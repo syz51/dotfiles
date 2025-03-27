@@ -2,7 +2,6 @@ local wezterm = require("wezterm")
 
 local config = wezterm.config_builder()
 
-config.default_prog = { "powershell.exe" }
 config.color_scheme = "Catppuccin Frappe"
 
 config.window_padding = {
@@ -11,5 +10,9 @@ config.window_padding = {
 	top = 0,
 	bottom = 0,
 }
+
+if wezterm.target_triple == "x86_64-pc-windows-msvc" then
+	config.default_prog = { "pwsh" }
+end
 
 return config
