@@ -5,13 +5,5 @@
 vim.filetype.add({ extension = { "templ" } })
 
 if jit.os == "Windows" then
-  local win_sh = nil
-  if vim.fn.executable("pwsh") then
-    win_sh = "pwsh"
-  elseif vim.fn.executable("powershell") then
-    win_sh = "powershell"
-  end
-  if win_sh then
-    LazyVim.terminal.setup(win_sh)
-  end
+  LazyVim.terminal.setup("pwsh")
 end
