@@ -7,3 +7,7 @@ local opts = { noremap = true, silent = true }
 
 -- select all
 keymap.set("n", "<C-a>", "gg<S-v>G", opts)
+
+-- save
+keymap.set({ "x", "n", "s" }, "<C-s>", "<cmd>w<cr><esc>", { desc = "Save File" })
+keymap.set("i", "<C-s>", "<esc><cmd>w<cr>", { desc = "Save File" })
