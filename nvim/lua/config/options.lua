@@ -5,5 +5,18 @@
 vim.filetype.add({ extension = { "templ" } })
 
 if jit.os == "Windows" then
-  LazyVim.terminal.setup("pwsh.exe")
+  vim.o.shell = "pwsh"
+
+  vim.o.shellcmdflag =
+    "-NoLogo -NoProfile -ExecutionPolicy RemoteSigned -Command $PSStyle.OutputRendering = 'PlainText';"
+
+  -- Setting shell redirection
+  vim.o.shellredir = "2>&1 | Out-File -Encoding UTF8 %s; exit $LastExitCode"
+
+  -- Setting shell pipe
+  vim.o.shellpipe = "2>&1 | Out-File -Encoding UTF8 %s; exit $LastExitCode"
+
+  -- Setting shell quote options
+  vim.o.shellquote = ""
+  vim.o.shellxquote = ""
 end
