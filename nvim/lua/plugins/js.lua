@@ -12,7 +12,12 @@ return {
     },
   },
   opts = function()
-    vim.cmd([[highlight PackageInfoUpToDateVersion guifg=]] .. "#98c379")
-    vim.cmd([[highlight PackageInfoOutdatedVersion guifg=]] .. "#d19a66")
+    local colors = require("catppuccin.palettes").get_palette("frappe")
+    vim.cmd([[highlight PackageInfoOutdatedVersion guifg=]] .. colors.peach)
+
+    return {
+      package_manager = "pnpm",
+      hide_up_to_date = true,
+    }
   end,
 }
