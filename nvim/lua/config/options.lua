@@ -5,5 +5,5 @@
 vim.filetype.add({ extension = { "templ" } })
 
 if jit.os == "Windows" then
-  LazyVim.terminal.setup("pwsh")
+  LazyVim.terminal.setup("pwsh.exe")
 end
