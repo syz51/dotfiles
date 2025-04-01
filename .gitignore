@@ -1,2 +1,4 @@
 podman/
 auth.json
+
+*.dump
