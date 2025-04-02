@@ -6,6 +6,8 @@ return {
       "graphql-language-service-cli",
       "powershell-editor-services",
       "pbls",
+      "markdownlint-cli2",
+      "markdown-toc",
     })
   end,
 }
