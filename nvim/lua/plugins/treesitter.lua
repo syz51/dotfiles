@@ -9,6 +9,7 @@ return {
       "graphql",
       "powershell",
       "proto",
+      "java",
     })
   end,
 }
