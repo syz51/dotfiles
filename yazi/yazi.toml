@@ -1,0 +1,28 @@
+[opener]
+edit = [
+    { run = 'code "$@"', orphan = true, desc = "Edit in VS Code", for = "unix" },
+]
+open = [
+    { run = 'open "$@"', desc = "Open with default app", for = "macos" },
+]
+reveal = [
+    { run = 'open -R "$1"', desc = "Reveal in Finder", for = "macos" },
+]
+
+[open]
+rules = [
+    { name = "*/", use = [ "open", "edit", "reveal" ] },
+    { mime = "text/*", use = [ "edit", "open", "reveal" ] },
+    { mime = "inode/x-empty", use = [ "edit", "open", "reveal" ] },
+    { name = "*.json", use = [ "edit", "open", "reveal" ] },
+    { name = "*.toml", use = [ "edit", "open", "reveal" ] },
+    { name = "*.yaml", use = [ "edit", "open", "reveal" ] },
+    { name = "*.yml", use = [ "edit", "open", "reveal" ] },
+    { name = "*.md", use = [ "edit", "open", "reveal" ] },
+    { name = "*.rs", use = [ "edit", "open", "reveal" ] },
+    { name = "*.py", use = [ "edit", "open", "reveal" ] },
+    { name = "*.js", use = [ "edit", "open", "reveal" ] },
+    { name = "*.ts", use = [ "edit", "open", "reveal" ] },
+    { name = "*.jsx", use = [ "edit", "open", "reveal" ] },
+    { name = "*.tsx", use = [ "edit", "open", "reveal" ] },
+]
