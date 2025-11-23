@@ -2,3 +2,16 @@ podman/
 auth.json
 
 *.dump
+
+.DS_Store
+configstore/
+gcloud/
+github-copilot/
+gtk-2.0/
+pip/
+Battle.net/
+.mono/
+gh/
+lazygit/
+
+tmux/plugins
