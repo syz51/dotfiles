@@ -3,13 +3,15 @@ auth.json
 
 *.dump
 
-# Local system files to ignore
 .DS_Store
 configstore/
 gcloud/
 github-copilot/
 gtk-2.0/
 pip/
+git/
 Battle.net/
 .mono/
-git/
+gh/
+lazygit/
+
