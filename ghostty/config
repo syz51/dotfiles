@@ -1,3 +1,4 @@
 theme = Catppuccin Frappe
 
 font-size = 16.0
+keybind = shift+enter=text:\x1b\r
