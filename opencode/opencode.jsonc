@@ -1,4 +1,73 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["openai"],
+  "model": "openai/gpt-5.4",
+  "small_model": "openai/gpt-5.4-mini",
   "autoupdate": true,
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 12000,
+  },
+  "provider": {
+    "openai": {
+      "options": {
+        "timeout": 600000,
+        "chunkTimeout": 45000,
+        "setCacheKey": true,
+      },
+      "models": {
+        "gpt-5.4": {
+          "options": {
+            "reasoningEffort": "high",
+            "textVerbosity": "low",
+            "reasoningSummary": "auto",
+          },
+        },
+        "gpt-5.4-mini": {
+          "options": {
+            "reasoningEffort": "medium",
+            "textVerbosity": "low",
+            "reasoningSummary": "auto",
+          },
+        },
+      },
+    },
+  },
+  "permission": {
+    "bash": {
+      "*": "ask",
+      "pwd": "allow",
+      "ls*": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git fetch origin*": "allow",
+      "gh pr view*": "allow",
+      "gh pr checks*": "allow",
+      "gh run view*": "allow",
+      "rg *": "allow",
+      "npm test*": "allow",
+      "pnpm test*": "allow",
+      "bun test*": "allow",
+      "vitest*": "allow",
+      "jest*": "allow",
+      "uv run pytest*": "allow",
+      "uv run ruff*": "allow",
+      "git push*": "deny",
+      "git reset --hard*": "deny",
+      "rm -rf *": "deny",
+    },
+  },
+  "watcher": {
+    "ignore": [
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      ".next/**",
+      ".turbo/**",
+      "coverage/**",
+    ],
+  },
 }
