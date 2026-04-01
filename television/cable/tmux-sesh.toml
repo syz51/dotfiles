@@ -6,7 +6,7 @@ requirements = ["sesh", "fd", "jq"]
 [source]
 command = """
 label_path() {
-  path="$1"
+  path="$(normalize_path "$1")"
   case "$path" in
     "$HOME"/*)
       printf '~%s\n' "${path#$HOME}"
@@ -15,6 +15,14 @@ label_path() {
       printf '%s\n' "$path"
       ;;
   esac
+}
+
+normalize_path() {
+  path="$1"
+  while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do
+    path="${path%/}"
+  done
+  printf '%s\n' "$path"
 }
 
 display_label() {
@@ -71,14 +79,16 @@ scan_dirs() {
 {
   sesh list --json --tmux -c | jq -r '(. // [])[] | [.Path, "session", .Name] | @tsv' |
     while IFS='	' read -r path kind target; do
+      path="$(normalize_path "$path")"
       label="$(label_path "$path")"
-      printf '%s\t%s\t%s\n' "$(display_label "$label")" "$kind" "$target"
+      printf '%s\t%s\t%s\t%s\n' "$(display_label "$label")" "$kind" "$target" "$path"
     done
   scan_dirs | while IFS= read -r path; do
+    path="$(normalize_path "$path")"
     label="$(label_path "$path")"
-    printf '%s\tfolder\t%s\n' "$(display_label "$label")" "$path"
+    printf '%s\tfolder\t%s\t%s\n' "$(display_label "$label")" "$path" "$path"
   done
-} | awk -F '\t' '!seen[$1]++'
+} | awk -F '\t' '!seen[$4]++ { print $1 "\t" $2 "\t" $3 }'
 """
 display = "{split:\t:0}"
 output = "{split:\t:2}"
