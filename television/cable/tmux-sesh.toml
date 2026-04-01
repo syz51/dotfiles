@@ -1,0 +1,101 @@
+[metadata]
+name = "tmux-sesh"
+description = "Session manager integrating tmux sessions, configured folders, and filesystem paths"
+requirements = ["sesh", "fd", "jq"]
+
+[source]
+command = """
+label_path() {
+  path="$1"
+  case "$path" in
+    "$HOME"/*)
+      printf '~%s\n' "${path#$HOME}"
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+display_label() {
+  label="$1"
+  case "$label" in
+    "~/.config")
+      printf '  %s\n' "$label"
+      ;;
+    "~/.codex")
+      printf '  %s\n' "$label"
+      ;;
+    "~/.pi")
+      printf '  %s\n' "$label"
+      ;;
+    ~/Documents/*)
+      printf '  %s\n' "$label"
+      ;;
+    *)
+      printf '  %s\n' "$label"
+      ;;
+  esac
+}
+
+fd_bin() {
+  if command -v fd >/dev/null 2>&1; then
+    command -v fd
+  elif command -v fdfind >/dev/null 2>&1; then
+    command -v fdfind
+  elif [ -x /opt/homebrew/bin/fd ]; then
+    printf '%s\n' /opt/homebrew/bin/fd
+  fi
+}
+
+scan_dirs() {
+  fd_cmd="$(fd_bin)"
+  if [ -n "$fd_cmd" ]; then
+    "$fd_cmd" -H -d 1 -t d -E .Trash -E .git -E node_modules -E .next -E dist -E build -E __pycache__ -E .pytest_cache -E .ruff_cache -E .mypy_cache -E .venv -E .vscode . ~/Documents
+    [ -d ~/.config ] && printf '%s\n' ~/.config
+    [ -d ~/.codex ] && printf '%s\n' ~/.codex
+    [ -d ~/.pi ] && printf '%s\n' ~/.pi
+    return
+  fi
+
+  find ~/Documents -mindepth 1 -maxdepth 1 -type d \
+    ! -name .Trash ! -name .git ! -name node_modules ! -name .next ! -name dist ! -name build \
+    ! -name __pycache__ ! -name .pytest_cache ! -name .ruff_cache ! -name .mypy_cache ! -name .venv \
+    ! -name .vscode ! -name .tmp ! -name archived_sessions ! -name cache ! -name log ! -name memories \
+    ! -name rules ! -name sessions ! -name shell_snapshots ! -name sqlite ! -name tmp ! -name vendor_imports
+  [ -d ~/.config ] && printf '%s\n' ~/.config
+  [ -d ~/.codex ] && printf '%s\n' ~/.codex
+  [ -d ~/.pi ] && printf '%s\n' ~/.pi
+}
+
+{
+  sesh list --json --tmux -c | jq -r '(. // [])[] | [.Path, "session", .Name] | @tsv' |
+    while IFS='	' read -r path kind target; do
+      label="$(label_path "$path")"
+      printf '%s\t%s\t%s\n' "$(display_label "$label")" "$kind" "$target"
+    done
+  scan_dirs | while IFS= read -r path; do
+    label="$(label_path "$path")"
+    printf '%s\tfolder\t%s\n' "$(display_label "$label")" "$path"
+  done
+} | awk -F '\t' '!seen[$1]++'
+"""
+display = "{split:\t:0}"
+output = "{split:\t:2}"
+
+[preview]
+command = "sesh preview '{split:\t:2}'"
+
+[keybindings]
+enter = "actions:connect"
+ctrl-d = ["actions:kill_session", "reload_source"]
+
+[actions.connect]
+description = "Connect to selected session"
+command = "sesh connect '{split:\t:2}'"
+mode = "execute"
+
+[actions.kill_session]
+description = "Kill selected tmux session (press Ctrl+r to reload)"
+command = "if [ '{split:\t:1}' = 'session' ]; then tmux kill-session -t '{split:\t:2}'; fi"
+mode = "fork"
