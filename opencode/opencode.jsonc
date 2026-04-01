@@ -36,7 +36,7 @@
   },
   "permission": {
     "bash": {
-      "*": "ask",
+      "*": "allow",
       "pwd": "allow",
       "ls*": "allow",
       "git status*": "allow",
@@ -70,4 +70,5 @@
       "coverage/**",
     ],
   },
+  "plugin": ["oh-my-openagent@latest"],
 }
