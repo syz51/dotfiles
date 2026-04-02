@@ -4,6 +4,7 @@ description = "Session manager integrating tmux sessions, configured folders, an
 requirements = ["sesh", "fd", "jq"]
 
 [source]
+no_sort = true
 command = """
 label_path() {
   path="$(normalize_path "$1")"
@@ -46,6 +47,12 @@ display_label() {
   esac
 }
 
+display_session() {
+  name="$1"
+  label="$2"
+  printf '  %s  [%s]\n' "$name" "$label"
+}
+
 fd_bin() {
   if command -v fd >/dev/null 2>&1; then
     command -v fd
@@ -81,7 +88,7 @@ scan_dirs() {
     while IFS='	' read -r path kind target; do
       path="$(normalize_path "$path")"
       label="$(label_path "$path")"
-      printf '%s\t%s\t%s\t%s\n' "$(display_label "$label")" "$kind" "$target" "$path"
+      printf '%s\t%s\t%s\t%s\n' "$(display_session "$target" "$label")" "$kind" "$target" "$path"
     done
   scan_dirs | while IFS= read -r path; do
     path="$(normalize_path "$path")"
