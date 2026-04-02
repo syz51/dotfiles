@@ -1,0 +1,26 @@
+model = "gpt-5.4"
+personality = "pragmatic"
+model_reasoning_effort = "high"
+model_verbosity = "medium"
+
+[projects."/Users/roy/.codex"]
+trust_level = "trusted"
+
+[projects."/Users/roy/Documents/show_catalog"]
+trust_level = "trusted"
+
+[projects."/Users/roy"]
+trust_level = "trusted"
+
+[projects."/Users/roy/Documents/rag"]
+trust_level = "trusted"
+
+[projects."/Users/roy/.config"]
+trust_level = "trusted"
+
+[features]
+multi_agent = true
+
+[[skills.config]]
+path = "/Users/roy/.codex/skills/openviking-memory-context/SKILL.md"
+enabled = false
