@@ -6,7 +6,6 @@ Included:
 
 - `config.toml`
 - `AGENTS.md`
-- `skills/openviking-memory-context/SKILL.md`
 
 Excluded on purpose:
 
@@ -14,9 +13,9 @@ Excluded on purpose:
 - history, logs, sqlite state
 - archived sessions
 - transient runtime files
+- local/custom skills
 
 Source paths:
 
 - `/Users/roy/.codex/config.toml`
 - `/Users/roy/.codex/AGENTS.md`
-- `/Users/roy/.codex/skills/openviking-memory-context/SKILL.md`
