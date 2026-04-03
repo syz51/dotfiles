@@ -5,6 +5,21 @@ At the end of each plan, give me a list of unresolved questions to answer, if an
 Use uv for python, and use bun for node.
 Apply these defaults unless a higher-priority system/developer/user instruction or a closer `AGENTS.md` overrides them.
 
+## Guidance Schema
+
+<guidance_schema>
+
+- Use this file as a stable schema, not a loose note dump.
+- Map new instructions into these buckets:
+  - Role & Intent: what the agent is trying to achieve for this task
+  - Operating Principles: default decision rules and tradeoffs
+  - Execution Protocol: ordered workflow and delegation rules
+  - Constraints & Safety: what must not happen
+  - Verification & Completion: evidence required before claiming success
+  - Recovery & Lifecycle: what to do when context changes, retrieval fails, or work needs to resume
+- When adding future guidance, extend the right section instead of creating overlapping rules elsewhere.
+  </guidance_schema>
+
 ## Core Contracts
 
 <output_contract>
@@ -46,7 +61,38 @@ Apply these defaults unless a higher-priority system/developer/user instruction 
 - If the task changes from execution to planning or review, stop executing and switch behavior immediately.
   </task_update_handling>
 
+<clarification_protocol>
+
+- For vague or broad tasks, inspect retrievable facts before asking the user.
+- Ask one high-leverage question at a time.
+- Prefer clarifying goal, non-goals, decision boundaries, and acceptance criteria before implementation details.
+- Stop asking once the task is specific enough to execute safely.
+  </clarification_protocol>
+
 ## Tool Discipline
+
+<delegation_model>
+
+- Choose execution strategy on three axes:
+  - `role`: the job to be done (`implementer`, `investigator`, `planner`, `reviewer`, `researcher`)
+  - `tier`: the depth and cost to spend (`low`, `standard`, `thorough`)
+  - `posture`: the operating style (`orchestrator`, `deep-worker`, `fast-lane`)
+- Pick `role` first, then `tier`, then `posture`.
+- Do not use model choice as a proxy for task ownership.
+- Default to `standard`.
+- Use `low` for bounded lookups, inventories, line references, and narrow validations.
+- Escalate to `thorough` for security, auth, migrations, architecture, high-blast-radius changes, or when weak evidence would be risky.
+- Use `orchestrator` posture to decompose, delegate, synthesize, and verify.
+- Use `deep-worker` posture to carry implementation or debugging through to completion with direct verification.
+- Use `fast-lane` posture for triage, grep, quick inventories, and second-pass spot checks.
+- Map this to native agent surfaces:
+  - main thread: `orchestrator` and any critical-path work
+  - `explorer` subagent: discovery plus `fast-lane`
+  - `worker` subagent: implementation or verification plus `deep-worker`
+- Escalate tier before agent count when the work is tightly coupled, evidence-sensitive, or blocked on shared context.
+- When delegating to sub agents, state the intended role, tier, and posture in the task brief.
+- When practical, keep reviewer and author roles separate for plan review, cleanup approval, and other high-stakes verification.
+  </delegation_model>
 
 <tool_persistence_rules>
 
@@ -98,6 +144,18 @@ Apply these defaults unless a higher-priority system/developer/user instruction 
 - Ask a minimal clarifying question only when the missing information cannot be retrieved reliably.
 - If forced to proceed, label assumptions explicitly and choose a reversible action.
   </missing_context_gating>
+
+<context_intake>
+
+- Before heavy multi-step work on a broad task, build a compact working brief:
+  - goal
+  - known facts and evidence
+  - constraints
+  - unknowns
+  - likely touchpoints
+- Reuse that brief through planning, implementation, and review instead of rediscovering context.
+- Do not create a persistent file for this unless the user asks for one or the workflow clearly benefits from an artifact.
+  </context_intake>
 
 <action_safety>
 

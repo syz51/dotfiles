@@ -1,0 +1,11 @@
+[project]
+name = "openviking-memory-context-skill"
+version = "0.1.0"
+description = "Runtime environment for the OpenViking Codex skill bridge"
+requires-python = ">=3.10"
+dependencies = [
+    "openviking",
+]
+
+[tool.uv]
+package = false
