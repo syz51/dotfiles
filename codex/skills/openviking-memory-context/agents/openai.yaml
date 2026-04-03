@@ -1,0 +1,4 @@
+interface:
+  display_name: 'OpenViking Memory'
+  short_description: 'Use OpenViking for Codex memory and context'
+  default_prompt: 'Use $openviking-memory-context to recall prior work, search indexed context, or persist durable project memory in OpenViking.'

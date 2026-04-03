@@ -6,6 +6,9 @@ Included:
 
 - `config.toml`
 - `AGENTS.md`
+- `agents/`
+- `rules/`
+- `skills/`
 
 Excluded on purpose:
 
@@ -13,9 +16,12 @@ Excluded on purpose:
 - history, logs, sqlite state
 - archived sessions
 - transient runtime files
-- local/custom skills
+- external skill roots such as `~/.agents/skills`
 
 Source paths:
 
 - `/Users/roy/.codex/config.toml`
 - `/Users/roy/.codex/AGENTS.md`
+- `/Users/roy/.codex/agents/`
+- `/Users/roy/.codex/rules/`
+- `/Users/roy/.codex/skills/`

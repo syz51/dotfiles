@@ -18,9 +18,18 @@ trust_level = "trusted"
 [projects."/Users/roy/.config"]
 trust_level = "trusted"
 
+[projects."/Users/roy/Documents/translation-agent"]
+trust_level = "trusted"
+
 [features]
 multi_agent = true
 
 [[skills.config]]
 path = "/Users/roy/.codex/skills/openviking-memory-context/SKILL.md"
 enabled = false
+
+[notice]
+hide_rate_limit_model_nudge = true
+
+[apps.connector_76869538009648d5b282a4bb21c3d157.tools.github_create_pull_request]
+approval_mode = "approve"
