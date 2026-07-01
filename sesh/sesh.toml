@@ -13,12 +13,12 @@ blacklist = ["roy/_codex", "roy/_config", "roy/_pi", "~/.codex", "~/.config", "~
 
 [[session]]
 name = "_codex"
-path = "/Users/roy/.codex"
+path = "~/.codex"
 
 [[session]]
 name = "_pi"
-path = "/Users/roy/.pi"
+path = "~/.pi"
 
 [[session]]
 name = "_config"
-path = "/Users/roy/.config"
+path = "~/.config"
