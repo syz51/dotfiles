@@ -1,8 +1,24 @@
 #:schema https://github.com/joshmedeski/sesh/raw/main/sesh.schema.json
 
-# Use a slightly longer derived name to reduce collisions between repos that
-# share a basename under different parents.
-dir_length = 2
+# Use basename-derived names for auto-created sessions so hidden roots like
+# ~/.codex, ~/.pi, and ~/.config become _codex, _pi, and _config.
+dir_length = 1
 
 # Speeds up repeated picker opens without changing session semantics.
 cache = false
+
+# Prefer the short explicit aliases for hidden-root workspaces in the picker.
+blacklist = ["roy/_codex", "roy/_config", "roy/_pi", "~/.codex", "~/.config", "~/.pi", "~/Documents/.beacon", "~/Documents/.UTSystemConfig"]
+
+
+[[session]]
+name = "_codex"
+path = "/Users/roy/.codex"
+
+[[session]]
+name = "_pi"
+path = "/Users/roy/.pi"
+
+[[session]]
+name = "_config"
+path = "/Users/roy/.config"

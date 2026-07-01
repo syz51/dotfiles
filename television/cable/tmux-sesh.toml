@@ -28,29 +28,20 @@ normalize_path() {
 
 display_label() {
   label="$1"
-  case "$label" in
-    "~/.config")
-      printf '  %s\n' "$label"
-      ;;
-    "~/.codex")
-      printf '  %s\n' "$label"
-      ;;
-    "~/.pi")
-      printf '  %s\n' "$label"
-      ;;
-    ~/Documents/*)
-      printf '  %s\n' "$label"
-      ;;
-    *)
-      printf '  %s\n' "$label"
-      ;;
-  esac
+  printf '  %s\n' "$label"
 }
 
 display_session() {
   name="$1"
   label="$2"
-  printf '  %s  [%s]\n' "$name" "$label"
+  state="$3"
+  icon=""
+  [ -n "$state" ] && icon="󰆍"
+  if [ -n "$state" ]; then
+    printf '%s  %s  [%s]  · %s\n' "$icon" "$name" "$label" "$state"
+  else
+    printf '%s  %s  [%s]\n' "$icon" "$name" "$label"
+  fi
 }
 
 fd_bin() {
@@ -66,7 +57,7 @@ fd_bin() {
 scan_dirs() {
   fd_cmd="$(fd_bin)"
   if [ -n "$fd_cmd" ]; then
-    "$fd_cmd" -H -d 1 -t d -E .Trash -E .git -E node_modules -E .next -E dist -E build -E __pycache__ -E .pytest_cache -E .ruff_cache -E .mypy_cache -E .venv -E .vscode . ~/Documents
+    "$fd_cmd" -H -d 1 -t d -E .Trash -E .git -E node_modules -E .next -E dist -E build -E __pycache__ -E .pytest_cache -E .ruff_cache -E .mypy_cache -E .venv -E .vscode -E .beacon -E .UTSystemConfig . ~/Documents
     [ -d ~/.config ] && printf '%s\n' ~/.config
     [ -d ~/.codex ] && printf '%s\n' ~/.codex
     [ -d ~/.pi ] && printf '%s\n' ~/.pi
@@ -76,7 +67,7 @@ scan_dirs() {
   find ~/Documents -mindepth 1 -maxdepth 1 -type d \
     ! -name .Trash ! -name .git ! -name node_modules ! -name .next ! -name dist ! -name build \
     ! -name __pycache__ ! -name .pytest_cache ! -name .ruff_cache ! -name .mypy_cache ! -name .venv \
-    ! -name .vscode ! -name .tmp ! -name archived_sessions ! -name cache ! -name log ! -name memories \
+    ! -name .vscode ! -name .beacon ! -name .UTSystemConfig ! -name .tmp ! -name archived_sessions ! -name cache ! -name log ! -name memories \
     ! -name rules ! -name sessions ! -name shell_snapshots ! -name sqlite ! -name tmp ! -name vendor_imports
   [ -d ~/.config ] && printf '%s\n' ~/.config
   [ -d ~/.codex ] && printf '%s\n' ~/.codex
@@ -84,11 +75,22 @@ scan_dirs() {
 }
 
 {
-  sesh list --json --tmux -c | jq -r '(. // [])[] | [.Path, "session", .Name] | @tsv' |
-    while IFS='	' read -r path kind target; do
+  sesh list --json --tmux -c | jq -r '(. // [])[] | [.Path, "session", .Name, .Src, (.Attached | tostring)] | @tsv' |
+    while IFS='	' read -r path kind target src attached; do
       path="$(normalize_path "$path")"
       label="$(label_path "$path")"
-      printf '%s\t%s\t%s\t%s\n' "$(display_session "$target" "$label")" "$kind" "$target" "$path"
+      state=""
+      if [ "$src" = "tmux" ]; then
+        case "$attached" in
+          ""|0)
+            state="running"
+            ;;
+          *)
+            state="attached"
+            ;;
+        esac
+      fi
+      printf '%s\t%s\t%s\t%s\n' "$(display_session "$target" "$label" "$state")" "$kind" "$target" "$path"
     done
   scan_dirs | while IFS= read -r path; do
     path="$(normalize_path "$path")"
