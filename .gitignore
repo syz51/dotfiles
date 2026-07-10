@@ -27,3 +27,6 @@ codex/skills/.system/
 /nvim.bak
 /tanstack
 /zed/prompts/prompts-library-db.0.mdb
+/herdr/*.log
+/herdr/release-notes.json
+/herdr/session.json
