@@ -22,7 +22,8 @@ jj
 mole
 mpv/watch_later
 uv
-codex/skills/.system/
+/codex/
+/claude/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack
@@ -32,3 +33,4 @@ codex/skills/.system/
 /herdr/session.json
 
 **.backup**
+/ponytail/
