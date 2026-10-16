@@ -58,32 +58,3 @@ serializes session selection and attachment across simultaneous launches.
 Ghostty and TUIOS use Catppuccin Frappe. TUIOS starts tiled in terminal mode, with
 the dock at the top and the sidebar on the left. The leader key is `Ctrl+Space`;
 follow it with `s` for the session switcher or uppercase `S` for scrollback.
-
-## Development checks
-
-Run checks relevant to the files you change. From the repository root:
-
-```sh
-# Launcher tests; their fake TUIOS executable also requires Homebrew Python.
-uv run --python /opt/homebrew/bin/python3 ghostty/test-tuios-launcher.py
-
-# Bun package-version parsing tests.
-bun test nvim/tests/bun-outdated.test.js
-```
-
-Neovim tests include invocation instructions in their source files. For example:
-
-```sh
-cd nvim
-nvim --headless -u NONE -i NONE -l tests/ghostty-docs.lua
-```
-
-Some integration tests require additional applications, such as Tectonic for
-LaTeX compilation. After testing, remove temporary files, session transcripts,
-and directories created by the tests.
-
-## Local state
-
-Keep credentials, session data, caches, and machine-specific settings out of
-commits. Review `git status` and staged changes before committing; `.gitignore`
-does not protect files that Git already tracks.
