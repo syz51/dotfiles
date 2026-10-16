@@ -1,0 +1,11 @@
+model = "gpt-5.4"
+personality = "pragmatic"
+model_reasoning_effort = "high"
+model_verbosity = "medium"
+plan_mode_reasoning_effort = "high"
+
+[features]
+multi_agent = true
+
+[notice]
+hide_rate_limit_model_nudge = true

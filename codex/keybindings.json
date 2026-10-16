@@ -1,0 +1,10 @@
+[
+  {
+    "command": "openAvatarOverlay",
+    "key": null
+  },
+  {
+    "command": "realtimeVoice",
+    "key": "Command+§"
+  }
+]
