@@ -30,3 +30,5 @@ codex/skills/.system/
 /herdr/*.log
 /herdr/release-notes.json
 /herdr/session.json
+
+**.backup**
