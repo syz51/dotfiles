@@ -16,8 +16,31 @@ return {
     vim.cmd([[highlight PackageInfoOutdatedVersion guifg=]] .. colors.peach)
 
     return {
-      package_manager = "pnpm",
+      package_manager = "bun",
       hide_up_to_date = true,
     }
+  end,
+  config = function(_, opts)
+    local config = require("package-info.config")
+    local commands = require("package-info.utils.commands")
+    local version_list, outdated = commands.version_list, commands.outdated
+
+    ---@diagnostic disable-next-line: duplicate-set-field
+    commands.version_list = function(name)
+      if config.options.package_manager == "bun" then
+        return "bun info " .. vim.fn.shellescape(name) .. " versions --json"
+      end
+      return version_list(name)
+    end
+
+    ---@diagnostic disable-next-line: duplicate-set-field
+    commands.outdated = function(workspace_path)
+      if config.options.package_manager == "bun" then
+        return "bun " .. vim.fn.shellescape(vim.fn.stdpath("config") .. "/scripts/bun-outdated.js")
+      end
+      return outdated(workspace_path)
+    end
+
+    require("package-info").setup(opts)
   end,
 }

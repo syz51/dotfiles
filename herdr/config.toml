@@ -1,8 +1,0 @@
-onboarding = false
-
-[theme]
-name = "terminal"
-auto_switch = false
-
-[ui.toast]
-delivery = "system"
