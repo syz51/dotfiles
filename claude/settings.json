@@ -1,4 +1,5 @@
 {
+  "syncClaudeAiSkills": false,
   "attribution": {
     "commit": "",
     "pr": "",
@@ -7,11 +8,15 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "disableClaudeAiConnectors": true,
   "sandbox": {
     "enabled": false
   },
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
-  "syncClaudeAiSkills": false,
-  "disableClaudeAiConnectors": true
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    }
+  }
 }
