@@ -4,6 +4,15 @@
 
 vim.filetype.add({ extension = { "templ" } })
 
+vim.g.vimtex_compiler_method = "tectonic"
+
+if jit.os == "OSX" then
+  vim.g.vimtex_view_method = "skim"
+  vim.g.vimtex_view_skim_sync = 0
+  -- Protect notes before both automatic and manual compilation can replace the PDF.
+  vim.cmd([[let g:vimtex_compiler_tectonic = {'start': function('config#vimtex#start')}]])
+end
+
 if jit.os == "Windows" then
   vim.o.shell = "pwsh"
 

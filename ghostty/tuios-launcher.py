@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-# Local dock-centering patch; keep the Homebrew installation intact.
+# Use the config-path wrapper, which forwards to Homebrew.
 TUIOS = "/Users/roy/.local/bin/tuios"
 
 

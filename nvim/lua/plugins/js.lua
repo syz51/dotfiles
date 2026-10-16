@@ -4,7 +4,7 @@ return {
   dependencies = "MunifTanjim/nui.nvim",
   keys = {
     {
-      "<leader>ns",
+      "<leader>cP",
       function()
         require("package-info").show({ force = true })
       end,

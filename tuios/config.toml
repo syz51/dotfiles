@@ -144,6 +144,7 @@ background = "#292c3c"
 sections = "files:30,spacer:40,sessions:15,terminals:15,agents"
 show_numbers = true
 file_icon_colors = false
+enabled = true
 
 [appearance.selection]
 bg = "#51576d"
@@ -176,3 +177,6 @@ prefix_session_switcher = ["s"]
 
 [spotlight]
 enabled = false
+
+[appearance.sidebar.left]
+enabled = true

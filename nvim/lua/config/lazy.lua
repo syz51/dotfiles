@@ -37,6 +37,9 @@ require("lazy").setup({
   }, -- automatically check for plugin updates
   performance = {
     rtp = {
+      paths = {
+        (vim.env.GHOSTTY_RESOURCES_DIR or "/Applications/Ghostty.app/Contents/Resources/ghostty") .. "/../nvim/site",
+      },
       -- disable some rtp plugins
       disabled_plugins = {
         "gzip",
