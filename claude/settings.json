@@ -8,15 +8,30 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/guard_destructive.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
   "disableClaudeAiConnectors": true,
   "sandbox": {
     "enabled": false
   },
-  "skipDangerousModePermissionPrompt": true,
-  "theme": "dark",
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "high"
     }
-  }
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
+  "switchModelsOnFlag": false
 }
