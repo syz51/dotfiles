@@ -23,15 +23,12 @@ Back up existing configuration before copying files into `~/.config`. Install
 the applications you intend to use, then copy or symlink their directories from
 this checkout. There is no installation script or complete dependency manifest.
 
-The terminal setup assumes macOS, zsh, and Homebrew under `/opt/homebrew`.
-Before using it on another account or machine, update these paths:
-
-- `ghostty/config` invokes `/Users/roy/.config/ghostty/tuios-launcher.sh`.
-- `ghostty/tuios-launcher.sh` invokes `/opt/homebrew/bin/python3` and the launcher
-  under `/Users/roy/.config/ghostty/`.
-- `ghostty/tuios-launcher.py` expects a TUIOS wrapper at
-  `/Users/roy/.local/bin/tuios`. That wrapper is outside this repository; provide
-  it locally or point the launcher at your TUIOS executable.
+The terminal setup assumes macOS, zsh, and this checkout at `~/.config`; paths
+resolve from `$HOME`, so it works under any account. The Ghostty launcher runs
+with Homebrew's `python3` when installed, otherwise the system `python3`.
+`ghostty/tuios-launcher.py` expects a TUIOS wrapper at `~/.local/bin/tuios`. That
+wrapper is outside this repository; provide it locally or point the launcher at
+your TUIOS executable.
 
 Neovim bootstraps lazy.nvim and installs the configured plugins on first launch,
 which requires Git and network access. Language-specific features may require

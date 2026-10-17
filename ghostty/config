@@ -6,4 +6,4 @@ font-size = 18.0
 keybind = shift+enter=text:\x1b\r
 
 # Reuse a detached TUIOS session, or create one when all sessions are attached.
-command = direct:/bin/sh /Users/roy/.config/ghostty/tuios-launcher.sh
+command = shell:exec /bin/sh "$HOME/.config/ghostty/tuios-launcher.sh"

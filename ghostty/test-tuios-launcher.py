@@ -7,7 +7,7 @@ import tempfile
 import time
 import unittest
 
-FAKE_TUIOS = r'''#!/opt/homebrew/bin/python3
+FAKE_TUIOS = r'''#!/usr/bin/env python3
 import contextlib, fcntl, json, os, pathlib, signal, sys, time
 root = pathlib.Path(__file__).parent
 
@@ -72,11 +72,11 @@ class LauncherTests(unittest.TestCase):
         fake.chmod(0o700)
         source = Path(__file__).with_name("tuios-launcher.py").read_text()
         (self.root / "launcher.py").write_text(source.replace(
-            "/Users/roy/.local/bin/tuios", str(fake)
+            'str(Path.home() / ".local/bin/tuios")', repr(str(fake))
         ).replace("time.monotonic() + 15", "time.monotonic() + 1.5"))
         shell = Path(__file__).with_name("tuios-launcher.sh").read_text()
         (self.root / "launcher.sh").write_text(shell.replace(
-            "/Users/roy/.config/ghostty/tuios-launcher.py", str(self.root / "launcher.py")
+            "$HOME/.config/ghostty/tuios-launcher.py", str(self.root / "launcher.py")
         ))
         self.processes = []
         self.addCleanup(self.stop_processes)
