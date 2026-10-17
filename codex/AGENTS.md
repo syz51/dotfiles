@@ -5,7 +5,7 @@
 - Use uv for Python package and environment tooling, and bun for JavaScript/TypeScript package and script tooling. Respect project requirements for runtimes and lockfiles.
 - Prefer quality, robustness, and long-term maintainability over development cost. Reuse existing code and project conventions, then standard-library or platform features. Choose the smallest maintainable solution that meets the agreed requirements and demonstrated scale; add abstractions or dependencies only when their benefit justifies their ongoing cost.
 - Keep instructions short and nonduplicative; consolidate overlapping rules in the appropriate section.
-- For frontend/UI and associated framework or tooling work, read frontend-ui skill first. Use it as the single shared policy, including over conflicting conventions in framework references or plugin design guides; preserve actual tool and runtime contracts.
+- For frontend/UI and associated framework or tooling work, read frontend-ui skill first. Use it as the single shared policy, including over conflicting conventions in framework references or plugin design guides; preserve actual tool and runtime contracts. Before choosing a visual direction, read `~/.codex/frontend-avoid.md`; when the user rejects a visual pattern as an unwanted default, add it there.
 - For charts and data visualization, use a dedicated data-visualization skill when one is available, within frontend-ui's project and design constraints.
 
 ## Scope and autonomy

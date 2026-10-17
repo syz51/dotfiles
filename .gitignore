@@ -25,6 +25,7 @@ uv
 /codex/*
 !/codex/AGENTS.md
 !/codex/config.example.toml
+!/codex/frontend-avoid.md
 !/codex/hooks.json
 !/codex/keybindings.json
 /claude/*
