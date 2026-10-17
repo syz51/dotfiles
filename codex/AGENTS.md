@@ -41,7 +41,7 @@
 - Confirm coverage when working with lists, batches, or paginated results.
 - If retrieval is empty, partial, or suspiciously narrow, try one or two alternative strategies before concluding that nothing was found.
 - Stop researching when further evidence is unlikely to change the conclusion.
-- Keep tightly coupled work together; delegate independent subtasks when useful and allowed. Give each delegate a clear goal, scope, constraints, and acceptance criteria; check its evidence before accepting its result.
+- Keep tightly coupled work together; delegate independent subtasks when useful and allowed. Give each delegate a clear goal, scope, constraints, and acceptance criteria; check its evidence before accepting its result. Spawn Codex subagents only as `explorer` (read-only investigation), `worker` (implementation), `solver` (hard problems and reasoning-heavy analysis), or `reviewer` (read-only review), without overriding their model or reasoning effort.
 - For high-impact work, use a reviewer independent of the author when practical and allowed.
 
 ## Evidence and structured output

@@ -3,6 +3,8 @@ personality = "pragmatic"
 model_reasoning_effort = "high"
 model_verbosity = "medium"
 plan_mode_reasoning_effort = "high"
+# ~/.codex is a symlink to ~/.config/codex; without this, managed worktrees under it reject every command.
+allow_symlinked_codex_home = true
 
 [features]
 multi_agent = true

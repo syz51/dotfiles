@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """PreToolUse hook: ask before destructive Bash commands, including in bypass mode.
 
-Detection is best effort for commands an agent writes in good faith, not a security boundary.
+Claude Code and Codex send the same payload. Codex cannot ask, so its hook passes --deny and
+the agent leaves the command for the user. Detection is best effort for commands an agent
+writes in good faith, not a security boundary.
 """
 
 import json
@@ -128,17 +130,24 @@ def command_reason(command, depth=0):
 def main():
     payload = json.load(sys.stdin)
     reason = command_reason(payload.get("tool_input", {}).get("command", ""))
-    if reason:
-        json.dump(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "ask",
-                    "permissionDecisionReason": f"Destructive command ({reason}); confirm before running.",
-                }
-            },
-            sys.stdout,
-        )
+    if not reason:
+        return
+    if "--deny" in sys.argv[1:]:
+        decision = "deny"
+        message = f"Blocked destructive command ({reason}). Do not work around this; leave it undone and list it in your final report for the user to approve."
+    else:
+        decision = "ask"
+        message = f"Destructive command ({reason}); confirm before running."
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": decision,
+                "permissionDecisionReason": message,
+            }
+        },
+        sys.stdout,
+    )
 
 
 if __name__ == "__main__":
