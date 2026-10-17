@@ -8,7 +8,7 @@ import sys
 import time
 
 # Use the config-path wrapper, which forwards to Homebrew.
-TUIOS = "/Users/roy/.local/bin/tuios"
+TUIOS = str(Path.home() / ".local/bin/tuios")
 
 
 def read_list(command):

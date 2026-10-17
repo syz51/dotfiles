@@ -1,2 +1,3 @@
 #!/bin/sh
-exec /bin/zsh -lic 'exec /opt/homebrew/bin/python3 /Users/roy/.config/ghostty/tuios-launcher.py'
+# Prefer Homebrew Python; Macs without it use the system interpreter.
+exec /bin/zsh -lic 'python=/opt/homebrew/bin/python3; [ -x "$python" ] || python=/usr/bin/python3; exec "$python" "$HOME/.config/ghostty/tuios-launcher.py"'
