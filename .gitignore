@@ -38,6 +38,10 @@ uv
 !/claude/hooks/
 !/claude/output-styles/
 !/claude/rules/
+!/claude/skills/
+/claude/skills/*
+!/claude/skills/headless-browser/
+/claude/skills/headless-browser/node_modules/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack
