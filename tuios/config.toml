@@ -138,13 +138,13 @@ window_title_format = "{index} · {cwd}"
 motion = "basic"
 
 [appearance.sidebar]
-position = "left"
+position = "hidden"
 width = 32
 background = "#292c3c"
 sections = "files:30,spacer:40,sessions:15,terminals:15,agents"
 show_numbers = true
 file_icon_colors = false
-enabled = true
+enabled = false
 
 [appearance.selection]
 bg = "#51576d"
@@ -179,4 +179,4 @@ prefix_session_switcher = ["s"]
 enabled = false
 
 [appearance.sidebar.left]
-enabled = true
+enabled = false

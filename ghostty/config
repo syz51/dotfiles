@@ -2,8 +2,8 @@ theme = Catppuccin Frappe
 selection-background = #51576d
 selection-foreground = #c6d0f5
 
-font-size = 18.0
+font-size = 17.0
 keybind = shift+enter=text:\x1b\r
 
 # Reuse a detached TUIOS session, or create one when all sessions are attached.
-command = shell:exec /bin/sh "$HOME/.config/ghostty/tuios-launcher.sh"
+command = shell:/bin/sh "$HOME/.config/ghostty/tuios-launcher.sh"
