@@ -8,6 +8,7 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "disableClaudeAiConnectors": true,
   "hooks": {
     "PreToolUse": [
       {
@@ -22,7 +23,6 @@
       }
     ]
   },
-  "disableClaudeAiConnectors": true,
   "sandbox": {
     "enabled": false
   },
