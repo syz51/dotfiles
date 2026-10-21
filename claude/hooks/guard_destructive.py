@@ -4,9 +4,12 @@
 Claude Code and Codex send the same payload. Codex cannot ask, so its hook passes --deny and
 the agent leaves the command for the user. Detection is best effort for commands an agent
 writes in good faith, not a security boundary.
+Recursive rm skips confirmation only when every operand resolves strictly inside a
+temporary root (/tmp, /private/tmp, or TMPDIR), with no unresolved shell expansion.
 """
 
 import json
+import os
 import re
 import shlex
 import sys
@@ -17,6 +20,8 @@ SHELLS = {"bash", "dash", "sh", "zsh"}
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--git-dir", "--namespace", "--work-tree"}
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 SHORT_FLAGS = re.compile(r"-[A-Za-z]+")
+TMPDIR_VARIABLE = re.compile(r"^\$(?:TMPDIR(?=/|$)|\{TMPDIR\})")
+SHELL_WORD = re.compile(r'''(?:[^\s;&|()'"\\]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+''', re.S)
 # Used only when the command cannot be tokenized, such as a heredoc body with an apostrophe.
 FALLBACK = re.compile(
     r"\brm\s+(-\S*[rR]|--recursive)"
@@ -42,6 +47,52 @@ def segments(command):
 
 def short_flags(args):
     return "".join(arg[1:] for arg in args if SHORT_FLAGS.fullmatch(arg))
+
+
+def rm_operands(args):
+    operands = []
+    options = True
+    for arg in args:
+        if options and arg == "--":
+            options = False
+        elif not options or not arg.startswith("-") or arg == "-":
+            operands.append(arg)
+    return operands
+
+
+def scratch_unsafe_segments(command):
+    # shlex drops quoting: a quoted separator or literal variable must not grant an exemption.
+    unsafe = set()
+    for match in SHELL_WORD.finditer(command):
+        raw = match.group(0)
+        words = shlex.split(raw)
+        if not words:
+            continue
+        word = words[0]
+        separator = set(word) <= set(PUNCTUATION)
+        literal_variable = TMPDIR_VARIABLE.match(word) and not TMPDIR_VARIABLE.match(raw.removeprefix('"'))
+        if separator or literal_variable:
+            # The prefix identifies the affected segment without changing existing tokenization.
+            prefix = list(segments(command[: match.start()]))
+            if prefix:
+                unsafe.add(len(prefix) - 1)
+    return unsafe
+
+
+def scratch_path(path):
+    tmpdir = os.environ.get("TMPDIR")
+    variable = TMPDIR_VARIABLE.match(path)
+    if variable:
+        if not tmpdir:
+            return False
+        path = tmpdir + path[variable.end() :]
+    if any(char in path for char in "$`~*?[]{}") or not os.path.isabs(path):
+        return False
+    resolved = os.path.realpath(path)
+    roots = ["/tmp", "/private/tmp"] + ([tmpdir] if tmpdir else [])
+    roots = [os.path.realpath(root) for root in roots]
+    allowed_roots = [os.path.realpath(tmpdir)] if variable else roots
+    return resolved not in roots and any(os.path.commonpath([root, resolved]) == root for root in allowed_roots)
 
 
 def git_reason(args):
@@ -74,10 +125,12 @@ def git_reason(args):
     return None
 
 
-def segment_reason(tokens, depth):
+def segment_reason(tokens, depth, scratch_allowed=True):
     while tokens and (tokens[0] in WRAPPERS or tokens[0] == "sudo" or ASSIGNMENT.match(tokens[0])):
         if tokens[0] == "sudo":
             return "sudo"
+        if tokens[0] in {"env", "xargs"} or tokens[0].startswith("TMPDIR="):
+            scratch_allowed = False
         tokens = tokens[1:]
         while tokens and tokens[0].startswith("-"):
             tokens = tokens[1:]
@@ -85,13 +138,14 @@ def segment_reason(tokens, depth):
         return None
     name, args = tokens[0].rsplit("/", 1)[-1], tokens[1:]
     if name == "rm" and ("--recursive" in args or any(c in "rR" for c in short_flags(args))):
-        return "recursive rm"
+        operands = rm_operands(args)
+        return None if scratch_allowed and operands and all(scratch_path(path) for path in operands) else "recursive rm"
     if name == "find":
         if "-delete" in args:
             return "find -delete"
         for flag in ("-exec", "-execdir", "-ok"):
             if flag in args:
-                found = segment_reason(args[args.index(flag) + 1 :], depth)
+                found = segment_reason(args[args.index(flag) + 1 :], depth, scratch_allowed)
                 if found:
                     return found
     if name == "git":
@@ -110,18 +164,29 @@ def segment_reason(tokens, depth):
             (args[i + 1] for i, arg in enumerate(args[:-1]) if re.fullmatch(r"-[a-z]*c", arg)), None
         )
         if script and depth < 3:
-            return command_reason(script, depth + 1)
+            return command_reason(script, depth + 1, scratch_allowed)
     return None
 
 
-def command_reason(command, depth=0):
+def command_reason(command, depth=0, scratch_allowed=True):
     try:
         parsed = list(segments(command))
     except ValueError:
         match = FALLBACK.search(command)
         return f"unparsed command matching {match.group(0).strip()!r}" if match else None
-    for tokens in parsed:
-        found = segment_reason(tokens, depth)
+    try:
+        unsafe = scratch_unsafe_segments(command)
+    except ValueError:
+        # A failed exemption check must preserve all of the original destructive rules.
+        unsafe = set(range(len(parsed)))
+    if any(
+        any(token.startswith("TMPDIR=") for token in tokens)
+        or (tokens[0] in {"unset", "read", "export", "declare", "typeset", "local"} and "TMPDIR" in tokens[1:])
+        for tokens in parsed
+    ):
+        scratch_allowed = False
+    for index, tokens in enumerate(parsed):
+        found = segment_reason(tokens, depth, scratch_allowed and index not in unsafe)
         if found:
             return found
     return None
