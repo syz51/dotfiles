@@ -13,7 +13,7 @@ directories, credentials, and runtime files are excluded by `.gitignore`.
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Agent instructions, example configuration, hooks, and keybindings.               |
-| `claude/`                | Claude Code instructions and settings.                                           |
+| `claude/`                | Claude Code instructions, settings, hooks, and a headless-browser skill.         |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
 | `AGENTS.md`, `CLAUDE.md` | Repository instructions for coding agents.                                       |
 
