@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 
-# Use the config-path wrapper, which forwards to Homebrew.
+# Use the config-path wrapper, which forwards to the local fork build.
 TUIOS = str(Path.home() / ".local/bin/tuios")
 
 
