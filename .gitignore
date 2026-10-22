@@ -54,3 +54,8 @@ uv
 /ponytail/
 
 /btop/
+
+# Installer receipts and generated defaults
+/atuin/atuin-receipt.json
+/fish/conf.d/atuin.env.fish
+/television/config.toml
