@@ -10,6 +10,37 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.atuin/bin/atuin\" hook codex"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.atuin/bin/atuin\" hook codex"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.atuin/bin/atuin\" hook codex"
+          }
+        ]
       }
     ]
   }
