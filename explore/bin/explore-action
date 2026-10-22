@@ -38,7 +38,7 @@ done
 if [[ $verb == menu ]]; then
   # Use our borderless picker for actions; tv's built-in action panel exposes
   # command templates and has fixed borders. These rows are static, never paths.
-  choice=$(tv --config-file "${bin:h}/config.toml" --cable-dir "${bin:h}/cable" \
+  choice=$("$bin/explore-television" --config-file "${bin:h}/config.toml" --cable-dir "${bin:h}/cable" \
     --source-command "printf '%s\\n' 'Copy paths' 'Rename' 'Move' 'Trash'" \
     --no-remote --no-help-panel --no-status-bar --input-header 'Actions · Esc cancels') || resume
   case $choice in

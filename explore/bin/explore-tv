@@ -17,7 +17,7 @@ launch() {
   fi
   header=${(V)header}
   # UI goes to the controlling terminal. Any incidental tv output stays private.
-  local -a picker=(tv --config-file "$root/config.toml" --cable-dir "$root/cable"
+  local -a picker=("$EXPLORE_BIN/explore-television" --config-file "$root/config.toml" --cable-dir "$root/cable"
     --no-remote --no-help-panel --no-status-bar --input-header "$header/"
     explore "$scope")
   if [[ $1 == exec ]]; then
@@ -32,7 +32,8 @@ if [[ $1 == --resume ]]; then
   exit $?
 fi
 [[ $# -le 1 ]] || { print -u2 'usage: explore-tv [directory]'; exit 64; }
-(( $+commands[tv] && $+commands[fd] )) || { print -u2 'explore requires tv and fd'; exit 69; }
+[[ -x ${EXPLORE_TELEVISION:-$HOME/.local/opt/explore-television/tv} ]] || (( $+commands[tv] )) || { print -u2 'explore requires Television (run install-television.sh or install tv)'; exit 69; }
+(( $+commands[fd] )) || { print -u2 'explore requires fd'; exit 69; }
 start=${1:-$PWD}
 [[ -d $start && $start != *$'\n'* ]] || { print -u2 'explore: invalid starting directory'; exit 66; }
 base=${EXPLORE_TMPDIR:-${TMPDIR:-/tmp}}

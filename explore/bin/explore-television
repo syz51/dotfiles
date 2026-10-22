@@ -1,0 +1,11 @@
+#!/bin/zsh -f
+# Keep the patched binary private to Explore; ordinary tv stays on PATH.
+emulate -LR zsh
+if [[ -n ${EXPLORE_TELEVISION:-} ]]; then
+  exec "$EXPLORE_TELEVISION" "$@"
+fi
+private=$HOME/.local/opt/explore-television/tv
+if [[ -x $private ]]; then
+  exec "$private" "$@"
+fi
+exec tv "$@"
