@@ -271,6 +271,10 @@ cap_right = ""
 [keybindings]
 leader_key = "ctrl+space"
 
+[keybindings.global]
+# Let Television receive Ctrl+P for selecting the previous entry.
+command_palette = []
+
 [keybindings.prefix_mode]
 prefix_file_search = []
 prefix_scrollback = ["S"]
