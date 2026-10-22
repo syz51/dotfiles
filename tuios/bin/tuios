@@ -1,0 +1,12 @@
+#!/bin/sh
+# Run TUIOS with this repository's configuration. Prefer the fork build that
+# tuios/install-fork.sh installs (it adds appearance.popup_dim); otherwise use
+# Homebrew's TUIOS.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+fork="$HOME/.local/opt/tuios-fork/tuios"
+[ -x "$fork" ] && exec "$fork" "$@"
+for brew in /opt/homebrew/bin/tuios /usr/local/bin/tuios; do
+  [ -x "$brew" ] && exec "$brew" "$@"
+done
+echo "tuios: no TUIOS found; run $XDG_CONFIG_HOME/tuios/install-fork.sh or brew install tuios" >&2
+exit 127

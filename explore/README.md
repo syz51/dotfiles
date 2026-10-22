@@ -36,8 +36,10 @@ excluded; ignore files do not hide descendants. Previews cap file input at
 
 ## Install
 
-Requires macOS, zsh, Neovim with RPC and `-l` support, and the TUIOS fork with
-`popup --capture-stdout`, command keys, and `send-keys --literal`.
+Requires macOS, zsh, Neovim with RPC and `-l` support, and TUIOS with
+`popup --capture-stdout`, command keys, and `send-keys --literal`. The screen
+behind the popup dims only with the TUIOS fork; install it with
+`../tuios/install-fork.sh`.
 Validated with Television 0.15.9 and Neovim 0.12.6.
 
 ```sh
