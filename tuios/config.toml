@@ -134,11 +134,12 @@ border_focused_color = "#babbf1"
 border_unfocused_color = "#838ba7"
 gap = 1
 dim_unfocused = 8
+popup_dim = 30
 window_title_format = "{index} · {cwd}"
 motion = "basic"
 
 [appearance.sidebar]
-position = "left"
+position = "hidden"
 width = 32
 background = "#292c3c"
 sections = "files:30,spacer:40,sessions:15,terminals:15,agents"

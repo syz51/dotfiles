@@ -7,3 +7,6 @@ keybind = shift+enter=text:\x1b\r
 
 # Reuse a detached TUIOS session, or create one when all sessions are attached.
 command = shell:/bin/sh "$HOME/.config/ghostty/tuios-launcher.sh"
+
+# Optional settings for this Mac, such as its preferred font size.
+config-file = ?config.local
