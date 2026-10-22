@@ -28,11 +28,23 @@ this checkout. There is no installation script or complete dependency manifest.
 The terminal setup assumes macOS, zsh, and this checkout at `~/.config`; paths
 resolve from `$HOME`, so it works under any account. The Ghostty launcher runs
 with Homebrew's `python3` when installed, otherwise the system `python3`.
-`ghostty/tuios-launcher.py` runs TUIOS through `~/.local/bin/tuios`. Run
-`tuios/install-fork.sh` to build the TUIOS fork that popup dimming needs and to
-link that path to `tuios/bin/tuios`, which uses the fork build when installed and
-Homebrew's TUIOS otherwise. Then run `tuios kill-server` and open a new Ghostty
-window.
+`ghostty/tuios-launcher.py` expects a TUIOS wrapper at `~/.local/bin/tuios`. That
+wrapper is outside this repository and forwards to `~/.local/libexec/tuios`, built
+from the [`feat/popup-dim` branch of syz51/tuios](https://github.com/syz51/tuios/tree/feat/popup-dim)
+in `~/.local/src/tuios`.
+To update that build:
+
+```sh
+git -C ~/.local/src/tuios fetch origin
+git -C ~/.local/src/tuios switch feat/popup-dim
+git -C ~/.local/src/tuios merge --no-edit origin/feat/popup-dim
+git -C ~/.local/src/tuios merge --no-edit origin/main
+~/.local/src/tuios/scripts/install.sh pure --prefix ~/.local/libexec --keep-server
+```
+
+The running daemon keeps its current build until restarted. `tuios restart-server`
+shows what it will stop and asks before restarting; a restart ends the programs
+running in its panes.
 
 Neovim bootstraps lazy.nvim and installs the configured plugins on first launch,
 which requires Git and network access. Language-specific features may require
