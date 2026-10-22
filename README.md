@@ -15,6 +15,7 @@ directories, credentials, and runtime files are excluded by `.gitignore`.
 | `codex/`                 | Agent instructions, example configuration, hooks, and keybindings.               |
 | `claude/`                | Claude Code instructions, settings, hooks, and a headless-browser skill.         |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
+| `t3/`                    | T3 Code desktop host startup and remote connection instructions.                 |
 | `AGENTS.md`, `CLAUDE.md` | Repository instructions for coding agents.                                       |
 
 ## Setup
