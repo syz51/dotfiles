@@ -37,6 +37,82 @@ class ExploreTests(unittest.TestCase):
     def zsh(self, script, *args, env=None, check=True):
         return subprocess.run(['zsh', '-f', '-c', script, 'test', *map(str, args)], env=env or self.env, capture_output=True, check=check)
 
+    def test_television_selection_preserves_argv_and_status(self):
+        base = self.scratch/'tv-selection'; base.mkdir()
+        home = base/'home'; home.mkdir()
+        fake = base/'bin'; fake.mkdir()
+        private = home/'.local/opt/explore-television/tv'
+        private.parent.mkdir(parents=True)
+        override = base/'override tv'
+        for binary, label in [(fake/'tv', 'system'), (private, 'private'), (override, 'override')]:
+            binary.write_text(f'#!/bin/zsh -f\nprintf "%s\\0" {label} "$@"\nexit 37\n')
+            binary.chmod(0o755)
+        env = dict(self.env, HOME=str(home), PATH=str(fake)+':'+self.env['PATH'])
+        env.pop('EXPLORE_TELEVISION', None)
+        args = ['space name', '$literal', '', '--version']
+        for label in ['private', 'override', 'system']:
+            with self.subTest(selection=label):
+                run_env = dict(env)
+                if label == 'override': run_env['EXPLORE_TELEVISION'] = str(override)
+                if label == 'system':
+                    private.unlink()
+                    private.mkdir()  # Searchable directories are not executable binaries.
+                result = subprocess.run([str(BIN/'explore-television'), *args], env=run_env, capture_output=True)
+                self.assertEqual(result.returncode, 37, result.stderr)
+                self.assertEqual(result.stdout.split(b'\0')[:-1], [label.encode(), *[a.encode() for a in args]])
+
+    def test_invalid_television_override_fails_before_session_or_launch(self):
+        base = self.scratch/'tv-invalid'; base.mkdir()
+        fake = base/'bin'; fake.mkdir()
+        marker = base/'unexpected-launch'
+        for name in ['tv', 'mktemp']:
+            binary = fake/name
+            binary.write_text('#!/bin/zsh -f\nprint called >> "$LAUNCH_MARKER"\nexit 99\n')
+            binary.chmod(0o755)
+        nonexec = base/'non-executable'; nonexec.touch()
+        env = dict(self.env, PATH=str(fake)+':'+self.env['PATH'], LAUNCH_MARKER=str(marker))
+        for override in [str(base/'missing'), str(base), str(nonexec), 'tv']:
+            for command in [('explore-television', '--version'), ('explore-tv', str(base)), ('explore-tv', '--resume')]:
+                with self.subTest(override=override, command=command):
+                    result = subprocess.run([str(BIN/command[0]), command[1]],
+                                            env=dict(env, EXPLORE_TELEVISION=override), capture_output=True)
+                    self.assertEqual(result.returncode, 69, result.stderr)
+                    self.assertIn(b'EXPLORE_TELEVISION', result.stderr)
+                    self.assertEqual(result.stdout, b'')
+                    self.assertFalse(marker.exists())
+
+    def test_installer_resolves_relative_physical_build_root_and_cleans_failure(self):
+        base = self.scratch/'installer'; base.mkdir()
+        build = base/'physical-build'; build.mkdir()
+        (base/'build-link').symlink_to(build, target_is_directory=True)
+        fake = base/'bin'; fake.mkdir()
+        output = base/'download-path'
+        for name in ['cargo', 'rustc', 'rustup']:
+            binary = fake/name
+            binary.write_text('#!/bin/sh\ncase "$1" in --version) echo "stub version";; which) exit 0;; *) exit 99;; esac\n')
+            binary.chmod(0o755)
+        curl = fake/'curl'
+        curl.write_text('#!/bin/zsh -f\nprint -r -- "${@[-1]}" > "$DOWNLOAD_PATH"\nexit 42\n')
+        curl.chmod(0o755)
+        env = dict(self.env, PATH=str(fake)+':'+self.env['PATH'], DOWNLOAD_PATH=str(output),
+                   EXPLORE_TELEVISION_BUILD_ROOT='build-link', EXPLORE_TELEVISION_DEST=str(base/'dest'))
+        result = subprocess.run([str(ROOT/'install-television.sh')], cwd=base, env=env, capture_output=True)
+        self.assertEqual(result.returncode, 42, result.stderr)
+        archive = pathlib.Path(output.read_text().strip())
+        self.assertTrue(archive.is_absolute())
+        self.assertEqual(archive.parent.parent, build)
+        self.assertEqual(archive.name, 'source.tar.gz')
+        self.assertEqual(list(build.iterdir()), [])
+        self.assertFalse((base/'dest').exists())
+        output.unlink()
+        for invalid in ['missing', 'download-path-file']:
+            if invalid == 'download-path-file': (base/invalid).touch()
+            result = subprocess.run([str(ROOT/'install-television.sh')], cwd=base,
+                                    env=dict(env, EXPLORE_TELEVISION_BUILD_ROOT=invalid), capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'build root', result.stderr)
+            self.assertFalse(output.exists())
+
     def test_shell_command_quotes_real_argv(self):
         work = self.scratch / 'quoted'
         work.mkdir()

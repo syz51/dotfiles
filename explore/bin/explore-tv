@@ -26,13 +26,19 @@ launch() {
     "${picker[@]}" > "$EXPLORE_SESSION/tv-output"
   fi
 }
+if [[ -n ${EXPLORE_TELEVISION:-} ]]; then
+  [[ $EXPLORE_TELEVISION == /* && -f $EXPLORE_TELEVISION && -x $EXPLORE_TELEVISION ]] || {
+    print -u2 'explore: EXPLORE_TELEVISION must be an absolute path to an executable file'
+    exit 69
+  }
+fi
 if [[ $1 == --resume ]]; then
   [[ $# == 1 && -d ${EXPLORE_SESSION:-} && -O $EXPLORE_SESSION && ! -L $EXPLORE_SESSION ]] || exit 65
   launch exec
   exit $?
 fi
 [[ $# -le 1 ]] || { print -u2 'usage: explore-tv [directory]'; exit 64; }
-[[ -x ${EXPLORE_TELEVISION:-$HOME/.local/opt/explore-television/tv} ]] || (( $+commands[tv] )) || { print -u2 'explore requires Television (run install-television.sh or install tv)'; exit 69; }
+[[ -f ${EXPLORE_TELEVISION:-$HOME/.local/opt/explore-television/tv} && -x ${EXPLORE_TELEVISION:-$HOME/.local/opt/explore-television/tv} ]] || (( $+commands[tv] )) || { print -u2 'explore requires Television (run install-television.sh or install tv)'; exit 69; }
 (( $+commands[fd] )) || { print -u2 'explore requires fd'; exit 69; }
 start=${1:-$PWD}
 [[ -d $start && $start != *$'\n'* ]] || { print -u2 'explore: invalid starting directory'; exit 66; }

@@ -3,9 +3,13 @@
 set -eu
 version=0.15.9
 sha256=5f46cbe7b14e1d6e3958f436b1d6ed8af86e9914d7d2aee5a9379e8e1772072d
-root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 dest=${EXPLORE_TELEVISION_DEST:-$HOME/.local/opt/explore-television}
 build_root=${EXPLORE_TELEVISION_BUILD_ROOT:-${TMPDIR:-/tmp}}
+build_root=$(CDPATH= cd -- "$build_root" && pwd -P) || {
+  echo 'install-television: build root must be an accessible existing directory' >&2
+  exit 1
+}
+root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 for dependency in curl tar shasum patch cargo rustc; do
   command -v "$dependency" >/dev/null || { echo "install-television: $dependency is required" >&2; exit 1; }
 done
@@ -17,6 +21,8 @@ if command -v rustup >/dev/null; then
   rustup which --toolchain "$RUSTUP_TOOLCHAIN" cargo >/dev/null
   rustup which --toolchain "$RUSTUP_TOOLCHAIN" rustc >/dev/null
 fi
+rustc --version
+cargo --version
 work=$(mktemp -d "$build_root/explore-television.XXXXXXXX")
 pending=
 cleanup() {

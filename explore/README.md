@@ -52,12 +52,18 @@ applies `patches/television-0.15.9-initial-batch.patch`,
 and builds with `cargo --locked`. It requires curl, tar, shasum, patch, and
 an installed Rust toolchain (Rust 1.93.1 verified; upstream minimum 1.90).
 The script uses an installed `stable` rustup toolchain by default;
-`EXPLORE_TELEVISION_TOOLCHAIN` selects another installed toolchain.
+`EXPLORE_TELEVISION_TOOLCHAIN` selects another installed toolchain. `stable`
+can change as Rust is updated, so these builds are not bit-reproducible.
+For an exact Rust version, select an already installed fixed toolchain, for
+example `EXPLORE_TELEVISION_TOOLCHAIN=1.93.1 ./install-television.sh`.
+The installer prints the rustc and cargo versions used.
 
 Only Explore's launch and action menu use the private binary at
 `~/.local/opt/explore-television/tv`; other `tv` invocations stay unchanged.
 `bin/explore-television` falls back to system `tv` when that binary is absent.
 `EXPLORE_TELEVISION=/absolute/path/to/tv` overrides selection for profiling.
+An invalid override fails before creating a picker session, even if system
+`tv` is available; the override must be an executable file, not a directory.
 The patch flushes the first useful command/stdin batch at 64 records or 16 ms,
 even when the producer stalls, then retains the 10,000-record/200 ms bulk
 thresholds. Insertions complete in record order. Partial records remain buffered.
