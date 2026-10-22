@@ -12,7 +12,8 @@ in the background at graphical login. It is linked into `~/Library/LaunchAgents`
 It runs once at login; it does not restart an app you quit or replace T3's server
 with a separate service. Keep the desktop app running while using it remotely.
 
-To install on another host with the same app installed:
+The plist is local to this Mac and excluded from Git. On another host, create
+the plist locally with that host's app path before installing the symlink:
 
 ```sh
 ln -s "$HOME/.config/t3/com.syz51.t3code.desktop.plist" \
