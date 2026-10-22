@@ -50,3 +50,7 @@ uv
 /ponytail/
 
 /btop/
+
+# Local installation metadata and package trust decisions.
+/atuin/atuin-receipt.json
+/homebrew/
