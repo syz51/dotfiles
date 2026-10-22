@@ -5,6 +5,7 @@
 - Use uv for Python and bun for JavaScript/TypeScript tooling; respect project runtimes and lockfiles.
 - Prefer robust, maintainable solutions. Reuse project conventions and existing code; add dependencies or abstractions only when justified.
 - Keep instructions concise and nonduplicative.
+- Never enable Fast mode or Ultra mode.
 - For frontend/UI work and its tooling, read frontend-ui first and use it as the shared policy, preserving actual tool and runtime contracts. Read `~/.codex/frontend-avoid.md` before choosing a visual direction; add patterns I explicitly reject there.
 - For charts, use a dedicated data-visualization skill when available, within frontend-ui's constraints.
 
