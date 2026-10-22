@@ -1,0 +1,51 @@
+#!/bin/zsh -f
+# The outer wrapper alone owns stdout; tv execute actions always reconnect to tty.
+emulate -LR zsh
+setopt extendedglob
+umask 077
+export EXPLORE_BIN=${0:A:h}
+root=${EXPLORE_BIN:h}
+launch() {
+  export TELEVISION_CONFIG=$root TELEVISION_DATA=$EXPLORE_SESSION/tv-data
+  export PATH="$EXPLORE_BIN:$PATH"
+  local scope=$(<"$EXPLORE_SESSION/scope")
+  local header=$scope
+  if [[ $scope == "$HOME" ]]; then
+    header='~'
+  elif [[ $scope == "$HOME"/* ]]; then
+    header="~/${scope#"$HOME"/}"
+  fi
+  header=${(V)header}
+  # UI goes to the controlling terminal. Any incidental tv output stays private.
+  local -a picker=(tv --config-file "$root/config.toml" --cable-dir "$root/cable"
+    --no-remote --no-help-panel --no-status-bar --input-header "$header/"
+    explore "$scope")
+  if [[ $1 == exec ]]; then
+    exec "${picker[@]}" > "$EXPLORE_SESSION/tv-output"
+  else
+    "${picker[@]}" > "$EXPLORE_SESSION/tv-output"
+  fi
+}
+if [[ $1 == --resume ]]; then
+  [[ $# == 1 && -d ${EXPLORE_SESSION:-} && -O $EXPLORE_SESSION && ! -L $EXPLORE_SESSION ]] || exit 65
+  launch exec
+  exit $?
+fi
+[[ $# -le 1 ]] || { print -u2 'usage: explore-tv [directory]'; exit 64; }
+(( $+commands[tv] && $+commands[fd] )) || { print -u2 'explore requires tv and fd'; exit 69; }
+start=${1:-$PWD}
+[[ -d $start && $start != *$'\n'* ]] || { print -u2 'explore: invalid starting directory'; exit 66; }
+base=${EXPLORE_TMPDIR:-${TMPDIR:-/tmp}}
+[[ -d $base && -O $base && ! -L $base ]] || { print -u2 'explore: invalid temporary directory'; exit 65; }
+export EXPLORE_SESSION=$(mktemp -d "$base/explore.XXXXXXXX") || exit 1
+# Only remove our own mktemp directory, never its parent or a supplied session.
+TRAPEXIT() { command rm -rf -- "$EXPLORE_SESSION"; }
+"$EXPLORE_BIN/explore-src" --init "$start" "$EXPLORE_SESSION" || exit $?
+launch
+rc=$?
+if [[ -s $EXPLORE_SESSION/result ]]; then
+  cat -- "$EXPLORE_SESSION/result"
+  exit 0
+fi
+(( rc == 0 )) && rc=130
+exit $rc

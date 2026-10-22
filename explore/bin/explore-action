@@ -1,0 +1,113 @@
+#!/bin/zsh -f
+# tv passes only opaque IDs. Resolve paths here, never through shell templates.
+emulate -LR zsh
+setopt extendedglob
+umask 077
+bin=${0:A:h}
+session=${EXPLORE_SESSION:?explore-action requires EXPLORE_SESSION}
+verb=$1; shift
+[[ -d $session && -O $session && ! -L $session ]] || exit 65
+resume() { exec "$bin/explore-tv" --resume; }
+message() { print -r -- "$*" > /dev/tty; }
+pause_error() {
+  message "explore: $*"
+  message 'Press Enter to return.'
+  IFS= read -r answer < /dev/tty
+  resume
+}
+confirm() {
+  message "$1 Type yes to confirm:"
+  IFS= read -r answer < /dev/tty || return 1
+  [[ $answer == yes ]]
+}
+if [[ $verb == up ]]; then
+  scope=$(<"$session/scope")
+  print -r -- "${scope:h}" > "$session/scope"
+  resume
+fi
+typeset -a paths targets
+typeset -A seen
+for id in "$@"; do
+  p=$("$bin/explore-src" --resolve "$id") || exit 65
+  [[ -e $p || -L $p ]] || pause_error 'Selection no longer exists.'
+  [[ -n ${seen[$p]-} ]] && continue
+  seen[$p]=1
+  paths+=("$p")
+done
+(( ${#paths} )) || resume
+if [[ $verb == menu ]]; then
+  # Use our borderless picker for actions; tv's built-in action panel exposes
+  # command templates and has fixed borders. These rows are static, never paths.
+  choice=$(tv --config-file "${bin:h}/config.toml" --cable-dir "${bin:h}/cable" \
+    --source-command "printf '%s\\n' 'Copy paths' 'Rename' 'Move' 'Trash'" \
+    --no-remote --no-help-panel --no-status-bar --input-header 'Actions · Esc cancels') || resume
+  case $choice in
+    'Copy paths') verb=copy_paths ;;
+    Rename) verb=rename ;;
+    Move) verb=move ;;
+    Trash) verb=trash ;;
+    *) resume ;;
+  esac
+fi
+case $verb in
+  open|nvim)
+    # Commit the whole record atomically; outer launcher alone emits it.
+    { printf 'EXPLORE1\0%s\0' "$verb"; printf '%s\0' "${paths[@]}"; } > "$session/result.pending" || exit 1
+    mv -- "$session/result.pending" "$session/result"
+    exit 0
+    ;;
+  into)
+    if (( ${#paths} == 1 )) && [[ -d $paths[1] ]]; then
+      print -r -- "${paths[1]:A}" > "$session/scope"
+    fi
+    resume
+    ;;
+  copy_paths)
+    (( $+commands[pbcopy] )) || pause_error 'pbcopy is unavailable.'
+    printf '%s\n' "${paths[@]}" | pbcopy || pause_error 'Could not copy paths.'
+    resume
+    ;;
+  rename)
+    for p in "${paths[@]}"; do
+      message "Rename ${(V)p}"
+      message 'New name (blank cancels):'
+      IFS= read -r name < /dev/tty || resume
+      [[ -n $name ]] || resume
+      [[ $name != */* && $name != . && $name != .. && $name != *$'\n'* ]] || pause_error 'Enter one filename, without /.'
+      targets+=("${p:h}/$name")
+    done
+    ;;
+  move)
+    message "${(C)verb} ${#paths} item(s). Destination folder (absolute path; blank cancels):"
+    IFS= read -r destination < /dev/tty || resume
+    [[ -n $destination ]] || resume
+    [[ $destination == /* && -d $destination && $destination != *$'\n'* ]] || pause_error 'Destination must be an existing absolute folder.'
+    destination=${destination:A}
+    for p in "${paths[@]}"; do targets+=("$destination/${p:t}"); done
+    ;;
+  trash)
+    [[ -x /usr/bin/trash ]] || pause_error '/usr/bin/trash is unavailable; no permanent-delete fallback.'
+    for p in "${paths[@]}"; do message "Trash ${(V)p}"; done
+    confirm "Trash ${#paths} item(s)?" || resume
+    /usr/bin/trash "${paths[@]}" > /dev/tty 2>&1 || pause_error 'Trash failed; inspect the listed items.'
+    resume
+    ;;
+  *) exit 64 ;;
+esac
+# Preflight every rename/move before touching any source. Never overwrite.
+typeset -A reserved
+typeset -i i
+for (( i=1; i<=${#paths}; ++i )); do
+  p=$paths[i]; target=$targets[i]
+  [[ ! -e $target && ! -L $target && -z ${reserved[$target]-} ]] || pause_error 'A destination already exists; nothing changed.'
+  reserved[$target]=1
+  [[ ! -d $p || $target != "$p"/* ]] || pause_error 'Cannot move a folder inside itself.'
+  message "${(V)p} → ${(V)target}"
+done
+confirm "${(C)verb} ${#paths} item(s)?" || resume
+for (( i=1; i<=${#paths}; ++i )); do
+  p=$paths[i]; target=$targets[i]
+  mv -n -- "$p" "$target" > /dev/tty 2>&1 || pause_error 'Operation failed; earlier items may have completed.'
+  [[ ! -e $p && ! -L $p ]] || pause_error 'Destination changed; source was preserved.'
+done
+resume

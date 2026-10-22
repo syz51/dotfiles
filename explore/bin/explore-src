@@ -1,0 +1,83 @@
+#!/bin/zsh -f
+# Session source and manifest utilities. No filename is ever shell template data.
+emulate -LR zsh
+setopt extendedglob
+umask 077
+if [[ $1 == --init ]]; then
+  [[ $# == 3 && -d $2 && -d $3 && -O $3 && ! -L $3 ]] || exit 64
+  scope=${2:A}
+  [[ $scope != *$'\n'* ]] || exit 65
+  print -r -- "$scope" > "$3/start"
+  print -r -- "$scope" > "$3/scope"
+  exit
+fi
+session=${EXPLORE_SESSION:?explore-src requires EXPLORE_SESSION}
+[[ -d $session && -O $session && ! -L $session ]] || exit 65
+if [[ $1 == --resolve ]]; then
+  id=$2
+  [[ $id == g[A-Za-z0-9]##-[1-9][0-9]# ]] || exit 65
+  gen=${id%-*}; index=${id##*-}
+  [[ -f $session/$gen/manifest && ! -L $session/$gen ]] || exit 65
+  p=$(sed -n "${index}p" "$session/$gen/manifest")
+  [[ $p == /* && $p != *$'\n'* && -n $p ]] || exit 65
+  print -r -- "$p"
+  exit
+fi
+[[ $# == 0 ]] || exit 64
+scope=$(<"$session/scope")
+start=$(<"$session/start")
+[[ -d $scope ]] || exit 1
+cd -- "$scope" || exit 1
+# Published IDs keep their paths until this picker exits, including across navigation.
+generation=$(mktemp -d "$session/gXXXXXXXX") || exit 1
+gen=${generation:t}
+typeset -A seen
+typeset -i count=0
+# Publish each manifest entry before its row; previews may resolve mid-scan.
+exec {manifest_fd}> "$generation/manifest" || exit 1
+emit() {
+  local p=$1 kind=$2 label=$3 color glyph id
+  [[ $p == /* && $p != *$'\n'* && -z ${seen[$p]-} ]] || return 0
+  seen[$p]=1
+  (( ++count ))
+  id="$gen-$count"
+  print -r -u $manifest_fd -- "$p" || exit 1
+  # OSC-8 stores only the safe ID; labels are terminal-escaped, never commands.
+  label=${(V)label}
+  case $kind in
+    place) color=35; glyph='◆' ;;
+    dir) color=34; glyph='▸' ;;
+    *) color=39; glyph='·' ;;
+  esac
+  printf '\033]8;;explore://%s\a\033[%sm%s %s\033[0m\033]8;;\a\n' "$id" "$color" "$glyph" "$label" || exit 1
+}
+if [[ $scope == $start ]] && (( $+commands[zoxide] )); then
+  typeset -i n=0
+  while IFS= read -r p; do
+    [[ -d $p && $p != $scope && $p != *$'\n'* ]] || continue
+    label=$p
+    [[ $p == "$HOME"/* ]] && label="~/${p#$HOME/}"
+    emit "${p:a}" place "$label/"
+    (( ++n >= 6 )) && break
+  done < <(zoxide query -l 2>/dev/null)
+fi
+# Glob sorting is deterministic and does not split whitespace or option-like names.
+for p in *(DN/); do
+  [[ $p == .git || $p == Library || $p == node_modules ]] && continue
+  emit "${scope%/}/$p" dir "$p/"
+done
+for p in *(DN^/); do
+  [[ $p == .git || $p == Library || $p == node_modules ]] && continue
+  emit "${scope%/}/$p" file "$p"
+done
+# fd remains streaming and bounded; it does not follow symlink directories.
+while IFS= read -r -d $'\0' p; do
+  p=${p#./}; p=${p%/}
+  [[ -n $p ]] || continue
+  kind=file; label=$p
+  [[ -d $scope/$p ]] && { kind=dir; label="$p/"; }
+  emit "${scope%/}/$p" "$kind" "$label"
+done < <(fd --hidden --no-ignore --color never --print0 --min-depth 2 --max-depth 12 --max-results 20000 --exclude .git --exclude Library --exclude node_modules . . 2>/dev/null)
+# tv suppresses external actions with zero entries. Keep empty folders navigable.
+(( count == 0 )) && emit "$scope" dir '(empty folder)'
+exec {manifest_fd}>&-

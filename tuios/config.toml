@@ -173,8 +173,15 @@ max-width = 32
 leader_key = "ctrl+space"
 
 [keybindings.prefix_mode]
+prefix_file_search = []
 prefix_scrollback = ["S"]
 prefix_session_switcher = ["s"]
+
+[[keybindings.command]]
+key = "prefix+f"
+type = "shell"
+command = '"$HOME/.config/explore/bin/explore-key"'
+description = "Explore"
 
 [spotlight]
 enabled = false

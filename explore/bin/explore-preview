@@ -1,0 +1,43 @@
+#!/bin/zsh -f
+# Bounded preview. Never emit a file's raw terminal controls or binary bytes.
+emulate -LR zsh
+umask 077
+bin=${0:A:h}
+p=$("$bin/explore-src" --resolve "$1") || exit 1
+printf '\033[90m%s\033[0m\n\n' "${(V)p}"
+if [[ -d $p ]]; then
+  typeset -i n=0
+  for entry in "$p"/*(DN); do
+    name=${entry:t}
+    if [[ -d $entry ]]; then
+      printf '\033[34m▸ %s/\033[0m\n' "${(V)name}"
+    else
+      print -r -- "· ${(V)name}"
+    fi
+    (( ++n >= 100 )) && break
+  done
+  (( n == 0 )) && print '(empty folder)'
+  exit 0
+fi
+[[ -f $p && -r $p ]] || { print '(not a readable regular file)'; exit 0; }
+sample=$(mktemp "$EXPLORE_SESSION/preview.XXXXXXXX") || exit 1
+TRAPEXIT() { command rm -f -- "$sample"; }
+head -c 32768 -- "$p" > "$sample" 2>/dev/null || exit 0
+[[ -s $sample ]] || { print '(empty file)'; exit 0; }
+if ! LC_ALL=C grep -Iq . "$sample"; then
+  print '(binary file; content preview suppressed)'
+  description=$(file -b -- "$p" 2>/dev/null)
+  print -r -- "${(V)description[1,500]}"
+  exit 0
+fi
+# Sanitize input before optional bat: bat must never pass through file ESC/OSC.
+typeset -a lines
+while IFS= read -r line || [[ -n $line ]]; do
+  lines+=("${(V)line}")
+  (( ${#lines} >= 120 )) && break
+done < "$sample"
+if (( $+commands[bat] )); then
+  printf '%s\n' "${lines[@]}" | bat --paging=never --color=always --theme=ansi --style=plain --file-name "$p" 2>/dev/null
+else
+  printf '%s\n' "${lines[@]}"
+fi

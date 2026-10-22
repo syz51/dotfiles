@@ -1,0 +1,15 @@
+default_channel = "explore"
+shell = "zsh"
+[ui]
+theme = "terminal"
+[ui.input_bar]
+prompt = "❯"
+border_type = "none"
+[ui.results_panel]
+border_type = "none"
+[ui.preview_panel]
+border_type = "none"
+size = 55
+scrollbar = false
+[ui.status_bar]
+hidden = true
