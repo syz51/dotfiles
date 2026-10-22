@@ -14,6 +14,7 @@
 - Inspect available context first. Ask only for consequential missing information; use reasonable assumptions for reversible details.
 - Fix the shared cause of bugs, reproducing and verifying through the closest feasible user-facing path. Report unrelated issues instead of expanding scope.
 - Run the smallest meaningful checks and required project checks. Add focused tests for non-trivial or risky logic; visually inspect UI changes. State any verification limits.
+- Keep a task's throwaway files in one scratch directory under `$TMPDIR` and delete it once, at the end. Do not delete and reinstall tools between steps.
 - Prefer dedicated tools and the in-app browser. Parallelize independent work when useful. Give delegates a clear scope and acceptance criteria, then check their results. Use Codex subagent roles `explorer`, `worker`, `solver`, or `reviewer` without overriding their models or effort.
 - Communicate concisely: state substantial actions before starting, share material progress, and report results and blockers. Verify uncertain or time-sensitive claims and cite supporting sources; follow requested output formats.
 - After translating or drafting a foreign-language reply, append its Chinese meaning when the output format permits.

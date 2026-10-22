@@ -13,8 +13,9 @@ directories, credentials, and runtime files are excluded by `.gitignore`.
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Agent instructions, example configuration, hooks, and keybindings.               |
-| `claude/`                | Claude Code instructions and settings.                                           |
+| `claude/`                | Claude Code instructions, settings, and a headless-browser skill.                |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
+| `t3/`                    | T3 Code desktop host startup and remote connection instructions.                 |
 | `AGENTS.md`, `CLAUDE.md` | Repository instructions for coding agents.                                       |
 
 ## Setup
@@ -55,3 +56,7 @@ serializes session selection and attachment across simultaneous launches.
 Ghostty and TUIOS use Catppuccin Frappe. TUIOS starts tiled in terminal mode, with
 the dock at the top and the sidebar hidden. The leader key is `Ctrl+Space`;
 follow it with `s` for the session switcher or uppercase `S` for scrollback.
+
+Ghostty loads optional machine settings from `ghostty/config.local`, which Git
+ignores. For example, set `font-size = 17.0` there to override the shared font size
+on a smaller display.

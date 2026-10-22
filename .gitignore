@@ -38,6 +38,10 @@ uv
 !/claude/hooks/
 !/claude/output-styles/
 !/claude/rules/
+!/claude/skills/
+/claude/skills/*
+!/claude/skills/headless-browser/
+/claude/skills/headless-browser/node_modules/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack
@@ -51,6 +55,9 @@ uv
 
 /btop/
 
-# Local installation metadata and package trust decisions.
+# Local installation metadata, generated defaults, and machine settings.
 /atuin/atuin-receipt.json
 /homebrew/
+/fish/conf.d/atuin.env.fish
+/television/config.toml
+/ghostty/config.local
