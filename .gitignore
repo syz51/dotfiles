@@ -61,3 +61,4 @@ uv
 /fish/conf.d/atuin.env.fish
 /television/config.toml
 /ghostty/config.local
+/t3/*.plist
