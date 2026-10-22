@@ -144,7 +144,7 @@ background = "#292c3c"
 sections = "files:30,spacer:40,sessions:15,terminals:15,agents"
 show_numbers = true
 file_icon_colors = false
-enabled = true
+enabled = false
 
 [appearance.selection]
 bg = "#51576d"
@@ -160,7 +160,7 @@ flash_color = "#babbf1"
 [dock]
 left = ["mode", "workspaces"]
 center = ["custom/time", "windows"]
-right = ["trail", "tape", "notifications", "copy-help", "cpu", "ram", "session-controls"]
+right = ["trail", "tape", "notifications", "copy-help", "cpu", "ram"]
 
 # SGR styling makes the clock legible; TUIOS safely preserves colour in dock cells.
 [dock.custom.time]
@@ -179,4 +179,4 @@ prefix_session_switcher = ["s"]
 enabled = false
 
 [appearance.sidebar.left]
-enabled = true
+enabled = false

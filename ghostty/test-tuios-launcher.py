@@ -78,6 +78,15 @@ class LauncherTests(unittest.TestCase):
         (self.root / "launcher.sh").write_text(shell.replace(
             "$HOME/.config/ghostty/tuios-launcher.py", str(self.root / "launcher.py")
         ))
+        command = next(
+            line.partition("=")[2].strip()
+            for line in Path(__file__).with_name("config").read_text().splitlines()
+            if line.startswith("command =")
+        )
+        self.assertTrue(command.startswith("shell:"))
+        self.command = command[len("shell:"):].replace(
+            "$HOME/.config/ghostty/tuios-launcher.sh", str(self.root / "launcher.sh")
+        )
         self.processes = []
         self.addCleanup(self.stop_processes)
         self.write_state([])
@@ -94,7 +103,8 @@ class LauncherTests(unittest.TestCase):
 
     def start(self):
         process = subprocess.Popen(
-            ["/bin/sh", str(self.root / "launcher.sh")],
+            # Ghostty's macOS shell wrapper prepends exec -l to the command.
+            ["/bin/bash", "--noprofile", "--norc", "-c", "exec -l " + self.command],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE, text=True,
         )
