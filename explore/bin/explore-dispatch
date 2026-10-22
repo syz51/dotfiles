@@ -1,0 +1,240 @@
+#!/bin/zsh
+# Shared dispatch operations. Sourcing defines functions without running them.
+typeset -g _EXPLORE_DISPATCH_BIN=${${(%):-%N}:A:h}
+
+explore_json() {
+  NVIM_LOG_FILE=/dev/null command nvim -u NONE -i NONE --headless -n -l "$_EXPLORE_DISPATCH_BIN/explore-json.lua" "$@"
+}
+
+explore_tuios() (
+  emulate -L zsh
+  local sock=${TUIOS_SOCKET:-} base server=${TUIOS_SERVER:-}
+  # tuios selects by runtime root/server, not TUIOS_SOCKET. Command keys
+  # report the socket, so recover a missing selector from its canonical path.
+  # An explicit runtime root wins over an inherited outer pane's socket.
+  if [[ -n $sock && $sock != /*/tuios.sock && -z ${XDG_RUNTIME_DIR:-} ]]; then
+    print -u2 -- 'explore: TUIOS_SOCKET needs a canonical tuios.sock path or explicit XDG_RUNTIME_DIR'
+    return 1
+  fi
+  if [[ -n $sock && $sock == /*/tuios.sock ]]; then
+    base=${sock:h}
+    if [[ ${base:h:t} == servers ]]; then
+      if [[ -z $server && ( -z ${XDG_RUNTIME_DIR:-} || ${base:h:h} == ${XDG_RUNTIME_DIR%/}/tuios ) ]]; then
+        server=${base:t}
+      fi
+      base=${base:h:h}
+    fi
+    if [[ -z ${XDG_RUNTIME_DIR:-} && ${base:t} == tuios ]]; then
+      export XDG_RUNTIME_DIR=${base:h}
+    elif [[ -z ${XDG_RUNTIME_DIR:-} && $base != /tmp/tuios-$UID && $base != /private/tmp/tuios-$UID ]]; then
+      print -u2 -- 'explore: cannot infer tuios routing from TUIOS_SOCKET'
+      return 1
+    fi
+  fi
+  [[ -n $server ]] && export TUIOS_SERVER=$server
+  local -a session_args
+  [[ -n ${TUIOS_SESSION:-} ]] && session_args=(--session "$TUIOS_SESSION")
+  command tuios "$1" "${session_args[@]}" "${@:2}"
+)
+
+# reply = (shell|nvim|other PID TTY FOREGROUND_PGID). Only the kernel's
+# foreground process group on the pane shell's terminal can receive a handoff.
+explore_foreground() {
+  emulate -L zsh
+  local shell_pid=$1 record proc_pid pgid foreground tty cmd line
+  local -a editors
+  reply=(other 0 '' 0)
+  [[ $shell_pid == <-> && $shell_pid -gt 0 ]] || return 1
+  record=$(command ps -p "$shell_pid" -o pid=,pgid=,tpgid=,tty=,comm= 2>/dev/null) || return 1
+  read -r proc_pid pgid foreground tty cmd <<< "$record"
+  [[ $tty != '?' && $tty != '??' && -n $tty && $foreground == <-> && $foreground -gt 0 ]] || return 1
+  tty=${tty#/dev/}
+  reply=(other 0 "$tty" "$foreground")
+  if [[ $pgid == $foreground && ${cmd:t} == zsh && $proc_pid == $shell_pid ]]; then
+    reply=(shell "$shell_pid" "$tty" "$foreground")
+    return 0
+  fi
+  while IFS= read -r line; do
+    read -r proc_pid pgid cmd <<< "$line"
+    if [[ $pgid == $foreground && ${cmd:t} == nvim && $proc_pid == <-> ]]; then
+      editors+=("$proc_pid")
+    fi
+  done < <(command ps -t "$tty" -o pid=,pgid=,comm= 2>/dev/null)
+  if (( ${#editors} == 1 )); then
+    reply=(nvim "$editors[1]" "$tty" "$foreground")
+  fi
+}
+
+# A busy or stale editor must not strand the command-key process. No files
+# are needed: the RPC child writes to the caller's existing stdout pipe.
+explore_rpc() {
+  emulate -L zsh
+  zmodload zsh/zselect || return 1
+  command nvim --server "$1" --remote-expr "$2" </dev/null 2>/dev/null &
+  local rpc_pid=$! tick result=124
+  {
+    for tick in {1..40}; do
+      if ! kill -0 "$rpc_pid" 2>/dev/null; then
+        wait "$rpc_pid"
+        return $?
+      fi
+      zselect -t 5 2>/dev/null || true
+    done
+  } always {
+    if kill -0 "$rpc_pid" 2>/dev/null; then
+      kill -TERM "$rpc_pid" 2>/dev/null
+      wait "$rpc_pid" 2>/dev/null
+    fi
+  }
+  return $result
+}
+
+explore_nvim_descendant() {
+  emulate -L zsh
+  local client=$1 server=$2 current=$2 record pid parent cmd depth
+  [[ $client == <-> && $client -gt 0 && $server == <-> && $server -gt 0 ]] || return 1
+  # Verify both endpoints are still Neovim processes. A UI client and its
+  # headless server can have different process groups and terminal devices.
+  record=$(command ps -p "$client" -o pid=,comm= 2>/dev/null) || return 1
+  read -r pid cmd <<< "$record"
+  [[ $pid == $client && ${cmd:t} == nvim ]] || return 1
+  for depth in {0..8}; do
+    record=$(command ps -p "$current" -o pid=,ppid=,comm= 2>/dev/null) || return 1
+    read -r pid parent cmd <<< "$record"
+    [[ $pid == $current && $parent == <-> ]] || return 1
+    [[ $current != $server || ${cmd:t} == nvim ]] || return 1
+    [[ $current == $client ]] && return 0
+    [[ $parent -gt 1 && $parent != $current ]] || return 1
+    current=$parent
+  done
+  return 1
+}
+
+# REPLY is the socket; REPLY_PID is its acknowledged server PID. The input
+# remains the foreground client PID, which callers must recheck separately.
+explore_nvim_socket() {
+  emulate -L zsh
+  local client=$1 pid parent cmd line candidate ack current depth found_pid='' found_socket=''
+  local -a candidates servers
+  local -A parents names
+  REPLY='' REPLY_PID=''
+  [[ $client == <-> && $client -gt 0 ]] || return 1
+  # One process snapshot gives a bounded ancestry search without scanning
+  # sockets belonging to unrelated editors on this machine.
+  while IFS= read -r line; do
+    read -r pid parent cmd <<< "$line"
+    [[ $pid == <-> && $parent == <-> ]] || continue
+    parents[$pid]=$parent
+    names[$pid]=${cmd:t}
+  done < <(command ps -axo pid=,ppid=,comm= 2>/dev/null)
+  [[ ${names[$client]:-} == nvim ]] || return 1
+  servers=("$client")
+  for pid in "${(@k)names}"; do
+    [[ $pid != $client && ${names[$pid]} == nvim ]] || continue
+    current=$pid
+    for depth in {1..8}; do
+      current=${parents[$current]:-0}
+      [[ $current == $client ]] && { servers+=("$pid"); break; }
+      [[ $current == <-> && $current -gt 1 ]] || break
+    done
+  done
+  for pid in "${servers[@]}"; do
+    candidates=()
+    [[ -n ${NVIM:-} ]] && candidates+=("$NVIM")
+    [[ -n ${NVIM_LISTEN_ADDRESS:-} ]] && candidates+=("$NVIM_LISTEN_ADDRESS")
+    while IFS= read -r line; do
+      [[ $line == n/* ]] || continue
+      candidate=${line#n}
+      candidate=${candidate% type=*}
+      candidates+=("$candidate")
+    done < <(command lsof -a -p "$pid" -U -Fn 2>/dev/null)
+    for candidate in "${(@u)candidates}"; do
+      [[ -S $candidate ]] || continue
+      ack=$(explore_rpc "$candidate" 'getpid()') || continue
+      [[ $ack == $pid ]] || continue
+      explore_nvim_descendant "$client" "$pid" || continue
+      # Several listener sockets for one server are fine; several live
+      # servers below one UI client are ambiguous and must use fallback.
+      [[ -z $found_pid || $found_pid == $pid ]] || return 1
+      found_pid=$pid found_socket=$candidate
+      break
+    done
+  done
+  if [[ -n $found_pid ]]; then
+    REPLY=$found_socket REPLY_PID=$found_pid
+    return 0
+  fi
+  return 1
+}
+
+explore_paths_valid() {
+  emulate -L zsh
+  local action=$1 item
+  shift
+  [[ $action == open || $action == nvim ]] && (( $# )) || return 1
+  for item in "$@"; do
+    [[ $item == /* && $item != *$'\n'* && -e $item ]] || return 1
+    [[ ! -d $item || $# == 1 ]] || return 1
+  done
+}
+
+explore_new_window() {
+  emulate -L zsh
+  explore_paths_valid "$@" || return 1
+  local action=$1 first=$2
+  shift
+  if [[ -d $first ]]; then
+    if [[ $action == nvim ]]; then
+      explore_tuios new-window --cwd "$first" nvim -- nvim
+    else
+      explore_tuios new-window --cwd "$first"
+    fi
+  else
+    explore_tuios new-window --cwd "${first:h}" nvim -- nvim -- "$@"
+  fi
+}
+
+explore_nvim_open() {
+  emulate -L zsh
+  local socket=$1 pid=$2 ack json literal expression first
+  shift 2
+  explore_paths_valid "$@" || return 1
+  shift # open and nvim both open the selection in the existing editor.
+  first=$1
+  ack=$(explore_rpc "$socket" 'getpid()') || return 1
+  [[ $ack == $pid ]] || return 1
+  json=$(explore_json argv "$@") || return 1
+  # JSON is data in a Vim single-quoted string; double apostrophes only.
+  literal=${json//\'/\'\'}
+  expression="json_decode('$literal')"
+  if [[ -d $first ]]; then
+    expression="execute('cd ' . fnameescape(${expression}[0]))"
+  elif (( $# > 1 )); then
+    expression="execute('arglocal') . execute('%argdelete') . nvim_cmd({'cmd':'argadd','args':map(copy($expression), 'fnameescape(v:val)'),'magic':{'file':v:false,'bar':v:false}}, {}) . execute('hide edit ' . fnameescape(${expression}[0]))"
+  else
+    expression="execute('hide edit ' . fnameescape(${expression}[0]))"
+  fi
+  if [[ ! -d $first ]]; then
+    # :hide cannot protect a modified buffer with destructive bufhidden.
+    # Keep that buffer displayed in its original window before opening a file.
+    expression="(&modified && index(['unload', 'delete', 'wipe'], &bufhidden) >= 0 ? execute('split') : '') . ($expression)"
+  fi
+  # The PID acknowledgement is emitted only after the synchronous RPC succeeds.
+  ack=$(explore_rpc "$socket" "[$expression, getpid()][1]") || return 1
+  [[ $ack == $pid ]]
+}
+
+explore_dispatch_main() {
+  emulate -L zsh
+  local operation=$1
+  shift
+  case $operation in
+    new-window) explore_new_window "$@" ;;
+    nvim) explore_nvim_open "$@" ;;
+    *) print -u2 -- 'usage: explore-dispatch new-window ACTION PATH... | nvim SOCKET PID ACTION PATH...'; return 2 ;;
+  esac
+}
+
+if [[ $ZSH_EVAL_CONTEXT == toplevel ]]; then
+  explore_dispatch_main "$@"
+fi

@@ -1,0 +1,49 @@
+[metadata]
+name = "explore"
+description = "Places, this folder, and descendants"
+[source]
+command = '"$EXPLORE_BIN/explore-src"'
+shell = "zsh"
+ansi = true
+frecency = false
+output = "{regex_extract:g[A-Za-z0-9]+-[0-9]+}"
+[preview]
+command = '"$EXPLORE_BIN/explore-preview" {regex_extract:g[A-Za-z0-9]+-[0-9]+}'
+shell = "zsh"
+cached = false
+[keybindings]
+enter = "actions:open"
+ctrl-o = "actions:nvim"
+right = "actions:into"
+left = "actions:up"
+tab = "toggle_selection_down"
+ctrl-x = "actions:menu"
+[actions.open]
+description = "Open selection"
+command = '"$EXPLORE_BIN/explore-action" open {split:\n:..|map:{regex_extract:g[A-Za-z0-9]+-[0-9]+}|join: }'
+separator = "\n"
+mode = "execute"
+shell = "zsh"
+[actions.nvim]
+description = "Open selection in Neovim"
+command = '"$EXPLORE_BIN/explore-action" nvim {split:\n:..|map:{regex_extract:g[A-Za-z0-9]+-[0-9]+}|join: }'
+separator = "\n"
+mode = "execute"
+shell = "zsh"
+[actions.into]
+description = "Enter folder"
+command = '"$EXPLORE_BIN/explore-action" into {split:\n:..|map:{regex_extract:g[A-Za-z0-9]+-[0-9]+}|join: }'
+separator = "\n"
+mode = "execute"
+shell = "zsh"
+[actions.up]
+description = "Parent folder"
+command = '"$EXPLORE_BIN/explore-action" up'
+mode = "execute"
+shell = "zsh"
+[actions.menu]
+description = "Actions"
+command = '"$EXPLORE_BIN/explore-action" menu {split:\n:..|map:{regex_extract:g[A-Za-z0-9]+-[0-9]+}|join: }'
+separator = "\n"
+mode = "execute"
+shell = "zsh"

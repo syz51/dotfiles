@@ -10,6 +10,7 @@ directories, credentials, and runtime files are excluded by `.gitignore`.
 | ------------------------ | -------------------------------------------------------------------------------- |
 | `ghostty/`               | Ghostty settings, themes, and a TUIOS session launcher with tests.               |
 | `tuios/`                 | TUIOS appearance, dock, sidebar, startup settings, and themes.                   |
+| `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Agent instructions, example configuration, hooks, and keybindings.               |

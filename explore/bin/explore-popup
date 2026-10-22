@@ -1,0 +1,5 @@
+#!/bin/zsh
+emulate -LR zsh
+source "${0:A:h}/explore-dispatch"
+[[ $# == 1 && -d $1 ]] || { print -u2 -- 'usage: explore-popup DIRECTORY'; exit 2; }
+explore_tuios popup --capture-stdout --cwd "$1" --width '80%' --height '70%' --name explore -- "${0:A:h}/explore-tv"

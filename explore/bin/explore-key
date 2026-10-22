@@ -1,0 +1,64 @@
+#!/bin/zsh
+emulate -LR zsh
+local_bin=${0:A:h}
+source "$local_bin/explore-dispatch"
+
+explore_key_main() {
+  emulate -L zsh
+  local pane=${TUIOS_ACTIVE_PANE_ID:-} listing row shell_pid cwd marker REPLY REPLY_PID selected pick_status socket='' editor_pid='' server_pid=''
+  local -a reply fields current
+  [[ -n $pane ]] || { print -u2 -- 'explore: TUIOS_ACTIVE_PANE_ID is required'; return 1; }
+  listing=$(explore_tuios list-windows --json) || return 1
+  row=$(explore_json pane "$pane" <<< "$listing") || return 1
+  fields=("${(@0)row}")
+  [[ $fields[1] == popup ]] && return 0
+  cwd=${TUIOS_ACTIVE_PANE_CWD:-}
+  [[ -d $cwd ]] || cwd=$fields[3]
+  [[ -d $cwd ]] || { print -u2 -- 'explore: active pane directory is unavailable'; return 1; }
+  shell_pid=$fields[2]
+  explore_foreground "$shell_pid" || true
+  if [[ $reply[1] == shell ]]; then
+    marker=${EXPLORE_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/explore-$UID}/zle-$shell_pid
+    if [[ -f $marker && ! -L $marker && -O $marker && $(<"$marker") == $pane ]]; then
+      # Recheck kernel foreground ownership immediately before the handoff.
+      current=("${reply[@]}")
+      explore_foreground "$shell_pid" || true
+      if [[ $reply[1] == shell && $reply[2] == $current[2] && -f $marker ]]; then
+        explore_tuios send-keys --literal -w "$pane" $'\e[99~' >/dev/null
+        return $?
+      fi
+    fi
+  elif [[ $reply[1] == nvim ]]; then
+    editor_pid=$reply[2]
+    if explore_nvim_socket "$editor_pid"; then
+      socket=$REPLY server_pid=$REPLY_PID
+      # Read the editor's cwd, including spaces and shell metacharacters.
+      selected=$(explore_rpc "$socket" 'json_encode(getcwd())') || return 1
+      cwd=$(explore_json string <<< "$selected") || return 1
+      [[ -d $cwd ]] || return 1
+    fi
+  fi
+  selected=$("$local_bin/explore-popup" "$cwd")
+  pick_status=$?
+  (( pick_status == 130 )) && return 0
+  (( pick_status == 0 )) || return $pick_status
+  [[ -n $selected ]] || return 0
+  fields=("${(@0)selected}")
+  [[ $fields[-1] == '' ]] && fields[-1]=()
+  [[ ${#fields} -ge 3 && $fields[1] == EXPLORE1 ]] || { print -u2 -- 'explore: invalid picker response'; return 1; }
+  fields[1]=()
+  explore_paths_valid "${fields[@]}" || return 1
+  if [[ -n $socket ]]; then
+    # Do not redirect an old pane selection into an editor which has left
+    # the foreground while the popup was open.
+    explore_foreground "$shell_pid" || true
+    if [[ $reply[1] == nvim && $reply[2] == $editor_pid ]] &&
+       explore_nvim_descendant "$editor_pid" "$server_pid" &&
+       explore_nvim_open "$socket" "$server_pid" "${fields[@]}"; then
+      return 0
+    fi
+  fi
+  explore_new_window "${fields[@]}" >/dev/null
+}
+
+explore_key_main "$@"
