@@ -55,7 +55,7 @@ attempts to restore saved sessions when the daemon is stopped. A file lock
 serializes session selection and attachment across simultaneous launches.
 
 Ghostty and TUIOS use Catppuccin Frappe. TUIOS starts tiled in terminal mode, with
-the dock at the top and the sidebar hidden. The leader key is `Ctrl+Space`;
+the dock at the bottom and the sidebar hidden. The leader key is `Ctrl+Space`;
 follow it with `s` for the session switcher or uppercase `S` for scrollback.
 
 Ghostty loads optional machine settings from `ghostty/config.local`, which Git
