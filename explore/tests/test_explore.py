@@ -7,6 +7,7 @@ import select
 import signal
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -95,7 +96,112 @@ class ExploreTests(unittest.TestCase):
         (session/'scope').write_text(str(work.resolve())+'\n')
         rows3 = subprocess.run([str(BIN/'explore-src')],env=env,capture_output=True,check=True).stdout
         self.assertIn('◆'.encode(),rows3)
+        # Navigation creates new generations without invalidating earlier IDs.
+        for old_id, expected in zip(ids, resolved):
+            old = subprocess.run([str(BIN/'explore-src'),'--resolve',old_id.decode()],env=env,capture_output=True,check=True)
+            self.assertEqual(old.stdout,os.fsencode(expected)+b'\n')
         self.assertNotEqual(self.zsh('"$1" --resolve "$2"',BIN/'explore-src', '$(touch NEVER)',env=env,check=False).returncode,0)
+
+    def test_source_chunk_boundaries_and_terminal_escaping(self):
+        work = self.scratch/'chunks'; work.mkdir()
+        fake = self.scratch/'chunks-bin'; fake.mkdir()
+        zoxide = fake/'zoxide'; zoxide.write_text('#!/bin/zsh -f\nexit 0\n'); zoxide.chmod(0o755)
+        payload = self.scratch/'chunks-payload'
+        # Include every non-NUL ASCII control, Unicode/bidi, and invalid UTF-8.
+        names = [b'sub/control-'+bytes([i]) for i in range(1,32)]
+        names += [b'sub/delete-\x7f', 'sub/日本語\u202e'.encode(), b'sub/invalid-\xff', b'sub/final']
+        data = b'\0'+b'\0'.join(b'./'+name for name in names)+b'\0./sub/unterminated'
+        payload.write_bytes(data)
+        fd = fake/'fd'
+        fd.write_text(f'#!{sys.executable}\nimport os\nos.write(1, open(os.environ["SCAN_PAYLOAD"], "rb").read())\n')
+        fd.chmod(0o755)
+        env = dict(self.env,PATH=str(fake)+':'+self.env['PATH'],SCAN_PAYLOAD=str(payload))
+        # The old read loop is the oracle for NUL/EOF behavior and ${(V)}.
+        reference = self.zsh('while IFS= read -r -d $\'\\0\' p; do '
+                             'p=${p#./}; p=${p%/}; [[ -n $p && $p != *$\'\\n\'* ]] || continue; '
+                             'print -rn -- "${(V)p}"$\'\\0\'; done < "$1"',payload,env=env).stdout.split(b'\0')[:-1]
+        for size in [1,7,65536]:
+            with self.subTest(read_size=size):
+                session = self.scratch/f'chunks-session-{size}'; session.mkdir()
+                run_env = dict(env,EXPLORE_SESSION=str(session),SCAN_READ_SIZE=str(size))
+                subprocess.run([str(BIN/'explore-src'),'--init',str(work),str(session)],env=run_env,check=True)
+                rows = self.zsh('sysread() { argv[4]=$SCAN_READ_SIZE; builtin sysread "$@"; }; '
+                                'src=$1; shift; source "$src"',BIN/'explore-src',env=run_env).stdout
+                labels = re.findall(rb'\x1b\[39m\xc2\xb7 (.*?)\x1b\[0m',rows)
+                self.assertEqual(labels,reference)
+                manifest = next(session.glob('g*/manifest')).read_bytes().split(b'\n')[:-1]
+                self.assertEqual(manifest,[bytes(work)+b'/'+n for n in names if b'\n' not in n])
+
+    def test_symlink_directory_classification_without_traversal(self):
+        work = self.scratch/'symlink-scope'; work.mkdir()
+        outside = self.scratch/'symlink-target'; outside.mkdir()
+        (outside/'unseen').touch()
+        (work/'sub').mkdir()
+        (work/'direct-link').symlink_to(outside,target_is_directory=True)
+        (work/'sub/deep-link').symlink_to(outside,target_is_directory=True)
+        session = self.scratch/'symlink-session'; session.mkdir()
+        env = dict(self.env,EXPLORE_SESSION=str(session))
+        subprocess.run([str(BIN/'explore-src'),'--init',str(work),str(session)],env=env,check=True)
+        rows = subprocess.run([str(BIN/'explore-src')],env=env,capture_output=True,check=True).stdout
+        self.assertIn('▸ sub/deep-link/'.encode(),rows)
+        # Direct symlinks retain the existing non-directory glob classification.
+        self.assertIn('· direct-link'.encode(),rows)
+        self.assertNotIn(b'unseen',rows)
+
+    def test_source_cancellation_reaps_scanner(self):
+        for mode in ['term','pipe']:
+            with self.subTest(mode=mode):
+                base = self.scratch/f'cancel-{mode}'; base.mkdir()
+                work = base/'scope'; work.mkdir()
+                fake = base/'bin'; fake.mkdir()
+                pidfile = base/'scanner-pid'
+                release = base/'release'
+                fd = fake/'fd'
+                fd.write_text(f'#!{sys.executable}\nimport os, time\n'
+                              'open(os.environ["SCAN_PID"], "w").write(str(os.getpid()))\n'
+                              'os.write(1, b"./sub/early\\0")\n'
+                              'while not os.path.exists(os.environ["SCAN_RELEASE"]): time.sleep(.01)\n'
+                              'os.write(1, b"./sub/late\\0")\n'
+                              'while True: time.sleep(.01)\n')
+                fd.chmod(0o755)
+                session = base/'session'; session.mkdir()
+                env = dict(self.env,PATH=str(fake)+':'+self.env['PATH'],EXPLORE_SESSION=str(session),
+                           SCAN_PID=str(pidfile),SCAN_RELEASE=str(release))
+                subprocess.run([str(BIN/'explore-src'),'--init',str(work),str(session)],env=env,check=True)
+                source = subprocess.Popen([str(BIN/'explore-src')],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                scanner = None
+                try:
+                    rows = b''
+                    deadline = time.monotonic()+5
+                    while b'sub/early' not in rows and time.monotonic()<deadline:
+                        if select.select([source.stdout],[],[],.05)[0]:
+                            chunk = os.read(source.stdout.fileno(),65536)
+                            if not chunk: break
+                            rows += chunk
+                    self.assertIn(b'sub/early',rows)
+                    scanner = int(pidfile.read_text())
+                    if mode == 'term':
+                        source.terminate()
+                    else:
+                        source.stdout.close()
+                        release.touch()
+                    source.wait(timeout=5)
+                    self.assertNotEqual(source.returncode,0)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(scanner,0)
+                    scanner = None
+                finally:
+                    if source.poll() is None:
+                        source.terminate()
+                        try: source.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            source.kill()
+                            source.wait(timeout=5)
+                    if source.stdout and not source.stdout.closed: source.stdout.close()
+                    source.stderr.close()
+                    if scanner is not None:
+                        try: os.kill(scanner,signal.SIGKILL)
+                        except ProcessLookupError: pass
 
     def test_rows_stream_and_resolve_before_scan_finishes(self):
         work = self.scratch/'stream'; work.mkdir()

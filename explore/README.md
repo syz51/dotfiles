@@ -46,6 +46,31 @@ Validated with Television 0.15.9 and Neovim 0.12.6.
 brew install television fd zoxide
 ```
 
+For earlier useful rows, run `./install-television.sh` from this folder.
+It verifies the SHA-256 of the upstream Television **0.15.9** source archive,
+applies `patches/television-0.15.9-initial-batch.patch`,
+and builds with `cargo --locked`. It requires curl, tar, shasum, patch, and
+an installed Rust toolchain (Rust 1.93.1 verified; upstream minimum 1.90).
+The script uses an installed `stable` rustup toolchain by default;
+`EXPLORE_TELEVISION_TOOLCHAIN` selects another installed toolchain.
+
+Only Explore's launch and action menu use the private binary at
+`~/.local/opt/explore-television/tv`; other `tv` invocations stay unchanged.
+`bin/explore-television` falls back to system `tv` when that binary is absent.
+`EXPLORE_TELEVISION=/absolute/path/to/tv` overrides selection for profiling.
+The patch flushes the first useful command/stdin batch at 64 records or 16 ms,
+even when the producer stalls, then retains the 10,000-record/200 ms bulk
+thresholds. Insertions complete in record order. Partial records remain buffered.
+
+Re-run the installer to rebuild this pinned version. To update upstream, review
+and regenerate the patch against pristine source, update its version and archive
+SHA-256 in the script, then run the ingestion tests and release build again.
+The patched ingestion tests run with `cargo test --locked --lib
+channels::channel::tests`; upstream's dev dependencies additionally require
+Zig 0.15.2 for Ghostty, even when running only library tests.
+For isolated builds, set `EXPLORE_TELEVISION_DEST` to a private destination
+folder and `EXPLORE_TELEVISION_BUILD_ROOT` to a scratch folder.
+
 Place this folder at `~/.config/explore`, then add this line once at the end
 of `~/.zshrc`:
 

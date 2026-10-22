@@ -35,6 +35,21 @@ typeset -A seen
 typeset -i count=0
 # Publish each manifest entry before its row; previews may resolve mid-scan.
 exec {manifest_fd}> "$generation/manifest" || exit 1
+# Own the scanner so cancellation and a closed row consumer cannot orphan it.
+cleanup() {
+  [[ -n ${scan_fd-} ]] && exec {scan_fd}<&-
+  if [[ -n ${scan_pid-} ]]; then
+    kill -TERM "$scan_pid" 2>/dev/null
+    wait "$scan_pid" 2>/dev/null
+  fi
+  exec {manifest_fd}>&-
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# Let checked writes report EPIPE; a PIPE trap can interrupt zsh's write builtin.
+trap '' PIPE
 emit() {
   local p=$1 kind=$2 label=$3 color glyph id
   [[ $p == /* && $p != *$'\n'* && -z ${seen[$p]-} ]] || return 0
@@ -71,13 +86,39 @@ for p in *(DN^/); do
   emit "${scope%/}/$p" file "$p"
 done
 # fd remains streaming and bounded; it does not follow symlink directories.
-while IFS= read -r -d $'\0' p; do
-  p=${p#./}; p=${p%/}
-  [[ -n $p ]] || continue
-  kind=file; label=$p
-  [[ -d $scope/$p ]] && { kind=dir; label="$p/"; }
-  emit "${scope%/}/$p" "$kind" "$label"
-done < <(fd --hidden --no-ignore --color never --print0 --min-depth 2 --max-depth 12 --max-results 20000 --exclude .git --exclude Library --exclude node_modules . . 2>/dev/null)
+zmodload zsh/system || exit 1
+coproc exec fd --hidden --no-ignore --color never --print0 --min-depth 2 --max-depth 12 --max-results 20000 --exclude .git --exclude Library --exclude node_modules . . </dev/null 2>/dev/null
+scan_pid=$!
+exec {scan_fd}<&p || exit 1
+pending=''
+# sysread returns available bytes (at most 64 KiB), retrying EINTR internally.
+# Split only complete NUL records; a read may end inside a multibyte filename.
+while true; do
+  sysread -i $scan_fd -s 65536 chunk
+  read_status=$?
+  (( read_status == 0 )) || break
+  chunk=$pending$chunk
+  records=("${(@0)chunk}")
+  if [[ $chunk[-1] == $'\0' ]]; then
+    pending=''
+  else
+    pending=$records[-1]
+    records[-1]=()
+  fi
+  for p in "${records[@]}"; do
+    p=${p#./}; p=${p%/}
+    [[ -n $p ]] || continue
+    kind=file; label=$p
+    [[ -d $scope/$p ]] && { kind=dir; label="$p/"; }
+    emit "${scope%/}/$p" "$kind" "$label"
+  done
+done
+(( read_status == 5 )) || exit 1
+# Like read -d NUL, ignore an unterminated final record, including at EOF.
+exec {scan_fd}<&-
+unset scan_fd
+wait "$scan_pid" 2>/dev/null
+unset scan_pid
 # tv suppresses external actions with zero entries. Keep empty folders navigable.
 (( count == 0 )) && emit "$scope" dir '(empty folder)'
-exec {manifest_fd}>&-
+exit 0

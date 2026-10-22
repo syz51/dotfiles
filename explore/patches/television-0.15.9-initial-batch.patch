@@ -1,0 +1,450 @@
+--- a/television/channels/channel.rs
++++ b/television/channels/channel.rs
+@@ -20,7 +20,7 @@
+ use std::time::Duration;
+ use tokio::process::Command as TokioCommand;
+ use tokio::{
+-    io::{AsyncBufReadExt, BufReader},
++    io::{AsyncBufRead, AsyncBufReadExt, BufReader},
+     time::Instant,
+ };
+ use tracing::debug;
+@@ -265,9 +265,9 @@
+ const BATCH_SIZE: usize = 10_000;
+ // Automatically flush batch after this interval
+ const UPDATE_INTERVAL: Duration = Duration::from_millis(200);
+-// Maximum number of concurrent flush tasks to prevent unbounded memory growth
+-// 4 * 10_000 * average line size = ~20 MB
+-const MAX_CONCURRENT_FLUSHES: usize = 4;
++// Only the initial batch uses these interactive startup bounds.
++const INITIAL_BATCH_SIZE: usize = 64;
++const INITIAL_INTERVAL: Duration = Duration::from_millis(16);
+ const DEFAULT_DELIMITER: u8 = b'\n';
+ 
+ /// Collects entries before pushing them to the injector.
+@@ -292,63 +292,17 @@
+         .expect("failed to execute process"); // FIXME: handle error
+ 
+     if let Some(out) = child.stdout.take() {
+-        let mut produced_output = false;
+-        let mut reader = BufReader::new(out);
+-        let mut buf = Vec::with_capacity(DEFAULT_LINE_BUFFER_SIZE);
+-        let mut batch = Vec::with_capacity(BATCH_SIZE);
+-        let mut flush_handles = tokio::task::JoinSet::new();
+-
+         let delimiter = entry_delimiter
+-            .as_ref()
+-            .map(|d| *d as u8)
++            .map(|d| d as u8)
+             .unwrap_or(DEFAULT_DELIMITER);
+-
+-        let mut last_flush = Instant::now();
+-        while {
+-            buf.clear();
+-            let n = reader.read_until(delimiter, &mut buf).await.unwrap_or(0);
+-            n > 0
+-        } {
+-            batch.push(buf.clone());
+-
+-            // Flush batch when it reaches the target size
+-            if batch.len() >= BATCH_SIZE
+-                || last_flush.elapsed() >= UPDATE_INTERVAL
+-            {
+-                if flush_handles.len() >= MAX_CONCURRENT_FLUSHES {
+-                    // Wait for any task to complete
+-                    let _ = flush_handles.join_next().await;
+-                }
+-
+-                let batch_to_flush = std::mem::replace(
+-                    &mut batch,
+-                    Vec::with_capacity(BATCH_SIZE),
+-                );
+-                let inj = injector.clone();
+-                let proc = processor.clone();
+-                flush_handles.spawn_blocking(move || {
+-                    flush_batch(batch_to_flush, &inj, &proc, delimiter);
+-                });
+-                produced_output = true;
+-                last_flush = Instant::now();
+-            }
+-        }
+-
+-        debug!("Finished reading command output.");
+-
+-        // Flush any remaining entries in the batch
+-        if !batch.is_empty() {
+-            let inj = injector.clone();
+-            let proc = processor.clone();
+-            flush_handles.spawn_blocking(move || {
+-                flush_batch(batch, &inj, &proc, delimiter);
+-            });
+-            produced_output = true;
+-        }
++        let produced_output = ingest_candidates(
++            BufReader::new(out),
++            delimiter,
++            processor.clone(),
++            injector.clone(),
++        )
++        .await;
+ 
+-        // Wait for all remaining flush tasks to complete
+-        while flush_handles.join_next().await.is_some() {}
+-
+         // if the command didn't produce any output, check stderr and display that instead
+         if !produced_output {
+             let tv_message =
+@@ -378,53 +332,122 @@
+     injector: Injector<P::Data>,
+ ) {
+     debug!("Loading candidates from stdin");
+-    let stdin = tokio::io::stdin();
+-    let mut reader = BufReader::new(stdin);
+-    let mut buf = Vec::with_capacity(DEFAULT_LINE_BUFFER_SIZE);
+-    let mut batch = Vec::with_capacity(BATCH_SIZE);
+-    let mut flush_handles = tokio::task::JoinSet::new();
+-
+     let delimiter = entry_delimiter
+-        .as_ref()
+-        .map(|d| *d as u8)
++        .map(|d| d as u8)
+         .unwrap_or(DEFAULT_DELIMITER);
++    ingest_candidates(
++        BufReader::new(tokio::io::stdin()),
++        delimiter,
++        processor,
++        injector,
++    )
++    .await;
++}
+ 
+-    let mut last_flush = Instant::now();
+-    while {
+-        buf.clear();
+-        let n = reader.read_until(delimiter, &mut buf).await.unwrap_or(0);
+-        n > 0
+-    } {
+-        batch.push(buf.clone());
+-
+-        if batch.len() >= BATCH_SIZE || last_flush.elapsed() >= UPDATE_INTERVAL
+-        {
+-            if flush_handles.len() >= MAX_CONCURRENT_FLUSHES {
+-                let _ = flush_handles.join_next().await;
++/// Shared command/stdin ingestion. `read_until` is cancellation safe: bytes
++/// accumulated by a losing select branch stay in `buf`, including partial UTF-8
++/// or a partial record. A timer never turns those bytes into a candidate.
++async fn ingest_candidates<R: AsyncBufRead + Unpin, P: EntryProcessor>(
++    mut reader: R,
++    delimiter: u8,
++    processor: P,
++    injector: Injector<P::Data>,
++) -> bool {
++    let mut buf = Vec::with_capacity(DEFAULT_LINE_BUFFER_SIZE);
++    let mut batch = Vec::with_capacity(BATCH_SIZE);
++    let mut initial = true;
++    let mut deadline = None;
++    let mut produced_output = false;
++    let mut last_flush = Instant::now();
++    loop {
++        let read_result = if let Some(at) = deadline {
++            tokio::select! {
++                // Prioritize the deadline even when input is continuously ready.
++                biased;
++                () = tokio::time::sleep_until(at) => {
++                    flush_batch(std::mem::take(&mut batch), &injector, &processor, delimiter);
++                    initial = false;
++                    deadline = None;
++                    last_flush = Instant::now();
++                    continue;
++                }
++                result = reader.read_until(delimiter, &mut buf) => result,
+             }
+-
+-            let batch_to_flush =
++        } else {
++            reader.read_until(delimiter, &mut buf).await
++        };
++        let n = match read_result {
++            Ok(n) => n,
++            Err(_) => break,
++        };
++        if n == 0 && buf.is_empty() {
++            break;
++        }
++        produced_output = true;
++        // Match flush_batch's filtering exactly. Ignored records cannot consume
++        // the useful initial batch or disable its deadline.
++        let useful = useful_record(&buf, delimiter);
++        if initial && useful && deadline.is_none() {
++            deadline = Some(Instant::now() + INITIAL_INTERVAL);
++        }
++        batch.push(std::mem::replace(
++            &mut buf,
++            Vec::with_capacity(DEFAULT_LINE_BUFFER_SIZE),
++        ));
++        if initial && batch.len() >= INITIAL_BATCH_SIZE {
++            let has_useful =
++                batch.iter().any(|bytes| useful_record(bytes, delimiter));
++            // Tiny synchronous insertion completes before any later batch.
++            flush_batch(
++                std::mem::take(&mut batch),
++                &injector,
++                &processor,
++                delimiter,
++            );
++            if has_useful {
++                initial = false;
++                deadline = None;
++                last_flush = Instant::now();
++            }
++        } else if !initial
++            && (batch.len() >= BATCH_SIZE
++                || last_flush.elapsed() >= UPDATE_INTERVAL)
++        {
++            let pending =
+                 std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE));
+             let inj = injector.clone();
+             let proc = processor.clone();
+-            flush_handles.spawn_blocking(move || {
+-                flush_batch(batch_to_flush, &inj, &proc, delimiter);
+-            });
++            // Await each bulk insertion so later batches cannot overtake it.
++            tokio::task::spawn_blocking(move || {
++                flush_batch(pending, &inj, &proc, delimiter)
++            })
++            .await
++            .expect("candidate flush failed");
+             last_flush = Instant::now();
+         }
+     }
+-
+-    debug!("Finished reading stdin.");
+-
+     if !batch.is_empty() {
+-        let inj = injector.clone();
+-        let proc = processor.clone();
+-        flush_handles.spawn_blocking(move || {
+-            flush_batch(batch, &inj, &proc, delimiter);
+-        });
++        if initial {
++            flush_batch(batch, &injector, &processor, delimiter);
++        } else {
++            tokio::task::spawn_blocking(move || {
++                flush_batch(batch, &injector, &processor, delimiter)
++            })
++            .await
++            .expect("candidate flush failed");
++        }
+     }
++    produced_output
++}
+ 
+-    while flush_handles.join_next().await.is_some() {}
++// Mirror flush_batch's filtering, including removal of a custom delimiter
++// before decoding UTF-8. The initial deadline must start for actual candidates.
++fn useful_record(bytes: &[u8], delimiter: u8) -> bool {
++    if bytes.is_empty() || bytes.iter().all(u8::is_ascii_whitespace) {
++        return false;
++    }
++    let line = bytes.strip_suffix(&[delimiter]).unwrap_or(bytes);
++    std::str::from_utf8(line).is_ok()
+ }
+ 
+ /// Flushes a batch of entries to the injector.
+@@ -607,6 +630,196 @@
+     use crate::channels::prototypes::SourceSpec;
+     use nucleo::SortStrategy;
+ 
++    #[derive(Clone)]
++    struct RecordingProcessor(tokio::sync::mpsc::UnboundedSender<String>);
++
++    impl EntryProcessor for RecordingProcessor {
++        type Data = ();
++        fn push_to_injector(&self, line: String, _: &Injector<()>) {
++            self.0.send(line).unwrap();
++        }
++        fn make_entry(
++            &self,
++            _: crate::matcher::matched_item::MatchedItem<()>,
++            _: Option<&Template>,
++        ) -> Entry {
++            unreachable!()
++        }
++        fn has_ansi(&self) -> bool {
++            false
++        }
++        fn frecency_key<'a>(
++            _: &nucleo::Item<'a, ()>,
++        ) -> std::borrow::Cow<'a, str> {
++            unreachable!()
++        }
++    }
++
++    async fn receive_prefix(
++        rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
++        count: usize,
++    ) {
++        // 100ms leaves scheduler headroom but fails the stock 200ms/EOF batching.
++        tokio::time::timeout(Duration::from_millis(100), async {
++            for i in 0..count {
++                assert_eq!(rx.recv().await.unwrap(), format!("row{i}"));
++            }
++        })
++        .await
++        .expect("useful prefix must arrive before producer EOF");
++    }
++
++    async fn stalled_stdin_prefix(count: usize) {
++        use tokio::io::AsyncWriteExt;
++        let (mut writer, reader) = tokio::io::duplex(8192);
++        let matcher = Matcher::<()>::new(SortStrategy::Index, 1);
++        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++        // This is the same generic ingestion entry point used by real stdin.
++        let task = tokio::spawn(ingest_candidates(
++            BufReader::new(reader),
++            b'\n',
++            RecordingProcessor(tx),
++            matcher.injector(),
++        ));
++        for i in 0..count {
++            writer
++                .write_all(format!("row{i}\n").as_bytes())
++                .await
++                .unwrap();
++        }
++        // Leave a partial multibyte record pending across the initial timer.
++        writer.write_all(b"later-\xc3").await.unwrap();
++        receive_prefix(&mut rx, count).await;
++        assert!(!task.is_finished(), "producer has not closed");
++        assert!(
++            rx.try_recv().is_err(),
++            "partial records must not be injected"
++        );
++        writer.write_all(b"\xa9\nfinal").await.unwrap();
++        drop(writer);
++        assert!(task.await.unwrap());
++        assert_eq!(rx.recv().await.unwrap(), "later-é");
++        assert_eq!(rx.recv().await.unwrap(), "final");
++        assert!(rx.recv().await.is_none());
++    }
++
++    #[tokio::test]
++    async fn initial_stdin_single_stalled_prefix() {
++        stalled_stdin_prefix(1).await;
++    }
++    #[tokio::test]
++    async fn initial_stdin_64_stalled_prefix() {
++        stalled_stdin_prefix(64).await;
++    }
++
++    async fn stalled_command_prefix(count: usize) {
++        // Gate the actual shell producer on a private FIFO, with no sleeps or EOF.
++        let dir = tempfile::tempdir().unwrap();
++        let gate = dir.path().join("gate");
++        assert!(
++            std::process::Command::new("mkfifo")
++                .arg(&gate)
++                .status()
++                .unwrap()
++                .success()
++        );
++        let command = format!(
++            r#"i=0; while [ $i -lt {count} ]; do printf 'row%s\n' "$i"; i=$((i+1)); done; read answer < '{}'; printf 'later\nfinal'"#,
++            gate.display()
++        );
++        let command = CommandSpec::from(Template::parse(&command).unwrap());
++        let matcher = Matcher::<()>::new(SortStrategy::Index, 1);
++        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++        let task = tokio::spawn(load_candidates(
++            command,
++            None,
++            0,
++            RecordingProcessor(tx),
++            matcher.injector(),
++        ));
++        receive_prefix(&mut rx, count).await;
++        assert!(!task.is_finished());
++        let writer = tokio::task::spawn_blocking(move || {
++            std::fs::write(gate, b"continue\n").unwrap()
++        });
++        writer.await.unwrap();
++        task.await.unwrap();
++        assert_eq!(rx.recv().await.unwrap(), "later");
++        assert_eq!(rx.recv().await.unwrap(), "final");
++        assert!(rx.recv().await.is_none());
++    }
++    #[tokio::test]
++    async fn initial_command_single_stalled_prefix() {
++        stalled_command_prefix(1).await;
++    }
++    #[tokio::test]
++    async fn initial_command_64_stalled_prefix() {
++        stalled_command_prefix(64).await;
++    }
++
++    #[tokio::test]
++    async fn initial_ordering_through_bulk_and_eof() {
++        let input: Vec<u8> = (0..25_123)
++            .flat_map(|i| format!("row{i}\n").into_bytes())
++            .collect();
++        let matcher = Matcher::<()>::new(SortStrategy::Index, 1);
++        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++        ingest_candidates(
++            BufReader::new(input.as_slice()),
++            b'\n',
++            RecordingProcessor(tx),
++            matcher.injector(),
++        )
++        .await;
++        for i in 0..25_123 {
++            assert_eq!(rx.recv().await.unwrap(), format!("row{i}"));
++        }
++        assert!(rx.recv().await.is_none());
++    }
++
++    #[tokio::test]
++    async fn initial_partial_record_at_eof_after_timer() {
++        use tokio::io::AsyncWriteExt;
++        let (mut writer, reader) = tokio::io::duplex(8192);
++        let matcher = Matcher::<()>::new(SortStrategy::Index, 1);
++        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++        let task = tokio::spawn(ingest_candidates(
++            BufReader::new(reader),
++            b'\n',
++            RecordingProcessor(tx),
++            matcher.injector(),
++        ));
++        writer.write_all(b"row0\npartial").await.unwrap();
++        receive_prefix(&mut rx, 1).await;
++        drop(writer);
++        assert!(task.await.unwrap());
++        assert_eq!(rx.recv().await.unwrap(), "partial");
++        assert!(rx.recv().await.is_none());
++    }
++
++    #[tokio::test]
++    async fn initial_ignored_records_and_cancellation() {
++        use tokio::io::AsyncWriteExt;
++        let (mut writer, reader) = tokio::io::duplex(8192);
++        let matcher = Matcher::<()>::new(SortStrategy::Index, 1);
++        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
++        let task = tokio::spawn(ingest_candidates(
++            BufReader::new(reader),
++            b'\n',
++            RecordingProcessor(tx),
++            matcher.injector(),
++        ));
++        writer.write_all(&[b'\n'; 128]).await.unwrap();
++        writer.write_all(b"\xff\nrow0\npartial").await.unwrap();
++        receive_prefix(&mut rx, 1).await;
++        task.abort();
++        assert!(task.await.unwrap_err().is_cancelled());
++        assert!(
++            rx.recv().await.is_none(),
++            "no partial or synthetic candidate on cancellation"
++        );
++    }
++
+     const MATCHER_TEST_THREADS: usize = 1;
+ 
+     #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
