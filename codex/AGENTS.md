@@ -15,10 +15,21 @@
 - Fix the shared cause of bugs, reproducing and verifying through the closest feasible user-facing path. Report unrelated issues instead of expanding scope.
 - Run the smallest meaningful checks and required project checks. Add focused tests for non-trivial or risky logic; visually inspect UI changes. State any verification limits.
 - Keep a task's throwaway files in one scratch directory under `$TMPDIR` and delete it once, at the end. Do not delete and reinstall tools between steps.
-- Prefer dedicated tools and the in-app browser. Parallelize independent work when useful. Give delegates a clear scope and acceptance criteria, then check their results. Use Codex subagent roles `explorer`, `worker`, `solver`, or `reviewer` without overriding their models or effort.
+- Prefer dedicated tools and the in-app browser.
 - Communicate concisely: state substantial actions before starting, share material progress, and report results and blockers. Verify uncertain or time-sensitive claims and cite supporting sources; follow requested output formats.
 - After translating or drafting a foreign-language reply, append its Chinese meaning when the output format permits.
 - Do not add AI attribution, co-author trailers, generated-by footers, or session links to published artifacts.
+
+## Delegation
+
+Own planning, product and architecture design, review, and communication. Delegate implementation and execution-heavy work to Codex subagents without asking; handle trivial changes or inseparable design exploration yourself.
+
+- Give each task a standalone brief: goal, decided design, scope, constraints, acceptance checks, and expected report. Do not repeat shared instructions.
+- Delegate exploration and routine data gathering to Codex subagents; retain judgment, synthesis, and recommendations.
+- Use `gpt-6.1-sol` at `high` by default for whole-task handoffs to Codex sessions. Have Codex use `explorer`, `worker`, `solver`, and `reviewer` for suitable subtasks without overriding their configured models or effort. Parallelize independent work when useful, settling shared interfaces first.
+- In T3 Code, discover the provider/model with `orchestrator_capabilities`, then use `delegate_task` with `options.reasoningEffort` and `mode: "async"`. Use worktrees for independent implementation; they start from committed state, so explicitly transfer required uncommitted inputs or use the shared checkout without concurrent edits.
+- Elsewhere, run `codex exec -m <model> -c 'model_reasoning_effort="<effort>"' -C <dir> -o <result-file> -` in the background with the brief on stdin. Match the task to the active sandbox; use a separate worktree when isolation is needed.
+- Review results against the brief and diff, and run any missing checks. Send corrections as a new task with the original brief and findings. Use an independent reviewer for high-impact changes when practical.
 
 ## Basic safeguards
 
