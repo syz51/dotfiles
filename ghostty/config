@@ -10,3 +10,6 @@ command = shell:/bin/sh "$HOME/.config/ghostty/tuios-launcher.sh"
 
 # Optional settings for this Mac, such as its preferred font size.
 config-file = ?config.local
+
+# Hide the split drag-handle dots (requires the development build).
+drag-handle = never

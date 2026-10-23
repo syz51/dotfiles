@@ -124,16 +124,17 @@ theme = "catppuccin_frappe"
 confirm_quit = true
 show_clock = true
 background = "theme"
-desktop_background = "#232634"
+desktop_background = "#303446"
 pane_background = "#303446"
 window_chrome_background = "#303446"
-dock_background = "#232634"
-dockbar_position = "bottom"
+dock_background = "#303446"
+dockbar_position = "top"
 dock_compact = true
 dock_pill_caps = false
 dock_workspace_tabs = true
 border_style = "hidden"
-shared_borders = false
+# Tiled panes use their full area, without an empty title/border row.
+shared_borders = true
 hide_window_buttons = true
 border_focused_color = "#ca9ee6"
 border_unfocused_color = "#737994"
@@ -141,7 +142,7 @@ gap = 1
 dim_unfocused = 8
 popup_dim = 30
 modal_dim = 30
-window_title_position = "top"
+window_title_position = "hidden"
 window_title_style = "plain"
 window_title_align = "left"
 window_title_format = "{title}"
@@ -168,105 +169,54 @@ search_fg = "#c6d0f5"
 flash_color = "#babbf1"
 
 [dock]
-left = ["workspaces"]
-center = []
-right = ["custom/status"]
+left = ["workspaces", "custom/machine", "custom/separator"]
+center = ["custom/clock"]
+right = []
 
 [dock.tabs]
 style = "flat"
 separator = "  "
 active_fg = "#c6d0f5"
-active_bg = "#232634"
+active_bg = "#303446"
 active_bold = true
 inactive_fg = "#737994"
-inactive_bg = "#232634"
+inactive_bg = "#303446"
 inactive_bold = false
 show_add = false
 
-# Query the dock's session afresh; its inherited cwd may belong to another pane.
-[dock.custom.status]
+# Read the focused shell each second; SSH destinations survive editor titles.
+[dock.custom.machine]
+command = '"$HOME/.local/bin/uv" run --offline --no-project --script "$HOME/.config/tuios/bin/dock-machine.py"'
+refresh = "1s"
+max-width = 24
+fg = "#c6d0f5"
+bg = "#303446"
+
+# Light dividers share the bar's ground; custom cells supply their own padding.
+[dock.custom.separator]
+command = "printf '∣'"
+refresh = "once"
+fg = "#c6d0f5"
+bg = "#303446"
+
+# A styled clock uses the push contract: emit immediately, then at each minute.
+# Strip the seconds' leading zero so POSIX shells never read 08/09 as octal.
+# The dock engine owns the process group and stops the loop on reload/shutdown.
+[dock.custom.clock]
 command = '''
-[ -n "${TUIOS_SESSION:-}" ] || exit 1
-server=
-case ${TUIOS_SOCKET:-} in
-  */servers/*/tuios.sock)
-    dir=${TUIOS_SOCKET%/tuios.sock}
-    server=${dir##*/}
-    base=${dir%/servers/*}
-    ;;
-  */tuios.sock) base=${TUIOS_SOCKET%/tuios.sock} ;;
-  *) exit 1 ;;
-esac
-case $base in
-  */tuios) XDG_RUNTIME_DIR=${base%/tuios}; export XDG_RUNTIME_DIR ;;
-  /tmp/tuios-*|/private/tmp/tuios-*) unset XDG_RUNTIME_DIR ;;
-  *) exit 1 ;;
-esac
-TUIOS_SERVER=$server
-export TUIOS_SERVER
-windows=$(tuios --server "$server" list-windows --session "$TUIOS_SESSION" --json 2>/dev/null) || exit 1
-i=0
-cwd=
-while focused=$(printf '%s' "$windows" | /usr/bin/plutil -extract "windows.$i.focused" raw -o - - 2>/dev/null); do
-  if [ "$focused" = true ]; then
-    cwd=$(printf '%s' "$windows" | /usr/bin/plutil -extract "windows.$i.cwd" raw -n -o - - 2>/dev/null && printf '.') || exit 1
-    cwd=${cwd%.}
-    break
-  fi
-  i=$((i + 1))
+while :; do
+  stamp=$(/bin/date '+%H:%M %S') || exit 1
+  clock_time=${stamp% *}
+  printf ' %s : %s \n' "${clock_time%:*}" "${clock_time#*:}"
+  seconds=${stamp##* }
+  seconds=${seconds#0}
+  sleep "$((60 - seconds))" || exit 1
 done
-[ -n "$cwd" ] || exit 1
-branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" symbolic-ref --quiet --short HEAD 2>/dev/null) ||
-  branch=$(GIT_OPTIONAL_LOCKS=0 git -C "$cwd" rev-parse --short HEAD 2>/dev/null) || branch=
-label=$cwd
-if [ -n "${HOME:-}" ]; then
-  case $cwd in
-    "$HOME") label='~' ;;
-    "$HOME"/*) label="~${cwd#"$HOME"}" ;;
-  esac
-fi
-label=$(printf '%s' "$label" | LC_ALL=C /usr/bin/tr -d '\000-\037\177')
-branch=$(printf '%s' "$branch" | LC_ALL=C /usr/bin/tr -d '\000-\037\177')
-# Reserve 40 columns for cwd, 24 for branch, and room for separator/clock.
-# Count non-ASCII characters as two columns to keep wide text within budget.
-fit_status() {
-  status_text=$1
-  status_fit=
-  status_used=0
-  while [ -n "$status_text" ]; do
-    case $3 in
-      tail) status_rest=${status_text%?}; status_char=${status_text#"$status_rest"} ;;
-      head) status_rest=${status_text#?}; status_char=${status_text%"$status_rest"} ;;
-    esac
-    case $status_char in
-      [\ -~]) status_width=1 ;;
-      *) status_width=2 ;;
-    esac
-    [ $((status_used + status_width)) -le "$2" ] || break
-    status_used=$((status_used + status_width))
-    case $3 in
-      tail) status_fit=$status_char$status_fit ;;
-      head) status_fit=$status_fit$status_char ;;
-    esac
-    status_text=$status_rest
-  done
-  if [ -n "$status_text" ]; then
-    case $3 in tail) status_fit="…${status_fit}" ;; head) status_fit="${status_fit}…" ;; esac
-  fi
-}
-fit_status "$label" 39 tail
-label=$status_fit
-fit_status "$branch" 23 head
-branch=$status_fit
-printf '\033[38;2;165;173;206m%s  ' "$label"
-[ -z "$branch" ] || printf '\033[38;2;115;121;148m%s  ' "$branch"
-printf '\033[38;2;81;87;109m·  \033[38;2;198;208;245m%s\033[0m' "$(/bin/date '+%H:%M')"
 '''
-refresh = "5s"
-max-width = 80
-bg = "#232634"
-cap_left = ""
-cap_right = ""
+refresh = "push"
+fg = "#c6d0f5"
+bg = "#303446"
+bold = true
 
 [keybindings]
 leader_key = "ctrl+space"
