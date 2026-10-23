@@ -132,13 +132,15 @@ dockbar_position = "top"
 dock_compact = true
 dock_pill_caps = false
 dock_workspace_tabs = true
-border_style = "hidden"
-# Tiled panes use their full area, without an empty title/border row.
+border_style = "normal"
+# A single thin divider between tiled panes, without individual pane frames.
 shared_borders = true
 hide_window_buttons = true
-border_focused_color = "#ca9ee6"
-border_unfocused_color = "#737994"
+border_focused_color = "#c6d0f5"
+border_unfocused_color = "#c6d0f5"
 gap = 1
+# Leave one blank terminal cell at both ends of each divider stroke.
+divider_inset = 1
 dim_unfocused = 8
 popup_dim = 30
 modal_dim = 30
