@@ -3,6 +3,9 @@
 -- Add any additional options here
 
 if (vim.env.SSH_CONNECTION or "") ~= "" or (vim.env.SSH_TTY or "") ~= "" then
+  -- Full-line highlighting triggers cursor flashes through TUIOS over SSH.
+  vim.opt.cursorlineopt = "number"
+
   -- Send both registers to the client clipboard; paste locally without OSC 52 reads.
   local copy = require("vim.ui.clipboard.osc52").copy("+")
   local clipboard = { name = "OSC 52", copy = {}, paste = {}, cache_enabled = 0 }
