@@ -15,8 +15,6 @@ end
 vim.opt.rtp:prepend(lazypath)
 
 require("lazy").setup({
-  -- Limit parallel plugin tasks only in SSH sessions.
-  concurrency = ((vim.env.SSH_CONNECTION or "") ~= "" or (vim.env.SSH_TTY or "") ~= "") and 8 or nil,
   spec = {
     -- add LazyVim and import its plugins
     { "LazyVim/LazyVim", import = "lazyvim.plugins" },
