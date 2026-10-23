@@ -2,6 +2,24 @@
 -- Default options that are always set: https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/config/options.lua
 -- Add any additional options here
 
+if (vim.env.SSH_CONNECTION or "") ~= "" or (vim.env.SSH_TTY or "") ~= "" then
+  -- Send both registers to the client clipboard; paste locally without OSC 52 reads.
+  local copy = require("vim.ui.clipboard.osc52").copy("+")
+  local clipboard = { name = "OSC 52", copy = {}, paste = {}, cache_enabled = 0 }
+  for _, register in ipairs({ "+", "*" }) do
+    local cached = { { "" }, "v" }
+    clipboard.copy[register] = function(lines, regtype)
+      cached = { lines, regtype }
+      copy(lines)
+    end
+    clipboard.paste[register] = function()
+      return cached
+    end
+  end
+  vim.g.clipboard = clipboard
+  vim.opt.clipboard = "unnamedplus"
+end
+
 vim.filetype.add({ extension = { "templ" } })
 
 vim.g.vimtex_compiler_method = "tectonic"
