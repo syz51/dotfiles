@@ -1,11 +1,11 @@
 #!/bin/sh
-# Build the TUIOS fork (syz51/tuios, branch feat/popup-dim) and install it for
+# Build the TUIOS fork (syz51/tuios, branch feat/divider-inset) and install it for
 # tuios/bin/tuios. Run it again to update. Restart the daemon afterwards with
-# `tuios kill-server` and open a new Ghostty window.
+# `~/.local/bin/tuios restart-server`; this ends programs running in its panes.
 set -eu
 
 repo=https://github.com/syz51/tuios.git
-branch=feat/popup-dim
+branch=feat/divider-inset
 src="${XDG_CACHE_HOME:-$HOME/.cache}/tuios-fork"
 dest="$HOME/.local/opt/tuios-fork"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
@@ -45,4 +45,4 @@ fi
 ln -sfn "$wrapper" "$link"
 
 "$link" --version | head -n 1
-echo "install-fork: restart with 'tuios kill-server', then open a new Ghostty window."
+echo "install-fork: save pane work, then run '~/.local/bin/tuios restart-server' to activate the build."

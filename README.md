@@ -23,28 +23,42 @@ directories, credentials, and runtime files are excluded by `.gitignore`.
 
 Back up existing configuration before copying files into `~/.config`. Install
 the applications you intend to use, then copy or symlink their directories from
-this checkout. There is no installation script or complete dependency manifest.
+this checkout. There is no repository-wide installer or complete dependency manifest.
 
 The terminal setup assumes macOS, zsh, and this checkout at `~/.config`; paths
 resolve from `$HOME`, so it works under any account. The Ghostty launcher runs
 with Homebrew's `python3` when installed, otherwise the system `python3`.
-`ghostty/tuios-launcher.py` expects a TUIOS wrapper at `~/.local/bin/tuios`. That
-wrapper is outside this repository and forwards to `~/.local/libexec/tuios`, built
-from the [`feat/popup-dim` branch of syz51/tuios](https://github.com/syz51/tuios/tree/feat/popup-dim)
-in `~/.local/src/tuios`.
-To update that build:
+`ghostty/tuios-launcher.py` runs `~/.local/bin/tuios`, which the fork installer
+links to this repository's `tuios/bin/tuios` wrapper. The installer builds the
+[`feat/divider-inset` branch of syz51/tuios](https://github.com/syz51/tuios/tree/feat/divider-inset)
+in `~/.cache/tuios-fork` and installs it at `~/.local/opt/tuios-fork/tuios`.
+To install or update:
 
 ```sh
-git -C ~/.local/src/tuios fetch origin
-git -C ~/.local/src/tuios switch feat/popup-dim
-git -C ~/.local/src/tuios merge --no-edit origin/feat/popup-dim
-git -C ~/.local/src/tuios merge --no-edit origin/main
-~/.local/src/tuios/scripts/install.sh pure --prefix ~/.local/libexec --keep-server
+GOMAXPROCS=4 GOFLAGS=-p=4 ~/.config/tuios/install-fork.sh
 ```
 
-The running daemon keeps its current build until restarted. `tuios restart-server`
-shows what it will stop and asks before restarting; a restart ends the programs
-running in its panes.
+Add this at the end of `~/.zshrc` for Ghostty shell integration inside TUIOS:
+
+```zsh
+PROMPT_EOL_MARK=''
+
+if [[ -n ${TUIOS_SESSION:-} ]]; then
+  _tuios_zsh_integration="${GHOSTTY_RESOURCES_DIR:-/Applications/Ghostty.app/Contents/Resources/ghostty}/shell-integration/zsh/ghostty-integration"
+  [[ -r $_tuios_zsh_integration ]] && source "$_tuios_zsh_integration"
+  unset _tuios_zsh_integration
+fi
+```
+
+The running daemon keeps its current build until restarted. Save pane work, then
+run:
+
+```sh
+~/.local/bin/tuios restart-server
+```
+
+The command shows what it will stop and asks before restarting. A restart ends
+the programs running in its panes and recreates the pane shells.
 
 Neovim bootstraps lazy.nvim and installs the configured plugins on first launch,
 which requires Git and network access. Language-specific features may require
