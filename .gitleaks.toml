@@ -1,0 +1,17 @@
+title = "Dotfiles secret scanning"
+[extend]
+useDefault = true
+
+# Public application identifier shipped in the verified uosc 5.13.0 release.
+[[allowlists]]
+description = "Upstream uosc OpenSubtitles application identifier"
+condition = "AND"
+paths = ['''^mpv/scripts/uosc/main\.lua$''']
+regexTarget = "secret"
+regexes = ['''^b0rd16N0bp7DETMpO4pYZwIqmQkZbYQr$''']
+
+[[rules]]
+id = "container-registry-auth"
+description = "Container registry credentials stored as base64 auth"
+regex = '''(?i)"auth"\s*:\s*"([A-Za-z0-9+/]{12,}={0,2})"'''
+secretGroup = 1

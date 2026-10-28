@@ -13,7 +13,7 @@ test("explorer role uses the configured model and reasoning effort", async () =>
   expect(role.model_reasoning_effort).toBe("medium");
 });
 
-test("runtime explorer path resolves to the configured role file", async () => {
+test.skipIf(process.env.RUN_CODEX_RUNTIME_INTEGRATION !== "1")("runtime explorer path resolves to the configured role file", async () => {
   expect(await realpath(join(homedir(), ".codex/agents/explorer.toml"))).toBe(
     await realpath(rolePath),
   );

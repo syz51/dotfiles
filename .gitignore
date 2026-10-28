@@ -64,3 +64,9 @@ uv
 /ghostty/config.local
 /t3/
 /muse
+
+# Container registry login stores and local environment credentials.
+/containers/auth.json
+.env
+.env.*
+!.env.example
