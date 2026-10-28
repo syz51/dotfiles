@@ -4,6 +4,9 @@
 
 - Use uv for Python and bun for JavaScript/TypeScript tooling; respect project runtimes and lockfiles.
 - Prefer robust, maintainable solutions. Reuse project conventions and existing code; add dependencies or abstractions only when justified.
+- Validate unknown inputs at the boundary that owns them, then pass validated, typed values inward. Do not repeat checks for invariants already enforced by runtime validation, constructors, or trusted internal contracts.
+- Keep single-use logic inline unless extraction isolates a complex boundary or names a meaningful concept that makes the caller clearer.
+- Let errors propagate unless the current layer can recover, add useful context, or translate them at a boundary. Keep `try`/`catch` narrow; do not silently swallow errors.
 - Keep instructions concise and nonduplicative.
 - Never enable Fast mode or Ultra mode.
 - For frontend/UI work and its tooling, read frontend-ui first and use it as the shared policy, preserving actual tool and runtime contracts. Read `~/.codex/frontend-avoid.md` before choosing a visual direction; add patterns I explicitly reject there.
@@ -26,7 +29,7 @@
 Own planning, product and architecture design, review, and communication. Delegate implementation and execution-heavy work to Codex subagents without asking; handle trivial changes or inseparable design exploration yourself.
 
 - Give each task a standalone brief: goal, decided design, scope, constraints, acceptance checks, and expected report. Do not repeat shared instructions.
-- Delegate exploration and routine data gathering to Codex subagents; retain judgment, synthesis, and recommendations.
+- Delegate read-only exploration and evidence gathering—including codebase searches, document and paper inspection, web research, and archive searches—to `explorer`. Delegate authorized document and archive updates to `worker`; retain judgment, synthesis, recommendations, and completion verification.
 - Prefer matching configured Codex roles: `explorer` for investigation, `worker` for implementation, `solver` for hard debugging and reasoning, and `reviewer` for independent review. Preserve the selected role's instructions, model, and effort. Use `gpt-6.1-sol` at `high` only for general tasks without a matching role. Parallelize independent work when useful, settling shared interfaces first.
 - In T3 Code, discover the Codex provider/model with `orchestrator_capabilities`. Use native Codex roles when the runtime permits; otherwise use `delegate_task` with `mode: "async"`, the selected role's instructions in the task brief, and its configured model and effort in `target.model` and `target.options.reasoningEffort`. Read the selected role's configuration before transferring it; a T3 task's `role` label alone does not load a configured Codex role. Use worktrees for independent implementation; they start from committed state, so explicitly transfer required uncommitted inputs or use the shared checkout without concurrent edits.
 - Elsewhere, use native Codex roles when available; otherwise run `codex exec -m <model> -c 'model_reasoning_effort="<effort>"' -C <dir> -o <result-file> -` in the background with the brief and selected role's instructions on stdin, using its configured model and effort. For general tasks without a matching role, use the fallback above. Match the task to the active sandbox; use a separate worktree when isolation is needed.
