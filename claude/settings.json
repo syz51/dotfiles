@@ -9,17 +9,6 @@
     "defaultMode": "bypassPermissions"
   },
   "disableClaudeAiConnectors": true,
-  "sandbox": {
-    "enabled": false
-  },
-  "modelSettings": {
-    "claude-opus-5-5": {
-      "effortLevel": "high"
-    }
-  },
-  "skipDangerousModePermissionPrompt": true,
-  "theme": "dark",
-  "switchModelsOnFlag": false,
   "hooks": {
     "PreToolUse": [
       {
@@ -54,5 +43,17 @@
         ]
       }
     ]
-  }
+  },
+  "enabledPlugins": {},
+  "sandbox": {
+    "enabled": false
+  },
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    }
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "theme": "dark",
+  "switchModelsOnFlag": false
 }
