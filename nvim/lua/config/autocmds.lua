@@ -7,6 +7,14 @@
 -- Or remove existing autocmds by their group name (which is prefixed with `lazyvim_` for the defaults)
 -- e.g. vim.api.nvim_del_augroup_by_name("lazyvim_wrap_spell")
 
+-- Lualine and Noice settle the status/command lines during VeryLazy. Refresh
+-- afterwards: their changes can cancel out without a window resize event.
+vim.schedule(function()
+  if vim.bo.filetype == "snacks_dashboard" then
+    Snacks.dashboard.update()
+  end
+end)
+
 if jit.os == "OSX" then
   vim.api.nvim_create_autocmd("User", {
     group = vim.api.nvim_create_augroup("vimtex_skim_notes", { clear = true }),
