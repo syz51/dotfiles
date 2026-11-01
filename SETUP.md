@@ -22,6 +22,28 @@ There is no repository-wide installer or complete dependency manifest.
 | Agent tools | The relevant Codex or Claude Code installation. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`. |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
+## Keep both Macs in sync
+
+Use `main` from `git@github.com:syz51/dotfiles.git` on both Macs. Before editing,
+check for local changes, then update a clean checkout:
+
+```sh
+cd ~/.config
+git status --short --branch
+git pull --ff-only origin main
+```
+
+Commit shared changes and push them with `git push origin main` before switching
+Macs. If both Macs have new commits, commit any unfinished work, fetch with
+`git fetch origin`, then combine the histories with `git merge origin/main`.
+Resolve any conflicts and run the verification checks below before pushing.
+The other Mac can then update with the fast-forward command above.
+
+Keep credentials and machine-specific settings in ignored local files, including
+`ghostty/config.local` and `codex/config.toml`; Git does not synchronize them.
+Installed applications and the separately built TUIOS fork also need to be
+installed or updated on each Mac using the instructions below.
+
 ## Terminal and dock
 
 The Ghostty launcher uses `/opt/homebrew/bin/python3` when available, otherwise
@@ -47,7 +69,11 @@ be downloaded by the dock's offline command.
 
 The TUIOS installer builds the
 [`feat/divider-inset` branch of syz51/tuios](https://github.com/syz51/tuios/tree/feat/divider-inset)
-in `~/.cache/tuios-fork` and installs it at `~/.local/opt/tuios-fork/tuios`.
+in `${XDG_DATA_HOME:-$HOME/.local/share}/tuios-fork` and installs it at
+`~/.local/opt/tuios-fork/tuios`. It moves an existing checkout from
+`${XDG_CACHE_HOME:-$HOME/.cache}/tuios-fork` to the new location automatically.
+Updates preserve local commits and require a clean checkout; divergent fork
+history needs an explicit merge in that checkout before rerunning the installer.
 It installs Go through Homebrew if Go is missing. To install or update:
 
 ```sh
