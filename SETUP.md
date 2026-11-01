@@ -128,7 +128,7 @@ git config --global core.excludesFile "$HOME/.config/git/ignore"
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js codex/tests/explorer.test.js
+bun test nvim/tests/bun-outdated.test.js codex/tests
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s ghostty -p 'test-*.py' -v
 ```
@@ -137,6 +137,9 @@ The machine-specific runtime-path check is skipped by default. Enable it with
 `RUN_CODEX_RUNTIME_INTEGRATION=1` only when `~/.codex/agents/explorer.toml`
 resolves to this checkout's role file. Live-agent cases are also skipped unless
 explicitly enabled; inspect the suite before opting in.
+
+See [Global instruction testing](codex/docs/agents-testing.md) for the complete
+offline and opt-in local Codex matrix, evidence requirements, and cleanup.
 
 With Explore's dependencies installed, its additional integration suite is:
 
