@@ -1,0 +1,13 @@
+{
+  "id": "typescript-effect-adoption",
+  "suite": "typescript",
+  "invocation": "configured",
+  "prompt": "Review this new TypeScript backend's proposed network workflow. Recommend the default application-logic approach from my applicable guidance and explain expected failures, safe retries, cancellation, and where execution belongs. Inspect the local proposal; do not install or run anything.",
+  "files": {
+    "package.json": "{\"private\":true,\"type\":\"module\"}",
+    "src/workflow.ts": "export async function send(sendRequest: () => Promise<void>) { for (;;) { try { await sendRequest(); return; } catch {} } }\n"
+  },
+  "required": ["typescript", "typescript/effect"],
+  "forbidden": ["frontend-ui"],
+  "before": []
+}

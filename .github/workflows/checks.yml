@@ -53,6 +53,6 @@ jobs:
           tar -xzf "$scratch/$archive" -C "$scratch" gitleaks
           "$scratch/gitleaks" git --redact=100 --max-decode-depth=2 --log-opts="--all"
           uv python install 3.13
-          bun test nvim/tests/bun-outdated.test.js codex/tests/explorer.test.js
+          bun test nvim/tests/bun-outdated.test.js codex/tests
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s tuios/tests -v
           uv run --offline --no-project --python 3.13 python -B ghostty/test-tuios-launcher.py -v
