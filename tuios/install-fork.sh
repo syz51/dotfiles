@@ -1,12 +1,13 @@
 #!/bin/sh
 # Build the TUIOS fork (syz51/tuios, branch feat/divider-inset) and install it for
-# tuios/bin/tuios. Run it again to update. Restart the daemon afterwards with
+# tuios/bin/tuios. Keep local fork updates when running it again. Restart with
 # `~/.local/bin/tuios restart-server`; this ends programs running in its panes.
 set -eu
 
 repo=https://github.com/syz51/tuios.git
 branch=feat/divider-inset
-src="${XDG_CACHE_HOME:-$HOME/.cache}/tuios-fork"
+src="${XDG_DATA_HOME:-$HOME/.local/share}/tuios-fork"
+legacy_src="${XDG_CACHE_HOME:-$HOME/.cache}/tuios-fork"
 dest="$HOME/.local/opt/tuios-fork"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
 
@@ -16,9 +17,21 @@ if ! command -v go >/dev/null; then
   brew install go
 fi
 
+if [ ! -e "$src" ] && [ -d "$legacy_src/.git" ]; then
+  mkdir -p "$(dirname "$src")"
+  mv "$legacy_src" "$src"
+fi
+
 if [ -d "$src/.git" ]; then
-  git -C "$src" fetch --quiet origin "$branch"
-  git -C "$src" checkout --quiet --detach FETCH_HEAD
+  if [ -n "$(git -C "$src" status --porcelain)" ]; then
+    echo "install-fork: $src has uncommitted changes; keep or commit them before updating" >&2
+    exit 1
+  fi
+  git -C "$src" fetch --quiet origin "$branch:refs/remotes/origin/$branch"
+  git -C "$src" checkout --quiet "$branch"
+  # A local merge of upstream is ahead of origin. Never discard it by
+  # detaching at FETCH_HEAD; divergent updates need an explicit merge.
+  git -C "$src" merge --ff-only --no-edit "origin/$branch"
 else
   git clone --quiet --branch "$branch" "$repo" "$src"
 fi
