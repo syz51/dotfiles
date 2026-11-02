@@ -59,6 +59,24 @@ and source-evidence helper have local regressions. No source is downloaded,
 vendored, or executed from saved traces. The Effect case requires the installed
 TypeScript entrypoint and Effect reference.
 
+Rust activation cases live in the same maintained engine; see its
+[live activation matrix](https://github.com/syz51/skills/blob/main/docs/testing.md#live-activation-evaluations).
+From the dotfiles root, inspect the Rust cases without a model call, then opt in
+to a live run only when needed using the scratch root above:
+
+```sh
+uv run --no-project python codex/scripts/check_skill_dispatch.py \
+  --ordinary-verification plan --suite rust
+TMPDIR="$task_scratch" uv run --no-project python \
+  codex/scripts/check_skill_dispatch.py --ordinary-verification \
+  run --suite rust --output-dir "$task_scratch/rust-dispatch" --jobs 2
+```
+
+The Rust suite covers Cargo, API/error, async/unsafe and selective library
+guidance, Tauri composition and unrelated-task controls. Installed-mode results
+depend on the skills and global instructions actually installed on that Mac;
+dotfiles' portable tests do not run or establish live Rust activation.
+
 Policy scenarios exercise actual Python/Bun fixes, project-declared npm tooling,
 read-only review, boundary validation/error propagation, simulated release
 safeguards, visual/chart guidance routing, a Japanese reply with a Chinese gloss,

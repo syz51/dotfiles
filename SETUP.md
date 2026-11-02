@@ -143,6 +143,21 @@ before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
 Do not replace an existing tool home without backing up its local data.
 
+The skills named in `codex/AGENTS.md` are maintained separately from dotfiles.
+Install the needed skills and their references from
+[syz51/skills](https://github.com/syz51/skills#install-skills), for example with
+`bunx skills add syz51/skills`, selecting the agents you use. Codex discovers
+user skills under `~/.agents/skills`; see the
+[official skill documentation](https://learn.chatgpt.com/docs/customization/overview#skills).
+
+On the two managed Macs, preserve the existing source checkout at
+`~/.local/share/codex-skills/repository` and discovery links through
+`~/.local/share/codex-skills/current/skills/<skill>`. Update the managed source
+rather than editing installed releases. Dotfiles alone does not install skills,
+configure feedback capture, or create the daily maintenance and audit jobs;
+those are configured separately through the managed skills workflow. Keep
+machine-specific links, credentials and job state outside this repository.
+
 To use the shared Git ignore file, configure its location explicitly:
 
 ```sh
