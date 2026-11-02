@@ -12,6 +12,7 @@
 
 - Before frontend/UI work or its tooling, including TSX and Vue, complete the `frontend-ui` skill read before opening language-specific guidance. Follow its shared policy and actual framework/runtime contracts.
 - Before TypeScript implementation, review, debugging, migration, or tooling/configuration work, read `typescript`; apply both skills when frontend work is involved. Follow each skill's routing to the references relevant to the task. Unrelated work in a TypeScript repository does not require this skill.
+- Before Rust implementation, review, debugging, migration, or Cargo/toolchain configuration work, read `rust`. For Tauri work, also follow `tauri`; for frontend work, complete `frontend-ui` before language-specific guidance. Follow relevant references; unrelated work in a Rust repository does not require this skill.
 - Before choosing a visual direction, read `~/.codex/frontend-avoid.md`. Record only patterns I explicitly reject as defaults; keep project-specific exclusions in that project's instructions.
 - For charts, select and read a dedicated data-visualization skill from the available skills catalog, including plugin skills; apply it within `frontend-ui`'s constraints.
 
