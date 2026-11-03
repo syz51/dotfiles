@@ -129,6 +129,28 @@ follow it with `s` for the session switcher, uppercase `S` for scrollback, or
 Ghostty loads optional machine settings from `ghostty/config.local`, which Git
 ignores. For example, put `font-size = 17.0` there to override the shared size.
 
+## Shell startup
+
+For the existing shell configuration on this Mac, review and apply the targeted
+startup changes with:
+
+```sh
+uv run --no-project ~/.config/shell/apply-startup-fixes.py
+uv run --no-project ~/.config/shell/apply-startup-fixes.py --apply
+```
+
+The installer checks the expected configuration and shell syntax before writing,
+keeps private backups beside `~/.zshrc` and `~/.bashrc`, and leaves an already
+updated configuration alone. Restore those backups to undo the changes.
+
+Zsh initializes completions once, after adding `~/.zsh/functions`. Generated uv
+and uvx completions are cached in
+`${XDG_CACHE_HOME:-$HOME/.cache}/shell-completions` and refreshed when the resolved
+executable or its metadata changes. An unusable cache falls back to live
+generation. fnm keeps its directory-change hook, with zsh selected explicitly;
+bash loads Atuin's PATH setup before its initialization. Open a new shell after
+applying.
+
 ## Neovim and optional tools
 
 Neovim bootstraps lazy.nvim and installs configured plugins on first launch,
@@ -172,6 +194,7 @@ From the repository root, run the focused local suites:
 bun test nvim/tests/bun-outdated.test.js codex/tests
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s ghostty -p 'test-*.py' -v
+uv run --no-project python -B shell/test-startup-fixes.py -v
 ```
 
 The machine-specific runtime-path check is skipped by default. Enable it with
