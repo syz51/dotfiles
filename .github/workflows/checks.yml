@@ -56,3 +56,4 @@ jobs:
           bun test nvim/tests/bun-outdated.test.js codex/tests
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s tuios/tests -v
           uv run --offline --no-project --python 3.13 python -B ghostty/test-tuios-launcher.py -v
+          uv run --offline --no-project --python 3.13 python -B shell/test-startup-fixes.py -v
