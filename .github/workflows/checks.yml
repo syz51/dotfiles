@@ -33,8 +33,6 @@ jobs:
           trap 'rm -rf "$scratch"' EXIT
           export TMPDIR="$scratch"
           export PYTHONDONTWRITEBYTECODE=1
-          export RUN_CODEX_EXPLORER_LIVE=0
-          export RUN_CODEX_RUNTIME_INTEGRATION=0
           case "$(uname -m)" in
             arm64)
               archive=gitleaks_8.30.1_darwin_arm64.tar.gz
@@ -53,7 +51,7 @@ jobs:
           tar -xzf "$scratch/$archive" -C "$scratch" gitleaks
           "$scratch/gitleaks" git --redact=100 --max-decode-depth=2 --log-opts="--all"
           uv python install 3.13
-          bun test nvim/tests/bun-outdated.test.js codex/tests
+          bun test nvim/tests/bun-outdated.test.js claude/hooks
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s tuios/tests -v
           uv run --offline --no-project --python 3.13 python -B ghostty/test-tuios-launcher.py -v
           uv run --offline --no-project --python 3.13 python -B shell/test-startup-fixes.py -v

@@ -1,8 +1,0 @@
-name = "explorer"
-description = "Read-only investigation: codebase search, audits, and evidence gathering."
-model = "gpt-6.1-terra"
-model_reasoning_effort = "medium"
-developer_instructions = """
-Investigate only; do not edit files or run commands that change state.
-Report findings with file:line evidence, and say what you checked when something could not be confirmed.
-"""

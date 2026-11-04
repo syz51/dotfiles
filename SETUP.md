@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | The relevant Codex or Claude Code installation. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`. |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -165,12 +165,12 @@ before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
 Do not replace an existing tool home without backing up its local data.
 
-The skills named in `codex/AGENTS.md` are maintained separately from dotfiles.
+The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
 Install the needed skills and their references from
 [syz51/skills](https://github.com/syz51/skills#install-skills), for example with
-`bunx skills add syz51/skills`, selecting the agents you use. Codex discovers
-user skills under `~/.agents/skills`; see the
-[official skill documentation](https://learn.chatgpt.com/docs/customization/overview#skills).
+`bunx skills add syz51/skills`, selecting the agents you use. Claude Code
+discovers personal skills under `~/.claude/skills`; see
+[Extend Claude with skills](https://code.claude.com/docs/en/skills).
 
 On the two managed Macs, preserve the existing source checkout at
 `~/.local/share/codex-skills/repository` and discovery links through
@@ -191,19 +191,11 @@ git config --global core.excludesFile "$HOME/.config/git/ignore"
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js codex/tests
+bun test nvim/tests/bun-outdated.test.js claude/hooks
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s ghostty -p 'test-*.py' -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 ```
-
-The machine-specific runtime-path check is skipped by default. Enable it with
-`RUN_CODEX_RUNTIME_INTEGRATION=1` only when `~/.codex/agents/explorer.toml`
-resolves to this checkout's role file. Live-agent cases are also skipped unless
-explicitly enabled; inspect the suite before opting in.
-
-See [Global instruction testing](codex/docs/agents-testing.md) for the complete
-offline and opt-in local Codex matrix, evidence requirements, and cleanup.
 
 With Explore's dependencies installed, its additional integration suite is:
 

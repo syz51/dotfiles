@@ -1,6 +1,6 @@
 ---
 name: headless-browser
-description: Screenshot and check web pages in a local headless Chromium. Use it to see a page you built or changed, a dev server, a static HTML file or a public URL; to click, type or press keys first and capture each state; or to collect console errors, page exceptions and failed requests. Use it when the in-app preview cannot take screenshots or is unavailable, or when you need repeatable captures from a script.
+description: Screenshot and check web pages in a local headless Chromium. Use it to see a page you built or changed, a dev server, a static HTML file or a public URL; to click, type or press keys first and capture each state; or to collect console errors, page exceptions and failed requests. Use it to verify your own UI changes and for repeatable captures from a script; use the in-app preview only when the user asks for it.
 ---
 
 # Headless browser
