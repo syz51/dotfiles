@@ -37,6 +37,7 @@ uv
 !/claude/output-styles/
 !/claude/rules/
 !/claude/skills/
+!/claude/tests/
 /claude/skills/*
 !/claude/skills/headless-browser/
 /claude/skills/headless-browser/node_modules/
