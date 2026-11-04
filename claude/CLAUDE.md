@@ -2,7 +2,7 @@
 
 ## Working preferences
 
-- Run Python tools and checks with `uv run`; use `bun` for JavaScript/TypeScript tooling. Respect project runtimes and lockfiles.
+- Run Python tools and checks with `uv run`, and JavaScript/TypeScript scripts, checks and tooling with `bun`. Respect project runtimes and lockfiles.
 - Reuse project conventions and existing code. Add dependencies or abstractions only when justified; keep single-use logic inline unless extraction clarifies a complex boundary or meaningful concept.
 - Validate unknown inputs at their owning boundary, then pass validated, typed values inward. Do not recheck invariants established by validation, constructors, or trusted internal contracts.
 - Let errors propagate unless this layer can recover, add useful context, or translate them at a boundary. Keep `try`/`catch` narrow; never silently swallow errors.
