@@ -17,10 +17,10 @@ there is no repository-wide installer.
 | `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
-| `codex/`                 | Agent instructions, example configuration, hooks, and keybindings.               |
-| `claude/`                | Claude Code instructions, settings, and a headless-browser skill.                |
+| `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
+| `claude/`                | Claude Code instructions, subagents, settings, push guard, and a browser skill.  |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
-| `AGENTS.md`, `CLAUDE.md` | Repository instructions for coding agents.                                       |
+| `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
 Original contributions are [MIT licensed](LICENSE). Bundled and adapted code
 retains its upstream terms; see [third-party notices](THIRD_PARTY_NOTICES.md).
