@@ -14,10 +14,16 @@ export function childEnv(base, overrides = {}) {
 // rejects on a spawn error, on the deadline or when stdout and stderr together exceed
 // maxBytes, killing the whole group, so descendants that outlive the leader die too.
 // A rejection carries the output captured so far as error.stdout and error.stderr.
-export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024 } = {}) {
+// input, when given, is written to stdin, which is then closed; otherwise stdin is empty.
+export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input } = {}) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    if (input !== undefined) {
+      // A child that exits without reading its input makes the write fail with EPIPE.
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
     const out = [];
     const err = [];
     let size = 0;

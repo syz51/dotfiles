@@ -33,6 +33,15 @@ test("exit codes, empty output and spawn errors are reported without hanging", a
   await expect(runProcess(["/nonexistent-test-executable"])).rejects.toThrow();
 });
 
+test("input goes to stdin; a child that ignores it still exits cleanly", async () => {
+  const echoed = await runProcess([bun, "-e", "process.stdin.pipe(process.stdout)"], { input: "через stdin 中文\n" });
+  expect(echoed.stdout).toBe("через stdin 中文\n");
+  const ignored = await runProcess([bun, "-e", "process.exit(3)"], { input: "x".repeat(1024 * 1024) });
+  expect(ignored.code).toBe(3);
+  const closed = await runProcess([bun, "-e", 'let n=0;process.stdin.on("data",(c)=>n+=c.length).on("end",()=>console.log(n))']);
+  expect(closed.stdout.trim()).toBe("0");
+});
+
 test("stdout and stderr share one output bound", async () => {
   await expect(runProcess([bun, "-e", 'process.stdout.write("a".repeat(400));process.stderr.write("b".repeat(400))'], { maxBytes: 500 }))
     .rejects.toThrow("bound");
