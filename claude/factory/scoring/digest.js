@@ -1,17 +1,17 @@
 // A bounded, deterministic text digest of a session for the judge: metadata, the human
 // prompts, the main session's assistant text, its tool calls with an output excerpt,
 // subagent spawns and the final assistant message. Events are labeled ([P2] prompt,
-// [A7] assistant text, [T14] tool call) so the judge can cite them. Over the size limit
+// [A7] assistant text, [T14] tool call, [I1] a fork's prompt from its parent
+// conversation) so the judge can cite them. Over the size limit
 // it keeps prompts first, then other events from the start and the end, and says what
 // it left out.
-import { readRecords } from "../lib/transcripts.js";
+import { INTERRUPT, readRecords, textOf } from "../lib/transcripts.js";
 
 export const DIGEST_CHARS = 60_000;
 const PROMPT_CHARS = 4_000;
 const TEXT_CHARS = 2_000;
 const INPUT_CHARS = 300;
 const OUTPUT_CHARS = 300;
-const INTERRUPT = "[Request interrupted by user";
 
 const flat = (text) => String(text).replace(/\s*\n\s*/g, " ⏎ ");
 // The start of text, at most max characters.
@@ -23,10 +23,6 @@ function ends(text, max) {
   const half = Math.max(0, Math.floor((max - marker.length) / 2));
   return `${text.slice(0, half)}${marker}${text.slice(text.length - half)}`;
 }
-
-const textOf = (content) => typeof content === "string"
-  ? content
-  : Array.isArray(content) ? content.filter((block) => block?.type === "text").map((block) => block.text ?? "").join("\n") : "";
 
 const time = (at) => (at ? `${at.slice(0, 16).replace("T", " ")}Z` : "?");
 
@@ -53,6 +49,8 @@ export function compactInput(name, input = {}) {
   return head(flat(typeof value === "string" ? value : JSON.stringify(input)), INPUT_CHARS);
 }
 
+const promptEvent = (label, prompt) => ({ kind: "prompt", text: `[${label}] PROMPT (${prompt.source ?? "?"}, ${time(prompt.at)}):\n${ends(prompt.text, PROMPT_CHARS)}` });
+
 // The main session's events in transcript order and its final assistant message.
 function collectEvents(session, records) {
   const prompts = new Map(session.prompts.map((prompt) => [`${prompt.at}\0${prompt.text}`, prompt]));
@@ -67,7 +65,7 @@ function collectEvents(session, records) {
       const text = textOf(content);
       const prompt = prompts.get(`${record.timestamp ?? null}\0${text}`);
       if (prompt) {
-        events.push({ kind: "prompt", text: `[${label("prompt")}] PROMPT (${prompt.source ?? "?"}, ${time(prompt.at)}):\n${ends(prompt.text, PROMPT_CHARS)}` });
+        events.push(promptEvent(label("prompt"), prompt));
       } else if (text.startsWith(INTERRUPT)) events.push({ kind: "note", text: "[interrupted by the user]" });
     } else if (record.type === "assistant" && !record.isSidechain && Array.isArray(content)) {
       const id = record.message?.id ?? record.uuid;
@@ -140,7 +138,8 @@ function keepEnds(items, budget) {
   return kept;
 }
 
-function render(events, kept) {
+// Events from index start up to end, with a marker for each run of omitted ones.
+function render(events, kept, start = 0, end = events.length) {
   const lines = [];
   let omitted = null;
   const flush = () => {
@@ -149,7 +148,8 @@ function render(events, kept) {
     lines.push(`[… omitted to fit the digest: ${parts.join(", ")} …]`);
     omitted = null;
   };
-  events.forEach((event, index) => {
+  for (let index = start; index < end; index++) {
+    const event = events[index];
     if (kept.has(index)) {
       flush();
       lines.push(event.text);
@@ -157,34 +157,44 @@ function render(events, kept) {
       omitted ??= {};
       omitted[event.kind] = (omitted[event.kind] ?? 0) + 1;
     }
-  });
+  }
   flush();
   return lines.join("\n");
 }
 
 // The digest text. records are the main transcript's records (read from session.file
 // when not given). A forked session starts with copies of its parent's records, marked
-// forkedFrom; they belong to the parent's score, so only the fork's own events show.
+// forkedFrom; they belong to the parent's score, so only the fork's own events show,
+// after the parent's prompts (session.inheritedPrompts) in their own section: the fork
+// carries on the task they set.
 export function buildDigest(session, { records = readRecords(session.file).records, maxChars = DIGEST_CHARS } = {}) {
   const own = records.filter((record) => !record.forkedFrom);
-  const { events, final } = collectEvents(session, own);
+  const collected = collectEvents(session, own);
+  const { final } = collected;
+  const inherited = session.inheritedPrompts.map((prompt, index) => promptEvent(`I${index + 1}`, prompt));
+  // Inherited prompts first, so the bounding below treats them as the earliest prompts.
+  const events = [...inherited, ...collected.events];
   const parent = records.find((record) => record.forkedFrom)?.forkedFrom.sessionId;
   const top = parent
-    ? `${header(session)}\nForked from session ${parent}: its ${records.length - own.length} inherited records are left out here and in the counts above. Judge only the events below.`
+    ? `${header(session)}\nForked from session ${parent}: its ${records.length - own.length} inherited records are left out here and in the counts above, except its ${inherited.length} prompts, shown first as context. Judge the fork's own events against the full request.`
     : header(session);
   const finalBlock = final
     ? `## Final assistant message [${final.label}]\n${ends(final.text, Math.floor(maxChars / 4))}`
     : "## Final assistant message\n(none)";
-  const compose = (body, note) => `${top}\n\n## Events${note}\n${body}\n\n${finalBlock}\n`;
-  const all = new Set(events.keys());
-  const full = compose(render(events, all), "");
+  const compose = (kept, note) => {
+    const before = inherited.length
+      ? `\n\n## Prompts from the parent conversation, before the fork; the fork's own events follow\n${render(events, kept, 0, inherited.length)}`
+      : "";
+    return `${top}${before}\n\n## Events${note}\n${render(events, kept, inherited.length)}\n\n${finalBlock}\n`;
+  };
+  const full = compose(new Set(events.keys()), "");
   if (full.length <= maxChars) return full;
   // Prompts first, up to half of the space when they need more; the rest goes to the
   // other events. Omission markers take space too, so shrink until it fits.
   const indexed = events.map((event, index) => ({ ...event, index }));
   const prompts = indexed.filter((event) => event.kind === "prompt");
   const others = indexed.filter((event) => event.kind !== "prompt");
-  let available = maxChars - compose("", " (partial)").length - 200;
+  let available = maxChars - compose(new Set(), " (partial)").length - 200;
   for (let attempt = 0; attempt < 8 && available > 0; attempt++) {
     const promptChars = prompts.reduce((sum, event) => sum + event.text.length + 1, 0);
     const keptPrompts = keepEnds(prompts, Math.min(promptChars, available / 2));
@@ -192,7 +202,7 @@ export function buildDigest(session, { records = readRecords(session.file).recor
     const keptOthers = keepEnds(others, available - promptUsed);
     const kept = new Set([...[...keptPrompts].map((i) => prompts[i].index), ...[...keptOthers].map((i) => others[i].index)]);
     const note = ` (partial: ${events.length - kept.size} of ${events.length} events omitted to fit ${maxChars} characters)`;
-    const text = compose(render(events, kept), note);
+    const text = compose(kept, note);
     if (text.length <= maxChars) return text;
     available -= text.length - maxChars + 200;
   }

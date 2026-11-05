@@ -79,21 +79,41 @@ test("a long session stays within the limit, keeps every prompt, the start and t
   expect(buildDigest(s, { maxChars: 20_000 })).toBe(digest);
 });
 
-test("a forked session shows only its own events and names its parent", () => {
+test("a forked session shows its parent's prompts as context, then only its own events", () => {
   const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
   const t = new Transcript()
     .prompt("Parent's request", { forkedFrom })
+    .prompt("Parent's summary", { forkedFrom, isCompactSummary: true })
     .tool("Bash", { command: "parent-command" }, "ok", { forkedFrom })
     .text("Parent's answer", { forkedFrom })
     .prompt("Fork's request")
     .text("Fork's answer");
   const digest = buildDigest(session(t));
-  expect(digest).toContain("Forked from session parent-1: its 3 inherited records are left out");
-  expect(digest).not.toContain("Parent's request");
+  expect(digest).toContain("Forked from session parent-1: its 4 inherited records are left out");
+  expect(digest).toContain("## Prompts from the parent conversation, before the fork; the fork's own events follow\n[I1] PROMPT (sdk,");
+  expect(digest).toContain("Parent's request");
+  expect(digest).not.toContain("Parent's summary");
   expect(digest).not.toContain("parent-command");
-  expect(digest).toContain("[P1] PROMPT");
+  expect(digest).not.toContain("Parent's answer");
+  expect(digest.indexOf("Parent's request")).toBeLessThan(digest.indexOf("## Events"));
+  expect(digest).toContain("## Events\n[P1] PROMPT");
   expect(digest).toContain("Fork's request");
   expect(digest).toContain("## Final assistant message [A1]\nFork's answer");
+});
+
+test("a long fork stays within the limit and keeps the start of its parent's task", () => {
+  const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
+  const t = new Transcript();
+  for (let i = 0; i < 30; i++) t.prompt(`parent-prompt-${i} ${"q".repeat(2000)}`, { forkedFrom }).text(`parent reply ${i}`, { forkedFrom });
+  t.prompt("Fork's request");
+  for (let i = 0; i < 200; i++) t.tool("Read", { file_path: `/file-${i}.js` }, "y".repeat(400));
+  t.text("All done.");
+  const digest = buildDigest(session(t), { maxChars: 30_000 });
+  expect(digest.length).toBeLessThanOrEqual(30_000);
+  expect(digest).toContain("parent-prompt-0 ");
+  expect(digest).toContain("Fork's request");
+  expect(digest).toContain("/file-199.js");
+  expect(digest).toContain("## Final assistant message [A1]\nAll done.");
 });
 
 test("prompts beyond half the space keep their start and end too", () => {

@@ -32,8 +32,9 @@ const ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 
 // Everything the detectors look at: tool calls in order (agent is null for the main
 // session), slash commands the prompts ran, and the human prompts. A fork's copies of
-// its parent's tool calls (marked forkedFrom) count for the parent only; inherited
-// prompts and commands still count as what was asked.
+// its parent's tool calls (marked forkedFrom) count for the parent only; its inherited
+// prompts (session.inheritedPrompts, filtered like its own) and commands still count as
+// what was asked.
 export function sessionActions(session, records = sessionRecords(session)) {
   const calls = [];
   const commands = [];
@@ -62,11 +63,7 @@ export function sessionActions(session, records = sessionRecords(session)) {
   };
   collect(records.main, null);
   for (const agent of records.subagents) collect(agent.records, agent.id);
-  // session.prompts leaves out a fork's inherited prompts; they still say what was asked.
-  const inherited = records.main
-    .filter((record) => record.forkedFrom && record.type === "user" && !record.isMeta && typeof record.message?.content === "string")
-    .map((record) => ({ at: record.timestamp ?? null, text: record.message.content }));
-  return { calls, commands, prompts: [...inherited, ...session.prompts], cwd: session.cwd };
+  return { calls, commands, prompts: [...session.inheritedPrompts, ...session.prompts], cwd: session.cwd };
 }
 
 const bashCommands = (actions) => actions.calls.filter((call) => call.name === "Bash" && typeof call.input.command === "string");
@@ -83,8 +80,8 @@ const NODE_TOOLS = {
 };
 const PYTHON_TOOLS = ["pip", "pip3", "pytest", "python", "python3", ...["10", "11", "12", "13", "14"].map((minor) => `python3.${minor}`)];
 
-// mayInvoke over-approximates on purpose (an `|` inside a quoted grep pattern reads as
-// a pipe), so a hit also needs the program in command position by simpleCommands.
+// A command runs a tool when the tool is the program in command position of one of its
+// simple commands, after wrappers and shell keywords.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
   const cwd = actions.cwd && existsSync(actions.cwd) ? actions.cwd : null;
@@ -92,7 +89,7 @@ export function packageRunner(actions) {
   for (const call of commands) {
     const { command } = call.input;
     const programs = new Set(simpleCommands(command).map((words) => basename(words[0])));
-    const runs = (name) => programs.has(name) && mayInvoke(command, name);
+    const runs = (name) => programs.has(name);
     const tool = Object.entries(NODE_TOOLS).find(([name, lockfiles]) =>
       runs(name) && !(cwd && lockfiles.some((lockfile) => existsSync(join(cwd, lockfile)))))?.[0]
       ?? PYTHON_TOOLS.find(runs);
@@ -125,13 +122,19 @@ export function aiAttribution(actions) {
 const HEREDOC = /(?<!<)<<-?(?!<)\s*(['"]?)([A-Za-z_]\w*)\1/;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
 // Wrappers that run the rest of their words as a command, and their options with a value.
-const WRAPPERS = { sudo: ["-u", "-g", "-C"], env: ["-u", "-C"], nice: ["-n"], nohup: [], time: [], command: [], exec: [], timeout: ["-s", "-k"] };
+const WRAPPERS = {
+  sudo: ["-u", "-g", "-C"], env: ["-u", "-C"], nice: ["-n"], nohup: [], time: [], command: [], exec: [], timeout: ["-s", "-k"],
+  xargs: ["-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a"],
+};
+// Shell keywords that can stand before the command of a list.
+const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "!", "{"]);
 
 // Simple commands of a shell command line as word lists, for spotting a program and its
 // arguments in real commands, most of which tests/lib/command.js's grammar cannot read.
 // Quotes group words without expansion and heredoc bodies are skipped, so quoted or
-// embedded text never counts as a
-// command; `sh -c`, `eval` and wrappers such as `timeout` or `sudo` are looked through.
+// embedded text never counts as a command. Shell keywords such as `if` or `do`,
+// environment assignments, wrappers such as `timeout` or `sudo`, `sh -c` and `eval` are
+// looked through, so each list's first word is the program it runs.
 export function simpleCommands(command, depth = 0) {
   const lines = String(command).split("\n");
   const kept = [];
@@ -184,8 +187,10 @@ export function simpleCommands(command, depth = 0) {
 }
 
 function unwrap(list, depth) {
-  let words = list.filter((word, index) => index >= list.findIndex((w) => !/^\w+=/.test(w)));
-  while (words.length && Object.hasOwn(WRAPPERS, basename(words[0]))) {
+  let words = list;
+  for (;;) {
+    while (words.length && (KEYWORDS.has(words[0]) || /^\w+=/.test(words[0]))) words = words.slice(1);
+    if (!words.length || !Object.hasOwn(WRAPPERS, basename(words[0]))) break;
     const wrapper = basename(words[0]);
     words = words.slice(1);
     while (words.length && (words[0].startsWith("-") || (wrapper === "env" && /^\w+=/.test(words[0]))))
@@ -216,10 +221,15 @@ export function gitPushes(command) {
 }
 
 const PROTECTED = new Set(["main", "master"]);
-const branchOf = (ref) => ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
 
 // Why a push breaks the force-push rule, or null when it does not force or follows it.
+// currentBranch is the branch the session was on: what HEAD and a push without a
+// refspec name.
 export function forcePushProblem(args, currentBranch = null) {
+  const branchOf = (ref) => {
+    const branch = ref.replace(/^\+/, "").split(":").at(-1).replace(/^refs\/heads\//, "");
+    return branch === "HEAD" ? currentBranch : branch;
+  };
   const positional = [];
   let plainForce = false;
   const leases = [];
@@ -233,7 +243,7 @@ export function forcePushProblem(args, currentBranch = null) {
   const refspecs = positional.slice(1);
   const plusRef = refspecs.some((ref) => ref.startsWith("+"));
   if (!plainForce && !plusRef && !leases.length) return null;
-  const targets = refspecs.length ? refspecs.map(branchOf) : [currentBranch].filter(Boolean);
+  const targets = refspecs.length ? refspecs.map(branchOf) : [currentBranch];
   for (const lease of leases) if (lease) targets.push(branchOf(lease.split(":")[0]));
   if (targets.some((branch) => PROTECTED.has(branch))) return "force push to a default branch";
   if (plainForce || plusRef) return "force push without --force-with-lease";
@@ -274,40 +284,73 @@ function commandMode({ name, args }) {
   return null;
 }
 
-const SETTINGS_FILE = /(?:^|\/)settings(?:\.local)?\.json\b/;
-const SETTINGS_TURN_ON = /"fastMode"\s*:\s*true|ultrathink|ultracode/i;
+const SETTINGS_FILE = /(?:^|[/\s"'`=(])settings(?:\.local)?\.json\b/;
+const isSettingsPath = (word) => /(?:^|\/)settings(?:\.local)?\.json$/.test(word);
 
-// The mode an agent action turns on, or null.
-function actionMode(call) {
+// Modes a settings text turns on: fastMode set to true, or a value of ultrathink or
+// ultracode (`"effortLevel": "ultrathink"`, jq's `.effortLevel = "ultrathink"`). A
+// comparison (`==`) or a mere mention turns nothing on. bareValue also counts an edit
+// whose whole new text is such a value.
+const FAST_ON = /["']?\bfastMode["']?\s*[:=]\s*true\b/i;
+const ULTRA_VALUE = /(?:^|[^=!<>])[:=]\s*\\?["']ultra(?:think|code)\\?["']/i;
+const ULTRA_ONLY = /^\s*["']ultra(?:think|code)["']\s*,?\s*$/i;
+function modesTurnedOn(text, { bareValue = false } = {}) {
+  const modes = [];
+  if (FAST_ON.test(text)) modes.push("fast");
+  if (ULTRA_VALUE.test(text) || (bareValue && ULTRA_ONLY.test(text))) modes.push("ultra effort");
+  return modes;
+}
+
+const SCRIPT_RUNNERS = /^(?:python[\d.]*|bun|node|deno|uv|ruby)$/;
+const WRITE_API = /\bopen\([^)]*,\s*["'][wa]|\.write(?:_text)?\(|\bjson\.dump\(|writeFile(?:Sync)?\(|\bBun\.write\(/;
+
+// Whether a shell command writes a settings file: a redirect to it, `tee`, an in-place
+// `sed -i` or `perl -pi`, `mv` or `cp` onto it, or a script that names it and writes.
+function writesSettings(command) {
+  const lists = simpleCommands(command);
+  for (const words of lists) {
+    const program = basename(words[0]);
+    const args = words.slice(1);
+    for (let i = 0; i < words.length; i++) {
+      const redirect = /^\d?>>?(.*)$/.exec(words[i]);
+      if (redirect && isSettingsPath(redirect[1] || words[i + 1] || "")) return true;
+    }
+    if (program === "tee" && args.some(isSettingsPath)) return true;
+    if (["sed", "perl"].includes(program) && args.some((arg) => /^-\w*i/.test(arg) || arg.startsWith("--in-place")) && args.some(isSettingsPath)) return true;
+    if (["mv", "cp"].includes(program) && isSettingsPath(args.at(-1) ?? "")) return true;
+  }
+  return lists.some((words) => SCRIPT_RUNNERS.test(basename(words[0]))) && SETTINGS_FILE.test(command) && WRITE_API.test(command);
+}
+
+// The modes an agent action turns on.
+function actionModes(call) {
   const { name, input } = call;
   if (name === "Skill") {
     const skill = String(input.skill ?? "").replace(/^.*:/, "");
     const args = String(input.args ?? "");
-    if (/^(?:code-)?review$/.test(skill) && /^\s*ultra\b/i.test(args)) return "ultra review";
-    if (skill === "fast") return "fast";
-    if (["effort", "model"].includes(skill)) return commandMode({ name: `/${skill}`, args });
-    return null;
+    if (/^(?:code-)?review$/.test(skill) && /^\s*ultra\b/i.test(args)) return ["ultra review"];
+    if (skill === "fast") return ["fast"];
+    if (["effort", "model"].includes(skill)) return [commandMode({ name: `/${skill}`, args })].filter(Boolean);
+    return [];
   }
   const path = input.file_path ?? input.notebook_path ?? "";
   if (["Edit", "Write", "MultiEdit"].includes(name) && SETTINGS_FILE.test(path)) {
-    const text = [input.new_string, input.content, ...(input.edits ?? []).map((edit) => edit.new_string)].filter(Boolean).join("\n");
-    if (SETTINGS_TURN_ON.test(text)) return /fastMode/i.test(text) ? "fast" : "ultra effort";
+    const texts = [input.new_string, input.content, ...(input.edits ?? []).map((edit) => edit.new_string)].filter((text) => typeof text === "string");
+    return [...new Set(texts.flatMap((text) => modesTurnedOn(text, { bareValue: true })))];
   }
-  if (name === "Bash" && typeof input.command === "string" && SETTINGS_FILE.test(input.command) && SETTINGS_TURN_ON.test(input.command))
-    return /fastMode/i.test(input.command) ? "fast" : "ultra effort";
-  return null;
+  if (name === "Bash" && typeof input.command === "string" && writesSettings(input.command)) return modesTurnedOn(input.command);
+  return [];
 }
 
 export function ultraEffort(actions) {
   const hits = [];
   const before = (at) => (item) => !at || !item.at || item.at <= at;
-  for (const call of actions.calls) {
-    const mode = actionMode(call);
-    if (!mode) continue;
-    const asked = actions.prompts.filter(before(call.at)).some((prompt) => askedIn(prompt.text, mode))
-      || actions.commands.filter(before(call.at)).some((command) => commandMode(command) === mode);
-    if (!asked) hits.push(hit(call, `${mode} with no prompt asking: ${call.name} ${JSON.stringify(call.input)}`, { mode }));
-  }
+  for (const call of actions.calls)
+    for (const mode of actionModes(call)) {
+      const asked = actions.prompts.filter(before(call.at)).some((prompt) => askedIn(prompt.text, mode))
+        || actions.commands.filter(before(call.at)).some((command) => commandMode(command) === mode);
+      if (!asked) hits.push(hit(call, `${mode} with no prompt asking: ${call.name} ${JSON.stringify(call.input)}`, { mode }));
+    }
   return verdictOf(true, hits);
 }
 

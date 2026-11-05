@@ -6,7 +6,10 @@ import { readJsonl } from "../lib/state.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { DETECTORS } from "./detectors.js";
 import { GLOBAL_INSTRUCTIONS, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
-import { byPriority, ineligible, isCorrection, prioritySignals, projectInstructions, run } from "./score.js";
+import { isCorrection } from "../metrics/corrections.js";
+import * as score from "./score.js";
+
+const { byPriority, ineligible, prioritySignals, projectInstructions, run } = score;
 
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 let scratch;
@@ -101,10 +104,14 @@ describe("eligibility and priority", () => {
     expect(ineligible({ ...base, automation: true }, { sha: "abc", scored, now, explicit: true })).toBeNull();
   });
 
-  test("recognizes corrections in follow-up prompts", () => {
+  test("recognizes corrections in follow-up prompts with the metrics heuristic, which score does not re-export", () => {
     for (const text of ["no, the other file", "That's not what I asked", "Why did you delete it?", "you didn't run the tests", "不对，应该是另一个", "Actually use bun"])
       expect(isCorrection(text), text).toBe(true);
     for (const text of ["Now add a test", "Great, ship it", "Notice the header too"]) expect(isCorrection(text), text).toBe(false);
+    expect("isCorrection" in score).toBe(false);
+    // The first prompt is the task, never a correction; host notices never count.
+    const signals = prioritySignals({ prompts: ["no, wrong", "no, the other file", "Update on pull request #3 (https://github.com/o/r/pull/3): wrong"].map((text) => ({ text })), interrupts: 0, toolCalls: [], costUSD: 0 });
+    expect(signals.corrections).toBe(1);
   });
 
   test("corrections, then interrupts, tool errors and cost come first; ties by id", () => {
@@ -184,6 +191,45 @@ describe("score command", () => {
     judgeAnswer(answer());
     expect(await run(["--days", "3650"])).toBe(0);
     expect(scores()[2].error).toBeNull();
+  });
+
+  test("a call that fails before reporting a cost is that session's error, counted at its whole budget", async () => {
+    write([1, 2, 3].map((n) => new Transcript().prompt(`Task ${n}`).text("Done")));
+    // A judge whose working folder cannot be made fails with a plain Error, not a
+    // ClaudeCallError; every sampled session still gets a record and the run goes on.
+    setEnv({ TMPDIR: join(scratch, "missing") });
+    expect(await run(["--days", "3650", "--sample", "2", "--budget-usd", "0.2"])).toBe(1);
+    setEnv({ TMPDIR: saved.TMPDIR });
+    let records = scores();
+    expect(records).toHaveLength(3);
+    expect(records.filter((record) => record.model)).toEqual([
+      expect.objectContaining({ error: expect.stringContaining("ENOENT"), costUSD: 0.2, dimensions: null }),
+      expect.objectContaining({ error: expect.stringContaining("ENOENT"), costUSD: 0.2, dimensions: null }),
+    ]);
+    expect(records.filter((record) => !record.model)).toHaveLength(1);
+    expect(output.join("\n")).toContain("Judged 2 sessions (2 errors); judge cost $0.40");
+
+    // A stream with no result also counts at the budget, so the total stops the run, and
+    // the unjudged sessions get their detector records.
+    rmSync(join(scratch, "state"), { recursive: true });
+    setEnv({ FAKE_CLAUDE_MODE: "malformed" });
+    expect(await run(["--days", "3650", "--budget-usd", "0.2", "--max-total-usd", "0.3"])).toBe(1);
+    expect(calls()).toHaveLength(1);
+    records = scores();
+    expect(records.filter((record) => record.error)).toEqual([expect.objectContaining({ costUSD: 0.2 })]);
+    expect(records.filter((record) => !record.model)).toHaveLength(2);
+    expect(output.join("\n")).toContain("Stopped judging");
+  });
+
+  test("the judge sees a fork's inherited prompts as context before the fork's own events", async () => {
+    const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
+    write([new Transcript().prompt("Rename foo to bar everywhere", { forkedFrom }).text("Renamed half", { forkedFrom }).prompt("Continue").text("Done")]);
+    judgeAnswer(answer());
+    expect(await run(["--days", "3650"])).toBe(0);
+    const [call] = calls();
+    expect(call.stdin).toContain("Judge only the fork's own events, against the full request");
+    expect(call.stdin).toMatch(/## Prompts from the parent conversation[^\n]*\n\[I1\] PROMPT[^\n]*\nRename foo to bar everywhere/);
+    expect(call.stdin).not.toContain("Renamed half");
   });
 
   test("stops before the total budget could be exceeded", async () => {
