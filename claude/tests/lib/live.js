@@ -153,7 +153,10 @@ export function liveSuite(name) {
       ledger.record(entry);
       if (report) {
         report.sessions ??= [];
-        report.sessions.push({ ...entry, skills: skillLoads(events), tools: toolUses(events).map(({ name, parent, input }) => ({ name, parent, input })), stream: stdout });
+        // Each tool call with the directory its PreToolUse hook reported, which the stream lacks.
+        const cwds = new Map(readRecords(recordDir).filter((r) => r.hook_event_name === "PreToolUse").map((r) => [r.tool_use_id, r.cwd]));
+        const tools = toolUses(events).map(({ id, name, parent, input }) => ({ id, name, parent, input, cwd: cwds.get(id) }));
+        report.sessions.push({ ...entry, skills: skillLoads(events), tools, stream: stdout });
       }
     }
   }

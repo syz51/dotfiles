@@ -116,3 +116,14 @@ export function concurrentSpawns(events, spawns) {
   const spans = [...ids].filter((id) => issued.has(id) && ended.has(id)).map((id) => [issued.get(id), ended.get(id)]);
   return spans.some(([from], i) => spans.some(([otherFrom, otherTo], j) => i !== j && otherFrom <= from && from < otherTo));
 }
+
+// Whether the main session printed line, on a line of its own, from a Bash call issued
+// after event index after. A fixture check that prints its marker and its own directory
+// once it passes then proves which copy of the check passed, however the command moved
+// the shell; the command text and the directory the call started in cannot show that.
+export function mainBashPrinted(events, line, after) {
+  const results = toolResults(events);
+  return events.some((event, index) => index > after && event.type === "assistant" && event.parent_tool_use_id == null
+    && Array.isArray(event.message?.content) && event.message.content.some((block) => block.type === "tool_use" && block.name === "Bash"
+      && results.get(block.id)?.text.split(/\r?\n/).some((output) => output.trim() === line)));
+}

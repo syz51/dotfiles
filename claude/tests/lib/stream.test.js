@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
-  agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, parseStream,
+  agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
   skillLoads, subagentMessages, toolResults,
 } from "./stream.js";
 
@@ -120,5 +120,36 @@ describe("delegation", () => {
 
   test("assistant events without content are ignored", () => {
     expect(skillLoads([{ type: "assistant", message: {} }, assistant({ type: "thinking", thinking: "" })])).toEqual([]);
+  });
+});
+
+// Shapes from live runs of the parallel-tracks scenario: the main session brings a track
+// back with commands that name the worktree, and may leave its shell inside one.
+describe("main-session check output", () => {
+  const line = "pricing-check:ok /work/pricing";
+  const worktree = "/work/.claude/worktrees/agent-a1";
+
+  test("counts a check that printed the main checkout's line after the given event", () => {
+    const merged = [init(), text("track returned"),
+      ...bash(`git -C ${worktree} diff --cached | git apply && bun pricing/check.js; echo "exit=$?"`, `${line}\nexit=0\n`)];
+    expect(mainBashPrinted(merged, line, 1)).toBe(true);
+    // A copy from the worktree after a cd into it, then the check back in the checkout.
+    const copied = [init(), text("track returned"), ...bash(`cd ${worktree}`, ""),
+      ...bash(`cp ${worktree}/pricing/*.js /work/pricing/ && cd /work && bun pricing/check.js`, `${line}\n`)];
+    expect(mainBashPrinted(copied, line, 1)).toBe(true);
+    // A later part of the command failed, but the check itself printed its line.
+    const later = [init(), text("track returned"), ...bash("bun pricing/check.js && bun shipping/check.js", `${line}\nerror: wrong weight\n`, { isError: true })];
+    expect(mainBashPrinted(later, line, 1)).toBe(true);
+  });
+
+  test("rejects a check in a worktree, before the event, by a subagent, or quoted in other output", () => {
+    const inWorktree = [init(), text("track returned"), ...bash(`cd ${worktree} && bun pricing/check.js`, `pricing-check:ok ${worktree}/pricing\n`)];
+    expect(mainBashPrinted(inWorktree, line, 1)).toBe(false);
+    const early = [init(), ...bash("bun pricing/check.js", `${line}\n`), text("track returned")];
+    expect(mainBashPrinted(early, line, 2)).toBe(false);
+    const subagent = [init(), text("track returned"), ...bash("bun pricing/check.js", `${line}\n`, { parent: "toolu_agent" })];
+    expect(mainBashPrinted(subagent, line, 1)).toBe(false);
+    const quoted = [init(), text("track returned"), ...bash(`echo "expect ${line}"`, `expect ${line}\n`)];
+    expect(mainBashPrinted(quoted, line, 1)).toBe(false);
   });
 });

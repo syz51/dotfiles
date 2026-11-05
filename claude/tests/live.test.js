@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileS
 import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
-import { agentSpawns, concurrentSpawns, finalText, subagentMessages, toolResults, toolUses } from "./lib/stream.js";
+import { agentSpawns, concurrentSpawns, finalText, mainBashPrinted, subagentMessages, toolResults, toolUses } from "./lib/stream.js";
 
 const CLAUDE = join(import.meta.dir, "..");
 const REPO = join(CLAUDE, "..");
@@ -293,14 +293,15 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   // worker that owns it end to end (finds the bug, fixes it, updates and runs its check),
   // pass each one the code only this conversation holds, isolate it in its own worktree,
   // then bring both back, remove the worktrees and their branches, and run the checks
-  // itself in this checkout.
+  // itself in this checkout. Each check prints its marker and its own directory once it
+  // passes, so the main session's output shows which copy it ran.
   test("parallel tracks are owned end to end and brought back", () => suite.scenario("parallel owned tracks", async ({ fixture, session }) => {
     const codes = { pricing: crypto.randomUUID(), shipping: crypto.randomUUID() };
     const { work } = publishedRepo(fixture, {
       "pricing/price.js": "export function total(items) {\n  return items.reduce((sum, item) => sum + item.price, 1);\n}\n",
-      "pricing/check.js": 'import { total } from "./price.js";\nif (total([{ price: 2 }, { price: 4 }]) !== 6 || total([]) !== 0) throw new Error("wrong total");\nconsole.log("pricing-check:ok");\n',
+      "pricing/check.js": 'import { total } from "./price.js";\nif (total([{ price: 2 }, { price: 4 }]) !== 6 || total([]) !== 0) throw new Error("wrong total");\nconsole.log(`pricing-check:ok ${import.meta.dirname}`);\n',
       "shipping/weight.js": "export function kilograms(grams) {\n  return grams / 100;\n}\n",
-      "shipping/check.js": 'import { kilograms } from "./weight.js";\nif (kilograms(2500) !== 2.5) throw new Error("wrong weight");\nconsole.log("shipping-check:ok");\n',
+      "shipping/check.js": 'import { kilograms } from "./weight.js";\nif (kilograms(2500) !== 2.5) throw new Error("wrong weight");\nconsole.log(`shipping-check:ok ${import.meta.dirname}`);\n',
     });
     const worktrees = () => git(work, "worktree", "list", "--porcelain").split("\n")
       .filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length))
@@ -343,7 +344,9 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
 
       // The main session left each module to its track: it did not investigate the module
       // before handing it off or edit it while the track ran, and after the track returned
-      // it ran the module's check itself in this checkout, not in a worktree.
+      // it ran the module's check itself in this checkout, not in a worktree. Its commands
+      // name the worktrees it merges from and may leave its shell in one, so only the
+      // check's own output shows where it ran.
       const blockAt = (match) => run.events.findIndex((event) => Array.isArray(event.message?.content) && event.message.content.some(match));
       const usedAt = (id) => blockAt((block) => block.type === "tool_use" && block.id === id);
       const handedOff = Math.min(...spawns.map((spawn) => usedAt(spawn.id)));
@@ -355,19 +358,18 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           `the main session investigated ${module} before handing it off`).toEqual([]);
         expect(main.filter((use) => ["Write", "Edit"].includes(use.name) && usedAt(use.id) < returned),
           `the main session edited ${module} while its track ran`).toEqual([]);
-        expect(run.bash.some((bash) => bash.parent === null && bash.ok && bash.cwd?.startsWith(work)
-          && !/worktrees/.test(bash.command) && !bash.cwd.includes("/.claude/worktrees/")
-          && /check\.js/.test(bash.command) && (touches({ input: bash.command }, module) || bash.cwd.endsWith(`/${module}`))
-          && usedAt(bash.id) > returned),
-        `the main session did not run ${module}'s check in this checkout after its track returned; its Bash calls: ${JSON.stringify(
-          run.bash.filter((bash) => bash.parent === null).map((bash) => ({ command: bash.command, cwd: bash.cwd, ok: bash.ok, at: usedAt(bash.id), returned })))}`).toBe(true);
+        expect(mainBashPrinted(run.events, `${module}-check:ok ${join(work, module)}`, returned),
+          `the main session did not run ${module}'s check in this checkout after its track returned; its Bash calls: ${JSON.stringify(
+            run.bash.filter((bash) => bash.parent === null).map((bash) => ({
+              command: bash.command, cwd: bash.cwd, at: usedAt(bash.id), returned, checks: bash.output.split("\n").filter((line) => line.includes("-check:ok")),
+            })))}`).toBe(true);
       }
 
       // Both tracks' work is in this checkout, and their worktrees and branches are gone.
       for (const [module, code] of Object.entries(codes)) {
         const checked = spawnSync("bun", [`${module}/check.js`], { cwd: work, encoding: "utf8" });
         expect(checked.status, checked.stderr).toBe(0);
-        expect(checked.stdout).toContain(`${module}-check:ok`);
+        expect(checked.stdout).toContain(`${module}-check:ok ${join(work, module)}`);
         expect(readFileSync(join(work, module, "code.js"), "utf8")).toContain(code);
         expect(readFileSync(join(work, module, "check.js"), "utf8"), `${module}'s check does not assert its CODE`).toMatch(/\bCODE\b/);
       }

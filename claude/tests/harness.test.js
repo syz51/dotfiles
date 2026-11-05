@@ -156,6 +156,19 @@ describe("reports", () => {
     assertCleanedUp();
   }, 30_000);
 
+  // The stream lacks the directory each tool call ran from, which the hooks record.
+  test("keep each tool call's directory alongside the stream", async () => {
+    const reports = join(root, "tmp", "reports");
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { CLAUDE_LIVE_REPORT_DIR: reports });
+    expect(run.code, output(run)).toBe(0);
+    const report = JSON.parse(readFileSync(join(reports, "python-checks-run-through-uv-run.json"), "utf8"));
+    const [check] = report.sessions[0].tools.filter((tool) => tool.name === "Bash");
+    expect(check.input.command).toContain("check.py");
+    expect(check.cwd).toEndWith("/fixture");
+    expect(readFileSync(join(reports, "python-checks-run-through-uv-run.stream.jsonl"), "utf8")).toContain(check.id);
+    assertCleanedUp();
+  }, 30_000);
+
   test("a report that cannot be written fails a passing run without skipping cleanup", async () => {
     const reports = join(root, "tmp", "reports");
     mkdirSync(join(reports, "python-checks-run-through-uv-run.json"), { recursive: true });
