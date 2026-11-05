@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv, runProcess } from "./process.js";
@@ -76,6 +76,24 @@ test("a timeout also kills descendants that started their own process group", as
 test("stdout and stderr share one output bound", async () => {
   await expect(runProcess([bun, "-e", 'process.stdout.write("a".repeat(400));process.stderr.write("b".repeat(400))'], { maxBytes: 500 }))
     .rejects.toThrow("bound");
+});
+
+test("output past the bound kills once, however many chunks follow", async () => {
+  // A ps earlier on PATH logs each process-table scan, then runs the real one.
+  const root = mkdtempSync(join(tmpdir(), "process-test-"));
+  const log = join(root, "ps.log");
+  writeFileSync(join(root, "ps"), `#!/bin/sh\necho scan >> "${log}"\nexec /bin/ps "$@"\n`);
+  chmodSync(join(root, "ps"), 0o755);
+  const path = process.env.PATH;
+  process.env.PATH = `${root}:${path}`;
+  try {
+    const code = 'const c="x".repeat(64);for(let i=0;i<2000;i++)process.stdout.write(c)';
+    await expect(runProcess([bun, "-e", code], { maxBytes: 100 })).rejects.toThrow("bound");
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["scan"]);
+  } finally {
+    process.env.PATH = path;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a timeout keeps the partial output and kills descendants after the leader exits", async () => {

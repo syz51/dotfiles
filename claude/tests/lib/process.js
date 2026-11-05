@@ -51,12 +51,18 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
       });
       child.stdin.end(input);
     }
+    // Kills once: later chunks past the bound must not rescan the process table. A
+    // descendant that is gone (ESRCH) or not ours to signal (EPERM, such as a pid reused by
+    // another user since the snapshot) is skipped, so the group kill below always runs.
+    let killed = false;
     const kill = () => {
+      if (killed) return;
+      killed = true;
       for (const pid of descendants(child.pid))
         try {
           process.kill(pid, "SIGKILL");
         } catch (error) {
-          if (error.code !== "ESRCH") throw error;
+          if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
         }
       try {
         process.kill(-child.pid, "SIGKILL");

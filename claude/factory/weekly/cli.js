@@ -97,22 +97,38 @@ function renderSummary(run) {
   return lines.join("\n");
 }
 
-// A lock file holding the running process id; a stale one (dead process) is taken over.
+// A lock file holding the running process id, created atomically, so two runs starting
+// together cannot both take it. A lock whose process is gone is taken over; a process we
+// may not signal (EPERM) is alive.
 function acquireLock(path) {
-  if (existsSync(path)) {
-    const pid = Number(readFileSync(path, "utf8"));
+  mkdirSync(dirname(path), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      if (pid) {
+      writeFileSync(path, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const pid = Number(readFileSync(path, "utf8"));
+    if (pid) {
+      try {
         process.kill(pid, 0);
         return false;
+      } catch (error) {
+        if (error.code === "EPERM") return false;
+        if (error.code !== "ESRCH") throw error;
       }
-    } catch {
-      // The holder is gone.
     }
+    rmSync(path, { force: true });
   }
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, String(process.pid));
-  return true;
+  return false;
+}
+
+// The steps' environment: no variables of a parent Claude Code session, but the factory's
+// own settings and CLAUDE_CONFIG_DIR, so the steps read the same setup as this run.
+export function stepEnv(base = process.env) {
+  const kept = Object.entries(base).filter(([name]) => /^(?:CLAUDE_FACTORY_\w+|CLAUDE_CONFIG_DIR)$/.test(name));
+  return { ...childEnv(base), ...Object.fromEntries(kept) };
 }
 
 async function notify(title, message) {
@@ -126,7 +142,7 @@ async function notify(title, message) {
   }
 }
 
-export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = false, env = childEnv(process.env) } = {}) {
+export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = false, env = stepEnv() } = {}) {
   const lock = statePath("weekly.lock");
   if (!acquireLock(lock)) {
     console.error("Another weekly run is in progress.");

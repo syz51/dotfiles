@@ -29,7 +29,7 @@ export class ClaudeCallError extends Error {
 
 // Events of a stream cut off mid-run: complete lines only. The last line of a killed
 // process is usually truncated, so an unparsable line is expected here, not an error.
-function partialEvents(stdout = "") {
+export function partialEvents(stdout = "") {
   return stdout.split("\n").filter((line) => line.trim()).flatMap((line) => {
     try {
       return [JSON.parse(line)];

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failed, internal, LABEL, needsAttention, plist, run, runWeekly, steps } from "./cli.js";
+import { failed, internal, LABEL, needsAttention, plist, run, runWeekly, stepEnv, steps } from "./cli.js";
 
 let scratch;
 const saved = {};
@@ -100,6 +100,20 @@ describe("runWeekly", () => {
     expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "propose"]);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     expect(readFileSync(last.summary, "utf8")).toContain("## score: FAILED (exit 4");
+  });
+
+  test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables", () => {
+    const env = stepEnv({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
+    expect(env).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude" });
+  });
+
+  test("the lock is taken atomically: a second taker fails while the first holds it", () => {
+    const lock = join(scratch, "state", "race.lock");
+    expect(internal.acquireLock(lock)).toBe(true);
+    expect(internal.acquireLock(lock)).toBe(false);
+    // A lock held by a process we may not signal (pid 1) counts as held.
+    writeFileSync(lock, "1");
+    expect(internal.acquireLock(lock)).toBe(false);
   });
 
   test("a live lock blocks a second run; a stale one is taken over", async () => {

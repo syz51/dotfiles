@@ -120,6 +120,7 @@ function summarize(records) {
     } else if (record.type === "system" && record.subtype === "compact_boundary") compactions++;
   }
   const usage = {};
+  const costByModel = {};
   let estimated = 0;
   let unpriced = false;
   const efforts = {};
@@ -130,14 +131,17 @@ function summarize(records) {
     addUsage(usage[model] ??= emptyUsage(), normalized);
     const cost = requestCost(model, normalized);
     if (cost === null) unpriced = true;
-    else estimated += cost;
+    else {
+      estimated += cost;
+      costByModel[model] = (costByModel[model] ?? 0) + cost;
+    }
   }
   for (const call of toolCalls) {
     const result = results.get(call.id);
     call.ok = result ? !result.isError : null;
     call.output = result ? excerpt(result.output) : "";
   }
-  return { models, efforts, usage, estimatedCostUSD: estimated, unpriced, toolCalls, apiErrors, interrupts, compactions, assistantMessages: messages.size };
+  return { models, efforts, usage, costByModel, estimatedCostUSD: estimated, unpriced, toolCalls, apiErrors, interrupts, compactions, assistantMessages: messages.size };
 }
 
 function timestamps(records) {
@@ -245,6 +249,8 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
     assistantMessages: main.assistantMessages,
     toolCalls: main.toolCalls,
     usage: main.usage,
+    // The main session's estimated cost per model, priced request by request.
+    costByModel: main.costByModel,
     // Claude Code's cost-state total when current; otherwise estimate the main session
     // and its subagents from usage.
     costUSD: hasCostState ? costState.totalCostUSD : estimated,

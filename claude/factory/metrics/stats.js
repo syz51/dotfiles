@@ -2,7 +2,6 @@
 // where prompts are the person's prompts, prs the PRs the session created or linked, and
 // corrections the heuristic count. prInfo maps PR keys to their GitHub state and revert,
 // or is null when GitHub was not asked.
-import { requestCost } from "../lib/pricing.js";
 
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 const ratio = (part, whole) => (whole ? part / whole : null);
@@ -65,7 +64,8 @@ function modelMix(sessions) {
   for (const session of sessions) {
     const subagentCost = sum(session.subagents.map((agent) => agent.costUSD));
     const mainCost = Math.max(0, session.estimatedCostUSD - subagentCost);
-    const weights = Object.keys(session.models).map((model) => [model, requestCost(model, session.usage[model]) ?? 0]);
+    // Per-request costs, so a model's long-prompt tier applies only where a request hit it.
+    const weights = Object.keys(session.models).map((model) => [model, session.costByModel?.[model] ?? 0]);
     const totalWeight = sum(weights.map(([, weight]) => weight));
     for (const [model, weight] of weights) {
       const entry = row("main", model);

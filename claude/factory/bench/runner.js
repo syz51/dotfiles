@@ -4,10 +4,10 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { ClaudeCallError, runTask } from "../lib/claude.js";
+import { ClaudeCallError, partialEvents, runTask } from "../lib/claude.js";
 import { removeSessionArtifacts } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { parseStream, resultEvent } from "../../tests/lib/stream.js";
+import { resultEvent } from "../../tests/lib/stream.js";
 import { applyOverlay, materialize, writeAgentOverride } from "./cases.js";
 
 const CLAUDE_ROOT = join(import.meta.dir, "..", "..");
@@ -95,11 +95,8 @@ export async function runOne(benchCase, { model, effort, trial, runId, batch, cl
       }
       if (!/^Process timeout/.test(error.message ?? "")) throw error;
       record.error = `session timed out after ${benchCase.timeoutMs} ms`;
-      try {
-        record.costUSD = resultEvent(parseStream(error.stdout ?? ""))?.total_cost_usd ?? null;
-      } catch {
-        // No complete stream before the deadline; the cost stays unknown.
-      }
+      // A killed session rarely got to write its result event; then the cost is unknown.
+      record.costUSD = resultEvent(partialEvents(error.stdout))?.total_cost_usd ?? null;
     }
     if (task) {
       const final = resultEvent(task.events);

@@ -49,9 +49,8 @@ review on sai** for the feasibility notes the user asked about.
   1.25x input (5 minutes) and 2x (1 hour). Only a fallback: prefer `cost-state`.
 - codex-skills (`~/.local/share/codex-skills/repository`, private `syz51/codex-skills`):
   hourly capture and source checks on both Macs, daily maintainer on this Mac via launchd.
-  The daily review runs `claude --print --permission-mode bypassPermissions` with full tools
-  and the user's configuration; no sandbox. No secret scanning in that repo's CI (it has no
-  `.github/`). The public export lost its content scanner in 1e3a944.
+  Its security posture is covered by the local `audit` (details stay in the state folder:
+  `notes/codex-skills-private.md`).
 - Global settings: `permissions.defaultMode: bypassPermissions`, `sandbox.enabled: false`,
   `skipDangerousModePermissionPrompt: true`. CLI 2.1.318 supports `--settings`,
   `--max-budget-usd`, `--agent`, `--json-schema`, `--tools`, `--setting-sources`,
@@ -61,12 +60,8 @@ review on sai** for the feasibility notes the user asked about.
 
 ## Coordination with other work
 
-- Thread "Fix restored privacy guards in codex-skills" is editing codex-skills on branch
-  `restore-redaction-scanner` (transcript redaction, public-export `scan()`), then releasing
-  to both Macs. A queued follow-up there fixes the hourly sync failures (429 rate limits on
-  capture, a `SyntaxWarning`) and may measure Sonnet for extraction. **Do not edit
-  codex-skills `scripts/claude_cli.py`, `capture.py`, `jobs.py` or `src/export.rs` until that
-  thread has merged and deployed**; then branch from the new `main`.
+- Another thread changed codex-skills on 2026-11-05; its work has merged to codex-skills
+  `main`, so codex-skills changes can branch from there.
 - `nvim/lazy-lock.json` has an unrelated uncommitted change. Leave it alone.
 
 ## Decisions
@@ -246,7 +241,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] `lib/claude.js` `runTask` gained `addDirs` (`--add-dir`), since a profile's
   `allowWrite` covers Bash only.
 - Real audit (2026-11-05), 2 high, 1 medium, 3 low:
-  - high: the codex-skills daily review runs bypass with full tools and no sandbox;
+  - high: the codex-skills daily review's permissions (details in the local notes);
   - high: interactive `defaultMode: bypassPermissions` with the sandbox off;
   - medium: `sandbox.enabled` false;
   - low: explorer is "read-only" by instruction but has Bash; dangerous-prompt skip on;
@@ -268,14 +263,9 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   exporter (the restored `scan()` from the other thread) or a workflow the exporter keeps;
   its `.public-export.json` hashes need the same allowlist. Decide after the other thread
   lands.
-- [-] (Deferred by the user, 2026-11-05.) codex-skills daily review in the sandbox: pass `--settings` with
-  `audit/maintainer-sandbox.json` in `review_command` (draft: writes to the investigations
-  folder, `~/.cache/codex-skills`, uv and cargo caches; network to github.com, docs.rs,
-  crates.io hosts, pypi; probes passed, main checkout stays read-only). Open issues:
-  `evidence.py --recheck` starts a nested `claude` needing api.anthropic.com and
-  `~/.claude` writes, so leave rechecks to the hourly job (do not exclude the script: the
-  checkout is writable); the job's PATH lacks `~/.cargo/bin`; allowing all of github.com
-  is an exfiltration path. Unblocked: the other thread merged to codex-skills main (a47ffc5).
+- [-] (Deferred by the user, 2026-11-05.) Run the codex-skills daily review under
+  `audit/maintainer-sandbox.json`. The draft's scope, probes and open questions are in the
+  state folder's `notes/codex-skills-private.md`.
 
 ### 5. Integration (main session)
 

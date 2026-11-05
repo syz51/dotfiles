@@ -118,6 +118,19 @@ describe("transcripts", () => {
     }
   });
 
+  test("cost by model is priced per request, so Haiku's long-prompt tier applies only where a request hit it", () => {
+    // Two Haiku requests of 60K prompt tokens each: neither passes 100K, though their sum does.
+    const t = new Transcript().prompt("go")
+      .text("a", { model: "claude-haiku-5-5", use: usage(60_000, 0, { cacheRead: 0, cacheWrite: 0 }) })
+      .text("b", { model: "claude-haiku-5-5", use: usage(60_000, 0, { cacheRead: 0, cacheWrite: 0 }) });
+    const root = writeProjects([{ transcript: t }]);
+    try {
+      expect(loadSessions({ root })[0].costByModel["claude-haiku-5-5"]).toBeCloseTo((120_000 * 0.1) / 1e6);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("estimates cost with subagents when there is no cost-state", () => {
     const main = new Transcript().prompt("go").text("ok", { use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
     const agent = new Transcript({ sessionId: main.sessionId }).text("found", { model: "claude-haiku-5-5", effort: "xhigh", use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
