@@ -44,9 +44,9 @@ export function readRecords(file) {
   return { records, malformed };
 }
 
-const INTERRUPT = "[Request interrupted by user";
+export const INTERRUPT = "[Request interrupted by user";
 
-const textOf = (content) => typeof content === "string"
+export const textOf = (content) => typeof content === "string"
   ? content
   : Array.isArray(content) ? content.filter((block) => block?.type === "text").map((block) => block.text ?? "").join("\n") : "";
 
@@ -147,7 +147,7 @@ function timestamps(records) {
     : { startedAt: null, endedAt: null };
 }
 
-function mostCommon(values) {
+export function mostCommon(values) {
   const counts = new Map();
   for (const value of values) if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
@@ -159,11 +159,13 @@ function parseSubagents(dir) {
     const id = basename(name, ".jsonl");
     const metaFile = join(dir, `${id}.meta.json`);
     let meta = {};
+    let metaUnreadable = false;
     if (existsSync(metaFile))
       try {
         meta = JSON.parse(readFileSync(metaFile, "utf8"));
-      } catch {
-        meta = {};
+      } catch (error) {
+        if (!(error instanceof SyntaxError)) throw error;
+        metaUnreadable = true;
       }
     const { records, malformed } = readRecords(join(dir, name));
     const summary = summarize(records);
@@ -179,7 +181,8 @@ function parseSubagents(dir) {
       assistantMessages: summary.assistantMessages,
       toolCalls: summary.toolCalls.length,
       toolErrors: summary.toolCalls.filter((call) => call.ok === false).length,
-      malformedLines: malformed,
+      unpriced: summary.unpriced,
+      malformedLines: malformed + (metaUnreadable ? 1 : 0),
     };
   });
 }
@@ -202,6 +205,10 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
   const main = summarize(records);
   const texts = records.map((record) => [record, promptText(record)]).filter(([, text]) => text);
   const prompts = texts.filter(([, text]) => !isHostPrompt(text)).map(([record, text]) => asPrompt(record, text));
+  const inheritedPrompts = all.filter((record) => record.forkedFrom)
+    .map((record) => [record, promptText({ ...record, forkedFrom: undefined })])
+    .filter(([, text]) => text && !isHostPrompt(text))
+    .map(([record, text]) => asPrompt(record, text));
   const subagents = parseSubagents(join(file.slice(0, -".jsonl".length), "subagents"));
   const cwd = all.find((record) => record.cwd)?.cwd ?? null;
   const costState = records.findLast((record) => record.type === "cost-state");
@@ -233,6 +240,8 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
     hostPrompts: texts.length - prompts.length,
     origin: prompts.length ? (isAgentBrief(prompts[0].text) ? "agent" : "person") : null,
     forkedFrom,
+    // A fork's prompts copied from its parent: what was asked before the fork.
+    inheritedPrompts,
     assistantMessages: main.assistantMessages,
     toolCalls: main.toolCalls,
     usage: main.usage,
@@ -241,7 +250,7 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
     costUSD: hasCostState ? costState.totalCostUSD : estimated,
     costSource: hasCostState ? "cost-state" : "estimated",
     estimatedCostUSD: estimated,
-    unpriced: main.unpriced,
+    unpriced: main.unpriced || subagents.some((agent) => agent.unpriced),
     linesAdded: costState?.totalLinesAdded ?? null,
     linesRemoved: costState?.totalLinesRemoved ?? null,
     compactions: main.compactions,

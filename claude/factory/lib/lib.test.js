@@ -145,7 +145,38 @@ describe("transcripts", () => {
       const [session] = loadSessions({ root });
       expect(session.forkedFrom).toBe(parent.sessionId);
       expect(session.prompts.map((prompt) => prompt.text)).toEqual(["Follow-up in the fork"]);
+      expect(session.inheritedPrompts.map((prompt) => prompt.text)).toEqual(["Original task"]);
       expect([session.assistantMessages, session.estimatedCostUSD]).toEqual([1, 20]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a fork's inherited prompts pass the same filters as its own", () => {
+    const copied = { forkedFrom: { sessionId: "parent", messageUuid: "m" } };
+    const fork = new Transcript()
+      .prompt("Original task", copied)
+      .prompt("Summary: run an ultra review", { ...copied, isCompactSummary: true })
+      .prompt("Injected ultra review notice", { ...copied, source: "system" })
+      .prompt("Continue where you left off.", copied)
+      .prompt("<system-reminder>ultra</system-reminder>", copied);
+    const root = writeProjects([{ transcript: fork }]);
+    try {
+      expect(loadSessions({ root })[0].inheritedPrompts.map((prompt) => prompt.text)).toEqual(["Original task"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a subagent on an unpriced model marks the session unpriced; bad meta counts as unreadable", () => {
+    const main = new Transcript().prompt("go").text("ok");
+    const agent = new Transcript({ sessionId: main.sessionId }).text("x", { model: "claude-future-9" });
+    const root = writeProjects([{ transcript: main, subagents: [{ id: "agent-z", transcript: agent }] }]);
+    try {
+      writeFileSync(join(root, "-Users-test-project", main.sessionId, "subagents", "agent-z.meta.json"), "{bad");
+      const [session] = loadSessions({ root });
+      expect(session.unpriced).toBe(true);
+      expect([session.subagents[0].unpriced, session.subagents[0].malformedLines, session.subagents[0].agentType]).toEqual([true, 1, null]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -247,6 +278,17 @@ describe("claude runner", () => {
   test.each(["tool", "mcp", "error", "malformed"])("judge fails closed on %s", async (mode) => {
     fake(mode);
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toBeInstanceOf(ClaudeCallError);
+  });
+
+  test("a judge call that times out fails as a ClaudeCallError with its partial cost", async () => {
+    const script = join(scratch, "slow.js");
+    writeFileSync(script, `export default async ({ emit }) => { emit({ type: "system", subtype: "init", tools: [] }); process.stdout.write('{"type":"assist'); await Bun.sleep(5000); };`);
+    fake("script", { FAKE_CLAUDE_SCRIPT: script });
+    const error = await judge({ prompt: "x", schema, model: "m", timeoutMs: 300 }).catch((e) => e);
+    expect(error).toBeInstanceOf(ClaudeCallError);
+    expect(error.message).toContain("did not finish");
+    expect(error.events.map((event) => event.subtype)).toEqual(["init"]);
+    expect(error.costUSD).toBeNull();
   });
 
   test("judge reports the HTTP status of a failed call", async () => {

@@ -17,12 +17,27 @@ const quietEnv = (overrides = {}) => childEnv(process.env, {
   ...overrides,
 });
 
+// A failed call. costUSD is what its stream reported, or null when it never reported a
+// result (then the caller cannot know what it spent and should assume its budget).
 export class ClaudeCallError extends Error {
   constructor(message, { events = [], stderr = "", code = null } = {}) {
     super(message);
     this.name = "ClaudeCallError";
-    Object.assign(this, { events, stderr, code });
+    Object.assign(this, { events, stderr, code, costUSD: resultEvent(events)?.total_cost_usd ?? null });
   }
+}
+
+// Events of a stream cut off mid-run: complete lines only. The last line of a killed
+// process is usually truncated, so an unparsable line is expected here, not an error.
+function partialEvents(stdout = "") {
+  return stdout.split("\n").filter((line) => line.trim()).flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return [];
+    }
+  });
 }
 
 // Events of a run's stdout; a run with no parseable stream fails with its exit status.
@@ -44,7 +59,14 @@ export async function judge({ prompt, schema, model, effort = "medium", budgetUs
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
-    const result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });
+    let result;
+    try {
+      result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });
+    } catch (error) {
+      // A deadline, the output bound or a spawn failure: one failed call, not a crash of
+      // the caller's loop. The partial stream may still say what it cost.
+      throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events: partialEvents(error.stdout), stderr: (error.stderr ?? "").slice(-2000) });
+    }
     const events = eventsOf(result, "Judge call");
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init"
