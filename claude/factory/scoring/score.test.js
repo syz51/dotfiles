@@ -7,6 +7,7 @@ import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { DETECTORS } from "./detectors.js";
 import { GLOBAL_INSTRUCTIONS, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
 import { isCorrection } from "../metrics/corrections.js";
+import { failureGroups } from "./propose.js";
 import * as score from "./score.js";
 
 const { byPriority, ineligible, prioritySignals, projectInstructions, run } = score;
@@ -187,10 +188,78 @@ describe("score command", () => {
     record = scores()[1];
     expect(record.error).toContain("HTTP 429");
     expect(record.dimensions).toBeNull();
+    // After two errors the session waits for --retry-errors.
     setEnv({ FAKE_CLAUDE_MODE: "structured" });
     judgeAnswer(answer());
     expect(await run(["--days", "3650"])).toBe(0);
+    expect(scores()).toHaveLength(2);
+    expect(await run(["--days", "3650", "--retry-errors"])).toBe(0);
     expect(scores()[2].error).toBeNull();
+  });
+
+  test("a session whose judge call failed twice for this transcript and rubric is skipped until --retry-errors", async () => {
+    const t = new Transcript({ sessionId: "e1e1e1e1-0000-4000-8000-000000000000" }).prompt("Fix it").text("Done");
+    write([t]);
+    setEnv({ FAKE_CLAUDE_MODE: "error" });
+    expect(await run(["--days", "3650"])).toBe(1);
+    expect(await run(["--days", "3650"])).toBe(1);
+    expect(calls()).toHaveLength(2);
+    expect(await run(["--days", "3650"])).toBe(0);
+    expect(calls()).toHaveLength(2);
+    expect(output.join("\n")).toContain("0 eligible sessions (skipped: 1 judge failed 2 times)");
+    expect(scores()).toHaveLength(2);
+    // Naming the session is a request to pay for it again.
+    expect(await run(["--session", "e1e1e1e1"])).toBe(1);
+    expect(calls()).toHaveLength(3);
+    expect(await run(["--days", "3650"])).toBe(0);
+    expect(calls()).toHaveLength(3);
+    setEnv({ FAKE_CLAUDE_MODE: "structured" });
+    judgeAnswer(answer());
+    expect(await run(["--days", "3650", "--retry-errors"])).toBe(0);
+    expect(calls()).toHaveLength(4);
+    expect(scores().at(-1)).toMatchObject({ sessionId: t.sessionId, error: null });
+  });
+
+  test("sessions named with --session are all judged, whatever --sample says, within --max-total-usd", async () => {
+    const named = ["a1", "b2", "c3"].map((prefix) => new Transcript({ sessionId: `${prefix}000000-0000-4000-8000-000000000000` }).prompt(`Task ${prefix}`).text("Done"));
+    write(named);
+    judgeAnswer(answer());
+    expect(await run(["--session", "a1", "--session", "b2", "--session", "c3", "--sample", "1"])).toBe(0);
+    expect(calls()).toHaveLength(3);
+    expect(scores().filter((record) => record.dimensions)).toHaveLength(3);
+
+    // The total budget still stops them, and each named session left unjudged is named.
+    setEnv({ FAKE_CLAUDE_COST: "0.4" });
+    expect(await run(["--session", "a1", "--session", "b2", "--session", "c3", "--max-total-usd", "0.8"])).toBe(0);
+    expect(calls()).toHaveLength(5);
+    const lines = output.filter((line) => /^Skipping .*: not judged, as the call could pass --max-total-usd \$0\.80$/.test(line));
+    expect(lines).toHaveLength(1);
+    expect(output.join("\n")).toContain("Stopped judging");
+  });
+
+  test("a rubric bump reruns the detectors on every eligible session, and proposals count only current records", async () => {
+    const sessions = [1, 2].map((n) => new Transcript().prompt(`Task ${n}`).tool("Bash", { command: "command -v python3 && echo ok" }, "ok").text("Done"));
+    const root = join(scratch, "config", "projects");
+    write(sessions);
+    // Detector records of rubric v2 for the same transcripts, from before its detectors
+    // were fixed: a lookup counted as running python3.
+    const stale = sessions.map((t) => ({
+      sessionId: t.sessionId, transcriptSha: score.transcriptSha(join(root, "-Users-test-project", `${t.sessionId}.jsonl`)), rubricVersion: 2,
+      scoredAt: "2026-11-02T00:00:00.000Z", endedAt: "2026-11-01T10:00:05.000Z", project: "-Users-test-project", model: null, effort: null, costUSD: 0,
+      detectors: { "package-runner": { verdict: "fail", hits: [{ evidence: "python3: command -v python3" }] } }, dimensions: null, corrections: null, summary: null, error: null,
+    }));
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "scores.jsonl"), stale.map((record) => `${JSON.stringify(record)}\n`).join(""));
+    expect(RUBRIC.version).toBeGreaterThan(2);
+    expect(await run(["--days", "3650", "--sample", "0"])).toBe(0);
+    expect(calls()).toHaveLength(0);
+    const fresh = scores().slice(2);
+    expect(fresh.map((record) => record.sessionId).sort()).toEqual(sessions.map((t) => t.sessionId).sort());
+    const shas = new Map(stale.map((record) => [record.sessionId, record.transcriptSha]));
+    for (const record of fresh) expect(record).toMatchObject({ rubricVersion: RUBRIC.version, transcriptSha: shas.get(record.sessionId), detectors: { "package-runner": { verdict: "pass" } } });
+    const groups = failureGroups(scores(), { since: 0 });
+    expect(groups.find((group) => group.dimension.id === "package-runner").failures).toEqual([]);
+    expect(failureGroups(stale, { since: 0 }).every((group) => !group.failures.length)).toBe(true);
   });
 
   test("a call that fails before reporting a cost is that session's error, counted at its whole budget", async () => {

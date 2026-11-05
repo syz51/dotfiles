@@ -21,7 +21,10 @@ Runs the detectors on every eligible session and the judge on a sample of them.
   --sample N          sessions to judge (default 8)
   --days N            window of sessions, by last activity (default 14)
   --session ID        score this session (repeatable; an ID prefix works); skips the
-                      window, automation and already-scored checks
+                      window, automation, already-scored and failed-judge checks, and
+                      every named session is judged, whatever --sample says
+  --retry-errors      judge sessions whose judge call already failed twice for this
+                      transcript and rubric
   --model MODEL       judge model (default claude-sonnet-5-5)
   --effort LEVEL      judge effort (default medium)
   --budget-usd N      budget per judge call (default 0.40)
@@ -52,27 +55,37 @@ export function prioritySignals(session) {
 // Highest priority first; ties by id so the order is deterministic.
 export const byPriority = (candidates) => [...candidates].sort((a, b) => b.signals.score - a.signals.score || a.session.id.localeCompare(b.session.id));
 
+// Judge errors after which a session is skipped until --retry-errors: one may be bad luck,
+// a second the same transcript failing the same way.
+const MAX_JUDGE_ERRORS = 2;
+
 // Why a session cannot be scored now, or null. scored is the set of
-// `${sessionId}:${sha}:${rubricVersion}` keys that already have a judged record.
-export function ineligible(session, { sha, scored, now, explicit = false, rubricVersion = RUBRIC.version }) {
+// `${sessionId}:${sha}:${rubricVersion}` keys that already have a judged record, and
+// errors counts the errored judge records of each key.
+export function ineligible(session, { sha, scored, errors = new Map(), retryErrors = false, now, explicit = false, rubricVersion = RUBRIC.version }) {
   if (!session.prompts.length) return "no prompts";
   if (!session.endedAt || now - Date.parse(session.endedAt) < QUIET_MINUTES * 60_000) return "active in the last 30 minutes";
   if (explicit) return null;
   if (session.automation) return "automation";
-  if (scored.has(`${session.id}:${sha}:${rubricVersion}`)) return "already scored";
+  const key = `${session.id}:${sha}:${rubricVersion}`;
+  if (scored.has(key)) return "already scored";
+  if (!retryErrors && (errors.get(key) ?? 0) >= MAX_JUDGE_ERRORS) return `judge failed ${MAX_JUDGE_ERRORS} times`;
   return null;
 }
 
-// Keys of records that hold a judge score, and of any record (detectors included).
+// Keys of records that hold a judge score and of any record (detectors included), and
+// the number of errored judge records per key.
 export function scoredKeys(records) {
   const judged = new Set();
   const any = new Set();
+  const errors = new Map();
   for (const record of records) {
     const key = `${record.sessionId}:${record.transcriptSha}:${record.rubricVersion}`;
     any.add(key);
     if (record.dimensions && !record.error) judged.add(key);
+    if (record.error) errors.set(key, (errors.get(key) ?? 0) + 1);
   }
-  return { judged, any };
+  return { judged, any, errors };
 }
 
 // CLAUDE.md files Claude Code loads for a session in cwd, from cwd up to (not including)
@@ -149,6 +162,7 @@ function parseOptions(argv) {
       effort: { type: "string", default: "medium" },
       "budget-usd": { type: "string", default: "0.40" },
       "max-total-usd": { type: "string", default: "4" },
+      "retry-errors": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
     },
@@ -167,6 +181,7 @@ function parseOptions(argv) {
     effort: values.effort,
     budgetUsd: number("budget-usd"),
     maxTotalUsd: number("max-total-usd"),
+    retryErrors: values["retry-errors"],
     dryRun: values["dry-run"],
   };
 }
@@ -215,7 +230,7 @@ export async function run(argv, { now = Date.now() } = {}) {
   const skipped = {};
   for (const { session, explicit } of selectSessions(options, now)) {
     const sha = transcriptSha(session.file);
-    const reason = ineligible(session, { sha, scored: keys.judged, now, explicit });
+    const reason = ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
     if (reason) {
       skipped[reason] = (skipped[reason] ?? 0) + 1;
       if (explicit) console.error(`Skipping ${session.id}: ${reason}`);
@@ -224,8 +239,10 @@ export async function run(argv, { now = Date.now() } = {}) {
     candidates.push({ session, sha, explicit, signals: prioritySignals(session) });
   }
   const ranked = byPriority(candidates);
-  const sample = ranked.slice(0, options.sample);
-  const rest = ranked.slice(options.sample);
+  // Sessions named with --session are all judged; only the total budget limits them.
+  const sampleSize = options.sessions.length ? ranked.length : options.sample;
+  const sample = ranked.slice(0, sampleSize);
+  const rest = ranked.slice(sampleSize);
   console.log(`${candidates.length} eligible sessions${Object.keys(skipped).length ? ` (skipped: ${Object.entries(skipped).map(([reason, n]) => `${n} ${reason}`).join(", ")})` : ""}; judging ${sample.length} with ${options.model} at ${options.effort} effort, rubric v${RUBRIC.version}.`);
 
   if (options.dryRun) {
@@ -239,7 +256,7 @@ export async function run(argv, { now = Date.now() } = {}) {
         project: projectName(candidate.session),
         prompts: candidate.session.prompts.length,
         sessionCost: formatUsd(candidate.session.costUSD),
-        judgeCost: index < options.sample ? "judge" : "-",
+        judgeCost: index < sampleSize ? "judge" : "-",
         result: `digest ${digest.length}${digest.length >= DIGEST_CHARS - 1000 ? " (bounded)" : ""} chars; corrections ${corrections}, interrupts ${interrupts}, tool errors ${toolErrors}; ${failures({ detectors }).join(" ") || "detectors pass"}`,
       };
     });
@@ -278,6 +295,7 @@ export async function run(argv, { now = Date.now() } = {}) {
     if (total + options.budgetUsd > options.maxTotalUsd) {
       stopped = true;
       rest.unshift(candidate);
+      if (candidate.explicit) console.error(`Skipping ${candidate.session.id}: not judged, as the call could pass --max-total-usd ${formatUsd(options.maxTotalUsd)}`);
       continue;
     }
     const records = sessionRecords(candidate.session);
