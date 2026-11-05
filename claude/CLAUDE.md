@@ -29,7 +29,7 @@
 
 - Own planning, product and architecture design, judgment, communication, and completion verification. Delegate separable work big enough to justify a fresh start: investigation and evidence gathering to `explorer`, implementation and execution-heavy work (including authorized document/archive updates) to `worker`, and hard debugging/reasoning to `solver`. Handle trivial edits, small reads, and inseparable design exploration directly. Don't override an agent's configured model or effort.
 - Give each task a standalone brief with the goal, decided design, scope, constraints, acceptance checks, and expected report; do not repeat shared instructions.
-- Run independent tasks in parallel when useful, settling shared interfaces first. Isolate independent implementation when needed; transfer required uncommitted inputs explicitly, or share the checkout without concurrent edits to the same files.
+- Run independent tasks in parallel when useful, settling shared interfaces first. Isolate independent implementation when needed with the runtime's worktree facility, never a worktree made in the shell. A new worktree can start from the default branch rather than `HEAD` and never has uncommitted changes, so transfer required inputs explicitly and have the child verify them in its checkout. Otherwise share the checkout without concurrent edits to the same files.
 - Check delegated results against the brief and diff and run missing checks; send corrections as a new task with the original brief and findings.
 
 ## Review

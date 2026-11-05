@@ -145,6 +145,13 @@ describe("rules the live suites test", () => {
     expect(preferences).toMatch(/lockfiles/);
   });
 
+  test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
+    const delegation = section("Delegation");
+    expect(delegation).toMatch(/the runtime's worktree facility, never a worktree made in the shell/);
+    expect(delegation).toMatch(/default branch rather than `HEAD` and never has uncommitted changes/);
+    expect(delegation).toMatch(/transfer required inputs explicitly and have the child verify them in its checkout/);
+  });
+
   test("Workflow keeps the Chinese meaning rule and its exceptions", () => {
     const workflow = section("Workflow");
     expect(workflow).toMatch(/followed by its Chinese meaning/);

@@ -228,8 +228,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
 
 - `live.test.js`: a session in `nvim/` loads the global and repository instructions
   and lists the agents and skills. Explorer, worker and solver run on their configured
-  model and effort, the worker edits only its authorized files, and two explorers run
-  in parallel. The guard hook blocks a force push to `main`.
+  model and effort, the worker edits only its authorized files, a worker isolated in a
+  worktree receives the main checkout's uncommitted input, and two explorers run in
+  parallel. The guard hook blocks a force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a

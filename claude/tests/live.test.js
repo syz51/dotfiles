@@ -189,6 +189,46 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     assertMatches(finalText(run.events), [/both|two/i, /\b0\b/, /atomic|compare.and.swap|transaction|lock|mutex/i]);
   }), 600_000);
 
+  // The Delegation rule on worktrees: a new worktree misses the main checkout's
+  // uncommitted edit, so the worker gets the right value only if the session transfers it.
+  test("a worktree-isolated worker gets the uncommitted input it needs", () => suite.scenario("worktree worker input", async ({ fixture, session }) => {
+    const [stale, current] = [crypto.randomUUID(), crypto.randomUUID()];
+    const remote = fixture({}, "remote.git");
+    const work = fixture({ "rate.json": `{"rate":"${stale}"}\n`, "README.md": "# Rates\n" }, "work");
+    git(remote, "init", "--quiet", "--bare", "--initial-branch=main");
+    git(work, "init", "--quiet", "--initial-branch=main");
+    git(work, "config", "user.name", "Live Test");
+    git(work, "config", "user.email", "live-test@example.invalid");
+    git(work, "add", ".");
+    git(work, "commit", "--quiet", "-m", "first");
+    git(work, "remote", "add", "origin", remote);
+    git(work, "push", "--quiet", "origin", "main");
+    git(work, "remote", "set-head", "origin", "main");
+    writeFileSync(join(work, "rate.json"), `{"rate":"${current}"}\n`);
+    const ignore = new Set([".git", ".claude"]);
+    const before = snapshot(work, { ignore });
+    const others = () => git(work, "worktree", "list", "--porcelain").split("\n")
+      .filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length))
+      .filter((path) => realpathSync(path) !== work);
+    try {
+      const run = await session({
+        cwd: work,
+        prompt: "Use the worker agent (subagent_type worker) in an isolated git worktree (Agent isolation \"worktree\") to "
+          + "create rate.js exporting a RATE string constant set to the rate in rate.json. Keep this checkout unchanged.",
+      });
+      const [spawn] = assertAgentRan(run, "worker");
+      expect(spawn.input.isolation).toBe("worktree");
+      assertUnchanged(before, snapshot(work, { ignore }));
+      const outputs = others().map((path) => join(path, "rate.js")).filter((path) => existsSync(path));
+      expect(outputs, "rate.js was not written in exactly one worktree").toHaveLength(1);
+      const text = readFileSync(outputs[0], "utf8");
+      expect(text, "the worker used the committed rate, not the checkout's").toContain(current);
+      expect(text).not.toContain(stale);
+    } finally {
+      for (const path of others()) git(work, "worktree", "remove", "--force", "--force", path);
+    }
+  }), 600_000);
+
   test("two explorers investigate independent modules in parallel", () => suite.scenario("parallel explorers", async ({ fixture, session }) => {
     const work = fixture({
       "a.js": "export function computeA(x) { return x * 7 + 11; }\n",
