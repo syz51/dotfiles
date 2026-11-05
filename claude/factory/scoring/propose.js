@@ -5,13 +5,14 @@
 // transcripts, runs the offline suites, and pushes a branch with a draft PR for the user
 // to review.
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { initEvent } from "../../tests/lib/stream.js";
+import { initEvent, resultEvent } from "../../tests/lib/stream.js";
 import { runTask } from "../lib/claude.js";
-import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
+import { appendJsonl, readJsonl, stateDir, statePath } from "../lib/state.js";
+import { projectsRoot } from "../lib/transcripts.js";
 import { REPO_ROOT, RUBRIC, section } from "./rubric.js";
 import { scoresFile } from "./score.js";
 
@@ -38,9 +39,23 @@ const EVIDENCE_CHARS = 400;
 const EVIDENCE_ITEMS = 25;
 // A verbatim run this long from the evidence in a pushed change counts as a leak.
 const LEAK_RUN = 40;
-// The proposer runs with the user's configuration; whatever it allows, these stay unread.
-const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json"];
-const PROPOSER_SETTINGS = JSON.stringify({ permissions: { deny: DENY_READ.map((path) => `Read(${path})`) } });
+// The proposer runs with the user's configuration; whatever it allows, these stay unread:
+// credentials, and the private sources the leak check never sees (raw transcripts, the
+// state folder with its scores and evidence files).
+const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**"];
+
+// Read deny rules for DENY_READ and the given absolute folders. A rule takes an absolute
+// path as //path; a folder under home gets its ~/ form as well.
+export function readDenies(folders, home = homedir()) {
+  const paths = [...DENY_READ];
+  for (const folder of folders.map((path) => resolve(path))) {
+    paths.push(`/${folder}/**`);
+    if (folder.startsWith(`${home}/`)) paths.push(`~/${relative(home, folder)}/**`);
+  }
+  return [...new Set(paths)].map((path) => `Read(${path})`);
+}
+
+const proposerSettings = () => JSON.stringify({ permissions: { deny: readDenies([stateDir(), projectsRoot()]) } });
 // Proposal outcomes that do not count as having proposed for these sessions.
 const RETRYABLE = new Set(["dry-run", "error"]);
 
@@ -282,7 +297,7 @@ async function attempt(group, options, record) {
       model: options.model,
       effort: options.effort,
       tools: TOOLS,
-      settings: PROPOSER_SETTINGS,
+      settings: proposerSettings(),
       permissionMode: "acceptEdits",
       budgetUsd: options.budgetUsd,
     });
@@ -294,16 +309,27 @@ async function attempt(group, options, record) {
     record.tools = init?.tools ?? null;
     if (!init || init.tools.some((tool) => !TOOLS.includes(tool)) || (init.mcp_servers ?? []).length)
       return { ...record, status: "rejected-tools", mcpServers: init?.mcp_servers ?? null };
+    record.paths = await changedPaths(clone);
+    // The change as a local patch for the reviewer; it never leaves the machine unless
+    // every check below passes.
+    const keepPatch = async () => {
+      await git(clone, ["add", "-A"]);
+      const { stdout } = await git(clone, ["diff", "--cached"]);
+      record.patchFile = record.evidenceFile.replace(/\.evidence\.md$/, ".patch");
+      writeFileSync(record.patchFile, stdout);
+      return stdout;
+    };
+    // A session that hit its budget, errored or stopped early left partial edits at best.
+    if (!task.ok) {
+      if (record.paths.length) await keepPatch();
+      return { ...record, status: "proposer-failed", resultSubtype: resultEvent(task.events)?.subtype ?? null };
+    }
     const title = /^TITLE:\s*(.+)$/m.exec(task.finalText)?.[1].trim().slice(0, 72) || `Address repeated ${group.dimension.id} failures`;
     const explanation = task.finalText.replace(/^TITLE:.*$/m, "").trim();
     Object.assign(record, { title, explanation: clip(explanation, 2000) });
     appendFileSync(record.evidenceFile, `\n## Proposer's explanation\n\n${explanation || "(none)"}\n`);
-    record.paths = await changedPaths(clone);
     if (!record.paths.length) return { ...record, status: "no-change" };
-    await git(clone, ["add", "-A"]);
-    const { stdout: patch } = await git(clone, ["diff", "--cached"]);
-    record.patchFile = record.evidenceFile.replace(/\.evidence\.md$/, ".patch");
-    writeFileSync(record.patchFile, patch);
+    const patch = await keepPatch();
     const outside = record.paths.filter((path) => !allowedPath(path));
     if (outside.length) return { ...record, status: "rejected-paths", rejected: outside };
     // The evidence quotes private transcripts; what gets pushed must not repeat it,
@@ -375,7 +401,7 @@ export async function run(argv, { now = Date.now() } = {}) {
     }
     appendJsonl(proposalsFile(), record);
     if (!["proposed", "dry-run", "no-change"].includes(record.status)) failed++;
-    console.log(`  ${record.status}: ${record.title ?? ""}${record.prUrl ? ` ${record.prUrl}` : ""}`);
+    console.log(`  ${record.status}: ${record.title ?? record.resultSubtype ?? ""}${record.prUrl ? ` ${record.prUrl}` : ""}`);
     if (record.error) console.log(`  error: ${record.error}`);
     if (record.paths.length) console.log(`  changed: ${record.paths.join(", ")}${record.rejected ? ` (outside the allowlist: ${record.rejected.join(", ")})` : ""}`);
     if (record.tests) console.log(`  tests: ${record.tests.summary}`);
