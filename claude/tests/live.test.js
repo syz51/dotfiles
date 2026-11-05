@@ -359,7 +359,8 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           && !/worktrees/.test(bash.command) && !bash.cwd.includes("/.claude/worktrees/")
           && /check\.js/.test(bash.command) && (touches({ input: bash.command }, module) || bash.cwd.endsWith(`/${module}`))
           && usedAt(bash.id) > returned),
-        `the main session did not run ${module}'s check in this checkout after its track returned`).toBe(true);
+        `the main session did not run ${module}'s check in this checkout after its track returned; its Bash calls: ${JSON.stringify(
+          run.bash.filter((bash) => bash.parent === null).map((bash) => ({ command: bash.command, cwd: bash.cwd, ok: bash.ok, at: usedAt(bash.id), returned })))}`).toBe(true);
       }
 
       // Both tracks' work is in this checkout, and their worktrees and branches are gone.

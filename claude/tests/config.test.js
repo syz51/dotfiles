@@ -168,6 +168,7 @@ describe("rules the live suites test", () => {
     const preferences = section("Working preferences");
     expect(preferences).toMatch(/`uv run`/);
     expect(preferences).toMatch(/`bun`/);
+    expect(preferences).toContain("never `node`, including for fallbacks");
     expect(preferences).toMatch(/lockfiles/);
   });
 

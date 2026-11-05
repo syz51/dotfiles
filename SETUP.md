@@ -267,7 +267,7 @@ scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures 
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use
 `claude-haiku-5-5`. Each suite prints its sessions' cost and its total. A full run
-costs about $3.50 and takes about 6 minutes:
+costs about $3.60 and takes about 8 minutes:
 
 ```sh
 RUN_CLAUDE_LIVE=1 bun test claude/tests
