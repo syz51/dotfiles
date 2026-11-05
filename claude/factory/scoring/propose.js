@@ -247,7 +247,8 @@ function newRecord(group, options, now) {
     model: options.model,
     effort: options.effort,
     dryRun: options.dryRun,
-    branch: `factory/proposal-${group.dimension.id}-${stamp(now)}`,
+    // Not under factory/: a branch named factory exists, and git cannot hold both.
+    branch: `factory-proposal/${group.dimension.id}-${stamp(now)}`,
     pushed: false,
     costUSD: 0,
     paths: [],

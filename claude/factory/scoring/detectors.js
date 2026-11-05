@@ -7,6 +7,7 @@
 import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { mayInvoke } from "../../tests/lib/command.js";
+import { readFilesWithDeadline } from "../lib/probe.js";
 import { readRecords } from "../lib/transcripts.js";
 
 const EVIDENCE = 300;
@@ -84,14 +85,16 @@ const PYTHON_TOOLS = ["pip", "pip3", "pytest", "python", "python3", ...["10", "1
 // simple commands, after wrappers and shell keywords.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
-  const cwd = actions.cwd && existsSync(actions.cwd) ? actions.cwd : null;
+  // Which lockfiles the project has, read with a deadline (see lib/probe.js). When the
+  // reads cannot finish, npm, pnpm and yarn are not judged: the lockfile is unknown.
+  const lockfiles = actions.cwd ? readFilesWithDeadline([...new Set(Object.values(NODE_TOOLS).flat())].map((name) => join(actions.cwd, name)), { maxChars: 0 }) : new Map();
+  const hasLockfile = (name) => Boolean(actions.cwd) && (lockfiles === null || typeof lockfiles.get(join(actions.cwd, name)) === "string");
   const hits = [];
   for (const call of commands) {
     const { command } = call.input;
     const programs = new Set(simpleCommands(command).map((words) => basename(words[0])));
     const runs = (name) => programs.has(name);
-    const tool = Object.entries(NODE_TOOLS).find(([name, lockfiles]) =>
-      runs(name) && !(cwd && lockfiles.some((lockfile) => existsSync(join(cwd, lockfile)))))?.[0]
+    const tool = Object.entries(NODE_TOOLS).find(([name, names]) => runs(name) && !names.some(hasLockfile))?.[0]
       ?? PYTHON_TOOLS.find(runs);
     if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }

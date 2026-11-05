@@ -1,12 +1,13 @@
 // `score`: run the detectors on every eligible session and the LLM judge on a sample,
 // storing one record per session in the state folder's scores.jsonl.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { judge } from "../lib/claude.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
+import { readFilesWithDeadline } from "../lib/probe.js";
 import { loadSessions } from "../lib/transcripts.js";
 import { countCorrections } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
@@ -75,15 +76,18 @@ export function scoredKeys(records) {
 }
 
 // CLAUDE.md files Claude Code loads for a session in cwd, from cwd up to (not including)
-// the home folder, outermost first. Only folders that still exist count.
+// the home folder, outermost first. Only files that still exist count. The reads are
+// bounded (see lib/probe.js): when they cannot finish, the judge goes without them.
 export function projectInstructions(cwd, home = homedir()) {
-  if (!cwd || !existsSync(cwd)) return [];
-  const files = [];
-  for (let dir = cwd; dir !== home && dir !== dirname(dir); dir = dirname(dir)) {
-    const file = join(dir, "CLAUDE.md");
-    if (existsSync(file)) files.unshift({ file, text: readFileSync(file, "utf8").slice(0, PROJECT_INSTRUCTION_CHARS) });
+  if (!cwd) return [];
+  const candidates = [];
+  for (let dir = cwd; dir !== home && dir !== dirname(dir); dir = dirname(dir)) candidates.unshift(join(dir, "CLAUDE.md"));
+  const read = readFilesWithDeadline(candidates, { maxChars: PROJECT_INSTRUCTION_CHARS });
+  if (!read) {
+    console.error(`Project instructions under ${cwd} could not be read in time; judging without them.`);
+    return [];
   }
-  return files;
+  return candidates.filter((file) => typeof read.get(file) === "string").map((file) => ({ file, text: read.get(file) }));
 }
 
 export function judgePrompt({ digest, globalInstructions, projectFiles, rubric = RUBRIC }) {

@@ -51,6 +51,10 @@ function repository() {
   git(source, "commit", "--quiet", "-m", "init");
   git(source, "remote", "add", "origin", remote);
   git(source, "push", "--quiet", "origin", "main");
+  // Work happens on a branch named factory, on both sides, as in the real checkout: a
+  // proposal branch under factory/ would clash with it.
+  git(source, "checkout", "--quiet", "-b", "factory");
+  git(source, "push", "--quiet", "origin", "factory");
   // An unpushed local commit, which proposals must not build on.
   put(source, { "local-only.txt": "x" });
   git(source, "add", "-A");
@@ -125,9 +129,9 @@ const proposals = () => readJsonl(join(scratch, "state", "proposals.jsonl"));
 const log = (name) => (existsSync(join(scratch, name)) ? readJsonl(join(scratch, name)) : []);
 const remoteBranches = (remote) => git(remote, "branch", "--format=%(refname:short)").split("\n").filter(Boolean);
 const edits = (files) => setEnv({ FAKE_EDITS: JSON.stringify(files) });
-// Runs at a fixed second, so branch names are known: factory/proposal-<id>-<UTC stamp>.
+// Runs at a fixed second, so branch names are known: factory-proposal/<id>-<UTC stamp>.
 const NOW = Date.parse("2026-11-05T09:08:07Z");
-const branchName = "factory/proposal-scope-creep-20261105-090807";
+const branchName = "factory-proposal/scope-creep-20261105-090807";
 const CLEARER = "# Rules\n\n## Workflow\n\n- Stay in the requested scope; report unrelated issues.\n\n## Delegation\n\n- Delegate rarely.\n";
 
 describe("proposal rules", () => {
@@ -194,7 +198,7 @@ describe("propose command", () => {
     expect(proposer.stdin).toContain("Edit only claude/CLAUDE.md and claude/agents/*.md");
     expect(existsSync(proposer.cwd)).toBe(false);
 
-    expect(remoteBranches(remote).sort()).toEqual([branchName, "main"].sort());
+    expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "main"].sort());
     expect(git(remote, "show", `${branchName}:claude/CLAUDE.md`)).toContain("report unrelated issues");
     expect(git(remote, "log", "-1", "--format=%s", branchName)).toBe("Clarify the scope rule");
     expect(() => git(remote, "show", `${branchName}:local-only.txt`)).toThrow();
@@ -231,7 +235,7 @@ describe("propose command", () => {
     setEnv({ FAKE_TOOLS: JSON.stringify(["Read", "Edit", "Bash"]) });
     expect(await run(["--repo", source], { now: NOW })).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Bash"] });
-    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
@@ -246,7 +250,7 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW })).toBe(1);
     const [entry] = proposals();
     expect(entry).toMatchObject({ status: "rejected-paths", rejected, tests: null });
-    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
@@ -261,7 +265,7 @@ describe("propose command", () => {
     expect(entry.tests.summary).toContain("1 fail");
     expect(entry.tests.tail).toContain("delegation rule");
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Delegate when it pays off.");
-    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
@@ -273,7 +277,7 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW })).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "leak-suspected", tests: null, prUrl: null });
     expect(existsSync(proposals()[0].patchFile)).toBe(true);
-    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
@@ -286,13 +290,13 @@ describe("propose command", () => {
     const [failed, next] = proposals();
     expect(failed).toMatchObject({ dimension: "scope-creep", status: "error", branch: branchName, pushed: true, prUrl: null, costUSD: 0.7 });
     expect(failed.error).toContain("HTTP 502");
-    expect(next).toMatchObject({ dimension: "delegation-fit", status: "proposed", branch: "factory/proposal-delegation-fit-20261105-090807" });
+    expect(next).toMatchObject({ dimension: "delegation-fit", status: "proposed", branch: "factory-proposal/delegation-fit-20261105-090807" });
 
     // The error does not block a retry, which pushes a branch of its own the same day.
     setEnv({ FAKE_GH_FAIL: undefined });
     expect(await run(["--repo", source, "--dimension", "scope-creep"], { now: NOW + 3_600_000 })).toBe(0);
-    expect(proposals()[2]).toMatchObject({ dimension: "scope-creep", status: "proposed", branch: "factory/proposal-scope-creep-20261105-100807" });
-    expect(remoteBranches(remote).sort()).toEqual([branchName, "factory/proposal-delegation-fit-20261105-090807", "factory/proposal-scope-creep-20261105-100807", "main"].sort());
+    expect(proposals()[2]).toMatchObject({ dimension: "scope-creep", status: "proposed", branch: "factory-proposal/scope-creep-20261105-100807" });
+    expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "factory-proposal/delegation-fit-20261105-090807", "factory-proposal/scope-creep-20261105-100807", "main"].sort());
   });
 
   test("a proposer run that fails is recorded at its budget without a branch", async () => {
@@ -302,7 +306,7 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW })).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "error", branch: null, pushed: false, costUSD: 3 });
     expect(proposals()[0].error).toContain("Task run");
-    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
   });
 
   test("a dry run runs the proposer and tests but pushes and opens nothing, and does not block a real run", async () => {
@@ -313,8 +317,8 @@ describe("propose command", () => {
     const [entry] = proposals();
     expect(entry).toMatchObject({ status: "dry-run", dryRun: true, prUrl: null, tests: { ok: true } });
     expect(existsSync(entry.patchFile)).toBe(true);
-    expect(remoteBranches(remote)).toEqual(["main"]);
-    expect(git(source, "branch", "--format=%(refname:short)")).toBe("main");
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+    expect(git(source, "branch", "--format=%(refname:short)")).toBe("factory\nmain");
     expect(log("gh.jsonl")).toHaveLength(0);
     expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(0);
     expect(proposals()[1].status).toBe("proposed");
