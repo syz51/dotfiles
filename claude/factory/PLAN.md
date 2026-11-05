@@ -292,8 +292,24 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   Factory section), the README table, and CI (`bun test claude/factory`).
 - [ ] Run every suite in SETUP.md's Verification section, plus the live suites (Claude Code
   behavior is involved).
-- [ ] `/code-review` at xhigh on the final diff; fix real defects; rerun affected checks.
-- [ ] Weekly launchd job on this Mac (install script, plist, uninstall command); first run.
+- [~] `/code-review` at xhigh on `origin/main...factory` (2026-11-05): 15 findings, all
+  real. Fixed in the main session (afb3e02, 4aaf164): bench case pinned to a commit on
+  main (the old pin existed only in local refs; CI would fail); judge timeouts become
+  ClaudeCallError with partial cost; runProcess kills descendants in nested process
+  groups and ignores only EPIPE on stdin; weekly reports audit findings as needing
+  attention; inherited fork prompts filtered like own prompts; unpriced subagents
+  flagged; unreadable subagent meta counted; shared helpers exported. Fixed by a worker
+  (ed06dd7, 300bf73): package-runner reads the program in command position through
+  newlines, wrappers and keywords; ultra-effort counts only writes to settings;
+  force-push resolves HEAD; digest shows a fork's task; scoring continues after any failed
+  judge call (unknown cost counts the per-call budget). In progress (worker resumed after
+  the 5-hour usage limit): propose allowlist reduced to `claude/CLAUDE.md` and
+  `claude/agents/*.md` with `--ignored` change detection and credential Read denies;
+  failures after push recorded as `error` with unique branch names; PR body without the
+  proposer's reply and a verbatim-evidence leak check before any push.
+- [x] Weekly job: `weekly run|install|uninstall|status`; LaunchAgent
+  `com.syz51.claude-factory.weekly`, Mondays 13:30. [ ] Install it and do a first run
+  after the review fixes land.
 - [ ] Clean up temporary files, worktrees, fixture sessions.
 
 ## Deferred: daily review on sai
@@ -335,3 +351,6 @@ Dokploy VPS). Feasible, with this split:
   agent-launched costing $309), 3 merged PRs at $48 per PR from their sessions and $218
   per PR counting all spend, correction rate 5.5% (heuristic), 18 rate-limit (429)
   errors, subagents 26% of cost. secret scan clean; codex-skills#2 opened.
+- 2026-11-05: Code review found 15 real issues; most fixed (see Integration). The
+  scoring worker hit the account's 5-hour usage limit mid-task and was resumed at 18:30.
+  Lesson: parallel Opus workers plus the hourly capture job share one account quota.
