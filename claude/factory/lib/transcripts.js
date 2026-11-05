@@ -50,6 +50,12 @@ const textOf = (content) => typeof content === "string"
   ? content
   : Array.isArray(content) ? content.filter((block) => block?.type === "text").map((block) => block.text ?? "").join("\n") : "";
 
+// Tool output kept per call: the start and the end, where errors and PR URLs appear.
+export const OUTPUT_EXCERPT = 2000;
+const excerpt = (text) => text.length <= OUTPUT_EXCERPT
+  ? text
+  : `${text.slice(0, OUTPUT_EXCERPT / 2)}\n[... ${text.length - OUTPUT_EXCERPT} characters omitted ...]\n${text.slice(-OUTPUT_EXCERPT / 2)}`;
+
 // Wrappers Claude Code puts around local command output and injected context.
 const INJECTED = /^\s*<(?:local-command-stdout|local-command-stderr|system-reminder|command-message|bash-stdout|bash-stderr)>/;
 
@@ -90,7 +96,7 @@ function summarize(records) {
       const content = record.message?.content;
       if (Array.isArray(content))
         for (const block of content) {
-          if (block?.type === "tool_result") results.set(block.tool_use_id, block.is_error === true);
+          if (block?.type === "tool_result") results.set(block.tool_use_id, { isError: block.is_error === true, output: textOf(block.content) });
           if (block?.type === "text" && block.text?.startsWith(INTERRUPT)) interrupts++;
         }
       else if (typeof content === "string" && content.startsWith(INTERRUPT)) interrupts++;
@@ -109,7 +115,11 @@ function summarize(records) {
     if (cost === null) unpriced = true;
     else estimated += cost;
   }
-  for (const call of toolCalls) call.ok = results.has(call.id) ? !results.get(call.id) : null;
+  for (const call of toolCalls) {
+    const result = results.get(call.id);
+    call.ok = result ? !result.isError : null;
+    call.output = result ? excerpt(result.output) : "";
+  }
   return { models, efforts, usage, estimatedCostUSD: estimated, unpriced, toolCalls, apiErrors, interrupts, compactions, assistantMessages: messages.size };
 }
 

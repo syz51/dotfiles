@@ -98,12 +98,14 @@ review on sai** for the feasibility notes the user asked about.
 ```
 { id, project, cwd, file, entrypoint, title, startedAt, endedAt, models: {model: count},
   prompts: [{ at, text, source }],      // human-sent prompts only
-  assistantMessages, toolCalls: [{ name, input, ok, parent }],
+  assistantMessages, efforts: {effort: count},
+  toolCalls: [{ id, name, input, ok, output, at }],  // output: 2,000-char start+end excerpt
   usage: { [model]: { input, output, cacheRead, cacheWrite5m, cacheWrite1h } },
-  costUSD, costSource: "cost-state" | "estimated",
-  linesAdded, linesRemoved, compactions, interrupts, apiErrors,
-  subagents: [{ id, agentType, model, effort, usage, costUSD }],
-  prLinks: [{ url, number, repository, at }] }
+  costUSD, costSource: "cost-state" | "estimated", estimatedCostUSD, unpriced,
+  linesAdded, linesRemoved, compactions, interrupts, apiErrors: {status: count},
+  subagents: [{ id, agentType, description, toolUseId, model, effort, usage, costUSD,
+                toolCalls, toolErrors, malformedLines }],
+  prLinks: [{ url, number, repository, at }], automation, malformedLines }
 ```
 
 `lib/claude.js`: `judge({ prompt, schema, model, effort, budgetUsd })` returns

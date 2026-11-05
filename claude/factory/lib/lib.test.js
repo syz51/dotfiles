@@ -104,7 +104,7 @@ describe("transcripts", () => {
       expect(session.assistantMessages).toBe(4);
       expect(session.models).toEqual({ "claude-opus-5-5": 3, "claude-sonnet-5-5": 1 });
       expect(session.usage["claude-opus-5-5"].output).toBe(300);
-      expect(session.toolCalls.map((call) => [call.name, call.ok])).toEqual([["Bash", false], ["Read", true]]);
+      expect(session.toolCalls.map((call) => [call.name, call.ok, call.output])).toEqual([["Bash", false, "1 fail"], ["Read", true, "x"]]);
       expect(session.interrupts).toBe(1);
       expect(session.apiErrors).toEqual({ 429: 2 });
       expect(session.compactions).toBe(1);
@@ -127,6 +127,20 @@ describe("transcripts", () => {
       expect(session.costSource).toBe("estimated");
       expect(session.costUSD).toBeCloseTo(20 + 0.5);
       expect(session.subagents).toEqual([expect.objectContaining({ id: "agent-a1", agentType: "explorer", model: "claude-haiku-5-5", effort: "xhigh", costUSD: 0.5, toolCalls: 0 })]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("long tool output keeps its start and end", () => {
+    const long = `${"a".repeat(3000)}https://github.com/o/r/pull/9`;
+    const root = writeProjects([{ transcript: new Transcript().tool("Bash", { command: "gh pr create" }, [{ type: "text", text: long }]) }]);
+    try {
+      const [{ toolCalls: [call] }] = loadSessions({ root });
+      expect(call.output.length).toBeLessThan(2100);
+      expect(call.output.startsWith("aaa")).toBe(true);
+      expect(call.output).toContain("characters omitted");
+      expect(call.output.endsWith("https://github.com/o/r/pull/9")).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
