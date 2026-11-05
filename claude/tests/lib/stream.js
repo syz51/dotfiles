@@ -96,23 +96,48 @@ export function subagentMessages(events, spawns) {
   return events.filter((event) => event.type === "assistant" && ids.has(event.parent_tool_use_id));
 }
 
-// Whether two of the spawns ran at the same time: one was issued while another was
-// still running. A spawn runs until its result, its last subagent event or, for an
-// agent Claude Code runs in the background (whose result only confirms the launch), its
-// task_notification, whichever comes last. A spawn after another finished is sequential.
-export function concurrentSpawns(events, spawns) {
+// Where each spawn ended, by Agent tool_use id: its result, its last subagent event or,
+// for an agent Claude Code runs in the background (whose result only confirms the
+// launch), its task_notification, whichever comes last. A spawn with no such event is
+// missing.
+export function spawnEnds(events, spawns) {
   const ids = new Set(spawns.map((spawn) => spawn.id));
-  const issued = new Map();
   const ended = new Map();
   const end = (id, index) => ids.has(id) && ended.set(id, Math.max(ended.get(id) ?? index, index));
   events.forEach((event, index) => {
-    if (event.type === "assistant" && Array.isArray(event.message?.content))
-      for (const block of event.message.content) if (block.type === "tool_use" && ids.has(block.id)) issued.set(block.id, index);
     if (event.type === "user" && Array.isArray(event.message?.content))
       for (const block of event.message.content) if (block.type === "tool_result") end(block.tool_use_id, index);
     if (event.type === "system" && event.subtype === "task_notification") end(event.tool_use_id, index);
     if (event.parent_tool_use_id) end(event.parent_tool_use_id, index);
   });
+  return ended;
+}
+
+// Whether two of the spawns ran at the same time: one was issued while another was still
+// running, until its spawnEnds index. A spawn after another finished is sequential.
+export function concurrentSpawns(events, spawns) {
+  const ids = new Set(spawns.map((spawn) => spawn.id));
+  const issued = new Map();
+  events.forEach((event, index) => {
+    if (event.type === "assistant" && Array.isArray(event.message?.content))
+      for (const block of event.message.content) if (block.type === "tool_use" && ids.has(block.id)) issued.set(block.id, index);
+  });
+  const ended = spawnEnds(events, spawns);
   const spans = [...ids].filter((id) => issued.has(id) && ended.has(id)).map((id) => [issued.get(id), ended.get(id)]);
   return spans.some(([from], i) => spans.some(([otherFrom, otherTo], j) => i !== j && otherFrom <= from && from < otherTo));
+}
+
+// Whether output has a line that starts with the word marker and names dir as one of its
+// words: what a fixture check prints, with its own directory, once it passes.
+export const printedFrom = (output, marker, dir) => output.split(/\r?\n/)
+  .some((line) => { const words = line.trim().split(/\s+/); return words[0] === marker && words.includes(dir); });
+
+// Whether a main-session Bash call issued after event index after printed marker from dir
+// (see printedFrom). The check's own output proves which copy of it passed, however the
+// command moved the shell; the command text and the directory the call started in cannot.
+export function mainBashPrinted(events, { marker, dir, after = -1 }) {
+  const results = toolResults(events);
+  return events.some((event, index) => index > after && event.type === "assistant" && event.parent_tool_use_id == null
+    && Array.isArray(event.message?.content) && event.message.content.some((block) => block.type === "tool_use" && block.name === "Bash"
+      && printedFrom(results.get(block.id)?.text ?? "", marker, dir)));
 }

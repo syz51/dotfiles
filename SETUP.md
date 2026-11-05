@@ -283,7 +283,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   module's bug, fixes it, updates and runs the module's check, and gets the code only
   the conversation held. The main session neither investigates nor edits a module
   before its track returns, then brings both back, removes the worktrees and their
-  branches, and runs the checks itself. The guard hook blocks a force push to `main`.
+  branches, and runs the checks itself. Each check prints its own directory when it
+  passes, so the session's output shows that the copy in the checkout, not a
+  worktree's, passed. The guard hook blocks a force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a
@@ -291,8 +293,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
   `bun` unless the project's lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
-  rename across several files, spawn no subagent. A
-  Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
+  rename across several files whose check proves from its own output that it passed
+  in the fixture, spawn no subagent. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,
@@ -305,7 +307,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/factory/audit
 ```
 
 Set `CLAUDE_LIVE_REPORT_DIR` to a folder inside `$TMPDIR` to keep a JSON report and
-the raw stream of each scenario; delete it when done.
+the raw stream of each scenario; the report lists each tool call with the directory it
+started in, which the stream lacks. Delete the folder when done: it holds transcripts.
 
 With Explore's dependencies installed, its additional integration suite is:
 

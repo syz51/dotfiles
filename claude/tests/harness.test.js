@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configuredEffort } from "./lib/live.js";
+import { configuredEffort, toolDirectories } from "./lib/live.js";
 import { childEnv, runProcess } from "./lib/process.js";
 
 const TESTS = import.meta.dir;
@@ -155,6 +155,29 @@ describe("reports", () => {
     expect(report.sessions[0]).toMatchObject({ status: "failed", model: "claude-opus-5-5", effort: configuredEffort("claude-opus-5-5") });
     assertCleanedUp();
   }, 30_000);
+
+  // The stream lacks the directory each tool call ran from, which the hooks record.
+  test("keep each tool call's directory alongside the stream", async () => {
+    const reports = join(root, "tmp", "reports");
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { CLAUDE_LIVE_REPORT_DIR: reports });
+    expect(run.code, output(run)).toBe(0);
+    const report = JSON.parse(readFileSync(join(reports, "python-checks-run-through-uv-run.json"), "utf8"));
+    const [check] = report.sessions[0].tools.filter((tool) => tool.name === "Bash");
+    expect(check.input.command).toContain("check.py");
+    expect(report.sessions[0].cwds[check.id]).toEndWith("/fixture");
+    expect(readFileSync(join(reports, "python-checks-run-through-uv-run.stream.jsonl"), "utf8")).toContain(check.id);
+    assertCleanedUp();
+  }, 30_000);
+
+  test("keep the directories of intact records when a killed hook left one truncated", () => {
+    const records = join(root, "records");
+    mkdirSync(records);
+    writeFileSync(join(records, "1.json"), JSON.stringify({ hook_event_name: "PreToolUse", tool_use_id: "toolu_1", cwd: "/work" }));
+    writeFileSync(join(records, "2.json"), JSON.stringify({ hook_event_name: "InstructionsLoaded", cwd: "/work" }));
+    writeFileSync(join(records, "3.json"), "");
+    expect(toolDirectories(records)).toEqual({ toolu_1: "/work" });
+    expect(toolDirectories(join(root, "missing"))).toEqual({});
+  });
 
   test("a report that cannot be written fails a passing run without skipping cleanup", async () => {
     const reports = join(root, "tmp", "reports");

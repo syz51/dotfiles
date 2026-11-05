@@ -61,6 +61,23 @@ const readRecords = (dir) => existsSync(dir)
   ? readdirSync(dir).sort().map((name) => JSON.parse(readFileSync(join(dir, name), "utf8")))
   : [];
 
+// The directory each tool call started in, by tool_use id, for a report. A hook killed
+// mid-write when a session times out leaves a truncated record, which only that call's
+// entry loses; a report must never replace the session's own error.
+export function toolDirectories(dir) {
+  const cwds = {};
+  for (const name of existsSync(dir) ? readdirSync(dir) : []) {
+    let record;
+    try {
+      record = JSON.parse(readFileSync(join(dir, name), "utf8"));
+    } catch {
+      continue;
+    }
+    if (record.hook_event_name === "PreToolUse") cwds[record.tool_use_id] = record.cwd;
+  }
+  return cwds;
+}
+
 const slug = (label) => label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48);
 
 function writeFiles(dir, files) {
@@ -153,7 +170,12 @@ export function liveSuite(name) {
       ledger.record(entry);
       if (report) {
         report.sessions ??= [];
-        report.sessions.push({ ...entry, skills: skillLoads(events), tools: toolUses(events).map(({ name, parent, input }) => ({ name, parent, input })), stream: stdout });
+        // cwds holds what the stream lacks: each call's directory, from its PreToolUse hook,
+        // kept even when the stream could not be parsed.
+        report.sessions.push({
+          ...entry, skills: skillLoads(events), tools: toolUses(events).map(({ id, name, parent, input }) => ({ id, name, parent, input })),
+          cwds: toolDirectories(recordDir), stream: stdout,
+        });
       }
     }
   }

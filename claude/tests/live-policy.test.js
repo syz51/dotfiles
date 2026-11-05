@@ -11,7 +11,7 @@ import { mayInvoke, successfulCheck } from "./lib/command.js";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { HOME_CLAUDE, LIVE, liveSuite } from "./lib/live.js";
 import { childEnv, runProcess } from "./lib/process.js";
-import { agentSpawns, finalText } from "./lib/stream.js";
+import { agentSpawns, finalText, mainBashPrinted } from "./lib/stream.js";
 import { chineseLines, hasKana, singleChineseLine } from "./lib/text.js";
 
 const suite = liveSuite("policy");
@@ -73,13 +73,15 @@ const scenarios = [
       "orders/invoice.js": 'import { calcTotal } from "./total.js";\nexport const invoice = (items) => ({ lines: items.length, total: calcTotal(items) });\n',
       "orders/receipt.js": 'import { calcTotal } from "./total.js";\nexport const receipt = (items) => `Total: ${calcTotal(items)}`;\n',
       "orders/summary.js": 'import { calcTotal } from "./total.js";\nexport const summary = (orders) => orders.map((items) => calcTotal(items));\n',
-      "check.js": 'import { readFileSync } from "node:fs";\nimport * as total from "./orders/total.js";\nimport { invoice } from "./orders/invoice.js";\nimport { receipt } from "./orders/receipt.js";\nimport { summary } from "./orders/summary.js";\nconst items = [{ price: 2, qty: 3 }, { price: 5, qty: 1 }];\nif ("calcTotal" in total || total.orderTotal(items) !== 11) throw new Error("orderTotal missing");\nif (invoice(items).total !== 11 || receipt(items) !== "Total: 11" || summary([items, []]).join() !== "11,0") throw new Error("behavior changed");\nfor (const name of ["total", "invoice", "receipt", "summary"]) if (readFileSync(`orders/${name}.js`, "utf8").includes("calcTotal")) throw new Error(`calcTotal left in ${name}.js`);\nconsole.log("fixture-check:ok");\n',
+      "check.js": 'import { readFileSync } from "node:fs";\nimport * as total from "./orders/total.js";\nimport { invoice } from "./orders/invoice.js";\nimport { receipt } from "./orders/receipt.js";\nimport { summary } from "./orders/summary.js";\nconst items = [{ price: 2, qty: 3 }, { price: 5, qty: 1 }];\nif ("calcTotal" in total || total.orderTotal(items) !== 11) throw new Error("orderTotal missing");\nif (invoice(items).total !== 11 || receipt(items) !== "Total: 11" || summary([items, []]).join() !== "11,0") throw new Error("behavior changed");\nfor (const name of ["total", "invoice", "receipt", "summary"]) if (readFileSync(`orders/${name}.js`, "utf8").includes("calcTotal")) throw new Error(`calcTotal left in ${name}.js`);\nconsole.log(`fixture-check:ok ${import.meta.dirname}`);\n',
     },
     writable: ["orders/total.js", "orders/invoice.js", "orders/receipt.js", "orders/summary.js"],
     prompt: "Rename calcTotal to orderTotal across orders/, in its definition and every use, without changing behavior. Verify with check.js and report the result. Only files in orders/ may change.",
-    // No strict check proof: a multi-file rename is naturally run as one command with a glob
-    // (sed -i … orders/*.js && bun check.js), which the proof grammar cannot read. The bun
-    // rule is held by avoid, and the result by the independent re-run.
+    // A multi-file rename is naturally one command with a glob (sed -i … orders/*.js &&
+    // bun check.js), which the check grammar cannot read. The check prints its directory
+    // once it passes instead, so its output proves the session ran it here; avoid holds
+    // the bun rule.
+    printed: true,
     avoid: ["node", "npm"],
     verify: ["bun", "check.js"],
   },
@@ -155,6 +157,8 @@ describe.skipIf(!LIVE)("live policy", () => {
       scenario.answer?.(text);
       if (scenario.check)
         expect(successfulCheck(run.bash, scenario.check, work), `no successful ${scenario.check.tool} check in the fixture among ${JSON.stringify(run.bash.map((b) => ({ command: b.command, cwd: b.cwd, ok: b.ok })))}`).toBe(true);
+      if (scenario.printed)
+        expect(mainBashPrinted(run.events, { marker: "fixture-check:ok", dir: work }), `the check never passed in the fixture among ${JSON.stringify(run.bash.map((b) => b.command))}`).toBe(true);
       for (const tool of scenario.avoid ?? [])
         for (const { command } of run.bash) expect(mayInvoke(command, tool), `ran ${tool}: ${command}`).toBe(false);
       if (scenario.verify) {
