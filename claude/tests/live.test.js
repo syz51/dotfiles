@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
 import { agentSpawns, concurrentSpawns, finalText, subagentMessages, toolResults, toolUses } from "./lib/stream.js";
@@ -191,6 +191,8 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
 
   // The Delegation rule on worktrees: a new worktree misses the main checkout's
   // uncommitted edit, so the worker gets the right value only if the session transfers it.
+  // With worktree.baseRef "head" the worktree starts from the local HEAD, so it also
+  // carries a commit that was never pushed.
   test("a worktree-isolated worker gets the uncommitted input it needs", () => suite.scenario("worktree worker input", async ({ fixture, session }) => {
     const [stale, current] = [crypto.randomUUID(), crypto.randomUUID()];
     const remote = fixture({}, "remote.git");
@@ -204,6 +206,9 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     git(work, "remote", "add", "origin", remote);
     git(work, "push", "--quiet", "origin", "main");
     git(work, "remote", "set-head", "origin", "main");
+    writeFileSync(join(work, "README.md"), "# Rates\nLocal notes.\n");
+    git(work, "commit", "--quiet", "-am", "unpushed");
+    const unpushed = git(work, "rev-parse", "HEAD");
     writeFileSync(join(work, "rate.json"), `{"rate":"${current}"}\n`);
     const ignore = new Set([".git", ".claude"]);
     const before = snapshot(work, { ignore });
@@ -221,6 +226,8 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       assertUnchanged(before, snapshot(work, { ignore }));
       const outputs = others().map((path) => join(path, "rate.js")).filter((path) => existsSync(path));
       expect(outputs, "rate.js was not written in exactly one worktree").toHaveLength(1);
+      const base = spawnSync("git", ["-C", dirname(outputs[0]), "merge-base", "--is-ancestor", unpushed, "HEAD"]);
+      expect(base.status, "the worktree did not start from the local HEAD").toBe(0);
       const text = readFileSync(outputs[0], "utf8");
       expect(text, "the worker used the committed rate, not the checkout's").toContain(current);
       expect(text).not.toContain(stale);

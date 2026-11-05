@@ -116,6 +116,10 @@ describe("settings", () => {
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  test("subagent worktrees branch from the local HEAD, not the remote default branch", () => {
+    expect(settings.worktree).toEqual({ baseRef: "head" });
+  });
+
   test("the guard is registered for Bash PreToolUse", () => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")

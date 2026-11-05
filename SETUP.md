@@ -193,7 +193,7 @@ From the repository root, run the focused local suites:
 ```sh
 bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
-uv run --no-project --python 3.11 python -B -m unittest discover -s ghostty -p 'test-*.py' -v
+uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 ```
 
@@ -229,8 +229,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
 - `live.test.js`: a session in `nvim/` loads the global and repository instructions
   and lists the agents and skills. Explorer, worker and solver run on their configured
   model and effort, the worker edits only its authorized files, a worker isolated in a
-  worktree receives the main checkout's uncommitted input, and two explorers run in
-  parallel. The guard hook blocks a force push to `main`.
+  worktree starts from the local `HEAD` and receives the main checkout's uncommitted
+  input, and two explorers run in parallel. The guard hook blocks a force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a
