@@ -45,6 +45,21 @@ describe("correction heuristic", () => {
   });
 });
 
+describe("actually", () => {
+  test("a leading 'actually' that redirects counts; one that adds work does not", () => {
+    expect(isCorrection("Actually use bun")).toBe(true);
+    expect(isCorrection("actually, that should be the other file")).toBe(true);
+    expect(isCorrection("Actually, can you also add a test?")).toBe(false);
+  });
+});
+
+describe("Chinese corrections", () => {
+  test("rejections, why-did-you and still-broken count; neutral uses of the same words do not", () => {
+    for (const text of ["不对，应该用另一个文件", "错了，回滚", "为什么你删掉了测试？", "还是不行"]) expect(isCorrection(text)).toBe(true);
+    for (const text of ["还是用 Rust 写吧", "为什么这个库更快？", "不错，继续", "不是很急，慢慢来"]) expect(isCorrection(text)).toBe(false);
+  });
+});
+
 describe("prompts", () => {
   test("host notices are not the person's prompts", () => {
     for (const text of [

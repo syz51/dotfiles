@@ -37,6 +37,12 @@ const CORRECTION = [
   /\b(?:failed|failing|broken|broke) again\b/,
   /\b(?:revert|undo) (?:that|this|it|the change)\b/,
   /^instead of\b/,
+  // "Actually, use X" changes what the agent did; "actually, can you also" adds work.
+  /^actually,?\s+(?:use|do|don'?t|do not|make|it|that|this|we should|you should|i (?:want|meant|need))\b/,
+  // Chinese: a leading rejection ("不对", "不是这样", "错了"), "why did you", "still not working".
+  /^(?:不对|不是这样|不是这个|错了|搞错了|别这样|不要这样)/,
+  /为什么(?:你|要)/,
+  /还是(?:不行|不对|错|没有?(?:用|好))/,
 ];
 
 export function isCorrection(text) {

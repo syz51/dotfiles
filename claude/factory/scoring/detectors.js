@@ -62,7 +62,11 @@ export function sessionActions(session, records = sessionRecords(session)) {
   };
   collect(records.main, null);
   for (const agent of records.subagents) collect(agent.records, agent.id);
-  return { calls, commands, prompts: session.prompts, cwd: session.cwd };
+  // session.prompts leaves out a fork's inherited prompts; they still say what was asked.
+  const inherited = records.main
+    .filter((record) => record.forkedFrom && record.type === "user" && !record.isMeta && typeof record.message?.content === "string")
+    .map((record) => ({ at: record.timestamp ?? null, text: record.message.content }));
+  return { calls, commands, prompts: [...inherited, ...session.prompts], cwd: session.cwd };
 }
 
 const bashCommands = (actions) => actions.calls.filter((call) => call.name === "Bash" && typeof call.input.command === "string");

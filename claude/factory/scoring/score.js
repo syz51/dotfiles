@@ -8,6 +8,7 @@ import { parseArgs } from "node:util";
 import { ClaudeCallError, judge } from "../lib/claude.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { loadSessions } from "../lib/transcripts.js";
+import { isCorrection } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
 import { buildDigest, DIGEST_CHARS } from "./digest.js";
 import { GLOBAL_INSTRUCTIONS, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
@@ -33,11 +34,9 @@ const PROJECT_INSTRUCTION_CHARS = 20_000;
 export const scoresFile = () => statePath("scores.jsonl");
 export const transcriptSha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-// A follow-up prompt that looks like it corrects the agent. Heuristic; the judge's
-// user-corrections dimension is the reliable signal.
-const CORRECTION = /^\s*(?:no\b|nope\b|not (?:that|this|what|quite)\b|wrong\b|stop\b|don'?t\b|do not\b|why (?:did|didn'?t|are|is) |you (?:didn'?t|did not|forgot|missed|broke|should(?:n'?t)? have)\b|that'?s (?:not|wrong|incorrect)\b|it(?:'s| is)? (?:still|not)\b|still\b|i (?:said|asked|meant|told you)\b|revert\b|undo\b|actually\b|instead\b|不对|不是|错了|别|不要|为什么|还是)/i;
-const CORRECTION_ANYWHERE = /\b(?:i (?:already )?(?:said|asked|told you)|you (?:didn'?t|did not|forgot to|ignored)|that'?s not what i)\b/i;
-export const isCorrection = (text) => CORRECTION.test(text) || CORRECTION_ANYWHERE.test(text);
+// Corrections are the metrics heuristic; the judge's user-corrections dimension is the
+// reliable signal.
+export { isCorrection };
 
 // Signals that make a session worth judging first.
 export function prioritySignals(session) {

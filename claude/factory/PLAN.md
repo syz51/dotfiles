@@ -170,25 +170,40 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
 
 ### 2. Scoring and proposals (`scoring/`)
 
-- [ ] `rubric.json`: dimensions defined in code, each mapped to the `claude/CLAUDE.md`
-  section it tests. Deterministic detectors (every session, free): package runner rule
-  (reuse `claude/tests/lib/command.js`), AI attribution in commits or PRs, fast mode or
-  ultra effort used, force pushes. Judge dimensions (sampled): followed instructions,
-  verified before claiming done, unnecessary confirmation, scope creep, redundant tests,
-  delegation fit, user had to correct the agent (with cause), concise reporting.
-- [ ] `score` command: sample N unscored completed sessions (prefer ones with corrections,
-  interrupts or errors), build a bounded digest, call the judge with a JSON schema, store
-  results keyed by session ID and transcript hash in `scores.jsonl`. Skip automation
-  sessions (codex-skills maintenance and investigation worktrees, live-test fixtures).
-- [ ] `propose` command: group failures by dimension over a window; at or above the threshold
-  (default 3 distinct sessions) and not already proposed, run a proposer session in a fresh
-  clone with only Read/Edit/Write/Glob/Grep, check the diff stays in the allowed paths, run
-  the offline suites, then push a branch and open a draft PR with the evidence. `--dry-run`
-  stops before pushing.
-- [ ] Tests: detectors, digest bounds, sampling and dedupe, judge schema handling with a
-  fake CLI, the proposal path-allowlist check, and the PR step with a fake `gh`.
-- [ ] Real run: score a sample of recent sessions; run `propose` (dry run first, then real if
-  a dimension qualifies).
+- [x] `rubric.json` (version 2): detectors package-runner, ai-attribution, force-push,
+  ultra-effort (quote-aware command splitting); judge dimensions followed-instructions,
+  verified-before-done, unnecessary-confirmation, scope-creep, redundant-tests,
+  delegation-fit, concise-reporting, user-corrections (with cause).
+- [x] `score`: eligibility (not automation, ended 30+ minutes ago, unscored for this
+  rubric and transcript hash), priority by corrections, interrupts, errors, cost;
+  bounded digest; judge with schema validation (invalid answers recorded as errors);
+  per-call and total budget caps; `scores.jsonl`; detector-only records for unsampled
+  sessions.
+- [x] `propose`: groups failures over a window, threshold of distinct sessions, dedupes
+  against `proposals.jsonl`, runs the proposer in a fresh clone with only the five file
+  tools (fails closed otherwise), enforces the path allowlist, runs the offline suites,
+  then pushes a branch and opens a draft PR. Because this repository is public, the PR
+  body lists session ids, judge model and test results only; quoted evidence stays in
+  `proposals/*.evidence.md` in the state folder. `--list` and `--dry-run`.
+- [x] Correction heuristic unified (`metrics/corrections.js`), now with Chinese and a
+  narrow "actually, use X" pattern.
+- [x] Real run (about $2.27): 6 sessions judged twice (rubric v1, then v2 after fixing
+  four issues it showed); detectors over 72 sessions. package-runner fails in 46
+  sessions: agents routinely run bare `python3 - <<'EOF'`, often to edit files instead of
+  using Edit. Judge labels and quotes check out against transcripts, but borderline
+  verdicts flip at medium effort; a high-effort rescore was right.
+- [x] `propose --dry-run` on package-runner: proposer tightened the uv rule in
+  `claude/CLAUDE.md` and updated `claude/tests/config.test.js`; tests passed in the clone.
+  Patch in the state folder (`proposals/package-runner-*.patch`). A reviewer may prefer a
+  rule steering file edits to the Edit tool, since that is the main source.
+- [ ] Judge reliability: calibrate with a bench case; require high effort or two agreeing
+  runs before a failure counts toward a proposal.
+- [ ] Record the `claude/CLAUDE.md` revision at scoring time (sessions are judged against
+  today's rules).
+- [ ] New detector: file edits through shell scripts ("Prefer dedicated tools").
+- [ ] `runTask` option for `--strict-mcp-config`, for the proposer.
+- [ ] Rescore `2870afe1` at the next rubric version (stale first hit from before a
+  detector fix); state folder still holds rubric v1 records, which `propose` ignores.
 
 ### 3. Benchmarks (`bench/`)
 
@@ -272,7 +287,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
 
 ### 5. Integration (main session)
 
-- [ ] Merge the track branches (metrics, audit, bench done; scoring running); update `SETUP.md` (Verification:
+- [x] Merge the track branches (all four merged). Then: update `SETUP.md` (Verification:
   `bun test claude/factory`, live `RUN_CLAUDE_LIVE=1 bun test claude/factory/audit`;
   Factory section), the README table, and CI (`bun test claude/factory`).
 - [ ] Run every suite in SETUP.md's Verification section, plus the live suites (Claude Code

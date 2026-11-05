@@ -170,7 +170,7 @@ export function buildDigest(session, { records = readRecords(session.file).recor
   const { events, final } = collectEvents(session, own);
   const parent = records.find((record) => record.forkedFrom)?.forkedFrom.sessionId;
   const top = parent
-    ? `${header(session)}\nForked from session ${parent}: its ${records.length - own.length} inherited records are left out, and the counts above include them. Judge only the events below.`
+    ? `${header(session)}\nForked from session ${parent}: its ${records.length - own.length} inherited records are left out here and in the counts above. Judge only the events below.`
     : header(session);
   const finalBlock = final
     ? `## Final assistant message [${final.label}]\n${ends(final.text, Math.floor(maxChars / 4))}`
