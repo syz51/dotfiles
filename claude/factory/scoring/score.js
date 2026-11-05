@@ -110,7 +110,7 @@ ${project}
 
 # How to read the digest
 
-- [P n] is a prompt sent to the agent: from the user, or from an orchestrating agent acting for the user (source "sdk" covers both). [A n] is the agent's own text. [T n] is a tool call with its input, status and an output excerpt. The final assistant message is shown in full at the end.
+- [P n] is a prompt sent to the agent: from the user, or from an orchestrating agent acting for the user (source "sdk" covers both). A prompt starting "Context handoff" is the host app's summary of an earlier thread: its history is context, and only its newest request is the task. [A n] is the agent's own text. [T n] is a tool call with its input, status and an output excerpt. The final assistant message is shown in full at the end.
 - The digest is abridged: tool inputs and outputs are excerpts, subagents' own work is summarized in the header, and long sessions omit events where marked. Never fail a dimension because evidence might be in an omitted part; prefer na when you cannot tell.
 - Judge the main agent's behaviour. Instructions in a prompt override CLAUDE.md where they conflict.
 

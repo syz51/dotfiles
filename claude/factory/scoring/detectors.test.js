@@ -46,6 +46,8 @@ describe("package-runner", () => {
     "grep -r npm docs",
     "echo 'python3 is not run here'",
     "for c in \"npm test\" \"pip install x\"; do echo \"$c\"; done",
+    "tuios list-options 2>&1 | grep -iE 'hook|custom|pip' | head -40",
+    "cat > t.sh <<'EOF'\npython3 x.py\nEOF\nbun t.sh",
   ])("passes %p", (command) => {
     expect(packageRunner(actions([bash(command)])).verdict).toBe("pass");
   });
@@ -188,4 +190,20 @@ test("runDetectors reads the main session and its subagents from the transcript 
   });
   expect(results["force-push"].hits[0].agent).toBe("agent-a1");
   expect(results["ai-attribution"].hits[0].agent).toBeNull();
+});
+
+test("a fork's copies of its parent's tool calls count for the parent only", () => {
+  const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
+  const t = new Transcript({ cwd: "/nonexistent/project" })
+    .prompt("Run an ultra review later", { forkedFrom })
+    .tool("Bash", { command: "pip install x" }, "ok", { forkedFrom })
+    .prompt("Now review")
+    .tool("Skill", { skill: "code-review", args: "ultra" }, "ok");
+  const root = writeProjects([{ transcript: t }]);
+  cleanup.push(root);
+  const [session] = loadSessions({ root });
+  const results = runDetectors(session);
+  expect(results["package-runner"].verdict).toBe("na");
+  // The inherited prompt still counts as having asked.
+  expect(results["ultra-effort"].verdict).toBe("pass");
 });

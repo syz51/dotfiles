@@ -163,10 +163,15 @@ function render(events, kept) {
 }
 
 // The digest text. records are the main transcript's records (read from session.file
-// when not given).
+// when not given). A forked session starts with copies of its parent's records, marked
+// forkedFrom; they belong to the parent's score, so only the fork's own events show.
 export function buildDigest(session, { records = readRecords(session.file).records, maxChars = DIGEST_CHARS } = {}) {
-  const { events, final } = collectEvents(session, records);
-  const top = header(session);
+  const own = records.filter((record) => !record.forkedFrom);
+  const { events, final } = collectEvents(session, own);
+  const parent = records.find((record) => record.forkedFrom)?.forkedFrom.sessionId;
+  const top = parent
+    ? `${header(session)}\nForked from session ${parent}: its ${records.length - own.length} inherited records are left out, and the counts above include them. Judge only the events below.`
+    : header(session);
   const finalBlock = final
     ? `## Final assistant message [${final.label}]\n${ends(final.text, Math.floor(maxChars / 4))}`
     : "## Final assistant message\n(none)";

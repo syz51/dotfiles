@@ -79,6 +79,23 @@ test("a long session stays within the limit, keeps every prompt, the start and t
   expect(buildDigest(s, { maxChars: 20_000 })).toBe(digest);
 });
 
+test("a forked session shows only its own events and names its parent", () => {
+  const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
+  const t = new Transcript()
+    .prompt("Parent's request", { forkedFrom })
+    .tool("Bash", { command: "parent-command" }, "ok", { forkedFrom })
+    .text("Parent's answer", { forkedFrom })
+    .prompt("Fork's request")
+    .text("Fork's answer");
+  const digest = buildDigest(session(t));
+  expect(digest).toContain("Forked from session parent-1: its 3 inherited records are left out");
+  expect(digest).not.toContain("Parent's request");
+  expect(digest).not.toContain("parent-command");
+  expect(digest).toContain("[P1] PROMPT");
+  expect(digest).toContain("Fork's request");
+  expect(digest).toContain("## Final assistant message [A1]\nFork's answer");
+});
+
 test("prompts beyond half the space keep their start and end too", () => {
   const t = new Transcript();
   for (let i = 0; i < 40; i++) t.prompt(`prompt-${i} ${"z".repeat(3000)}`).text(`reply ${i}`);

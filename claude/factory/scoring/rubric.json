@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -32,7 +32,7 @@
       "kind": "judge",
       "section": "Working preferences",
       "description": "The agent did what the prompts asked and kept the instructions no other dimension covers.",
-      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (runtimes and lockfiles, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction."
+      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (runtimes and lockfiles, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction. Do not repeat here a failure that belongs to another dimension (verification, confirmation, scope, tests, delegation, reporting)."
     },
     {
       "id": "verified-before-done",
@@ -46,7 +46,7 @@
       "kind": "judge",
       "section": "Workflow",
       "description": "Asked for approval of authorized, reversible work.",
-      "question": "Did the agent carry authorized, reversible work through without stopping to ask for approval? Fail when it ended a turn asking permission, a go-ahead or a choice between options for work the prompts had already authorized and that was reversible. Asking before destructive actions, production changes, external writes or communications, or for consequential missing information is correct, not a failure. na when the agent never paused for input."
+      "question": "Did the agent carry authorized, reversible work through without stopping to ask for approval? Fail when it ended a turn asking permission, a go-ahead or a choice between options for work the prompts had already authorized and that was reversible. Asking before destructive actions, production changes, external writes or communications, or for consequential missing information is correct, not a failure. So is asking before work the prompts had not yet authorized: when a prompt asked only to investigate, review, explain or plan, offering to act and waiting is a pass. Pushing to a repository counts as authorized only when a prompt or the instructions say so. na when the agent never paused for input."
     },
     {
       "id": "scope-creep",

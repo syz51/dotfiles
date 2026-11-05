@@ -31,7 +31,9 @@ const COMMAND = /<command-name>\s*(\/?[^<\s]+)\s*<\/command-name>/;
 const ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
 
 // Everything the detectors look at: tool calls in order (agent is null for the main
-// session), slash commands the prompts ran, and the human prompts.
+// session), slash commands the prompts ran, and the human prompts. A fork's copies of
+// its parent's tool calls (marked forkedFrom) count for the parent only; inherited
+// prompts and commands still count as what was asked.
 export function sessionActions(session, records = sessionRecords(session)) {
   const calls = [];
   const commands = [];
@@ -46,6 +48,7 @@ export function sessionActions(session, records = sessionRecords(session)) {
     for (const record of list) {
       const content = record.message?.content;
       if (record.type === "assistant" && Array.isArray(content)) {
+        if (record.forkedFrom) continue;
         for (const block of content)
           if (block?.type === "tool_use" && !seen.has(block.id)) {
             seen.add(block.id);
@@ -76,16 +79,20 @@ const NODE_TOOLS = {
 };
 const PYTHON_TOOLS = ["pip", "pip3", "pytest", "python", "python3", ...["10", "11", "12", "13", "14"].map((minor) => `python3.${minor}`)];
 
+// mayInvoke over-approximates on purpose (an `|` inside a quoted grep pattern reads as
+// a pipe), so a hit also needs the program in command position by simpleCommands.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
   const cwd = actions.cwd && existsSync(actions.cwd) ? actions.cwd : null;
   const hits = [];
   for (const call of commands) {
     const { command } = call.input;
+    const programs = new Set(simpleCommands(command).map((words) => basename(words[0])));
+    const runs = (name) => programs.has(name) && mayInvoke(command, name);
     const tool = Object.entries(NODE_TOOLS).find(([name, lockfiles]) =>
-      mayInvoke(command, name) && !(cwd && lockfiles.some((lockfile) => existsSync(join(cwd, lockfile)))))?.[0]
-      ?? PYTHON_TOOLS.find((name) => mayInvoke(command, name));
-    if (tool) hits.push(hit(call, command, { tool }));
+      runs(name) && !(cwd && lockfiles.some((lockfile) => existsSync(join(cwd, lockfile)))))?.[0]
+      ?? PYTHON_TOOLS.find(runs);
+    if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }
   return verdictOf(commands.length > 0, hits);
 }

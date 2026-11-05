@@ -79,7 +79,7 @@ beforeEach(() => {
   chmodSync(gh, 0o755);
   // The proposer: writes FAKE_EDITS ({ path: content }) into its working folder.
   const proposer = join(scratch, "proposer.js");
-  writeFileSync(proposer, `import { mkdirSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nexport default async ({ cwd, emit }) => {\n  for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {\n    mkdirSync(dirname(join(cwd, path)), { recursive: true });\n    writeFileSync(join(cwd, path), content);\n  }\n  emit({ type: "system", subtype: "init", tools: ["Read", "Edit", "Write", "Glob", "Grep"], mcp_servers: [] });\n  emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.7, num_turns: 3, result: "The scope rule was vague.\\nTITLE: Clarify the scope rule" });\n};\n`);
+  writeFileSync(proposer, `import { mkdirSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nexport default async ({ cwd, emit }) => {\n  for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {\n    mkdirSync(dirname(join(cwd, path)), { recursive: true });\n    writeFileSync(join(cwd, path), content);\n  }\n  emit({ type: "system", subtype: "init", tools: JSON.parse(process.env.FAKE_TOOLS ?? JSON.stringify(["Read", "Edit", "Write", "Glob", "Grep"])), mcp_servers: [] });\n  emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.7, num_turns: 3, result: "The scope rule was vague.\\nTITLE: Clarify the scope rule" });\n};\n`);
   setEnv({
     CLAUDE_FACTORY_STATE: join(scratch, "state"),
     CLAUDE_FACTORY_BIN: FAKE,
@@ -89,6 +89,7 @@ beforeEach(() => {
     FAKE_CLAUDE_LOG: join(scratch, "claude.jsonl"),
     FAKE_GH_LOG: join(scratch, "gh.jsonl"),
     FAKE_EDITS: undefined,
+    FAKE_TOOLS: undefined,
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_AUTHOR_NAME: "Test",
@@ -173,17 +174,34 @@ describe("propose command", () => {
     const [pr] = log("gh.jsonl");
     expect(pr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", branchName]);
     const body = pr.args[pr.args.indexOf("--body") + 1];
-    for (const text of ["`s1`", "`s3`", "[T3] edited unrelated file in s1", "Judge: claude-sonnet-5-5 (medium)", "Proposer: claude-opus-5-5 (high), $0.70", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
+    for (const text of ["The scope rule was vague.", "- `s1`", "- `s3`", "Judge: claude-sonnet-5-5 (medium)", "Proposer: claude-opus-5-5 (high), $0.70", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
     expect(body).not.toMatch(/Generated with|Co-Authored-By|\u{1F916}/u);
+    // Evidence quotes private transcripts: it stays local, and the body names the file.
+    expect(body).not.toContain("edited unrelated file");
+    expect(body).not.toContain("-Users-test-project");
+    expect(body).not.toContain("TITLE:");
 
     const [entry] = proposals();
     expect(entry).toMatchObject({ dimension: "scope-creep", status: "proposed", sessions: ["s1", "s2", "s3"], prUrl: "https://github.com/o/r/pull/42", branch: branchName, costUSD: 0.7, paths: ["claude/CLAUDE.md", "claude/tests/scope.test.js"] });
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Stay in the requested scope");
+    expect(readFileSync(entry.evidenceFile, "utf8")).toContain("- s2 (-Users-test-project)\n  - [T3] edited unrelated file in s2");
+    expect(body).toContain(`\`proposals/${entry.evidenceFile.split("/").at(-1)}\``);
 
     // The same sessions do not get a second proposal.
     expect(await run(["--repo", source])).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
     expect(output.join("\n")).toMatch(/scope-creep\s+3 failing sessions\s+already proposed/);
+  });
+
+  test("rejects a proposer session that had more than the file tools", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    edits({ "claude/CLAUDE.md": "changed\n" });
+    setEnv({ FAKE_TOOLS: JSON.stringify(["Read", "Edit", "Bash"]) });
+    expect(await run(["--repo", source])).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Bash"] });
+    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(log("gh.jsonl")).toHaveLength(0);
   });
 
   test("rejects a change outside the allowed paths without pushing", async () => {

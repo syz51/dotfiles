@@ -4,9 +4,10 @@
 // offline suites, and pushes a branch with a draft PR for the user to review.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
+import { initEvent } from "../../tests/lib/stream.js";
 import { runTask } from "../lib/claude.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { REPO_ROOT, RUBRIC, section } from "./rubric.js";
@@ -111,7 +112,7 @@ Your task:
 2. Otherwise make the smallest change that fixes that cause. Prefer clarifying, replacing or deleting existing text over adding a new rule; keep the file's concise style and do not repeat rules. Keep claude/tests in step: update or add assertions in claude/tests/config.test.js for rules you change, and rewrite tests for replaced behaviour rather than deleting them.
 3. Edit only claude/CLAUDE.md, claude/agents/*.md and files under claude/tests/. Do not touch settings, hooks or anything else; such a change is rejected. You cannot run commands; the tool runs the tests after you finish.
 
-End your reply with a line "TITLE: <imperative summary under 70 characters>" for the commit, then a short paragraph on the cause and the change.`;
+Reply with a short paragraph on the cause and the change, then a last line "TITLE: <imperative summary under 70 characters>" for the commit. The paragraph becomes the description of a pull request on a public repository: describe the failure pattern in general terms, and do not quote the evidence, commands, paths, URLs or project names.`;
 }
 
 const git = async (cwd, args, { allowFailure = false } = {}) => {
@@ -143,14 +144,22 @@ async function runTests(cwd) {
 
 const today = (now) => new Date(now).toISOString().slice(0, 10).replace(/-/g, "");
 
-function prBody({ group, tests, model, effort, costUSD, explanation }) {
+// The evidence, kept in the state folder: it quotes prompts and commands from private
+// transcripts, so it never goes into a PR body, which may be public.
+function evidenceMarkdown(group) {
+  return [`# ${group.dimension.id}: ${group.failures.length} failing sessions`, "",
+    ...group.failures.flatMap((failure) => [`- ${failure.sessionId} (${failure.project ?? "?"})`, ...failure.evidence.map((line) => `  - ${line}`)]), ""].join("\n");
+}
+
+function prBody({ group, tests, model, effort, costUSD, explanation, evidenceName }) {
   const lines = [
     `Repeated \`${group.dimension.id}\` failures (${group.dimension.kind}) in ${group.failures.length} scored sessions, against the "${group.dimension.section}" section of \`claude/CLAUDE.md\`.`,
     "",
     explanation.trim(),
     "",
     "## Evidence",
-    ...group.failures.slice(0, EVIDENCE_ITEMS).flatMap((failure) => [`- \`${failure.sessionId}\` (${failure.project ?? "?"})`, ...failure.evidence.map((line) => `  - ${line}`)]),
+    `The judge's and detectors' evidence quotes private transcripts, so it stays in the factory state folder as \`proposals/${evidenceName}\`. Sessions:`,
+    ...group.failures.map((failure) => `- \`${failure.sessionId}\``),
     "",
     "## Provenance",
     `- Judge: ${[...group.judges].join(", ") || "deterministic detector"}; rubric v${RUBRIC.version}`,
@@ -217,7 +226,9 @@ async function attempt(group, options, now) {
     tests: null,
     prUrl: null,
     patchFile: null,
+    evidenceFile: statePath("proposals", `${group.dimension.id}-${today(now)}-${now}.evidence.md`),
   };
+  writeFileSync(record.evidenceFile, evidenceMarkdown(group));
   const { stdout: originUrl } = await git(options.repo, ["remote", "get-url", "origin"]);
   const clone = mkdtempSync(join(tmpdir(), "claude-factory-proposal-"));
   try {
@@ -239,6 +250,12 @@ async function attempt(group, options, now) {
     });
     record.costUSD = task.costUSD;
     record.proposerOk = task.ok;
+    // Fail closed if the session had more than the file tools (an MCP server or a
+    // built-in that slipped through), whatever it changed.
+    const init = initEvent(task.events);
+    record.tools = init?.tools ?? null;
+    if (!init || init.tools.some((tool) => !TOOLS.includes(tool)) || (init.mcp_servers ?? []).length)
+      return { ...record, status: "rejected-tools", mcpServers: init?.mcp_servers ?? null };
     const title = /^TITLE:\s*(.+)$/m.exec(task.finalText)?.[1].trim().slice(0, 72) || `Address repeated ${group.dimension.id} failures`;
     const explanation = task.finalText.replace(/^TITLE:.*$/m, "").trim();
     Object.assign(record, { title, explanation: clip(explanation, 2000) });
@@ -257,7 +274,7 @@ async function attempt(group, options, now) {
     await git(clone, ["commit", "--quiet", "-m", title]);
     await git(clone, ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${branch}`]);
     const gh = process.env.CLAUDE_FACTORY_GH || "gh";
-    const body = prBody({ group, tests, model: options.model, effort: options.effort, costUSD: task.costUSD, explanation });
+    const body = prBody({ group, tests, model: options.model, effort: options.effort, costUSD: task.costUSD, explanation, evidenceName: basename(record.evidenceFile) });
     const pr = await runProcess([gh, "pr", "create", "--draft", "--base", "main", "--head", branch, "--title", title, "--body", body], { cwd: clone, env: process.env, timeout: 120_000 });
     if (pr.code !== 0) throw new Error(`${gh} pr create failed (${pr.code}) after pushing ${branch}: ${pr.stderr.trim()}`);
     return { ...record, status: "proposed", prUrl: pr.stdout.trim().split("\n").at(-1) };
@@ -302,7 +319,7 @@ export async function run(argv, { now = Date.now() } = {}) {
     console.log(`\nProposing for ${group.dimension.id} with ${options.model} (${options.effort})${options.dryRun ? ", dry run" : ""}…`);
     const record = await attempt(group, options, now);
     appendJsonl(proposalsFile(), record);
-    if (["rejected-paths", "tests-failed"].includes(record.status)) failed++;
+    if (["rejected-tools", "rejected-paths", "tests-failed"].includes(record.status)) failed++;
     console.log(`  ${record.status}: ${record.title ?? ""}${record.prUrl ? ` ${record.prUrl}` : ""}`);
     if (record.paths.length) console.log(`  changed: ${record.paths.join(", ")}${record.rejected ? ` (outside the allowlist: ${record.rejected.join(", ")})` : ""}`);
     if (record.tests) console.log(`  tests: ${record.tests.summary}`);
