@@ -186,12 +186,35 @@ To use the shared Git ignore file, configure its location explicitly:
 git config --global core.excludesFile "$HOME/.config/git/ignore"
 ```
 
+## Factory
+
+`claude/factory/` measures and improves this Claude Code setup. It reads the session
+transcripts under `~/.claude/projects` and keeps its reports, scores, benchmark results
+and proposal records in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/`, never in this
+repository. Commands that call a model state a budget and stay within it.
+
+```sh
+bun ~/.claude/factory/cli.js metrics            # last 7 days vs the week before
+bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
+bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
+bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
+bun ~/.claude/factory/cli.js bench list         # benchmark cases
+bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
+```
+
+`weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
+audit, scoring (judge budget $3) and proposals. Proposals open draft PRs on this
+repository only for the deterministic detector dimensions, and their bodies hold session
+ids, not transcript text, because the repository is public. `weekly status` shows the
+last run; `weekly uninstall` removes the job. The living task list is
+[`claude/factory/PLAN.md`](claude/factory/PLAN.md).
+
 ## Verification
 
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests
+bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests claude/factory
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
@@ -242,6 +265,15 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   independently, reviews stay read-only, and these small tasks spawn no subagent. A
   Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
+
+`claude/factory` tests run offline against synthetic transcripts and fake `claude`,
+`gh` and `launchctl` programs. Its live sandbox check runs real Haiku sessions (about
+$0.01) and verifies that the strict profile blocks writes outside the working folder and
+unlisted hosts:
+
+```sh
+RUN_CLAUDE_LIVE=1 bun test claude/factory/audit
+```
 
 Set `CLAUDE_LIVE_REPORT_DIR` to a folder inside `$TMPDIR` to keep a JSON report and
 the raw stream of each scenario; delete it when done.

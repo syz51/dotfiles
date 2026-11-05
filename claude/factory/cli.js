@@ -7,6 +7,7 @@ const COMMANDS = {
   propose: ["./scoring/propose.js", "Propose configuration fixes for repeated failures"],
   bench: ["./bench/cli.js", "Benchmark model and effort configurations on real tasks"],
   audit: ["./audit/cli.js", "Audit the security posture of this setup"],
+  weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
 };
 
 function usage() {

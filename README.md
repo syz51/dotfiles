@@ -19,6 +19,7 @@ there is no repository-wide installer.
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
 | `claude/`                | Claude Code instructions, subagents, settings, push guard, and a browser skill.  |
+| `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
