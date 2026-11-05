@@ -320,7 +320,8 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   Haiku did not run the command (an existing test; the hook never ran). The last full run
   passed every Claude configuration suite, including the policy suite under #16.
 - [x] codex-skills#2 merged (squash, e2222419).
-- [ ] Merge #17, switch `~/.config` to main, then merge #16.
+- [x] Merged #17 (7ada7e7) and #16 (d267080) on 2026-11-05; `~/.config` is on main, so the
+  weekly LaunchAgent runs the merged code.
 - [ ] Live-test flakes worth hardening later: the guard-hook scenario depends on Haiku
   agreeing to run a force push; the sandbox check's rare failure needs its output.
 - [ ] Inherited host prompts of a forked session are not shown to the judge (the lib
@@ -346,9 +347,11 @@ Dokploy VPS). Feasible, with this split:
 
 ## Next actions
 
-1. Foundation (area 0), commit, push.
-2. Launch tracks 1-3 and the dotfiles part of track 4 in parallel worktrees.
-3. Meanwhile in the main session: the secret scan and sandbox verification.
+The build is complete and merged. Remaining work is the open `[ ]` items above, none
+blocking: Codex session coverage and LiteLLM pricing (area 1), judge calibration and a
+shell-edit detector (area 2), more benchmark cases and trials (area 3), public-export
+scanning (area 4), and hardening two flaky live scenarios. The weekly run (Mondays 13:30)
+reports in the state folder's `reports/weekly-*.md`.
 
 ## Log
 
@@ -372,3 +375,4 @@ Dokploy VPS). Feasible, with this split:
   both fixed. codex-skills#2 CI green. The other thread merged to codex-skills main.
 - 2026-11-05: User decisions: audit baseline accepted; sandbox work deferred; the earlier
   address exposure needs no further action. Reviewing and merging the open PRs.
+- 2026-11-05: #17 and #16 merged; codex-skills#2 merged earlier. Build complete.
