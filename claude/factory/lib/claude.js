@@ -68,7 +68,7 @@ export async function judge({ prompt, schema, model, effort = "medium", budgetUs
 // built-in tools. Returns the stream whether or not the task succeeded.
 export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
-  permissionMode = "bypassPermissions", env = {},
+  permissionMode = "bypassPermissions", env = {}, addDirs = [],
 }) {
   const argv = [bin(), "--print", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
@@ -77,6 +77,8 @@ export async function runTask({
   if (agent) argv.push("--agent", agent);
   if (settings) argv.push("--settings", settings);
   if (tools) argv.push("--tools", tools.join(","));
+  // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
+  for (const dir of addDirs) argv.push("--add-dir", dir);
   const result = await runProcess(argv, { cwd, env: quietEnv(env), timeout: timeoutMs, input: prompt });
   const events = eventsOf(result, "Task run");
   const final = resultEvent(events);

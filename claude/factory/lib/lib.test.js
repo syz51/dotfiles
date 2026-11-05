@@ -257,11 +257,12 @@ describe("claude runner", () => {
   test("runTask passes the session options and returns the outcome", async () => {
     fake("task", { FAKE_CLAUDE_TEXT: "all done", FAKE_CLAUDE_WRITE: "out/answer.txt=42", FAKE_CLAUDE_COST: "0.5" });
     const cwd = mkdtempSync(join(scratch, "task-"));
-    const run = await runTask({ prompt: "do it", cwd, model: "claude-haiku-5-5", effort: "low", agent: "explorer", settings: '{"a":1}', tools: ["Read", "Edit"], budgetUsd: 1 });
+    const run = await runTask({ prompt: "do it", cwd, model: "claude-haiku-5-5", effort: "low", agent: "explorer", settings: '{"a":1}', tools: ["Read", "Edit"], budgetUsd: 1, addDirs: ["/x", "/y"] });
     expect([run.ok, run.finalText, run.costUSD, run.turns]).toEqual([true, "all done", 0.5, 1]);
     expect(readFileSync(join(cwd, "out", "answer.txt"), "utf8")).toBe("42");
     const [call] = calls();
     expect(call.args).toEqual(expect.arrayContaining(["--agent", "explorer", "--settings", '{"a":1}', "--tools", "Read,Edit", "--effort", "low", "--no-session-persistence"]));
+    expect(call.args.join(" ")).toContain("--add-dir /x --add-dir /y");
   });
 
   test("runTask fails with the exit status when there is no stream", async () => {

@@ -206,13 +206,34 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 
-- [ ] `audit` command: report the interactive posture (permission mode, sandbox, dangerous
-  prompt skip, hooks present and passing their tests, MCP servers and plugins enabled,
-  agents' tool restrictions) with a severity per item. Exit nonzero on regressions from a
-  recorded baseline.
-- [ ] Verify Claude Code's sandbox on this Mac with cheap live runs: writes outside the
-  working folder and non-allowlisted network are blocked; `failIfUnavailable` works. Keep
-  the profile in `audit/sandbox-profile.json` with a live test.
+- [x] `audit` command (merged): permission mode, sandbox, dangerous-prompt skip, hooks
+  present (and passing with `--with-tests`), MCP servers by name and type only (never
+  values from `~/.claude.json`), plugins, agents' tool limits, the codex-skills review's
+  flags. Baseline in the state folder; `--fail-on` exits 1 on unaccepted findings, and an
+  accepted finding fails again if its severity rises.
+- [x] Sandbox verified live on this Mac (4 Haiku runs, $0.005): with
+  `audit/sandbox-unattended.json` a Bash write inside the folder works, a write to `$HOME`
+  fails ("operation not permitted"), curl to an unlisted host is refused by the proxy,
+  `github.com` allowlisted returns 200, and `blockWritesOutsideWorkingDirectories` stops
+  the Write tool outside the folder. `strictAllowlist` from `--settings` is what blocks
+  unlisted hosts in bypass mode. Not verifiable here: `failIfUnavailable`. Quirk:
+  macOS-sandboxed curl cannot verify example.com's chain (exit 60).
+- [x] `lib/claude.js` `runTask` gained `addDirs` (`--add-dir`), since a profile's
+  `allowWrite` covers Bash only.
+- Real audit (2026-11-05), 2 high, 1 medium, 3 low:
+  - high: the codex-skills daily review runs bypass with full tools and no sandbox;
+  - high: interactive `defaultMode: bypassPermissions` with the sandbox off;
+  - medium: `sandbox.enabled` false;
+  - low: explorer is "read-only" by instruction but has Bash; dangerous-prompt skip on;
+    Write/Edit unconfined (`blockWritesOutsideWorkingDirectories` unset).
+- [ ] User decision: accept current findings into the real baseline
+  (`audit --update-baseline`), so the weekly run alerts only on regressions.
+- [ ] User decision: opt-in interactive sandbox. Known breakage: git over SSH, ssh and
+  database clients that ignore the proxy, dev servers (needs `allowLocalBinding`), `open`
+  and `osascript`, browser logins, pbcopy, Docker sockets, Go CLIs such as `gh`, some
+  certificate chains, Bash writes to `~/.claude`. Cheaper first step with no breakage:
+  `permissions.blockWritesOutsideWorkingDirectories: true` (low finding above), though
+  it removes EnterWorktree and ExitWorktree.
 - [x] Secret scan (2026-11-05): pinned gitleaks 8.30.1 over all branches of codex-skills
   (13 findings) and public `syz51/skills` (27). All false positives: SHA-256 hashes keyed
   by file path in `sources.json` and `.public-export.json`, and the jwt.io sample token in
@@ -224,15 +245,20 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   exporter (the restored `scan()` from the other thread) or a workflow the exporter keeps;
   its `.public-export.json` hashes need the same allowlist. Decide after the other thread
   lands.
-- [!] codex-skills daily review in the sandbox: pass the sandbox profile through
-  `--settings`, limit writes to the review checkout and state folders, network to GitHub and
-  docs.rs. Blocked on the other thread merging (it edits `claude_cli.py` and `jobs.py`).
-- [ ] Decision for the user: opt-in interactive sandbox profile.
+- [!] codex-skills daily review in the sandbox: pass `--settings` with
+  `audit/maintainer-sandbox.json` in `review_command` (draft: writes to the investigations
+  folder, `~/.cache/codex-skills`, uv and cargo caches; network to github.com, docs.rs,
+  crates.io hosts, pypi; probes passed, main checkout stays read-only). Open issues:
+  `evidence.py --recheck` starts a nested `claude` needing api.anthropic.com and
+  `~/.claude` writes, so leave rechecks to the hourly job (do not exclude the script: the
+  checkout is writable); the job's PATH lacks `~/.cargo/bin`; allowing all of github.com
+  is an exfiltration path. Blocked on the other thread merging (it edits `claude_cli.py`).
 
 ### 5. Integration (main session)
 
-- [ ] Merge the track branches; update `SETUP.md` (Verification, Factory section), the
-  README table, and CI (`bun test claude/factory`).
+- [ ] Merge the track branches (metrics and audit done); update `SETUP.md` (Verification:
+  `bun test claude/factory`, live `RUN_CLAUDE_LIVE=1 bun test claude/factory/audit`;
+  Factory section), the README table, and CI (`bun test claude/factory`).
 - [ ] Run every suite in SETUP.md's Verification section, plus the live suites (Claude Code
   behavior is involved).
 - [ ] `/code-review` at xhigh on the final diff; fix real defects; rerun affected checks.
