@@ -130,6 +130,12 @@ describe("settings", () => {
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read
+  // 300K-970K of context on every turn; 56% of two weeks' usage came from requests above 200K.
+  test("conversations compact at 300K tokens, not near the 1M window", () => {
+    expect(settings.autoCompactWindow).toBe(300000);
+  });
+
   // This applies to every Claude Code worktree (--worktree, EnterWorktree and subagent
   // isolation), so all of them carry the current branch and its unpushed commits.
   test("worktrees branch from the local HEAD, not the remote default branch", () => {
