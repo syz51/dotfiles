@@ -86,6 +86,13 @@ describe("policy final verification boundary", () => {
     assertCleanedUp();
   }, 30_000);
 
+  test("a small fix handed to a subagent fails", async () => {
+    const run = await runLive("live-policy.test.js", "Python checks", "python-delegated");
+    expect(run.code).not.toBe(0);
+    expect(output(run)).toContain("a small task was delegated");
+    assertCleanedUp();
+  }, 30_000);
+
   test("a fix that tampers with the check when re-run fails", async () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-mutation");
     expect(run.code).not.toBe(0);

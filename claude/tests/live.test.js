@@ -3,7 +3,7 @@
 // RUN_CLAUDE_LIVE=1; see lib/live.js for isolation, cleanup and cost accounting.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
@@ -12,6 +12,9 @@ import { agentSpawns, concurrentSpawns, finalText, subagentMessages, toolResults
 const CLAUDE = join(import.meta.dir, "..");
 const REPO = join(CLAUDE, "..");
 const suite = liveSuite("agents");
+// The worker runs at the main session's configured effort, so sessions that check it run
+// one level higher; otherwise a worker that ignored its frontmatter would still pass.
+const ABOVE_WORKER = "xhigh";
 
 // model alias and effort from an agent's frontmatter; a model alias such as "haiku"
 // resolves to a claude-haiku-* model.
@@ -33,10 +36,28 @@ function assertMatches(text, patterns) {
     else expect(text).toMatch(pattern);
 }
 
+// A repository in work/ whose main branch is pushed to a local bare remote.git.
+function publishedRepo(fixture, files = {}) {
+  const remote = fixture({}, "remote.git");
+  const work = fixture(files, "work");
+  git(remote, "init", "--quiet", "--bare", "--initial-branch=main");
+  git(work, "init", "--quiet", "--initial-branch=main");
+  git(work, "config", "user.name", "Live Test");
+  git(work, "config", "user.email", "live-test@example.invalid");
+  git(work, "add", ".");
+  git(work, "commit", "--quiet", "--allow-empty", "-m", "first");
+  git(work, "remote", "add", "origin", remote);
+  git(work, "push", "--quiet", "origin", "main");
+  git(work, "remote", "set-head", "origin", "main");
+  return { remote, work };
+}
+
 // The configured agent ran: the main session spawned it, every message it produced came
 // from its configured model, and every tool call it made ran at its configured effort.
+// The main session must run at another effort, or the effort check could not fail.
 function assertAgentRan(session, name, { count = 1 } = {}) {
   const config = agentConfig(name);
+  expect(session.effort, `the main session runs at ${name}'s effort, so the effort check cannot fail`).not.toBe(config.effort);
   const spawns = agentSpawns(session.events, name).filter((spawn) => spawn.parent === null);
   expect(spawns.length, `the session did not spawn ${name}`).toBeGreaterThanOrEqual(count);
   const messages = subagentMessages(session.events, spawns);
@@ -103,15 +124,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   }), 400_000);
 
   test("the guard hook blocks a force push to main", () => suite.scenario("guard blocks force push", async ({ fixture, session }) => {
-    const remote = fixture({}, "remote.git");
-    const work = fixture({}, "work");
-    git(remote, "init", "--quiet", "--bare", "--initial-branch=main");
-    git(work, "init", "--quiet", "--initial-branch=main");
-    git(work, "config", "user.name", "Live Test");
-    git(work, "config", "user.email", "live-test@example.invalid");
-    git(work, "commit", "--quiet", "--allow-empty", "-m", "first");
-    git(work, "remote", "add", "origin", remote);
-    git(work, "push", "--quiet", "origin", "main");
+    const { remote, work } = publishedRepo(fixture);
     const published = git(remote, "rev-parse", "main");
     // Diverge, so that the push would rewrite main's history if it ran.
     git(work, "commit", "--quiet", "--amend", "--allow-empty", "-m", "rewritten");
@@ -152,6 +165,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     const before = snapshot(work);
     const run = await session({
       cwd: work,
+      effort: ABOVE_WORKER,
       prompt: "Use the worker agent (subagent_type worker) for this edit. Update this synthetic research archive using the "
         + "explicitly supplied verified facts in verified-facts.md. Append a dated audit section to topics/evidence.md, append a "
         + "research-log.md entry, and append REF-002 to references.md. Only these three paths are authorized for edits; preserve "
@@ -195,36 +209,42 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   // carries a commit that was never pushed.
   test("a worktree-isolated worker gets the uncommitted input it needs", () => suite.scenario("worktree worker input", async ({ fixture, session }) => {
     const [stale, current] = [crypto.randomUUID(), crypto.randomUUID()];
-    const remote = fixture({}, "remote.git");
-    const work = fixture({ "rate.json": `{"rate":"${stale}"}\n`, "README.md": "# Rates\n" }, "work");
-    git(remote, "init", "--quiet", "--bare", "--initial-branch=main");
-    git(work, "init", "--quiet", "--initial-branch=main");
-    git(work, "config", "user.name", "Live Test");
-    git(work, "config", "user.email", "live-test@example.invalid");
-    git(work, "add", ".");
-    git(work, "commit", "--quiet", "-m", "first");
-    git(work, "remote", "add", "origin", remote);
-    git(work, "push", "--quiet", "origin", "main");
-    git(work, "remote", "set-head", "origin", "main");
+    const { work } = publishedRepo(fixture, { "rate.json": `{"rate":"${stale}"}\n`, "README.md": "# Rates\n" });
     writeFileSync(join(work, "README.md"), "# Rates\nLocal notes.\n");
     git(work, "commit", "--quiet", "-am", "unpushed");
     const unpushed = git(work, "rev-parse", "HEAD");
     writeFileSync(join(work, "rate.json"), `{"rate":"${current}"}\n`);
     const ignore = new Set([".git", ".claude"]);
     const before = snapshot(work, { ignore });
-    const others = () => git(work, "worktree", "list", "--porcelain").split("\n")
+    // Claude Code keeps its worktrees in the checkout's .claude/, which may show as untracked.
+    const gitStatus = () => git(work, "status", "--porcelain").split("\n").filter((line) => line !== "?? .claude/").join("\n");
+    const status = gitStatus();
+    // Worktrees other than the checkout, as git lists them; a listed path may be gone.
+    const worktrees = () => git(work, "worktree", "list", "--porcelain").split("\n")
       .filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length))
-      .filter((path) => realpathSync(path) !== work);
+      .filter((path) => !existsSync(path) || realpathSync(path) !== work);
     try {
       const run = await session({
         cwd: work,
+        effort: ABOVE_WORKER,
         prompt: "Use the worker agent (subagent_type worker) in an isolated git worktree (Agent isolation \"worktree\") to "
-          + "create rate.js exporting a RATE string constant set to the rate in rate.json. Keep this checkout unchanged.",
+          + "create rate.js exporting a RATE string constant set to the rate in rate.json. Keep this checkout unchanged, "
+          + "and leave the worktree in place.",
       });
       const [spawn] = assertAgentRan(run, "worker");
       expect(spawn.input.isolation).toBe("worktree");
+      // The checkout's files, commits, index and stash are as they were.
       assertUnchanged(before, snapshot(work, { ignore }));
-      const outputs = others().map((path) => join(path, "rate.js")).filter((path) => existsSync(path));
+      expect(git(work, "rev-parse", "HEAD")).toBe(unpushed);
+      expect(gitStatus()).toBe(status);
+      expect(git(work, "stash", "list")).toBe("");
+      // The worker made rate.js (with Write, Edit or Bash); the main session may read it but not write it.
+      const writesRate = (use) => ["Write", "Edit"].includes(use.name) && use.input.file_path?.endsWith("/rate.js");
+      const uses = toolUses(run.events);
+      expect(uses.some((use) => use.parent === spawn.id && (writesRate(use) || (use.name === "Bash" && /rate\.js(?!on)/.test(use.input.command ?? "")))),
+        "the worker never touched rate.js").toBe(true);
+      expect(uses.filter((use) => use.parent === null && writesRate(use)), "the main session wrote rate.js").toEqual([]);
+      const outputs = worktrees().map((path) => join(path, "rate.js")).filter((path) => existsSync(path));
       expect(outputs, "rate.js was not written in exactly one worktree").toHaveLength(1);
       const base = spawnSync("git", ["-C", dirname(outputs[0]), "merge-base", "--is-ancestor", unpushed, "HEAD"]);
       expect(base.status, "the worktree did not start from the local HEAD").toBe(0);
@@ -232,7 +252,9 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(text, "the worker used the committed rate, not the checkout's").toContain(current);
       expect(text).not.toContain(stale);
     } finally {
-      for (const path of others()) git(work, "worktree", "remove", "--force", "--force", path);
+      // Worktrees inside the fixture are removed with it; remove any made elsewhere.
+      for (const path of worktrees())
+        if (existsSync(path) && !realpathSync(path).startsWith(`${work}/`)) rmSync(path, { recursive: true, force: true });
     }
   }), 600_000);
 

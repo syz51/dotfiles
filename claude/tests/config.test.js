@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { configuredEffort } from "./lib/live.js";
 
 const CLAUDE = join(import.meta.dir, "..");
 const REPO = join(CLAUDE, "..");
@@ -31,7 +32,6 @@ function section(heading) {
 
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent"] },
-  // The main session's configured Opus effort, so a parallel track loses no effort.
   worker: { model: "opus", effort: "high", disallowedTools: ["Agent"] },
   solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent"] },
 };
@@ -61,6 +61,10 @@ describe("agents", () => {
   test("every agent is described as one independent track run in parallel", () => {
     for (const name of agentFiles)
       expect(frontmatter(`claude/agents/${name}`).meta.description).toMatch(/\bindependent\b.*\bin parallel with other work\b/);
+  });
+
+  test("worker runs at the main session's configured Opus effort, so a parallel track loses none", () => {
+    expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
   });
 
   test("implementing agents stay within their assigned files", () => {
@@ -116,7 +120,9 @@ describe("settings", () => {
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
-  test("subagent worktrees branch from the local HEAD, not the remote default branch", () => {
+  // This applies to every Claude Code worktree (--worktree, EnterWorktree and subagent
+  // isolation), so all of them carry the current branch and its unpushed commits.
+  test("worktrees branch from the local HEAD, not the remote default branch", () => {
     expect(settings.worktree).toEqual({ baseRef: "head" });
   });
 
@@ -163,14 +169,17 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/takes only a handful of tool calls/);
     expect(delegation).toMatch(/Don't use subagents to verify your own work/);
     expect(delegation).toMatch(/Choose each track's agent by what it does/);
+    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
+    expect(delegation).toMatch(/Agents that stand in for a tool you lack, such as `web-fetch`, are tool use, not delegation/);
     expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
     const delegation = section("Delegation");
     expect(delegation).toMatch(/the runtime's worktree facility, never a worktree made in the shell/);
-    expect(delegation).toMatch(/default branch rather than `HEAD` and never has uncommitted changes/);
+    expect(delegation).toMatch(/A new worktree never has uncommitted changes/);
     expect(delegation).toMatch(/transfer required inputs explicitly and have the child verify them in its checkout/);
+    expect(delegation).toMatch(/bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise/);
   });
 
   test("Workflow keeps the Chinese meaning rule and its exceptions", () => {
