@@ -114,7 +114,7 @@ export function renderMarkdown(report) {
 // The history file as a Markdown table, oldest first.
 export function renderHistory(entries) {
   if (!entries.length) return "No metrics runs recorded yet.";
-  return table(["Run", "Window", "Project", "Sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
+  return table(["Run (UTC)", "Window", "Project", "Sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
     entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions, usd(entry.costUSD),
       num(entry.mergedPRs), usd(entry.costPerMergedPRUSD), num(entry.promptsPerSession), pct(entry.correctionRate), pct(entry.toolErrorRate), entry.api429]));
 }
