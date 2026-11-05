@@ -151,7 +151,7 @@ describe("audit command", () => {
     expect(found["agent:runner:read-only-by-instruction"]).toBeUndefined();
   });
 
-  test("checks whether the codex-skills daily review runs unsandboxed", async () => {
+  test("checks whether the codex-skills weekly review runs unsandboxed", async () => {
     const file = join(scratch, "codex", "scripts", "claude_cli.py");
     write(file, "def review_command(cli):\n    return [str(cli), '--print', '--permission-mode', 'bypassPermissions']\n");
     expect(byId((await json()).report)["codex-skills.review-unsandboxed"].severity).toBe("high");

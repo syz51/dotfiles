@@ -191,7 +191,7 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
 
 const xml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// The LaunchAgent: Mondays at 13:30, after the codex-skills daily review's 09:00 slot.
+// The LaunchAgent: Mondays at 13:30, after the codex-skills weekly review's Monday 09:00 slot.
 // launchd runs a missed calendar job once when the Mac wakes.
 export function plist({ bun = process.execPath, cli = join(homedir(), ".claude", "factory", "cli.js"), path = process.env.PATH, home = homedir(), logs = stateDir() } = {}) {
   const strings = (items) => items.map((item) => `\t\t<string>${xml(item)}</string>`).join("\n");

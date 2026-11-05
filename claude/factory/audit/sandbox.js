@@ -11,7 +11,7 @@
 // web tools, so the profile also confines Write/Edit/NotebookEdit to the working folders
 // and denies WebFetch and WebSearch.
 //
-// maintainer-sandbox.json: draft for the codex-skills daily review (not applied yet).
+// maintainer-sandbox.json: draft for the codex-skills weekly review (not applied yet).
 //
 // Key names and semantics: code.claude.com/docs/en/settings-reference (sandbox.*,
 // permissions.*) and code.claude.com/docs/en/sandboxing, checked against Claude Code
