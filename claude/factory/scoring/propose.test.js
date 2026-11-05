@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { RUBRIC } from "./rubric.js";
-import { allowedPath, alreadyProposed, failureGroups, leakedEvidence, run } from "./propose.js";
+import { allowedPath, alreadyProposed, failureGroups, leakedEvidence, readDenies, run } from "./propose.js";
 
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 let scratch;
@@ -86,9 +86,10 @@ beforeEach(() => {
   // The fake gh fails for a --head branch containing FAKE_GH_FAIL.
   writeFileSync(gh, `#!/usr/bin/env bun\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(process.env.FAKE_GH_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");\nif (process.env.FAKE_GH_FAIL && args[args.indexOf("--head") + 1].includes(process.env.FAKE_GH_FAIL)) { console.error("HTTP 502"); process.exit(1); }\nconsole.log("https://github.com/o/r/pull/42");\n`);
   chmodSync(gh, 0o755);
-  // The proposer: writes FAKE_EDITS ({ path: content }) into its working folder.
+  // The proposer: writes FAKE_EDITS ({ path: content }) into its working folder, then
+  // ends with FAKE_RESULT (a result event) when set, else a success.
   const proposer = join(scratch, "proposer.js");
-  writeFileSync(proposer, `import { mkdirSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nexport default async ({ cwd, emit }) => {\n  for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {\n    mkdirSync(dirname(join(cwd, path)), { recursive: true });\n    writeFileSync(join(cwd, path), content);\n  }\n  emit({ type: "system", subtype: "init", tools: JSON.parse(process.env.FAKE_TOOLS ?? JSON.stringify(["Read", "Edit", "Write", "Glob", "Grep"])), mcp_servers: [] });\n  emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.7, num_turns: 3, result: "The scope rule was vague.\\nTITLE: Clarify the scope rule" });\n};\n`);
+  writeFileSync(proposer, `import { mkdirSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nexport default async ({ cwd, emit }) => {\n  for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {\n    mkdirSync(dirname(join(cwd, path)), { recursive: true });\n    writeFileSync(join(cwd, path), content);\n  }\n  emit({ type: "system", subtype: "init", tools: JSON.parse(process.env.FAKE_TOOLS ?? JSON.stringify(["Read", "Edit", "Write", "Glob", "Grep"])), mcp_servers: [] });\n  emit(process.env.FAKE_RESULT ? JSON.parse(process.env.FAKE_RESULT) : { type: "result", subtype: "success", is_error: false, total_cost_usd: 0.7, num_turns: 3, result: "The scope rule was vague.\\nTITLE: Clarify the scope rule" });\n};\n`);
   setEnv({
     CLAUDE_FACTORY_STATE: join(scratch, "state"),
     CLAUDE_FACTORY_BIN: FAKE,
@@ -99,6 +100,7 @@ beforeEach(() => {
     FAKE_GH_LOG: join(scratch, "gh.jsonl"),
     FAKE_EDITS: undefined,
     FAKE_TOOLS: undefined,
+    FAKE_RESULT: undefined,
     FAKE_GH_FAIL: undefined,
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
@@ -139,6 +141,14 @@ describe("proposal rules", () => {
     for (const path of ["claude/CLAUDE.md", "claude/agents/worker.md"]) expect(allowedPath(path), path).toBe(true);
     for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test"])
       expect(allowedPath(path), path).toBe(false);
+  });
+
+  test("the proposer may not read private sources: a folder gets its absolute rule, and its ~/ rule under home", () => {
+    const denies = readDenies(["/home/me/.local/share/claude-factory", "/srv/state", "/home/me/.claude/projects"], "/home/me");
+    expect(denies).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.claude/projects/**)", "Read(~/.codex/**)",
+      "Read(//home/me/.local/share/claude-factory/**)", "Read(~/.local/share/claude-factory/**)", "Read(//srv/state/**)", "Read(//home/me/.claude/projects/**)"]));
+    expect(denies.filter((rule) => rule === "Read(~/.claude/projects/**)")).toHaveLength(1);
+    expect(denies.some((rule) => rule.startsWith("Read(~/") && rule.includes("srv"))).toBe(false);
   });
 
   test("a leak is a verbatim run of 40 characters of evidence that the repository did not already hold", () => {
@@ -189,9 +199,11 @@ describe("propose command", () => {
 
     const [proposer] = log("claude.jsonl");
     expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--permission-mode", "acceptEdits", "--model", "claude-opus-5-5", "--effort", "high", "--max-budget-usd", "3"]));
-    // Reads of credentials are denied, whatever the user's settings allow.
+    // Reads of credentials, raw transcripts and the state folder are denied, whatever the
+    // user's settings allow; an absolute path is written //path.
     const settings = JSON.parse(proposer.args[proposer.args.indexOf("--settings") + 1]);
-    expect(settings.permissions.deny).toEqual(["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)", "Read(~/.netrc)", "Read(~/.claude.json)", "Read(~/.docker/config.json)"]);
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)", "Read(~/.netrc)", "Read(~/.claude.json)", "Read(~/.docker/config.json)",
+      "Read(~/.claude/projects/**)", "Read(~/.codex/**)", `Read(/${join(scratch, "state")}/**)`]));
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
     expect(proposer.stdin).toContain("Prefer clarifying, replacing or deleting");
@@ -307,6 +319,26 @@ describe("propose command", () => {
     expect(proposals()[0]).toMatchObject({ status: "error", branch: null, pushed: false, costUSD: 3 });
     expect(proposals()[0].error).toContain("Task run");
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+  });
+
+  test("a proposer that hit its budget keeps its partial edits as a local patch, untested and unpushed", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    edits({ "claude/CLAUDE.md": CLEARER });
+    setEnv({ FAKE_RESULT: JSON.stringify({ type: "result", subtype: "error_max_budget_usd", is_error: true, total_cost_usd: 3 }) });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    const [entry] = proposals();
+    expect(entry).toMatchObject({ status: "proposer-failed", resultSubtype: "error_max_budget_usd", proposerOk: false, costUSD: 3, tests: null, pushed: false, prUrl: null, paths: ["claude/CLAUDE.md"] });
+    expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Stay in the requested scope");
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+    expect(log("gh.jsonl")).toHaveLength(0);
+    expect(output.join("\n")).toContain("proposer-failed: error_max_budget_usd");
+
+    // Without edits there is no patch.
+    rmSync(join(scratch, "state", "proposals.jsonl"));
+    edits({});
+    expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "proposer-failed", paths: [], patchFile: null });
   });
 
   test("a dry run runs the proposer and tests but pushes and opens nothing, and does not block a real run", async () => {

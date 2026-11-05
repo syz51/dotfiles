@@ -44,6 +44,43 @@ test("holds metadata, prompts, assistant text once per message, tool calls, suba
   expect(digest).toContain(`## Final assistant message [A2]\nDone. ${"Final report. ".repeat(400)}`);
 });
 
+test("shows host notices in order, labelled apart from prompts, and slash commands by name and arguments", () => {
+  const t = new Transcript()
+    .prompt("Context handoff (full_thread_summary): earlier thread renamed foo. Newest request: rename bar too.")
+    .text("Renaming bar.")
+    .prompt("<command-name>/review</command-name>\n<command-message>review</command-message>\n<command-args>high origin/main</command-args>")
+    .prompt("Delegated task node:delegated-task:abc finished: tests pass.")
+    .prompt("Update on pull request #3 (https://github.com/o/r/pull/3): a check failed.")
+    .prompt("Fix the check")
+    .text("Fixed.");
+  const s = session(t);
+  expect(s.prompts.map((prompt) => prompt.text)).toEqual(["Fix the check"]);
+  const digest = buildDigest(s);
+  expect(digest).toContain("Prompts: 1; host notices: 4;");
+  const events = digest.slice(digest.indexOf("## Events"), digest.indexOf("## Final"));
+  const order = ["[H1] HOST NOTICE (", "Context handoff (full_thread_summary): earlier thread", "[A1] ASSISTANT: Renaming bar.",
+    "[H2] HOST NOTICE (slash command, ", "): /review high origin/main", "[H3] HOST NOTICE", "Delegated task node:delegated-task:abc", "[H4] HOST NOTICE", "Update on pull request #3", "[P1] PROMPT", "Fix the check"];
+  const positions = order.map((text) => events.indexOf(text));
+  expect(positions.every((position) => position >= 0), JSON.stringify(positions)).toBe(true);
+  expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  expect(events).not.toContain("<command-name>");
+});
+
+test("host notices are bounded like prompts and kept ahead of other events", () => {
+  const t = new Transcript().prompt("Start");
+  t.prompt(`Context handoff (full_thread_summary): long-handoff ${"h".repeat(10_000)} newest request`);
+  for (let i = 0; i < 20; i++) t.prompt(`Context handoff (full_thread_summary): handoff-${i} ${"h".repeat(2500)}`).tool("Read", { file_path: `/file-${i}.js` }, "y".repeat(2000));
+  t.text("All done.");
+  const digest = buildDigest(session(t), { maxChars: 20_000 });
+  expect(digest.length).toBeLessThanOrEqual(20_000);
+  // Each notice keeps its start and end within the prompt bound.
+  const notice = /\[H1\][^\n]*\n([^\n]*)/.exec(digest)[1];
+  expect(notice.length).toBeLessThanOrEqual(4000);
+  expect(notice).toEndWith("newest request");
+  expect(digest).toContain("handoff-19 ");
+  expect(digest).toMatch(/omitted to fit the digest: \d+ host notices? …/);
+});
+
 test("bounds each part: prompts, tool inputs and outputs", () => {
   const t = new Transcript().prompt(`start ${"p".repeat(10_000)} end`).tool("Bash", { command: "c".repeat(1000) }, "o".repeat(5000)).text("ok");
   const digest = buildDigest(session(t));

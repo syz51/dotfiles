@@ -1,11 +1,11 @@
 // A bounded, deterministic text digest of a session for the judge: metadata, the human
-// prompts, the main session's assistant text, its tool calls with an output excerpt,
-// subagent spawns and the final assistant message. Events are labeled ([P2] prompt,
-// [A7] assistant text, [T14] tool call, [I1] a fork's prompt from its parent
-// conversation) so the judge can cite them. Over the size limit
-// it keeps prompts first, then other events from the start and the end, and says what
-// it left out.
-import { INTERRUPT, readRecords, textOf } from "../lib/transcripts.js";
+// prompts, host notices, the main session's assistant text, its tool calls with an
+// output excerpt, subagent spawns and the final assistant message. Events are labeled
+// ([P2] prompt, [H1] host notice, [A7] assistant text, [T14] tool call, [I1] a fork's
+// prompt from its parent conversation) so the judge can cite them. Over the size limit
+// it keeps prompts and host notices first, then other events from the start and the
+// end, and says what it left out.
+import { INTERRUPT, isHostPrompt, readRecords, textOf } from "../lib/transcripts.js";
 
 export const DIGEST_CHARS = 60_000;
 const PROMPT_CHARS = 4_000;
@@ -51,14 +51,33 @@ export function compactInput(name, input = {}) {
 
 const promptEvent = (label, prompt) => ({ kind: "prompt", text: `[${label}] PROMPT (${prompt.source ?? "?"}, ${time(prompt.at)}):\n${ends(prompt.text, PROMPT_CHARS)}` });
 
+const COMMAND = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/;
+const COMMAND_ARGS = /<command-args>([\s\S]*?)<\/command-args>/;
+
+// A notice the host sent as a prompt (lib/transcripts.js's isHostPrompt): a slash
+// command, a context handoff, a delegated task's result or a pull request update. A
+// slash command shows as its name and arguments, anything else as its text.
+function hostEvent(label, record, text) {
+  const command = COMMAND.exec(text)?.[1];
+  if (!command) return { kind: "host", text: `[${label}] HOST NOTICE (${time(record.timestamp)}):\n${ends(text, PROMPT_CHARS)}` };
+  const args = flat(COMMAND_ARGS.exec(text)?.[1].trim() ?? "");
+  return { kind: "host", text: `[${label}] HOST NOTICE (slash command, ${time(record.timestamp)}): /${command}${args ? ` ${ends(args, PROMPT_CHARS)}` : ""}` };
+}
+
+// Whether a user record is a prompt the host sent: what lib/transcripts.js would take as
+// a prompt text, apart from its host filter.
+const isHostRecord = (record, text) => !record.isMeta && !record.isCompactSummary && record.promptSource !== "system" && !record.isVisibleInTranscriptOnly
+  && !(Array.isArray(record.message?.content) && record.message.content.some((block) => block?.type === "tool_result"))
+  && isHostPrompt(text);
+
 // The main session's events in transcript order and its final assistant message.
 function collectEvents(session, records) {
   const prompts = new Map(session.prompts.map((prompt) => [`${prompt.at}\0${prompt.text}`, prompt]));
   const calls = new Map(session.toolCalls.map((call) => [call.id, call]));
   const events = [];
   const texts = new Map(); // message id -> its text event
-  const counters = { prompt: 0, assistant: 0, tool: 0 };
-  const label = (kind) => `${{ prompt: "P", assistant: "A", tool: "T" }[kind]}${++counters[kind]}`;
+  const counters = { prompt: 0, host: 0, assistant: 0, tool: 0 };
+  const label = (kind) => `${{ prompt: "P", host: "H", assistant: "A", tool: "T" }[kind]}${++counters[kind]}`;
   for (const record of records) {
     const content = record.message?.content;
     if (record.type === "user" && !record.isSidechain) {
@@ -66,7 +85,8 @@ function collectEvents(session, records) {
       const prompt = prompts.get(`${record.timestamp ?? null}\0${text}`);
       if (prompt) {
         events.push(promptEvent(label("prompt"), prompt));
-      } else if (text.startsWith(INTERRUPT)) events.push({ kind: "note", text: "[interrupted by the user]" });
+      } else if (isHostRecord(record, text)) events.push(hostEvent(label("host"), record, text));
+      else if (text.startsWith(INTERRUPT)) events.push({ kind: "note", text: "[interrupted by the user]" });
     } else if (record.type === "assistant" && !record.isSidechain && Array.isArray(content)) {
       const id = record.message?.id ?? record.uuid;
       for (const block of content) {
@@ -106,7 +126,7 @@ function header(session) {
     `Time: ${time(session.startedAt)} to ${time(session.endedAt)} (${duration(session.startedAt, session.endedAt)})`,
     `Models: ${count(session.models)}; efforts: ${count(session.efforts)}`,
     `Cost: $${session.costUSD.toFixed(2)} (${session.costSource})${session.linesAdded !== null ? `; lines +${session.linesAdded}/-${session.linesRemoved}` : ""}`,
-    `Prompts: ${session.prompts.length}; assistant messages: ${session.assistantMessages}; tool calls: ${session.toolCalls.length} (${toolErrors} errors); interrupts: ${session.interrupts}; compactions: ${session.compactions}; API errors: ${count(session.apiErrors)}`,
+    `Prompts: ${session.prompts.length}; host notices: ${session.hostPrompts}; assistant messages: ${session.assistantMessages}; tool calls: ${session.toolCalls.length} (${toolErrors} errors); interrupts: ${session.interrupts}; compactions: ${session.compactions}; API errors: ${count(session.apiErrors)}`,
   ];
   if (session.prLinks.length) lines.push(`PRs: ${session.prLinks.map((link) => link.url).join(", ")}`);
   if (session.subagents.length) {
@@ -144,7 +164,7 @@ function render(events, kept, start = 0, end = events.length) {
   let omitted = null;
   const flush = () => {
     if (!omitted) return;
-    const parts = Object.entries(omitted).map(([kind, n]) => `${n} ${{ prompt: "prompt", assistant: "assistant message", tool: "tool call", note: "note" }[kind]}${n === 1 ? "" : "s"}`);
+    const parts = Object.entries(omitted).map(([kind, n]) => `${n} ${{ prompt: "prompt", host: "host notice", assistant: "assistant message", tool: "tool call", note: "note" }[kind]}${n === 1 ? "" : "s"}`);
     lines.push(`[… omitted to fit the digest: ${parts.join(", ")} …]`);
     omitted = null;
   };
@@ -189,11 +209,13 @@ export function buildDigest(session, { records = readRecords(session.file).recor
   };
   const full = compose(new Set(events.keys()), "");
   if (full.length <= maxChars) return full;
-  // Prompts first, up to half of the space when they need more; the rest goes to the
-  // other events. Omission markers take space too, so shrink until it fits.
+  // Prompts and host notices first, up to half of the space when they need more; the
+  // rest goes to the other events. Omission markers take space too, so shrink until it
+  // fits.
   const indexed = events.map((event, index) => ({ ...event, index }));
-  const prompts = indexed.filter((event) => event.kind === "prompt");
-  const others = indexed.filter((event) => event.kind !== "prompt");
+  const asked = (event) => event.kind === "prompt" || event.kind === "host";
+  const prompts = indexed.filter(asked);
+  const others = indexed.filter((event) => !asked(event));
   let available = maxChars - compose(new Set(), " (partial)").length - 200;
   for (let attempt = 0; attempt < 8 && available > 0; attempt++) {
     const promptChars = prompts.reduce((sum, event) => sum + event.text.length + 1, 0);
