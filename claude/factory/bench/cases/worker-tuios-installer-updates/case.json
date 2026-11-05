@@ -1,0 +1,18 @@
+{
+  "id": "worker-tuios-installer-updates",
+  "title": "Preserve local TUIOS fork updates",
+  "role": "worker",
+  "prompt": "Make the failing tests pass: Preserve local TUIOS fork updates\n\nThe tests are tuios/tests/test_install_fork.py. Change the code, not the tests.",
+  "fixture": {
+    "type": "git",
+    "repo": ".",
+    "commit": "ae71467a64467687ddce8b9a2f3ebfe78bdb081d",
+    "overlay": "overlay"
+  },
+  "oracle": {
+    "command": "uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -p test_install_fork.py",
+    "timeoutMs": 300000
+  },
+  "budgetUsd": 2.5,
+  "timeoutMs": 900000
+}
