@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": [],
+    "enableWeakerNetworkIsolation": false,
+    "allowAppleEvents": false,
+    "network": {
+      "allowedDomains": [
+        "github.com",
+        "docs.rs",
+        "crates.io",
+        "static.crates.io",
+        "index.crates.io",
+        "pypi.org",
+        "files.pythonhosted.org"
+      ],
+      "strictAllowlist": true,
+      "allowLocalBinding": false,
+      "allowAllUnixSockets": false
+    },
+    "filesystem": {
+      "allowWrite": [
+        "~/.local/share/codex-skills/investigations",
+        "~/.cache/codex-skills",
+        "~/.cache/uv",
+        "~/.cargo/registry",
+        "~/.cargo/git"
+      ],
+      "denyRead": [
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.netrc",
+        "~/.config/gh",
+        "~/.docker/config.json",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.cargo/credentials.toml",
+        "~/.claude.json"
+      ]
+    }
+  },
+  "permissions": {
+    "blockWritesOutsideWorkingDirectories": true
+  }
+}

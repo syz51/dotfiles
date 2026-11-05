@@ -159,6 +159,10 @@ function segments(command) {
   return out.filter((segment) => segment.text.trim()).map((segment) => ({ ...segment, lists: commandLists(segment.text) }));
 }
 
+// An echo or printf of literal text and variables, with no substitution, pipe, list,
+// redirection or background job.
+const REPORT_ONLY = /^\s*(?:echo|printf)(?:\s+[^`|&;<>()]*)?\s*$/;
+
 // Whether the command ran the contract's check in the fixture directory. cwd is the
 // directory the session reported for this call (from a PreToolUse hook), never a guess;
 // a literal `cd` moves it, and a `cd` in an earlier segment, which may have failed,
@@ -172,6 +176,12 @@ export function checkRun(command, contract, { cwd, fixture }) {
     parts = segments(outer[0][2]);
   }
   if (!parts?.length) return false;
+  // Trailing segments that only report, such as `echo "exit=$?"`, leave the check as the
+  // last real segment. The script then exits with the echo, so the proof is the marker,
+  // which only the check can print: the command must not contain the marker's text, and
+  // a reporting segment may expand variables but not run anything.
+  if (!command.includes("fixture-check"))
+    while (parts.length > 1 && REPORT_ONLY.test(parts.at(-1).text)) parts = parts.slice(0, -1);
   const last = parts.at(-1);
   if (!last.lists) return false;
   let possible = new Set([cwd]);

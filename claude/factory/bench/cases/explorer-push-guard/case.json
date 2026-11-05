@@ -1,0 +1,13 @@
+{
+  "id": "explorer-push-guard",
+  "title": "Find the force-push guard hook, its registration and its tests",
+  "role": "explorer",
+  "prompt": "This repository holds a Claude Code configuration that is installed at ~/.claude. One of its hooks blocks git force pushes that would rewrite history. Answer four questions with repository-relative paths where a path is asked for: which file implements that hook, which file registers it, under which hook event it is registered, and which file tests it. Keep the answer under ten lines.",
+  "fixture": { "type": "git", "repo": ".", "commit": "b814f0197bcb88d616973e3983bf60d7bad3109b" },
+  "oracle": {
+    "command": "f=\"$FINAL_ANSWER_FILE\"; [ \"$(wc -c < \"$f\")\" -le 3000 ] && grep -q 'claude/hooks/guard-git-push\\.js' \"$f\" && grep -q 'claude/settings\\.json' \"$f\" && grep -q 'PreToolUse' \"$f\" && grep -q 'claude/hooks/guard-git-push\\.test\\.js' \"$f\"",
+    "timeoutMs": 10000
+  },
+  "budgetUsd": 0.75,
+  "timeoutMs": 300000
+}

@@ -86,7 +86,7 @@ describe("binding a check to the fixture directory", () => {
   test("printed checks, masked failures and checks that are not last prove nothing", () => {
     for (const command of [
       "echo uv run python check.py", "echo fixture-check:ok", "uv run python check.py || true",
-      "python3 check.py && uv run --version", "cat check.py", "uv run check.py; true", "uv run check.py\necho done",
+      "python3 check.py && uv run --version", "cat check.py", "uv run check.py; true",
       "uv run check.py | tail -3", "uv run check.py 2>&1 | tail -3",
       "uv run check.py > out.txt", "uv run check.py > /dev/null && echo fixture-check:ok",
     ])
@@ -120,6 +120,18 @@ describe("binding a check to the fixture directory", () => {
     // From outside, a cd that may have failed leaves two possible directories.
     expect(checkRun("cd fixture; uv run check.py", uv, { cwd: "/work", fixture })).toBe(false);
     expect(checkRun("cd fixture && uv run check.py", uv, { cwd: "/work", fixture })).toBe(true);
+  });
+
+  test("trailing segments that only report leave the check as the proof", () => {
+    for (const command of ['uv run check.py; echo "exit=$?"', "uv run check.py; printf 'done %s\\n' $?", "uv run check.py\necho done", 'uv run check.py; echo "exit: $?"; echo ok'])
+      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(true);
+    // A cd that may have failed still leaves two possible directories.
+    expect(checkRun('cd fixture; uv run check.py; echo "exit=$?"', uv, { cwd: "/work", fixture })).toBe(false);
+    for (const command of [
+      "uv run check.py; echo fixture-check:ok", 'uv run check.py; echo "$(rm -rf x)"', "uv run check.py; echo `id`",
+      "uv run check.py; echo x > calc.py", "uv run check.py; echo x | tee calc.py", "uv run check.py; python3 check.py",
+    ])
+      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(false);
   });
 
   test("a successful check needs zero exit and the success marker", () => {
