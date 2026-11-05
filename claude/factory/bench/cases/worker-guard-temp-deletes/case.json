@@ -1,0 +1,18 @@
+{
+  "id": "worker-guard-temp-deletes",
+  "title": "Allow recursive deletes inside temporary directories",
+  "role": "worker",
+  "prompt": "Make the failing tests pass: Allow recursive deletes inside temporary directories\n\nThe tests are claude/hooks/test_guard_destructive.py. Change the code, not the tests.",
+  "fixture": {
+    "type": "git",
+    "repo": ".",
+    "commit": "81cb3221aa2226a243047ecd13aae345846d8ff9",
+    "overlay": "overlay"
+  },
+  "oracle": {
+    "command": "cd claude/hooks && uv run --no-project --python 3.11 python -B -m unittest test_guard_destructive",
+    "timeoutMs": 300000
+  },
+  "budgetUsd": 3,
+  "timeoutMs": 900000
+}
