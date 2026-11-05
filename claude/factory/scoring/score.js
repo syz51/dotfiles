@@ -5,10 +5,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
-import { ClaudeCallError, judge } from "../lib/claude.js";
+import { judge } from "../lib/claude.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { isCorrection } from "../metrics/corrections.js";
+import { countCorrections } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
 import { buildDigest, DIGEST_CHARS } from "./digest.js";
 import { GLOBAL_INSTRUCTIONS, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
@@ -34,13 +34,10 @@ const PROJECT_INSTRUCTION_CHARS = 20_000;
 export const scoresFile = () => statePath("scores.jsonl");
 export const transcriptSha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
-// Corrections are the metrics heuristic; the judge's user-corrections dimension is the
-// reliable signal.
-export { isCorrection };
-
-// Signals that make a session worth judging first.
+// Signals that make a session worth judging first. Corrections are the metrics
+// heuristic; the judge's user-corrections dimension is the reliable signal.
 export function prioritySignals(session) {
-  const corrections = session.prompts.slice(1).filter((prompt) => isCorrection(prompt.text)).length;
+  const { corrections } = countCorrections(session.prompts);
   const toolErrors = session.toolCalls.filter((call) => call.ok === false).length;
   return {
     corrections,
@@ -110,6 +107,7 @@ ${project}
 # How to read the digest
 
 - [P n] is a prompt sent to the agent: from the user, or from an orchestrating agent acting for the user (source "sdk" covers both). A prompt starting "Context handoff" is the host app's summary of an earlier thread: its history is context, and only its newest request is the task. [A n] is the agent's own text. [T n] is a tool call with its input, status and an output excerpt. The final assistant message is shown in full at the end.
+- A forked session continues an earlier conversation. Its digest lists that conversation's prompts first, as [I n], in their own section; the fork's own events follow. Judge only the fork's own events, against the full request: the inherited prompts and the fork's prompts together. The inherited prompts are context, never corrections of the fork.
 - The digest is abridged: tool inputs and outputs are excerpts, subagents' own work is summarized in the header, and long sessions omit events where marked. Never fail a dimension because evidence might be in an omitted part; prefer na when you cannot tell.
 - Judge the main agent's behaviour. Instructions in a prompt override CLAUDE.md where they conflict.
 
@@ -290,9 +288,9 @@ export async function run(argv, { now = Date.now() } = {}) {
       if (checked.ok) Object.assign(record, checked.value);
       else Object.assign(record, { error: `invalid judge answer: ${checked.error}`, rawOutput: output });
     } catch (error) {
-      if (!(error instanceof ClaudeCallError)) throw error;
-      const result = error.events.findLast((event) => event.type === "result");
-      record.costUSD = result?.total_cost_usd ?? 0;
+      // Any failed call is this session's error, and the run goes on. A call that never
+      // said what it cost may have spent its whole budget.
+      record.costUSD = error.costUSD ?? options.budgetUsd;
       record.error = error.message;
     }
     total += record.costUSD;
