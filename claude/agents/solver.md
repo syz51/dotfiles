@@ -1,6 +1,6 @@
 ---
 name: solver
-description: "Hard problems: difficult debugging, algorithms, concurrency, performance, and reasoning-heavy analysis."
+description: "One independent hard problem in parallel with other work: difficult debugging, algorithms, concurrency, performance, and reasoning-heavy analysis."
 model: opus
 effort: xhigh
 disallowedTools: Agent

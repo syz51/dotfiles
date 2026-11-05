@@ -31,7 +31,8 @@ function section(heading) {
 
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent"] },
-  worker: { model: "opus", effort: "medium", disallowedTools: ["Agent"] },
+  // The main session's configured Opus effort, so a parallel track loses no effort.
+  worker: { model: "opus", effort: "high", disallowedTools: ["Agent"] },
   solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent"] },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
@@ -55,6 +56,11 @@ describe("agents", () => {
 
   test("explorer's instructions keep it read-only", () => {
     expect(frontmatter("claude/agents/explorer.md").body).toMatch(/do not edit files/);
+  });
+
+  test("every agent is described as one independent track run in parallel", () => {
+    for (const name of agentFiles)
+      expect(frontmatter(`claude/agents/${name}`).meta.description).toMatch(/\bindependent\b.*\bin parallel with other work\b/);
   });
 
   test("implementing agents stay within their assigned files", () => {
@@ -143,6 +149,17 @@ describe("rules the live suites test", () => {
     expect(preferences).toMatch(/`uv run`/);
     expect(preferences).toMatch(/`bun`/);
     expect(preferences).toMatch(/lockfiles/);
+  });
+
+  test("Delegation is a standing request limited to parallel tracks", () => {
+    const delegation = section("Delegation");
+    expect(delegation).toMatch(/standing request to use subagents, so don't wait for me to ask/);
+    expect(delegation).toMatch(/Delegate only when running work in parallel pays off/);
+    expect(delegation).toMatch(/one agent per track/);
+    expect(delegation).toMatch(/takes only a handful of tool calls/);
+    expect(delegation).toMatch(/Don't use subagents to verify your own work/);
+    expect(delegation).toMatch(/Choose each track's agent by what it does/);
+    expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {

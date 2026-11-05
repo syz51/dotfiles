@@ -1,7 +1,8 @@
-// Live policy checks from the Working preferences and Workflow sections of
+// Live policy checks from the Working preferences, Workflow and Delegation sections of
 // claude/CLAUDE.md: real sessions on fixture projects, scored deterministically from
-// Bash calls (with the directory each ran in), the files left behind, an independent
-// re-run of the project check, and the final reply. Opt in with RUN_CLAUDE_LIVE=1.
+// Bash calls (with the directory each ran in), Agent spawns, the files left behind, an
+// independent re-run of the project check, and the final reply. Every scenario is a
+// small task, so none may spawn a subagent. Opt in with RUN_CLAUDE_LIVE=1.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { mayInvoke, successfulCheck } from "./lib/command.js";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { HOME_CLAUDE, LIVE, liveSuite } from "./lib/live.js";
 import { childEnv, runProcess } from "./lib/process.js";
-import { finalText } from "./lib/stream.js";
+import { agentSpawns, finalText } from "./lib/stream.js";
 import { chineseLines, hasKana, singleChineseLine } from "./lib/text.js";
 
 const suite = liveSuite("policy");
@@ -131,6 +132,7 @@ describe.skipIf(!LIVE)("live policy", () => {
       const global = run.instructions.find((record) => record.memory_type === "User");
       expect(global && realpathSync(global.file_path), "the global instructions were not loaded").toBe(realpathSync(join(HOME_CLAUDE, "CLAUDE.md")));
       assertUnchanged(before, snapshot(work), scenario.writable);
+      expect(agentSpawns(run.events).map((spawn) => spawn.input.subagent_type), "a small task was delegated").toEqual([]);
       const text = finalText(run.events);
       scenario.answer?.(text);
       if (scenario.check)

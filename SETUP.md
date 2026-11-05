@@ -237,7 +237,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   TypeScript and Rust repository loads no skill, and the article run saves its draft.
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
   `bun` unless the project's lockfile names another tool. Fixes are re-checked
-  independently, and reviews stay read-only. A Japanese draft is followed by its
+  independently, reviews stay read-only, and these small tasks spawn no subagent. A Japanese draft is followed by its
   Chinese meaning, while JSON-only and Chinese-only replies stay as asked.
 
 Set `CLAUDE_LIVE_REPORT_DIR` to a folder inside `$TMPDIR` to keep a JSON report and

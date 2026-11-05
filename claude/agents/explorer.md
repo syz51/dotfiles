@@ -1,6 +1,6 @@
 ---
 name: explorer
-description: "Read-only investigation: codebase search, audits, and evidence gathering."
+description: "Read-only investigation of one independent area in parallel with other work: codebase search, audits, and evidence gathering."
 model: haiku
 effort: xhigh
 disallowedTools: Write, Edit, NotebookEdit, Agent
