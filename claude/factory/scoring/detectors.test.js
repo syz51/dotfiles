@@ -56,8 +56,20 @@ describe("package-runner", () => {
     "for c in \"npm test\" \"pip install x\"; do echo \"$c\"; done",
     "tuios list-options 2>&1 | grep -iE 'hook|custom|pip' | head -40",
     "cat > t.sh <<'EOF'\npython3 x.py\nEOF\nbun t.sh",
+    // Lookups check that a program exists; they run nothing.
+    "command -v python3 && echo ok",
+    "command -V pip",
+    "command -pv npm >/dev/null || echo missing",
+    "type python3; which pip; hash pytest",
   ])("passes %p", (command) => {
     expect(packageRunner(actions([bash(command)])).verdict).toBe("pass");
+  });
+
+  test("`command` without a lookup option still runs its program", () => {
+    expect(simpleCommands("command -v python3 && echo ok")).toEqual([["command", "-v", "python3"], ["echo", "ok"]]);
+    expect(simpleCommands("command python3 x.py")).toEqual([["python3", "x.py"]]);
+    expect(packageRunner(actions([bash("command python3 x.py")])).verdict).toBe("fail");
+    expect(packageRunner(actions([bash("command -p pip install x")])).verdict).toBe("fail");
   });
 
   test("a matching lockfile in the session's folder makes the project's runner fine", () => {
@@ -116,6 +128,14 @@ describe("force-push", () => {
     ["cd repo && git push --force origin feature 2>&1 | tail -3", "without --force-with-lease"],
     ["git push --force-with-lease=HEAD:abcdef1 origin HEAD", "default branch", "main"],
     ["git push --force origin +HEAD", "default branch", "master"],
+    // A mirror push force-updates every remote ref, with or without a force option.
+    ["git push --mirror origin", "mirror push"],
+    ["git push --mirror --force-with-lease=feature:0123abcd origin", "mirror push"],
+    // Forcing all branches forces main too, whatever lease names another branch.
+    ["git push --all --force origin", "all branches"],
+    ["git push --all -f", "all branches"],
+    ["git push --all --force-with-lease=feature:0123abcd origin", "all branches"],
+    ["git push --branches --force-with-lease origin", "all branches"],
   ])("flags %p", (command, problem, gitBranch = "feature") => {
     const result = forcePush(actions([bash(command, { gitBranch })]));
     expect(result.verdict).toBe("fail");
@@ -129,6 +149,8 @@ describe("force-push", () => {
     "git push --force-with-lease=refs/heads/feature:0123abcdef0123abcdef0123abcdef0123abcdef origin HEAD:feature",
     // HEAD is the session's current branch, here "feature": an explicit lease on it.
     "git push --force-with-lease=HEAD:abcdef1 origin HEAD",
+    // Pushing all branches without a force fast-forwards only.
+    "git push --all origin",
   ])("passes %p", (command) => {
     expect(forcePush(actions([bash(command)])).verdict).toBe("pass");
   });
@@ -146,6 +168,14 @@ describe("force-push", () => {
     expect(forcePushProblem(["--force-with-lease=HEAD:0123abcd"], "main")).toBe("force push to a default branch");
     expect(forcePushProblem(["--force-with-lease=HEAD:0123abcd"], "feature")).toBeNull();
     expect(forcePush(actions([bash("git push --force-with-lease=x:0123abcd", { gitBranch: "master" })])).verdict).toBe("fail");
+  });
+
+  test("mirror and forced all-branch pushes cover main whatever the lease names", () => {
+    expect(forcePushProblem(["--mirror", "--force-with-lease=feature:abc1234"], "x")).toContain("mirror push");
+    expect(forcePushProblem(["--mirror"], "x")).toContain("mirror push");
+    expect(forcePushProblem(["--all", "--force-with-lease=feature:abc1234"], "x")).toContain("all branches");
+    expect(forcePushProblem(["--all", "origin", "+feature"], "x")).toContain("all branches");
+    expect(forcePushProblem(["--all", "origin"], "x")).toBeNull();
   });
 
   test("reads push arguments through wrappers and options with values", () => {

@@ -137,7 +137,8 @@ const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", 
 // Quotes group words without expansion and heredoc bodies are skipped, so quoted or
 // embedded text never counts as a command. Shell keywords such as `if` or `do`,
 // environment assignments, wrappers such as `timeout` or `sudo`, `sh -c` and `eval` are
-// looked through, so each list's first word is the program it runs.
+// looked through, so each list's first word is the program it runs. A lookup such as
+// `command -v x` runs nothing, so its first word stays `command`.
 export function simpleCommands(command, depth = 0) {
   const lines = String(command).split("\n");
   const kept = [];
@@ -195,6 +196,8 @@ function unwrap(list, depth) {
     while (words.length && (KEYWORDS.has(words[0]) || /^\w+=/.test(words[0]))) words = words.slice(1);
     if (!words.length || !Object.hasOwn(WRAPPERS, basename(words[0]))) break;
     const wrapper = basename(words[0]);
+    // `command -v` and `-V` look a program up and run nothing, like `type` or `which`.
+    if (wrapper === "command" && words.slice(1).some((word) => /^-[a-zA-Z]*[vV]/.test(word))) break;
     words = words.slice(1);
     while (words.length && (words[0].startsWith("-") || (wrapper === "env" && /^\w+=/.test(words[0]))))
       words = words.slice(WRAPPERS[wrapper].includes(words[0]) ? 2 : 1);
@@ -245,7 +248,10 @@ export function forcePushProblem(args, currentBranch = null) {
   }
   const refspecs = positional.slice(1);
   const plusRef = refspecs.some((ref) => ref.startsWith("+"));
+  // --mirror force-updates every remote ref, and a forced --all every branch: main too.
+  if (args.includes("--mirror")) return "mirror push, which force-updates every remote ref";
   if (!plainForce && !plusRef && !leases.length) return null;
+  if (args.includes("--all") || args.includes("--branches")) return "force push of all branches, a default branch included";
   const targets = refspecs.length ? refspecs.map(branchOf) : [currentBranch];
   for (const lease of leases) if (lease) targets.push(branchOf(lease.split(":")[0]));
   if (targets.some((branch) => PROTECTED.has(branch))) return "force push to a default branch";
