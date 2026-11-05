@@ -376,3 +376,13 @@ reports in the state folder's `reports/weekly-*.md`.
 - 2026-11-05: User decisions: audit baseline accepted; sandbox work deferred; the earlier
   address exposure needs no further action. Reviewing and merging the open PRs.
 - 2026-11-05: #17 and #16 merged; codex-skills#2 merged earlier. Build complete.
+- 2026-11-05: API-first billing. `claude/bin/claude-api` bills unattended print-mode runs
+  (factory, live suites, research scripts through `claude/bin/api-first`) to the API while
+  credit lasts, else the subscription; the key reaches Claude Code through an
+  `apiKeyHelper`, not the environment (an env key showed up in the agent's Bash; the key
+  file itself stays readable by a session running as the user). `/code-review` at xhigh
+  found 15 issues, all fixed: the wrapper now `exec`s claude (a killed wrapper had left
+  claude running), uses `API_FIRST_*` variables (callers strip `CLAUDE_*`), caches per key,
+  handles `--`, treats spend limits as exhausted and leaves a caller's own auth alone. The codex-skills pipeline is handled in the "Review Agent
+  Instructions" thread (its own API path since a98a27c; fallback proposal awaiting the
+  user). The masters project's AGENTS.md now routes experiment billing through the wrapper.

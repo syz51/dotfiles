@@ -1,0 +1,36 @@
+#!/bin/sh
+# claude, billed to the Anthropic API while the account has credit, otherwise to the
+# claude.ai subscription; for unattended print-mode runs (-p/--print). api-first.js makes the
+# plan; this script assembles the command and replaces itself with the real claude (exec),
+# so a caller that kills the process it started kills claude itself. See SETUP.md, "Billing".
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+API_FIRST_DEPTH=$(( ${API_FIRST_DEPTH:-0} + 1 ))
+export API_FIRST_DEPTH
+bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
+
+plan=$("$bun" "$here/api-first.js" plan "$@")
+real=$(printf '%s\n' "$plan" | sed -n 1p)
+mode=$(printf '%s\n' "$plan" | sed -n 2p)
+settings=$(printf '%s\n' "$plan" | sed -n 3p)
+
+if [ "$mode" = api ]; then
+  # Drop every --settings before a `--` marker and pass the merged value once, before the
+  # marker if there is one, so it stays an option.
+  rebuilt=0 skip=0 after=0 inserted=0
+  for arg do
+    if [ "$rebuilt" = 0 ]; then set --; rebuilt=1; fi
+    if [ "$after" = 1 ]; then set -- "$@" "$arg"; continue; fi
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case $arg in
+      --settings) skip=1; continue ;;
+      --settings=*) continue ;;
+      --) set -- "$@" --settings "$settings" --; after=1; inserted=1; continue ;;
+    esac
+    set -- "$@" "$arg"
+  done
+  [ "$inserted" = 1 ] || set -- "$@" --settings "$settings"
+fi
+
+exec "$real" "$@"
