@@ -193,7 +193,7 @@ From the repository root, run the focused local suites:
 ```sh
 bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
-uv run --no-project --python 3.11 python -B -m unittest discover -s ghostty -p 'test-*.py' -v
+uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 ```
 
@@ -208,9 +208,9 @@ in CI:
   runner, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
-  check that tampers with the fixture when re-run fails, and so does a forbidden
-  guidance read in a subagent. Configuration drift fails too, as does a claimed but
-  unsaved artifact or an unwritable report.
+  check that tampers with the fixture when re-run fails, and so do a small task handed
+  to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
+  too, as does a claimed but unsaved artifact or an unwritable report.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
@@ -220,7 +220,7 @@ scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures 
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use
 `claude-haiku-5-5`. Each suite prints its sessions' cost and its total. A full run
-costs about $3 to $4 and takes about 5 minutes:
+costs about $3.50 and takes about 6 minutes:
 
 ```sh
 RUN_CLAUDE_LIVE=1 bun test claude/tests
@@ -228,16 +228,20 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
 
 - `live.test.js`: a session in `nvim/` loads the global and repository instructions
   and lists the agents and skills. Explorer, worker and solver run on their configured
-  model and effort, the worker edits only its authorized files, and two explorers run
-  in parallel. The guard hook blocks a force push to `main`.
+  model and effort (worker checks run the main session at `xhigh`, above the worker),
+  the worker edits only its authorized files, a worker isolated in a worktree starts
+  from the local `HEAD` and receives the main checkout's uncommitted input while the
+  checkout stays untouched, and two explorers run in parallel. The guard hook blocks a
+  force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a
   TypeScript and Rust repository loads no skill, and the article run saves its draft.
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
   `bun` unless the project's lockfile names another tool. Fixes are re-checked
-  independently, and reviews stay read-only. A Japanese draft is followed by its
-  Chinese meaning, while JSON-only and Chinese-only replies stay as asked.
+  independently, reviews stay read-only, and these small tasks spawn no subagent. A
+  Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
+  replies stay as asked.
 
 Set `CLAUDE_LIVE_REPORT_DIR` to a folder inside `$TMPDIR` to keep a JSON report and
 the raw stream of each scenario; delete it when done.

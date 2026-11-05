@@ -1,8 +1,8 @@
 ---
 name: worker
-description: "Implements one assigned part of a task within the files it was given."
+description: "Implements one independent part of a task in parallel with other work, within the files it was given."
 model: opus
-effort: medium
+effort: high
 disallowedTools: Agent
 ---
 
