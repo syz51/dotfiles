@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { RUBRIC } from "./rubric.js";
-import { allowedPath, alreadyProposed, failureGroups, run } from "./propose.js";
+import { allowedPath, alreadyProposed, failureGroups, leakedEvidence, run } from "./propose.js";
 
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 let scratch;
@@ -39,9 +39,13 @@ function repository() {
   mkdirSync(source);
   git(source, "init", "--quiet", "-b", "main");
   put(source, {
+    ".gitignore": ".env.*\n",
     "claude/CLAUDE.md": "# Rules\n\n## Workflow\n\n- Stay in scope.\n\n## Delegation\n\n- Delegate rarely.\n",
+    "claude/agents/worker.md": "# Worker\n\nDo the task.\n",
     "claude/settings.json": "{}\n",
     "claude/tests/ok.test.js": 'import { expect, test } from "bun:test";\ntest("ok", () => expect(1).toBe(1));\n',
+    // Pins rule text, as claude/tests/config.test.js does.
+    "claude/tests/config.test.js": 'import { expect, test } from "bun:test";\nimport { readFileSync } from "node:fs";\ntest("delegation rule", () => expect(readFileSync("claude/CLAUDE.md", "utf8")).toContain("Delegate rarely."));\n',
   });
   git(source, "add", "-A");
   git(source, "commit", "--quiet", "-m", "init");
@@ -75,7 +79,8 @@ beforeEach(() => {
   const gitConfig = join(scratch, "gitconfig");
   writeFileSync(gitConfig, "");
   const gh = join(scratch, "fake-gh.js");
-  writeFileSync(gh, `#!/usr/bin/env bun\nimport { appendFileSync } from "node:fs";\nappendFileSync(process.env.FAKE_GH_LOG, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }) + "\\n");\nconsole.log("https://github.com/o/r/pull/42");\n`);
+  // The fake gh fails for a --head branch containing FAKE_GH_FAIL.
+  writeFileSync(gh, `#!/usr/bin/env bun\nimport { appendFileSync } from "node:fs";\nconst args = process.argv.slice(2);\nappendFileSync(process.env.FAKE_GH_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");\nif (process.env.FAKE_GH_FAIL && args[args.indexOf("--head") + 1].includes(process.env.FAKE_GH_FAIL)) { console.error("HTTP 502"); process.exit(1); }\nconsole.log("https://github.com/o/r/pull/42");\n`);
   chmodSync(gh, 0o755);
   // The proposer: writes FAKE_EDITS ({ path: content }) into its working folder.
   const proposer = join(scratch, "proposer.js");
@@ -90,6 +95,7 @@ beforeEach(() => {
     FAKE_GH_LOG: join(scratch, "gh.jsonl"),
     FAKE_EDITS: undefined,
     FAKE_TOOLS: undefined,
+    FAKE_GH_FAIL: undefined,
     GIT_CONFIG_GLOBAL: gitConfig,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_AUTHOR_NAME: "Test",
@@ -119,13 +125,27 @@ const proposals = () => readJsonl(join(scratch, "state", "proposals.jsonl"));
 const log = (name) => (existsSync(join(scratch, name)) ? readJsonl(join(scratch, name)) : []);
 const remoteBranches = (remote) => git(remote, "branch", "--format=%(refname:short)").split("\n").filter(Boolean);
 const edits = (files) => setEnv({ FAKE_EDITS: JSON.stringify(files) });
-const branchName = `factory/proposal-scope-creep-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}`;
+// Runs at a fixed second, so branch names are known: factory/proposal-<id>-<UTC stamp>.
+const NOW = Date.parse("2026-11-05T09:08:07Z");
+const branchName = "factory/proposal-scope-creep-20261105-090807";
+const CLEARER = "# Rules\n\n## Workflow\n\n- Stay in the requested scope; report unrelated issues.\n\n## Delegation\n\n- Delegate rarely.\n";
 
 describe("proposal rules", () => {
-  test("only the global instructions, agent definitions and tests may change", () => {
-    for (const path of ["claude/CLAUDE.md", "claude/agents/worker.md", "claude/tests/config.test.js", "claude/tests/lib/new.js"]) expect(allowedPath(path), path).toBe(true);
-    for (const path of ["claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json"])
+  test("only the global instructions and agent definitions may change: text, never code", () => {
+    for (const path of ["claude/CLAUDE.md", "claude/agents/worker.md"]) expect(allowedPath(path), path).toBe(true);
+    for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test"])
       expect(allowedPath(path), path).toBe(false);
+  });
+
+  test("a leak is a verbatim run of 40 characters of evidence that the repository did not already hold", () => {
+    const evidence = ["[T3] ran a deploy against the staging cluster without asking first"];
+    expect(leakedEvidence("- Never run a deploy against the staging cluster without asking first.", evidence)).toBe(true);
+    // Whitespace differences do not hide a run.
+    expect(leakedEvidence("- Never run a deploy against the staging\n  cluster without asking.", evidence)).toBe(true);
+    expect(leakedEvidence("- Ask before deploying anywhere.", evidence)).toBe(false);
+    // Evidence that quotes the existing rule text leaks nothing when the rule is kept.
+    const rule = "Ask before any action that changes shared state.";
+    expect(leakedEvidence(`- ${rule} This covers deploys.`, [`[A2] ignored "${rule}"`], { publicText: [rule] })).toBe(false);
   });
 
   test("groups distinct failing sessions per dimension from each session's latest records", () => {
@@ -141,10 +161,14 @@ describe("proposal rules", () => {
     expect(failureGroups([record("s2")], { since: Date.now() + 1000 }).every((group) => !group.failures.length)).toBe(true);
   });
 
-  test("a recent real proposal sharing a session blocks the dimension; a dry run does not", () => {
+  test("a recent real proposal sharing a session blocks the dimension; a dry run or an error does not", () => {
     const now = Date.now();
     const at = new Date(now - 86_400_000).toISOString();
-    const proposalsMade = [{ dimension: "scope-creep", status: "proposed", createdAt: at, sessions: ["s1", "s2"] }, { dimension: "delegation-fit", status: "dry-run", createdAt: at, sessions: ["s1"] }];
+    const proposalsMade = [
+      { dimension: "scope-creep", status: "proposed", createdAt: at, sessions: ["s1", "s2"] },
+      { dimension: "delegation-fit", status: "dry-run", createdAt: at, sessions: ["s1"] },
+      { dimension: "delegation-fit", status: "error", createdAt: at, sessions: ["s1"] },
+    ];
     expect(alreadyProposed(proposalsMade, "scope-creep", ["s2", "s9"], now)).toBeTruthy();
     expect(alreadyProposed(proposalsMade, "scope-creep", ["s9"], now)).toBeUndefined();
     expect(alreadyProposed(proposalsMade, "delegation-fit", ["s1"], now)).toBeUndefined();
@@ -153,17 +177,21 @@ describe("proposal rules", () => {
 });
 
 describe("propose command", () => {
-  test("pushes a branch from the remote's main and opens a draft PR with the evidence", async () => {
+  test("pushes a branch from the remote's main and opens a draft PR without the proposer's words or the evidence", async () => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    edits({ "claude/CLAUDE.md": "# Rules\n\n## Workflow\n\n- Stay in the requested scope; report unrelated issues.\n\n## Delegation\n\n- Delegate rarely.\n", "claude/tests/scope.test.js": 'import { expect, test } from "bun:test";\ntest("scope", () => expect(true).toBe(true));\n' });
-    expect(await run(["--repo", source])).toBe(0);
+    edits({ "claude/CLAUDE.md": CLEARER, "claude/agents/worker.md": "# Worker\n\nDo only the task.\n" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(0);
 
     const [proposer] = log("claude.jsonl");
     expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--permission-mode", "acceptEdits", "--model", "claude-opus-5-5", "--effort", "high", "--max-budget-usd", "3"]));
+    // Reads of credentials are denied, whatever the user's settings allow.
+    const settings = JSON.parse(proposer.args[proposer.args.indexOf("--settings") + 1]);
+    expect(settings.permissions.deny).toEqual(["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)", "Read(~/.netrc)", "Read(~/.claude.json)", "Read(~/.docker/config.json)"]);
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
     expect(proposer.stdin).toContain("Prefer clarifying, replacing or deleting");
+    expect(proposer.stdin).toContain("Edit only claude/CLAUDE.md and claude/agents/*.md");
     expect(existsSync(proposer.cwd)).toBe(false);
 
     expect(remoteBranches(remote).sort()).toEqual([branchName, "main"].sort());
@@ -174,21 +202,24 @@ describe("propose command", () => {
     const [pr] = log("gh.jsonl");
     expect(pr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", branchName]);
     const body = pr.args[pr.args.indexOf("--body") + 1];
-    for (const text of ["The scope rule was vague.", "- `s1`", "- `s3`", "Judge: claude-sonnet-5-5 (medium)", "Proposer: claude-opus-5-5 (high), $0.70", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
+    for (const text of ["`scope-creep`", "3 scored sessions", "- `s1`", "- `s3`", "Judge: claude-sonnet-5-5 (medium)", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
     expect(body).not.toMatch(/Generated with|Co-Authored-By|\u{1F916}/u);
-    // Evidence quotes private transcripts: it stays local, and the body names the file.
+    // The proposer's reply and the evidence quote private transcripts: they stay local.
+    expect(body).not.toContain("The scope rule was vague.");
     expect(body).not.toContain("edited unrelated file");
     expect(body).not.toContain("-Users-test-project");
     expect(body).not.toContain("TITLE:");
 
     const [entry] = proposals();
-    expect(entry).toMatchObject({ dimension: "scope-creep", status: "proposed", sessions: ["s1", "s2", "s3"], prUrl: "https://github.com/o/r/pull/42", branch: branchName, costUSD: 0.7, paths: ["claude/CLAUDE.md", "claude/tests/scope.test.js"] });
+    expect(entry).toMatchObject({ dimension: "scope-creep", status: "proposed", sessions: ["s1", "s2", "s3"], prUrl: "https://github.com/o/r/pull/42", branch: branchName, pushed: true, costUSD: 0.7, paths: ["claude/CLAUDE.md", "claude/agents/worker.md"] });
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Stay in the requested scope");
-    expect(readFileSync(entry.evidenceFile, "utf8")).toContain("- s2 (-Users-test-project)\n  - [T3] edited unrelated file in s2");
+    const evidence = readFileSync(entry.evidenceFile, "utf8");
+    expect(evidence).toContain("- s2 (-Users-test-project)\n  - [T3] edited unrelated file in s2");
+    expect(evidence).toContain("The scope rule was vague.");
     expect(body).toContain(`\`proposals/${entry.evidenceFile.split("/").at(-1)}\``);
 
     // The same sessions do not get a second proposal.
-    expect(await run(["--repo", source])).toBe(0);
+    expect(await run(["--repo", source], { now: NOW + 60_000 })).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
     expect(output.join("\n")).toMatch(/scope-creep\s+3 failing sessions\s+already proposed/);
   });
@@ -198,55 +229,101 @@ describe("propose command", () => {
     scores(["s1", "s2", "s3"].map((id) => record(id)));
     edits({ "claude/CLAUDE.md": "changed\n" });
     setEnv({ FAKE_TOOLS: JSON.stringify(["Read", "Edit", "Bash"]) });
-    expect(await run(["--repo", source])).toBe(1);
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Bash"] });
     expect(remoteBranches(remote)).toEqual(["main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
-  test("rejects a change outside the allowed paths without pushing", async () => {
+  test.each([
+    ["a settings file", { "claude/settings.json": '{"permissions":{"allow":["Bash"]}}\n' }, ["claude/settings.json"]],
+    ["a test, which the suite would run as code", { "claude/tests/scope.test.js": 'import { test } from "bun:test";\ntest("x", () => {});\n' }, ["claude/tests/scope.test.js"]],
+    ["an ignored file, such as one Bun loads into the test run's environment", { ".env.test": "X=1\n" }, [".env.test"]],
+  ])("rejects a change to %s without running the tests or pushing", async (_, extra, rejected) => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    edits({ "claude/CLAUDE.md": "changed\n", "claude/settings.json": '{"permissions":{"allow":["Bash"]}}\n' });
-    expect(await run(["--repo", source])).toBe(1);
-    expect(proposals()[0]).toMatchObject({ status: "rejected-paths", rejected: ["claude/settings.json"] });
+    edits({ "claude/CLAUDE.md": CLEARER, ...extra });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    const [entry] = proposals();
+    expect(entry).toMatchObject({ status: "rejected-paths", rejected, tests: null });
     expect(remoteBranches(remote)).toEqual(["main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
-  test("records failing tests and pushes nothing", async () => {
+  test("an edit that breaks a test pinning rule text is recorded as failing tests, kept locally and not pushed", async () => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    edits({ "claude/tests/bad.test.js": 'import { expect, test } from "bun:test";\ntest("bad", () => expect(1).toBe(2));\n' });
-    expect(await run(["--repo", source])).toBe(1);
+    edits({ "claude/CLAUDE.md": "# Rules\n\n## Workflow\n\n- Stay in scope.\n\n## Delegation\n\n- Delegate when it pays off.\n" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
     const [entry] = proposals();
     expect(entry.status).toBe("tests-failed");
     expect(entry.tests).toMatchObject({ ok: false, command: "bun test claude/tests" });
     expect(entry.tests.summary).toContain("1 fail");
-    expect(entry.tests.tail).toContain("bad");
+    expect(entry.tests.tail).toContain("delegation rule");
+    expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Delegate when it pays off.");
     expect(remoteBranches(remote)).toEqual(["main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
+  });
+
+  test("rejects a change that repeats the private evidence without pushing", async () => {
+    const { remote, source } = repository();
+    const quote = "ran rm -rf build in the payments checkout without asking";
+    scores(["s1", "s2", "s3"].map((id) => record(id, { evidence: `[T4] ${quote}` })));
+    edits({ "claude/CLAUDE.md": `${CLEARER}- Never do what this agent did: it ${quote}.\n` });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "leak-suspected", tests: null, prUrl: null });
+    expect(existsSync(proposals()[0].patchFile)).toBe(true);
+    expect(remoteBranches(remote)).toEqual(["main"]);
+    expect(log("gh.jsonl")).toHaveLength(0);
+  });
+
+  test("a failure after the push is recorded with the branch, the next dimension still runs, and a later run retries on a new branch", async () => {
+    const { remote, source } = repository();
+    scores([...["s1", "s2", "s3"].map((id) => record(id)), ...["d1", "d2", "d3"].map((id) => record(id, { dimension: "delegation-fit" }))]);
+    edits({ "claude/CLAUDE.md": CLEARER });
+    setEnv({ FAKE_GH_FAIL: "scope-creep" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    const [failed, next] = proposals();
+    expect(failed).toMatchObject({ dimension: "scope-creep", status: "error", branch: branchName, pushed: true, prUrl: null, costUSD: 0.7 });
+    expect(failed.error).toContain("HTTP 502");
+    expect(next).toMatchObject({ dimension: "delegation-fit", status: "proposed", branch: "factory/proposal-delegation-fit-20261105-090807" });
+
+    // The error does not block a retry, which pushes a branch of its own the same day.
+    setEnv({ FAKE_GH_FAIL: undefined });
+    expect(await run(["--repo", source, "--dimension", "scope-creep"], { now: NOW + 3_600_000 })).toBe(0);
+    expect(proposals()[2]).toMatchObject({ dimension: "scope-creep", status: "proposed", branch: "factory/proposal-scope-creep-20261105-100807" });
+    expect(remoteBranches(remote).sort()).toEqual([branchName, "factory/proposal-delegation-fit-20261105-090807", "factory/proposal-scope-creep-20261105-100807", "main"].sort());
+  });
+
+  test("a proposer run that fails is recorded at its budget without a branch", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    setEnv({ FAKE_CLAUDE_MODE: "exit" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "error", branch: null, pushed: false, costUSD: 3 });
+    expect(proposals()[0].error).toContain("Task run");
+    expect(remoteBranches(remote)).toEqual(["main"]);
   });
 
   test("a dry run runs the proposer and tests but pushes and opens nothing, and does not block a real run", async () => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    edits({ "claude/CLAUDE.md": "# Rules\n\n## Workflow\n\n- Clearer.\n" });
-    expect(await run(["--repo", source, "--dry-run"])).toBe(0);
+    edits({ "claude/CLAUDE.md": CLEARER });
+    expect(await run(["--repo", source, "--dry-run"], { now: NOW })).toBe(0);
     const [entry] = proposals();
     expect(entry).toMatchObject({ status: "dry-run", dryRun: true, prUrl: null, tests: { ok: true } });
     expect(existsSync(entry.patchFile)).toBe(true);
     expect(remoteBranches(remote)).toEqual(["main"]);
     expect(git(source, "branch", "--format=%(refname:short)")).toBe("main");
     expect(log("gh.jsonl")).toHaveLength(0);
-    expect(await run(["--repo", source])).toBe(0);
+    expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(0);
     expect(proposals()[1].status).toBe("proposed");
   });
 
   test("no change is recorded as such", async () => {
     const { source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    expect(await run(["--repo", source])).toBe(0);
+    expect(await run(["--repo", source], { now: NOW })).toBe(0);
     expect(proposals()[0]).toMatchObject({ status: "no-change", paths: [] });
   });
 
