@@ -67,9 +67,13 @@ describe("agents", () => {
     expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
   });
 
-  test("implementing agents stay within their assigned files", () => {
-    for (const name of ["worker", "solver"])
-      expect(frontmatter(`claude/agents/${name}.md`).body).toMatch(/change only the files in your assignment/i);
+  test("implementing agents own their whole track and stay within their assigned files", () => {
+    for (const name of ["worker", "solver"]) {
+      const { body } = frontmatter(`claude/agents/${name}.md`);
+      expect(body).toMatch(/You own this (track|problem) end to end/);
+      expect(body).toMatch(/change only the files in your assignment/i);
+    }
+    expect(frontmatter("claude/agents/worker.md").body).toMatch(/investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them/);
   });
 });
 
@@ -106,6 +110,24 @@ describe("global instructions", () => {
     const { meta } = frontmatter("claude/skills/headless-browser/SKILL.md");
     expect(meta.name).toBe("headless-browser");
     expect(meta.description.length).toBeGreaterThan(20);
+  });
+
+  // Anthropic's multi-agent guidance: split by context, not by type of work, because
+  // each handoff between phases of the same work loses context. No live scenario covers
+  // this, so it sits outside the live-rules block.
+  test("Delegation splits by context, and each agent owns its whole track", () => {
+    const delegation = section("Delegation");
+    expect(delegation).toMatch(/Split work by context, not by type of work/);
+    expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
+    expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
+    expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
+    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
+    expect(delegation).toMatch(/hard debugging or reasoning, including its fix, to `solver`/);
+    expect(delegation).toMatch(/Settle only the interfaces tracks share/);
+    expect(delegation).toMatch(/those interfaces, what it needs from this conversation/);
+    expect(delegation).not.toMatch(/decided design/);
+    expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);
+    expect(delegation).toMatch(/continue the agent that did the track when it and its checkout still exist/);
   });
 });
 
@@ -165,17 +187,18 @@ describe("rules the live suites test", () => {
     const delegation = section("Delegation");
     expect(delegation).toMatch(/standing request to use subagents, so don't wait for me to ask/);
     expect(delegation).toMatch(/Delegate only when running work in parallel pays off/);
+    expect(delegation).toMatch(/each needing little of this conversation's context or of the others'/);
     expect(delegation).toMatch(/one agent per track/);
+    expect(delegation).toMatch(/Unless I ask for one, don't hand a single track to an agent and then just wait for it/);
     expect(delegation).toMatch(/takes only a handful of tool calls/);
     expect(delegation).toMatch(/Don't use subagents to verify your own work/);
-    expect(delegation).toMatch(/Choose each track's agent by what it does/);
-    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
     expect(delegation).toMatch(/Agents that stand in for a tool you lack, such as `web-fetch`, are tool use, not delegation/);
     expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
   test("Review fixes every real defect it finds and reports the rest", () => {
     const review = section("Review");
+    expect(review).toMatch(/on the final diff before pushing or reporting done/);
     expect(review).toMatch(/Check each finding against the code before deciding/);
     expect(review).toMatch(/Fix every one that is a real defect in what the change is meant to do and verify the fix/);
     expect(review).toMatch(/rerun the affected checks instead of reviewing again/);
@@ -184,7 +207,8 @@ describe("rules the live suites test", () => {
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
     const delegation = section("Delegation");
-    expect(delegation).toMatch(/the runtime's worktree facility, never a worktree made in the shell/);
+    expect(delegation).toMatch(/Give each track that edits files its own worktree through the runtime's worktree facility when one is available, never one made in the shell/);
+    expect(delegation).toMatch(/Other tracks share this checkout; never let two tracks, or a track and you, change the same files or state at the same time/);
     expect(delegation).toMatch(/A new worktree never has uncommitted changes/);
     expect(delegation).toMatch(/transfer required inputs explicitly and have the child verify them in its checkout/);
     expect(delegation).toMatch(/bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise/);

@@ -6,5 +6,6 @@ effort: xhigh
 disallowedTools: Agent
 ---
 
-Solve the assigned problem and change only the files in your assignment; other agents may be editing the rest of the checkout.
+You own this problem end to end, from investigation to a verified result.
+Change only the files in your assignment, so your work merges cleanly with the other tracks.
 Verify the result with a reproducible check, then report the approach, the evidence, and any remaining doubts.
