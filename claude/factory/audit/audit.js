@@ -349,7 +349,7 @@ function agentFindings(configDir) {
   return findings;
 }
 
-// The codex-skills daily review: unsandboxed when it runs bypassPermissions without a
+// The codex-skills weekly review: unsandboxed when it runs bypassPermissions without a
 // sandbox --settings.
 function codexSkillsFindings(repo) {
   const file = join(repo, "scripts", "claude_cli.py");
@@ -359,11 +359,11 @@ function codexSkillsFindings(repo) {
   const settings = /["']--settings["']/.test(text);
   if (bypass && !settings)
     return [finding("codex-skills.review-unsandboxed", "high",
-      "codex-skills daily review runs claude --permission-mode bypassPermissions with full tools and no sandbox --settings",
+      "codex-skills weekly review runs claude --permission-mode bypassPermissions with full tools and no sandbox --settings",
       "Pass --settings with factory/audit/maintainer-sandbox.json in review_command (after the codex-skills thread merges)")];
   if (bypass)
-    return [finding("codex-skills.review-settings", "info", "codex-skills daily review passes --settings; confirm it enables the sandbox", "None needed")];
-  return [finding("codex-skills.review", "info", "codex-skills daily review does not use bypassPermissions", "None needed")];
+    return [finding("codex-skills.review-settings", "info", "codex-skills weekly review passes --settings; confirm it enables the sandbox", "None needed")];
+  return [finding("codex-skills.review", "info", "codex-skills weekly review does not use bypassPermissions", "None needed")];
 }
 
 // All findings for the setup the paths describe, ordered most severe first.

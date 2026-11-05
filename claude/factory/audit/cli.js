@@ -8,7 +8,7 @@ import { SEVERITIES, audit, auditPaths, rank } from "./audit.js";
 const USAGE = `Usage: bun ~/.claude/factory/cli.js audit [options]
 
 Reads ~/.claude (or CLAUDE_CONFIG_DIR) settings, hooks, agents, MCP servers in .claude.json
-(names and types only) and the codex-skills daily review, and reports findings by severity.
+(names and types only) and the codex-skills weekly review, and reports findings by severity.
 
 Options:
   --json                 Print findings as JSON
