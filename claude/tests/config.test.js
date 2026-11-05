@@ -174,6 +174,14 @@ describe("rules the live suites test", () => {
     expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
+  test("Review fixes every real defect it finds and reports the rest", () => {
+    const review = section("Review");
+    expect(review).toMatch(/Check each finding against the code before deciding/);
+    expect(review).toMatch(/Fix every one that is a real defect in what the change is meant to do and verify the fix/);
+    expect(review).toMatch(/rerun the affected checks instead of reviewing again/);
+    expect(review).toMatch(/Report the rest, as with unrelated issues, instead of fixing them/);
+  });
+
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
     const delegation = section("Delegation");
     expect(delegation).toMatch(/the runtime's worktree facility, never a worktree made in the shell/);
