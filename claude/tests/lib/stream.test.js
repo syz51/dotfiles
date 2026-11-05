@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
   agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
-  skillLoads, subagentMessages, toolResults,
+  printedFrom, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
 
 describe("parsing", () => {
@@ -118,6 +118,15 @@ describe("delegation", () => {
     expect(concurrentSpawns(active, [a, b])).toBe(true);
   });
 
+  test("a background spawn ends at its notification, not at its launch result", () => {
+    const a = toolUse("Agent", { subagent_type: "worker" });
+    const b = toolUse("Agent", { subagent_type: "worker" });
+    const events = [a.event, toolResult(a.id, "Async agent launched successfully."), b.event, toolResult(b.id, "B"),
+      text("working", { parent: a.id }), { type: "system", subtype: "task_notification", tool_use_id: a.id }];
+    expect(Object.fromEntries(spawnEnds(events, [a, b]))).toEqual({ [a.id]: 5, [b.id]: 3 });
+    expect(spawnEnds([a.event], [a]).has(a.id)).toBe(false);
+  });
+
   test("assistant events without content are ignored", () => {
     expect(skillLoads([{ type: "assistant", message: {} }, assistant({ type: "thinking", thinking: "" })])).toEqual([]);
   });
@@ -126,30 +135,41 @@ describe("delegation", () => {
 // Shapes from live runs of the parallel-tracks scenario: the main session brings a track
 // back with commands that name the worktree, and may leave its shell inside one.
 describe("main-session check output", () => {
+  const proof = { marker: "pricing-check:ok", dir: "/work/pricing" };
   const line = "pricing-check:ok /work/pricing";
   const worktree = "/work/.claude/worktrees/agent-a1";
+
+  test("a line names the marker and the directory as words", () => {
+    expect(printedFrom(`exit=0\n  ${line}\n`, proof.marker, proof.dir)).toBe(true);
+    expect(printedFrom(`${line} CODE ok`, proof.marker, proof.dir)).toBe(true);
+    expect(printedFrom("pricing-check:ok", proof.marker, proof.dir)).toBe(false);
+    expect(printedFrom(`pricing-check:ok ${worktree}/pricing`, proof.marker, proof.dir)).toBe(false);
+    expect(printedFrom("pricing-check:ok /work/pricing2", proof.marker, proof.dir)).toBe(false);
+    expect(printedFrom(`console.log(\`${line}\`)`, proof.marker, proof.dir)).toBe(false);
+  });
 
   test("counts a check that printed the main checkout's line after the given event", () => {
     const merged = [init(), text("track returned"),
       ...bash(`git -C ${worktree} diff --cached | git apply && bun pricing/check.js; echo "exit=$?"`, `${line}\nexit=0\n`)];
-    expect(mainBashPrinted(merged, line, 1)).toBe(true);
+    expect(mainBashPrinted(merged, { ...proof, after: 1 })).toBe(true);
     // A copy from the worktree after a cd into it, then the check back in the checkout.
     const copied = [init(), text("track returned"), ...bash(`cd ${worktree}`, ""),
       ...bash(`cp ${worktree}/pricing/*.js /work/pricing/ && cd /work && bun pricing/check.js`, `${line}\n`)];
-    expect(mainBashPrinted(copied, line, 1)).toBe(true);
-    // A later part of the command failed, but the check itself printed its line.
+    expect(mainBashPrinted(copied, { ...proof, after: 1 })).toBe(true);
+    // A later part of the command failed, but the check itself passed.
     const later = [init(), text("track returned"), ...bash("bun pricing/check.js && bun shipping/check.js", `${line}\nerror: wrong weight\n`, { isError: true })];
-    expect(mainBashPrinted(later, line, 1)).toBe(true);
+    expect(mainBashPrinted(later, { ...proof, after: 1 })).toBe(true);
+    expect(mainBashPrinted(later, proof)).toBe(true);
   });
 
   test("rejects a check in a worktree, before the event, by a subagent, or quoted in other output", () => {
     const inWorktree = [init(), text("track returned"), ...bash(`cd ${worktree} && bun pricing/check.js`, `pricing-check:ok ${worktree}/pricing\n`)];
-    expect(mainBashPrinted(inWorktree, line, 1)).toBe(false);
+    expect(mainBashPrinted(inWorktree, { ...proof, after: 1 })).toBe(false);
     const early = [init(), ...bash("bun pricing/check.js", `${line}\n`), text("track returned")];
-    expect(mainBashPrinted(early, line, 2)).toBe(false);
+    expect(mainBashPrinted(early, { ...proof, after: 2 })).toBe(false);
     const subagent = [init(), text("track returned"), ...bash("bun pricing/check.js", `${line}\n`, { parent: "toolu_agent" })];
-    expect(mainBashPrinted(subagent, line, 1)).toBe(false);
+    expect(mainBashPrinted(subagent, { ...proof, after: 1 })).toBe(false);
     const quoted = [init(), text("track returned"), ...bash(`echo "expect ${line}"`, `expect ${line}\n`)];
-    expect(mainBashPrinted(quoted, line, 1)).toBe(false);
+    expect(mainBashPrinted(quoted, { ...proof, after: 1 })).toBe(false);
   });
 });
