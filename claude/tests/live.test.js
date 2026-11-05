@@ -282,7 +282,100 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     });
     const spawns = assertAgentRan(run, "explorer", { count: 2 });
     expect(concurrentSpawns(run.events, spawns), "the explorers ran one after another").toBe(true);
+    // Read-only tracks share this checkout.
+    for (const spawn of spawns) expect(spawn.input.isolation, "a read-only track was given a worktree").toBeUndefined();
     assertUnchanged(before, snapshot(work));
     assertMatches(finalText(run.events), ["172", "78", /a\.js:1\b/, /b\.js:1\b/]);
+  }), 600_000);
+
+  // The Delegation rules on context: the prompt asks for parallel subagents but names no
+  // agent and leaves the bugs unlocated, so the session must route each editing track to a
+  // worker that owns it end to end (finds the bug, fixes it, updates and runs its check),
+  // pass each one the code only this conversation holds, isolate it in its own worktree,
+  // then bring both back, remove the worktrees and their branches, and run the checks
+  // itself in this checkout.
+  test("parallel tracks are owned end to end and brought back", () => suite.scenario("parallel owned tracks", async ({ fixture, session }) => {
+    const codes = { pricing: crypto.randomUUID(), shipping: crypto.randomUUID() };
+    const { work } = publishedRepo(fixture, {
+      "pricing/price.js": "export function total(items) {\n  return items.reduce((sum, item) => sum + item.price, 1);\n}\n",
+      "pricing/check.js": 'import { total } from "./price.js";\nif (total([{ price: 2 }, { price: 4 }]) !== 6 || total([]) !== 0) throw new Error("wrong total");\nconsole.log("pricing-check:ok");\n',
+      "shipping/weight.js": "export function kilograms(grams) {\n  return grams / 100;\n}\n",
+      "shipping/check.js": 'import { kilograms } from "./weight.js";\nif (kilograms(2500) !== 2.5) throw new Error("wrong weight");\nconsole.log("shipping-check:ok");\n',
+    });
+    const worktrees = () => git(work, "worktree", "list", "--porcelain").split("\n")
+      .filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length))
+      .filter((path) => !existsSync(path) || realpathSync(path) !== work);
+    try {
+      const run = await session({
+        cwd: work,
+        effort: ABOVE_WORKER,
+        timeout: 540_000,
+        prompt: "pricing/ and shipping/ are independent modules, and each has a bug that makes its check.js fail. Work on them "
+          + "in parallel with one subagent per module. Also, as agreed with the client, pricing/code.js must export CODE set to "
+          + `"${codes.pricing}", and as agreed with the carrier, shipping/code.js must export CODE set to "${codes.shipping}". `
+          + "Each module's check.js must also assert its CODE. When done, the fixes belong in this checkout.",
+      });
+      const spawns = assertAgentRan(run, "worker", { count: 2 });
+      expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null).map((spawn) => spawn.input.subagent_type),
+        "a track went to another agent, or one area passed between agents").toEqual(["worker", "worker"]);
+      expect(concurrentSpawns(run.events, spawns), "the tracks ran one after another").toBe(true);
+      for (const spawn of spawns) expect(spawn.input.isolation, "an editing track shared the checkout").toBe("worktree");
+
+      // Each module is one worker's whole track: only that worker touched it, its brief held
+      // the conversation's code, and it updated and ran the module's check itself.
+      const uses = toolUses(run.events);
+      const touches = (use, module) => new RegExp(`\\b${module}\\b`).test(JSON.stringify(use.input));
+      const owners = {};
+      for (const module of Object.keys(codes)) {
+        const owner = spawns.filter((spawn) => uses.some((use) => use.parent === spawn.id && touches(use, module)));
+        expect(owner.length, `${module} was not one worker's track`).toBe(1);
+        owners[module] = owner[0];
+        expect(owner[0].input.prompt, `the ${module} brief lacks the code from this conversation`).toContain(codes[module]);
+        const own = uses.filter((use) => use.parent === owner[0].id);
+        expect(own.some((use) => (["Write", "Edit"].includes(use.name) && use.input.file_path?.endsWith(`/${module}/check.js`))
+          || (use.name === "Bash" && /check\.js/.test(use.input.command ?? "") && /sed -i|perl -pi|>|\btee\b/.test(use.input.command ?? ""))),
+        `the ${module} worker did not update its check`).toBe(true);
+        expect(run.bash.some((bash) => bash.parent === owner[0].id && bash.ok && /check\.js/.test(bash.command)
+          && (touches({ input: bash.command }, module) || bash.cwd?.includes(`/${module}`))),
+        `the ${module} worker did not run its check`).toBe(true);
+      }
+      expect(owners.pricing.id).not.toBe(owners.shipping.id);
+
+      // The main session left each module to its track: it did not investigate the module
+      // before handing it off or edit it while the track ran, and after the track returned
+      // it ran the module's check itself in this checkout, not in a worktree.
+      const blockAt = (match) => run.events.findIndex((event) => Array.isArray(event.message?.content) && event.message.content.some(match));
+      const usedAt = (id) => blockAt((block) => block.type === "tool_use" && block.id === id);
+      const handedOff = Math.min(...spawns.map((spawn) => usedAt(spawn.id)));
+      for (const [module, owner] of Object.entries(owners)) {
+        const returned = blockAt((block) => block.type === "tool_result" && block.tool_use_id === owner.id);
+        expect(returned, `the ${module} track never returned`).toBeGreaterThan(-1);
+        const main = uses.filter((use) => use.parent === null && touches(use, module));
+        expect(main.filter((use) => ["Read", "Grep"].includes(use.name) && usedAt(use.id) < handedOff),
+          `the main session investigated ${module} before handing it off`).toEqual([]);
+        expect(main.filter((use) => ["Write", "Edit"].includes(use.name) && usedAt(use.id) < returned),
+          `the main session edited ${module} while its track ran`).toEqual([]);
+        expect(run.bash.some((bash) => bash.parent === null && bash.ok && bash.cwd?.startsWith(work)
+          && !/worktrees/.test(bash.command) && !bash.cwd.includes("/.claude/worktrees/")
+          && /check\.js/.test(bash.command) && (touches({ input: bash.command }, module) || bash.cwd.endsWith(`/${module}`))
+          && usedAt(bash.id) > returned),
+        `the main session did not run ${module}'s check in this checkout after its track returned`).toBe(true);
+      }
+
+      // Both tracks' work is in this checkout, and their worktrees and branches are gone.
+      for (const [module, code] of Object.entries(codes)) {
+        const checked = spawnSync("bun", [`${module}/check.js`], { cwd: work, encoding: "utf8" });
+        expect(checked.status, checked.stderr).toBe(0);
+        expect(checked.stdout).toContain(`${module}-check:ok`);
+        expect(readFileSync(join(work, module, "code.js"), "utf8")).toContain(code);
+        expect(readFileSync(join(work, module, "check.js"), "utf8"), `${module}'s check does not assert its CODE`).toMatch(/\bCODE\b/);
+      }
+      expect(worktrees(), "a track's worktree was left behind").toEqual([]);
+      expect(git(work, "branch", "--format=%(refname:short)").split("\n"), "a track's branch was left behind").toEqual(["main"]);
+    } finally {
+      // Worktrees inside the fixture are removed with it; remove any made elsewhere.
+      for (const path of worktrees())
+        if (existsSync(path) && !realpathSync(path).startsWith(`${work}/`)) rmSync(path, { recursive: true, force: true });
+    }
   }), 600_000);
 });

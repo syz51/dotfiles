@@ -112,22 +112,10 @@ describe("global instructions", () => {
     expect(meta.description.length).toBeGreaterThan(20);
   });
 
-  // Anthropic's multi-agent guidance: split by context, not by type of work, because
-  // each handoff between phases of the same work loses context. No live scenario covers
-  // this, so it sits outside the live-rules block.
-  test("Delegation splits by context, and each agent owns its whole track", () => {
-    const delegation = section("Delegation");
-    expect(delegation).toMatch(/Split work by context, not by type of work/);
-    expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
-    expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
-    expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
-    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
-    expect(delegation).toMatch(/hard debugging or reasoning, including its fix, to `solver`/);
-    expect(delegation).toMatch(/Settle only the interfaces tracks share/);
-    expect(delegation).toMatch(/those interfaces, what it needs from this conversation/);
-    expect(delegation).not.toMatch(/decided design/);
-    expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);
-    expect(delegation).toMatch(/continue the agent that did the track when it and its checkout still exist/);
+  // No live scenario covers continuing an agent: it needs a defect to surface after a
+  // track returns, which a fixture cannot trigger reliably.
+  test("Delegation sends a parallel correction back to the agent that has the context", () => {
+    expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
 });
 
@@ -194,6 +182,22 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/Don't use subagents to verify your own work/);
     expect(delegation).toMatch(/Agents that stand in for a tool you lack, such as `web-fetch`, are tool use, not delegation/);
     expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
+  });
+
+  // Anthropic's multi-agent guidance: split by context, not by type of work, because
+  // each handoff between phases of the same work loses context.
+  test("Delegation splits by context, and each agent owns its whole track", () => {
+    const delegation = section("Delegation");
+    expect(delegation).toMatch(/Split work by context, not by type of work/);
+    expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
+    expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
+    expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
+    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
+    expect(delegation).toMatch(/hard debugging or reasoning, including its fix, to `solver`/);
+    expect(delegation).toMatch(/Settle only the interfaces tracks share/);
+    expect(delegation).toMatch(/those interfaces, what it needs from this conversation/);
+    expect(delegation).not.toMatch(/decided design/);
+    expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);
   });
 
   test("Review fixes every real defect it finds and reports the rest", () => {

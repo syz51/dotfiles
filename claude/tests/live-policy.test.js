@@ -2,7 +2,8 @@
 // claude/CLAUDE.md: real sessions on fixture projects, scored deterministically from
 // Bash calls (with the directory each ran in), Agent spawns, the files left behind, an
 // independent re-run of the project check, and the final reply. Every scenario is a
-// small task, so none may spawn a subagent. Opt in with RUN_CLAUDE_LIVE=1.
+// single track, small or spread over several files, so none may spawn a subagent. Opt in
+// with RUN_CLAUDE_LIVE=1.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -62,6 +63,20 @@ const scenarios = [
     },
     writable: ["order.js"],
     prompt: "Fix order.js so the existing check.js passes. Only order.js may change. Verify with the existing check and report the result.",
+    check: { tool: "bun", script: "check.js" },
+    verify: ["bun", "check.js"],
+  },
+  {
+    name: "a single multi-file track stays in the main session",
+    files: {
+      "orders/total.js": "export function calcTotal(items) {\n  return items.reduce((sum, item) => sum + item.price * item.qty, 0);\n}\n",
+      "orders/invoice.js": 'import { calcTotal } from "./total.js";\nexport const invoice = (items) => ({ lines: items.length, total: calcTotal(items) });\n',
+      "orders/receipt.js": 'import { calcTotal } from "./total.js";\nexport const receipt = (items) => `Total: ${calcTotal(items)}`;\n',
+      "orders/summary.js": 'import { calcTotal } from "./total.js";\nexport const summary = (orders) => orders.map((items) => calcTotal(items));\n',
+      "check.js": 'import { readFileSync } from "node:fs";\nimport * as total from "./orders/total.js";\nimport { invoice } from "./orders/invoice.js";\nimport { receipt } from "./orders/receipt.js";\nimport { summary } from "./orders/summary.js";\nconst items = [{ price: 2, qty: 3 }, { price: 5, qty: 1 }];\nif ("calcTotal" in total || total.orderTotal(items) !== 11) throw new Error("orderTotal missing");\nif (invoice(items).total !== 11 || receipt(items) !== "Total: 11" || summary([items, []]).join() !== "11,0") throw new Error("behavior changed");\nfor (const name of ["total", "invoice", "receipt", "summary"]) if (readFileSync(`orders/${name}.js`, "utf8").includes("calcTotal")) throw new Error(`calcTotal left in ${name}.js`);\nconsole.log("fixture-check:ok");\n',
+    },
+    writable: ["orders/total.js", "orders/invoice.js", "orders/receipt.js", "orders/summary.js"],
+    prompt: "Rename calcTotal to orderTotal across orders/, in its definition and every use, without changing behavior. Verify with check.js and report the result. Only files in orders/ may change.",
     check: { tool: "bun", script: "check.js" },
     verify: ["bun", "check.js"],
   },
@@ -132,7 +147,7 @@ describe.skipIf(!LIVE)("live policy", () => {
       const global = run.instructions.find((record) => record.memory_type === "User");
       expect(global && realpathSync(global.file_path), "the global instructions were not loaded").toBe(realpathSync(join(HOME_CLAUDE, "CLAUDE.md")));
       assertUnchanged(before, snapshot(work), scenario.writable);
-      expect(agentSpawns(run.events).map((spawn) => spawn.input.subagent_type), "a small task was delegated").toEqual([]);
+      expect(agentSpawns(run.events).map((spawn) => spawn.input.subagent_type), "a single track was delegated").toEqual([]);
       const text = finalText(run.events);
       scenario.answer?.(text);
       if (scenario.check)
