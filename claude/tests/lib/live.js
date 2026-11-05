@@ -130,6 +130,8 @@ export function liveSuite(name) {
       const preToolUse = records.filter((r) => r.hook_event_name === "PreToolUse");
       const cwds = new Map(preToolUse.map((r) => [r.tool_use_id, r.cwd]));
       return {
+        model,
+        effort,
         events,
         init,
         result: resultEvent(events),

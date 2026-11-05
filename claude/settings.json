@@ -52,6 +52,9 @@
   "sandbox": {
     "enabled": false
   },
+  "worktree": {
+    "baseRef": "head"
+  },
   "modelSettings": {
     "claude-opus-5-5": {
       "effortLevel": "high"

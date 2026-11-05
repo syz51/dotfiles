@@ -27,15 +27,16 @@
 
 ## Delegation
 
-- Own planning, product and architecture design, judgment, communication, and completion verification. Delegate separable work big enough to justify a fresh start: investigation and evidence gathering to `explorer`, implementation and execution-heavy work (including authorized document/archive updates) to `worker`, and hard debugging/reasoning to `solver`. Handle trivial edits, small reads, and inseparable design exploration directly. Don't override an agent's configured model or effort.
-- Give each task a standalone brief with the goal, decided design, scope, constraints, acceptance checks, and expected report; do not repeat shared instructions.
-- Run independent tasks in parallel when useful, settling shared interfaces first. Isolate independent implementation when needed; transfer required uncommitted inputs explicitly, or share the checkout without concurrent edits to the same files.
-- Check delegated results against the brief and diff and run missing checks; send corrections as a new task with the original brief and findings.
+- This section is my standing request to use subagents, so don't wait for me to ask. Delegate only when running work in parallel pays off: sizeable, independent tracks that can run at the same time, such as a wide investigation of separate areas, with one agent per track, or one such track running while you continue other work. Do everything else yourself, including work that shares this conversation's context, iterates with me, or takes only a handful of tool calls. Don't use subagents to verify your own work beyond the Review section's `/code-review`. Agents that stand in for a tool you lack, such as `web-fetch`, are tool use, not delegation.
+- Choose each track's agent by what it does: read-only investigation to `explorer`, file edits and other state-changing work to `worker`, and hard debugging or reasoning to `solver`. Keep the count low, and don't override an agent's configured model or effort.
+- Settle shared interfaces first, then give each agent a standalone brief with the goal, decided design, scope, constraints, acceptance checks, and expected report; do not repeat shared instructions.
+- Isolate tracks that edit files with the runtime's worktree facility, never a worktree made in the shell. A new worktree never has uncommitted changes, so transfer required inputs explicitly and have the child verify them in its checkout. Afterwards bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise. Otherwise share the checkout without concurrent edits to the same files.
+- Keep planning, design, judgment, communication, and completion verification yourself. Check delegated results against the brief and diff and run missing checks, then fix what remains yourself; delegate a correction only when it is again a parallel track, as a new task with the original brief and findings.
 
 ## Review
 
 - `/code-review` is the only review process. For high-impact changes (shared or security-sensitive code, migrations, public interfaces, or anything hard to revert), run it once at `xhigh` on the final diff before pushing or reporting done; its level also sets the review's reasoning effort. Don't run a second review, `/simplify`, or `/security-review` unless I ask.
-- Fix small findings yourself; delegate larger fixes with the original brief and findings, then rerun the affected checks instead of reviewing again.
+- Check each finding against the code before deciding. Fix every one that is a real defect in what the change is meant to do and verify the fix, delegating only fixes that split into parallel tracks under the Delegation section, then rerun the affected checks instead of reviewing again. Report the rest, as with unrelated issues, instead of fixing them.
 
 ## Basic safeguards
 
