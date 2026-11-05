@@ -8,6 +8,10 @@ tasks under the right area instead of keeping them in conversation only.
 
 Started 2026-11-05 on `sunmacbook-air` (this Mac is also the codex-skills maintainer).
 
+**This repository is public.** Keep server addresses, logins, private repository
+contents, transcript text and personal data out of every tracked file, this one included.
+Evidence that quotes transcripts stays in the state folder.
+
 ## Goal
 
 Cover the four gaps found when comparing this setup with the talk, each with working tools,
