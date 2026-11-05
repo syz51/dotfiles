@@ -231,8 +231,8 @@ in CI:
   runner, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
-  check that tampers with the fixture when re-run fails, and so do a small task handed
-  to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
+  check that tampers with the fixture when re-run fails, and so do a single-track task
+  handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
   too, as does a claimed but unsaved artifact or an unwritable report.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
@@ -254,15 +254,20 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   model and effort (worker checks run the main session at `xhigh`, above the worker),
   the worker edits only its authorized files, a worker isolated in a worktree starts
   from the local `HEAD` and receives the main checkout's uncommitted input while the
-  checkout stays untouched, and two explorers run in parallel. The guard hook blocks a
-  force push to `main`.
+  checkout stays untouched, and two explorers run in parallel in the shared checkout.
+  Two parallel tracks go to one worker each, in its own worktree: each worker finds its
+  module's bug, fixes it, updates and runs the module's check, and gets the code only
+  the conversation held. The main session neither investigates nor edits a module
+  before its track returns, then brings both back, removes the worktrees and their
+  branches, and runs the checks itself. The guard hook blocks a force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a
   TypeScript and Rust repository loads no skill, and the article run saves its draft.
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
   `bun` unless the project's lockfile names another tool. Fixes are re-checked
-  independently, reviews stay read-only, and these small tasks spawn no subagent. A
+  independently, reviews stay read-only, and these single-track tasks, one of them a
+  rename across several files, spawn no subagent. A
   Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
 
