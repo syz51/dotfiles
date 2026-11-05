@@ -232,6 +232,17 @@ describe("score command", () => {
     expect(call.stdin).not.toContain("Renamed half");
   });
 
+  test("the judge sees host notices and slash commands, and is told how to read them", async () => {
+    write([new Transcript().prompt("Context handoff (full_thread_summary): earlier work. Newest request: add tests.").prompt("<command-name>/review</command-name>\n<command-args>high</command-args>").prompt("Fix what it finds").text("Done")]);
+    judgeAnswer(answer());
+    expect(await run(["--days", "3650"])).toBe(0);
+    const [call] = calls();
+    expect(call.stdin).toContain("[H n] is a HOST NOTICE");
+    expect(call.stdin).toContain('shows as "slash command" with its name and arguments');
+    expect(call.stdin).toMatch(/\[H1\] HOST NOTICE \([^)]*\):\nContext handoff \(full_thread_summary\): earlier work/);
+    expect(call.stdin).toMatch(/\[H2\] HOST NOTICE \(slash command, [^)]*\): \/review high/);
+  });
+
   test("stops before the total budget could be exceeded", async () => {
     write([1, 2, 3, 4].map((n) => new Transcript().prompt(`Task ${n}`).text("Done")));
     judgeAnswer(answer());
