@@ -38,6 +38,7 @@ uv
 !/claude/rules/
 !/claude/skills/
 !/claude/tests/
+!/claude/factory/
 /claude/skills/*
 !/claude/skills/headless-browser/
 /claude/skills/headless-browser/node_modules/
@@ -68,3 +69,6 @@ uv
 .env
 .env.*
 !.env.example
+
+# Claude Code subagent worktrees.
+/.claude/
