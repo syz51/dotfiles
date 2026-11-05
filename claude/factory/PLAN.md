@@ -311,8 +311,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   on macOS's privacy check; such reads now go through `lib/probe.js` with a 5 s deadline;
   (2) branch `factory/proposal-...` cannot coexist with branch `factory`; now
   `factory-proposal/...`.
-- [~] Second real run (launchd, 19:31).
-- [ ] Clean up temporary files, worktrees, fixture sessions.
+- [x] Second real run (launchd, 19:31-19:34): every step ran. Scoring finished in 2 minutes
+  (the deadline fix works under launchd); proposals opened draft syz51/dotfiles#16
+  ("Require uv run for all Python and bun outside matching lockfiles", 48 sessions,
+  $0.23, tests passing). Its PR body holds session ids only; the diff is one rule line.
+  Note: a few of the 48 sessions carry rubric v2 detector records from before the
+  package-runner fix (for example a `pip` inside a grep pattern); rescore at rubric v3.
+- [x] Clean up temporary files, worktrees, fixture sessions.
+- [ ] Open the factory PR; merge is the user's call.
 
 ## Deferred: daily review on sai
 
