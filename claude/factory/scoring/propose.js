@@ -119,9 +119,14 @@ export function failureGroups(records, { since, rubric = RUBRIC }) {
 
 // A recent proposal for the dimension that already used one of these sessions; dry runs
 // and errors do not count, so the next run tries again.
+// A proposer that failed for any reason but its budget (an API error or rate limit, say)
+// is retried next run; one that used up its budget would again, so it waits.
+const retryable = (proposal) => RETRYABLE.has(proposal.status)
+  || (proposal.status === "proposer-failed" && proposal.resultSubtype !== "error_max_budget_usd");
+
 export function alreadyProposed(proposals, dimension, sessionIds, now) {
   const since = now - RECENT_DAYS * 86_400_000;
-  return proposals.find((proposal) => proposal.dimension === dimension && !RETRYABLE.has(proposal.status)
+  return proposals.find((proposal) => proposal.dimension === dimension && !retryable(proposal)
     && Date.parse(proposal.createdAt) >= since && proposal.sessions.some((id) => sessionIds.includes(id)));
 }
 

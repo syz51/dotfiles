@@ -57,11 +57,12 @@ const excerpt = (text) => text.length <= OUTPUT_EXCERPT
   : `${text.slice(0, OUTPUT_EXCERPT / 2)}\n[... ${text.length - OUTPUT_EXCERPT} characters omitted ...]\n${text.slice(-OUTPUT_EXCERPT / 2)}`;
 
 // Wrappers Claude Code puts around local command output and injected context.
-const INJECTED = /^\s*<(?:local-command-stdout|local-command-stderr|system-reminder|command-message|bash-stdout|bash-stderr)>/;
+const INJECTED = /^\s*<(?:local-command-stdout|local-command-stderr|system-reminder|bash-stdout|bash-stderr)>/;
 
 // Notices T3 Code sends as ordinary prompts in the person's name, and slash commands.
 const HOST_PROMPT = [
-  /^\s*<command-name>/,
+  // A slash command, whichever of its tags comes first.
+  /^\s*<command-(?:name|message)>/,
   /^Update on pull request #\d+ \(https:\/\/github\.com\//,
   /^Pull request #\d+ \(https:\/\/github\.com\/[^)]+\) was (?:closed|merged)/,
   /^Delegated task node:delegated-task:/,

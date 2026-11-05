@@ -191,11 +191,8 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   today's rules).
 - [ ] New detector: file edits through shell scripts ("Prefer dedicated tools").
 - [ ] `runTask` option for `--strict-mcp-config`, for the proposer.
-- [ ] Rescore `2870afe1` at the next rubric version (stale first hit from before a
-  detector fix); state folder still holds rubric v1 records, which `propose` ignores.
-
-### 3. Benchmarks (`bench/`)
-
+- [x] Rubric v3 (2026-11-05): detector changes since v2 are scored afresh; v2 records no
+  longer count toward proposals.
 - [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
   parallel scheduler, fresh fixture per run, agent override file plus `--agent`, installs
   and web blocked, overlay re-applied before the oracle so tests cannot be edited to
@@ -302,10 +299,21 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   (the deadline fix works under launchd); proposals opened draft syz51/dotfiles#16
   ("Require uv run for all Python and bun outside matching lockfiles", 48 sessions,
   $0.23, tests passing). Its PR body holds session ids only; the diff is one rule line.
-  Note: a few of the 48 sessions carry rubric v2 detector records from before the
-  package-runner fix (for example a `pip` inside a grep pattern); rescore at rubric v3.
+  Note: a few of the 48 sessions carried v2 detector records from before the
+  package-runner fix (for example a `pip` inside a grep pattern); rubric v3 rescores them.
 - [x] Clean up temporary files, worktrees, fixture sessions.
-- [ ] Open the factory PR; merge is the user's call.
+- [x] Second `/code-review` at xhigh on PR #17 (user asked): 15 findings, all real, all
+  fixed (2e5e782 and the merged scoring fixes): a failed proposer run never pushes and
+  only a budget overrun blocks its retry; the proposer cannot read transcripts or factory
+  state; rubric v3; `command -v` is a lookup; `--mirror`/forced `--all` pushes flagged; the
+  judge sees host notices and slash commands; repeated judge errors stop being retried;
+  `--session` judges every named session; weekly keeps config overrides and locks
+  atomically; runProcess kills once and tolerates EPERM; model mix priced per request;
+  bench timeout cost via the shared partial-stream reader; private codex-skills details
+  moved to the state folder's notes.
+- [ ] Merge #17, switch `~/.config` to main, then live-test and merge #16.
+- [ ] Inherited host prompts of a forked session are not shown to the judge (the lib
+  filters them); add if forks of slash-command sessions turn out to matter.
 
 ## Deferred: daily review on sai
 

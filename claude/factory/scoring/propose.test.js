@@ -188,6 +188,15 @@ describe("proposal rules", () => {
     expect(alreadyProposed(proposalsMade, "delegation-fit", ["s1"], now)).toBeUndefined();
     expect(alreadyProposed(proposalsMade, "scope-creep", ["s1"], now + 40 * 86_400_000)).toBeUndefined();
   });
+
+  test("a proposer that ran out of budget blocks a retry; one that failed otherwise does not", () => {
+    const now = Date.now();
+    const at = new Date(now - 86_400_000).toISOString();
+    const failed = (resultSubtype) => [{ dimension: "scope-creep", status: "proposer-failed", resultSubtype, createdAt: at, sessions: ["s1"] }];
+    expect(alreadyProposed(failed("error_max_budget_usd"), "scope-creep", ["s1"], now)).toBeTruthy();
+    expect(alreadyProposed(failed("error_during_execution"), "scope-creep", ["s1"], now)).toBeUndefined();
+    expect(alreadyProposed(failed(null), "scope-creep", ["s1"], now)).toBeUndefined();
+  });
 });
 
 describe("propose command", () => {

@@ -201,13 +201,14 @@ describe("transcripts", () => {
       .prompt("Update on pull request #3 (https://github.com/o/r/pull/3), which T3 Code is watching:")
       .prompt("Context handoff (full_thread_summary):\nProvider context handoff.")
       .prompt("<command-name>/compact</command-name>")
+      .prompt("<command-message>review</command-message>\n<command-name>/review</command-name>")
       .prompt("Continue where you left off.");
     const personal = new Transcript().prompt("Continue where you left off, but in Rust");
     const empty = new Transcript().prompt("Delegated task node:delegated-task:x [completed]");
     const root = writeProjects([{ transcript: delegated }, { transcript: personal }, { transcript: empty }]);
     try {
       const byId = Object.fromEntries(loadSessions({ root }).map((s) => [s.id, s]));
-      expect([byId[delegated.sessionId].prompts.length, byId[delegated.sessionId].hostPrompts, byId[delegated.sessionId].origin]).toEqual([1, 4, "agent"]);
+      expect([byId[delegated.sessionId].prompts.length, byId[delegated.sessionId].hostPrompts, byId[delegated.sessionId].origin]).toEqual([1, 5, "agent"]);
       expect([byId[personal.sessionId].prompts.length, byId[personal.sessionId].origin]).toEqual([1, "person"]);
       expect([byId[empty.sessionId].prompts.length, byId[empty.sessionId].origin]).toEqual([0, null]);
       expect(isHostPrompt("Delegated task node:delegated-task:abc")).toBe(true);
