@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "autoAllowBashIfSandboxed": true,
+    "excludedCommands": [],
+    "enableWeakerNetworkIsolation": false,
+    "allowAppleEvents": false,
+    "network": {
+      "allowedDomains": [],
+      "strictAllowlist": true,
+      "allowLocalBinding": false,
+      "allowAllUnixSockets": false
+    },
+    "filesystem": {
+      "allowWrite": [],
+      "denyRead": [
+        "~/.ssh",
+        "~/.aws",
+        "~/.gnupg",
+        "~/.netrc",
+        "~/.config/gh",
+        "~/.docker/config.json",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.cargo/credentials.toml",
+        "~/.claude.json"
+      ]
+    }
+  },
+  "permissions": {
+    "blockWritesOutsideWorkingDirectories": true,
+    "deny": ["WebFetch", "WebSearch"]
+  }
+}
