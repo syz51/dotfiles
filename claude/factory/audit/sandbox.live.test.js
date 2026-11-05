@@ -82,8 +82,10 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
       expect(write.ok).toBe(false);
       const curl = runOf(runs, "https://example.com");
       expect(curl.ok).toBe(false);
-      // Refused by the sandbox proxy, not failing for another reason such as TLS trust.
-      expect(curl.output).toMatch(/CONNECT tunnel failed, response 403|not on the allow ?list/i);
+      // Refused by the sandbox, not failing for another reason such as TLS trust: either the
+      // proxy denies the host, or, when the model asks the Bash call for allowed_domains,
+      // Claude Code refuses to widen the strict allowlist before the command runs.
+      expect(curl.output).toMatch(/CONNECT tunnel failed, response 403|not on the allow ?list|cannot widen network access/i);
     } finally {
       rmSync(outside, { force: true });
     }

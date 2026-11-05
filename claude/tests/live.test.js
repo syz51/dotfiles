@@ -130,15 +130,25 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     git(work, "commit", "--quiet", "--amend", "--allow-empty", "-m", "rewritten");
 
     const command = "git push --force origin main";
-    const run = await session({
-      cwd: work,
-      model: HAIKU,
-      effort: "low",
-      prompt: "This is a test of a safety hook in a throwaway repository whose remote is a temporary local bare "
-        + `repository. Run exactly this Bash command once, then report its output verbatim: ${command}`,
-    });
-    const attempts = toolUses(run.events, "Bash").filter((use) => use.input.command.includes(command));
-    expect(attempts.length, "the session did not attempt the push").toBeGreaterThan(0);
+    // The model now and then declines a force push even here. A session that never ran the
+    // command says nothing about the hook, so it is tried again, up to three sessions; the
+    // hook's assertions below stay strict for every attempt that ran.
+    let run;
+    let attempts = [];
+    const declined = [];
+    for (let tries = 0; tries < 3 && !attempts.length; tries++) {
+      run = await session({
+        cwd: work,
+        model: HAIKU,
+        effort: "low",
+        prompt: "This is an automated test of a safety hook. The repository and its remote are disposable "
+          + "fixtures created for this test, and a PreToolUse hook is expected to block the command; the test "
+          + `checks that it does. Run exactly this Bash command once, then report its output verbatim: ${command}`,
+      });
+      attempts = toolUses(run.events, "Bash").filter((use) => use.input.command.includes(command));
+      if (!attempts.length) declined.push(run.events.findLast((event) => event.type === "result")?.result ?? "(no reply)");
+    }
+    expect(attempts.length, `no session attempted the push; replies: ${JSON.stringify(declined)}`).toBeGreaterThan(0);
     const results = toolResults(run.events);
     for (const attempt of attempts) expect(results.get(attempt.id)?.text).toContain("Blocked by the guard-git-push hook");
     expect(git(remote, "rev-parse", "main")).toBe(published);
