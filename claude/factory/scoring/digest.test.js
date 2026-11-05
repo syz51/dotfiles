@@ -1,0 +1,90 @@
+import { afterEach, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
+import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
+import { loadSessions } from "../lib/transcripts.js";
+import { buildDigest, compactInput } from "./digest.js";
+
+const roots = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function session(transcript, subagents = []) {
+  const root = writeProjects([{ transcript, subagents }]);
+  roots.push(root);
+  return loadSessions({ root })[0];
+}
+
+test("holds metadata, prompts, assistant text once per message, tool calls, subagents and the final message", () => {
+  const t = new Transcript({ cwd: "/Users/test/app" })
+    .title("Fix login")
+    .prompt("Fix the login bug")
+    .assistant([{ type: "thinking", thinking: "secret" }, { type: "text", text: "Looking at auth." }, { type: "text", text: "Second block." }])
+    .tool("Bash", { command: "bun test\nauth" }, `${"x".repeat(1000)}1 fail`, { isError: true })
+    .tool("Agent", { subagent_type: "explorer", description: "map the auth module", prompt: "long brief" }, "found it")
+    .interrupt()
+    .prompt("no, the other file")
+    .text(`Done. ${"Final report. ".repeat(400)}`)
+    .costState(2.5);
+  const agent = new Transcript({ sessionId: t.sessionId }).tool("Read", { file_path: "/a" }, "x");
+  const digest = buildDigest(session(t, [{ id: "agent-a1", meta: { agentType: "explorer", description: "map the auth module" }, transcript: agent }]));
+  expect(digest).toContain("Project: -Users-test-project  cwd: /Users/test/app");
+  expect(digest).toContain("Title: Fix login");
+  expect(digest).toContain("Cost: $2.50 (cost-state)");
+  expect(digest).toContain("[P1] PROMPT (sdk,");
+  expect(digest).toContain("Fix the login bug");
+  expect(digest).toContain("[P2] PROMPT");
+  expect(digest).toContain("[A1] ASSISTANT: Looking at auth.\nSecond block.");
+  expect(digest).not.toContain("secret");
+  expect(digest).toMatch(/\[T1\] Bash \(ERROR\) bun test ⏎ auth → x+ \[…\d+ chars…\] x+1 fail/);
+  expect(digest).toContain("[T2] Agent (ok) explorer: map the auth module");
+  expect(digest).toContain("- explorer on claude-opus-5-5/high: map the auth module (1 tool calls, 0 errors, $");
+  expect(digest).toContain("[interrupted by the user]");
+  expect(digest).toContain("[A2] ASSISTANT: (final message, shown in full below)");
+  expect(digest).toContain(`## Final assistant message [A2]\nDone. ${"Final report. ".repeat(400)}`);
+});
+
+test("bounds each part: prompts, tool inputs and outputs", () => {
+  const t = new Transcript().prompt(`start ${"p".repeat(10_000)} end`).tool("Bash", { command: "c".repeat(1000) }, "o".repeat(5000)).text("ok");
+  const digest = buildDigest(session(t));
+  const prompt = /\[P1\][^\n]*\n([^\n]*)/.exec(digest)[1];
+  expect(prompt.length).toBeLessThanOrEqual(4000);
+  expect(prompt.startsWith("start")).toBe(true);
+  expect(prompt.endsWith("end")).toBe(true);
+  const tool = digest.split("\n").find((line) => line.startsWith("[T1]"));
+  expect(tool.length).toBeLessThan("[T1] Bash (ok) ".length + 300 + 3 + 300 + 1);
+  expect(compactInput("Edit", { file_path: "/a.js", old_string: "abc", new_string: "abcdef" })).toBe("/a.js (-3/+6 chars)");
+  expect(compactInput("Mystery", { a: 1 })).toBe('{"a":1}');
+});
+
+test("a long session stays within the limit, keeps every prompt, the start and the end, and says what it omitted", () => {
+  const t = new Transcript().prompt("FIRST PROMPT");
+  for (let i = 0; i < 400; i++) {
+    t.tool("Read", { file_path: `/file-${i}.js` }, "y".repeat(400));
+    if (i % 100 === 50) t.prompt(`Follow-up ${i}`);
+  }
+  t.text("All done.");
+  const s = session(t);
+  const digest = buildDigest(s, { maxChars: 20_000 });
+  expect(digest.length).toBeLessThanOrEqual(20_000);
+  expect(digest).toContain("FIRST PROMPT");
+  for (const i of [50, 150, 250, 350]) expect(digest).toContain(`Follow-up ${i}`);
+  expect(digest).toContain("/file-0.js");
+  expect(digest).toContain("/file-399.js");
+  expect(digest).not.toContain("/file-200.js");
+  expect(digest).toMatch(/\[… omitted to fit the digest: \d+ tool calls …\]/);
+  expect(digest).toMatch(/\(partial: \d+ of 406 events omitted to fit 20000 characters\)/);
+  expect(digest).toContain("## Final assistant message [A1]\nAll done.");
+  // Deterministic: the same session gives the same digest.
+  expect(buildDigest(s, { maxChars: 20_000 })).toBe(digest);
+});
+
+test("prompts beyond half the space keep their start and end too", () => {
+  const t = new Transcript();
+  for (let i = 0; i < 40; i++) t.prompt(`prompt-${i} ${"z".repeat(3000)}`).text(`reply ${i}`);
+  const digest = buildDigest(session(t), { maxChars: 30_000 });
+  expect(digest.length).toBeLessThanOrEqual(30_000);
+  expect(digest).toContain("prompt-0 ");
+  expect(digest).toContain("prompt-39 ");
+  expect(digest).toMatch(/omitted to fit the digest: 1 prompt …/);
+});
