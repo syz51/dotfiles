@@ -188,21 +188,33 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
 
 ### 3. Benchmarks (`bench/`)
 
-- [ ] Case format `bench/cases/<id>/case.json`: role (`main`, `explorer`, `worker`,
-  `solver`), prompt, fixture (`files` folder or `git` repository plus commit), oracle
-  command (gets `FINAL_ANSWER_FILE`), budget, turn and time limits.
-- [ ] `bench run`: matrix of model x effort x trials; each run in a fresh temporary copy;
-  for a subagent role, write an override `.claude/agents/<role>.md` in the fixture and run
-  with `--agent <role>`; block installs and web access like the live suites; record pass,
-  cost, duration and turns.
-- [ ] `bench add-from-commit <repo> <sha> --tests <paths>`: turn a real commit with tests
-  into a case (fixture = parent commit plus the commit's tests; oracle = those tests).
-- [ ] `bench report`: per role, pass rate and median cost per configuration, the
-  cost-vs-correctness Pareto front, and a recommendation (cheapest configuration within a
-  set margin of the best pass rate).
-- [ ] Seed cases from this repo's history (at least one each for explorer and worker) and
-  a judge-calibration case for area 2's judge model.
-- [ ] Tests with a fake CLI; one small real matrix run, with results in the log.
+- [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
+  parallel scheduler, fresh fixture per run, agent override file plus `--agent`, installs
+  and web blocked, overlay re-applied before the oracle so tests cannot be edited to
+  pass, infrastructure failures marked and left out of reports), `report` (pass rate,
+  median cost and duration, Pareto front, recommendation or "not enough trials" under 3),
+  `add-from-commit` (checks the oracle fails on the parent and passes on the commit).
+- [x] Seed cases: `explorer-push-guard` (pinned ac55bf1), `worker-tuios-installer-updates`
+  (d0d89c0), `worker-guard-temp-deletes` (daa04fd).
+- [x] First real run, 1 trial each, all passed: explorer haiku $0.005 / sonnet $0.057 /
+  opus $0.114 (all 5 turns, about 11 s); worker tuios sonnet-high $0.136 (33 s) vs
+  opus-high $0.349 (58 s). Total $1.45. Requested models confirmed from the stream.
+- CLI facts learned (2.1.318): `--model` overrides an agent file's model; a project
+  `.claude/agents/<name>.md` beats the user's; an agent file's `effort` is ignored when
+  the agent runs as the main session (effort comes from `--effort`, else `modelSettings`,
+  else medium); effort is not in stream-json, only in saved transcripts.
+- [ ] Real recommendations: 3+ trials per configuration on all cases (budget about $10).
+- [ ] Harder explorer cases (this one does not separate models), plus `solver` and `main`
+  cases, and the judge-calibration case for area 2.
+- [ ] Verify effort: let `runTask` opt into keeping the transcript to read `effort`, then
+  delete it.
+- [ ] Decide whether subagent roles should be benchmarked as spawned subagents of a main
+  session (where frontmatter effort applies) instead of through `--agent`.
+- [ ] Small lib cleanups: `runTask` returns partial events on timeout instead of throwing;
+  export Claude Code's temp folder path from `claude/tests/lib/cleanup.js` (used by
+  `live.js` and `bench/runner.js`).
+- Note: bench sessions load user settings, so the atuin hooks record their commands in
+  shell history, as with the live suites.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 
@@ -256,7 +268,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
 
 ### 5. Integration (main session)
 
-- [ ] Merge the track branches (metrics and audit done); update `SETUP.md` (Verification:
+- [ ] Merge the track branches (metrics, audit, bench done; scoring running); update `SETUP.md` (Verification:
   `bun test claude/factory`, live `RUN_CLAUDE_LIVE=1 bun test claude/factory/audit`;
   Factory section), the README table, and CI (`bun test claude/factory`).
 - [ ] Run every suite in SETUP.md's Verification section, plus the live suites (Claude Code
