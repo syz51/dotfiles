@@ -119,7 +119,7 @@ override points both at a fake CLI in tests.
 
 ## Tasks
 
-Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
+Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]` deferred.
 
 ### 0. Foundation (main session, before parallel work)
 
@@ -251,14 +251,11 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   - medium: `sandbox.enabled` false;
   - low: explorer is "read-only" by instruction but has Bash; dangerous-prompt skip on;
     Write/Edit unconfined (`blockWritesOutsideWorkingDirectories` unset).
-- [ ] User decision: accept current findings into the real baseline
-  (`audit --update-baseline`), so the weekly run alerts only on regressions.
-- [ ] User decision: opt-in interactive sandbox. Known breakage: git over SSH, ssh and
-  database clients that ignore the proxy, dev servers (needs `allowLocalBinding`), `open`
-  and `osascript`, browser logins, pbcopy, Docker sockets, Go CLIs such as `gh`, some
-  certificate chains, Bash writes to `~/.claude`. Cheaper first step with no breakage:
-  `permissions.blockWritesOutsideWorkingDirectories: true` (low finding above), though
-  it removes EnterWorktree and ExitWorktree.
+- [x] User decision (2026-11-05): current findings accepted into the real baseline
+  (`audit --update-baseline`); `audit --fail-on medium` now exits 0, so the weekly run
+  flags only regressions.
+- [-] User decision (2026-11-05): no sandbox work for now, interactive or for the
+  codex-skills daily review. The profiles in `audit/` stay, verified, for later.
 - [x] Secret scan (2026-11-05): pinned gitleaks 8.30.1 over all branches of codex-skills
   (13 findings) and public `syz51/skills` (27). All false positives: SHA-256 hashes keyed
   by file path in `sources.json` and `.public-export.json`, and the jwt.io sample token in
@@ -271,7 +268,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   exporter (the restored `scan()` from the other thread) or a workflow the exporter keeps;
   its `.public-export.json` hashes need the same allowlist. Decide after the other thread
   lands.
-- [ ] codex-skills daily review in the sandbox: pass `--settings` with
+- [-] (Deferred by the user, 2026-11-05.) codex-skills daily review in the sandbox: pass `--settings` with
   `audit/maintainer-sandbox.json` in `review_command` (draft: writes to the investigations
   folder, `~/.cache/codex-skills`, uv and cargo caches; network to github.com, docs.rs,
   crates.io hosts, pypi; probes passed, main checkout stays read-only). Open issues:
@@ -364,3 +361,5 @@ Dokploy VPS). Feasible, with this split:
   Lesson: parallel Opus workers plus the hourly capture job share one account quota.
 - 2026-11-05: First launchd run exposed the macOS privacy wait and the branch-name clash;
   both fixed. codex-skills#2 CI green. The other thread merged to codex-skills main.
+- 2026-11-05: User decisions: audit baseline accepted; sandbox work deferred; the earlier
+  address exposure needs no further action. Reviewing and merging the open PRs.
