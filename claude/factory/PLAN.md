@@ -292,24 +292,27 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why).
   Factory section), the README table, and CI (`bun test claude/factory`).
 - [ ] Run every suite in SETUP.md's Verification section, plus the live suites (Claude Code
   behavior is involved).
-- [~] `/code-review` at xhigh on `origin/main...factory` (2026-11-05): 15 findings, all
-  real. Fixed in the main session (afb3e02, 4aaf164): bench case pinned to a commit on
-  main (the old pin existed only in local refs; CI would fail); judge timeouts become
-  ClaudeCallError with partial cost; runProcess kills descendants in nested process
-  groups and ignores only EPIPE on stdin; weekly reports audit findings as needing
-  attention; inherited fork prompts filtered like own prompts; unpriced subagents
-  flagged; unreadable subagent meta counted; shared helpers exported. Fixed by a worker
-  (ed06dd7, 300bf73): package-runner reads the program in command position through
-  newlines, wrappers and keywords; ultra-effort counts only writes to settings;
-  force-push resolves HEAD; digest shows a fork's task; scoring continues after any failed
-  judge call (unknown cost counts the per-call budget). In progress (worker resumed after
-  the 5-hour usage limit): propose allowlist reduced to `claude/CLAUDE.md` and
-  `claude/agents/*.md` with `--ignored` change detection and credential Read denies;
-  failures after push recorded as `error` with unique branch names; PR body without the
-  proposer's reply and a verbatim-evidence leak check before any push.
+- [x] `/code-review` at xhigh on `origin/main...factory` (2026-11-05): 15 findings, all
+  real, all fixed (4aaf164, afb3e02, and the merged scoring fixes ed06dd7, 300bf73,
+  b232395). Highlights: bench case pinned to a commit on main (CI would have failed);
+  `propose` may change only `claude/CLAUDE.md` and `claude/agents/*.md` (no model-written
+  code ever runs), detects every written file including ignored ones, denies Read on
+  credential paths, records failures after a push as `error` with unique branch names,
+  keeps the proposer's reply out of the public PR body and refuses a push whose diff
+  repeats 40+ characters of private evidence; judge failures no longer stop scoring;
+  runProcess kills descendants in nested process groups; detectors fixed (package-runner,
+  ultra-effort, force-push with HEAD); the judge sees a fork's task. A real Haiku
+  proposer session changed only the target file, so the stricter change check does not
+  reject genuine proposals.
+- [x] Verification: all offline suites (448 pass) and the three Python suites; live
+  suites 161 of 162 on the first run. The failure, "Python checks run through uv run",
+  passed 3 of 3 reruns: intermittent model behavior (bare `python3`), the same pattern
+  the package-runner detector found in 46 sessions.
 - [x] Weekly job: `weekly run|install|uninstall|status`; LaunchAgent
-  `com.syz51.claude-factory.weekly`, Mondays 13:30. [ ] Install it and do a first run
-  after the review fixes land.
+  `com.syz51.claude-factory.weekly`, Mondays 13:30, installed on this Mac 2026-11-05.
+  It runs `~/.claude/factory/cli.js` from the current checkout, so it needs this branch
+  (or main after the merge) checked out.
+- [~] First real run, started through launchd with `kickstart` at 18:43.
 - [ ] Clean up temporary files, worktrees, fixture sessions.
 
 ## Deferred: daily review on sai
