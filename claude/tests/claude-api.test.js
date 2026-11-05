@@ -1,10 +1,10 @@
-// The API-first wrapper (claude/bin/claude-api): settings merging, the credit check, the
-// cached decision and fallback, and an end-to-end run against a fake API and fake claude.
+// The API-first wrapper: its planner (claude/bin/api-first.js) and the shell script that
+// replaces itself with the real claude (claude/bin/claude-api).
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkCredit, decide, isPrintMode, OK_TTL_MS, plan, realClaude, startedBySelf, UNAVAILABLE_TTL_MS, withKeyHelper } from "../bin/claude-api";
+import { checkCredit, decide, MAX_DEPTH, mergedSettings, plan, readArgs, realClaude, TTL_MS } from "../bin/api-first.js";
 
 const WRAPPER = join(import.meta.dir, "..", "bin", "claude-api");
 const SHIM = join(import.meta.dir, "..", "bin", "api-first");
@@ -17,50 +17,47 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "claude-api-test-"));
   roots.push(root);
   writeFileSync(join(root, "key"), "sk-test-key\n", { mode: 0o600 });
-  env = { HOME: root, PATH: "/usr/bin:/bin", CLAUDE_API_KEY_FILE: join(root, "key"), XDG_STATE_HOME: join(root, "state") };
+  env = { HOME: root, PATH: "/usr/bin:/bin", API_FIRST_KEY_FILE: join(root, "key"), API_FIRST_STATE: join(root, "state") };
 });
 
 const response = (status, body) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
+const statusOf = (status) => async () => ({ status, detail: status });
 
-describe("settings", () => {
-  const helper = "cat '/k'";
-  test("adds the key helper when the caller passed no settings", () => {
-    expect(withKeyHelper(["-p", "hi"], helper)).toEqual(["-p", "hi", "--settings", JSON.stringify({ apiKeyHelper: helper })]);
+describe("arguments and settings", () => {
+  test("print mode and the last --settings are read before a -- marker only", () => {
+    expect(readArgs(["-p", "--settings", "a", "--settings=b", "x"])).toEqual({ print: true, settings: "b" });
+    expect(readArgs(["--print", "--", "--settings", "c", "-p"])).toEqual({ print: true, settings: undefined });
+    expect(readArgs(["--", "-p"])).toEqual({ print: false, settings: undefined });
+    expect(readArgs(["--version"]).print).toBe(false);
   });
 
-  test("merges into the last --settings, inline or a file, and drops earlier ones as Claude Code would", () => {
+  test("the key helper is merged into the caller's settings, inline or from a file", () => {
     const file = join(root, "s.json");
     writeFileSync(file, JSON.stringify({ hooks: { PreToolUse: [] } }));
-    const merged = (argv) => JSON.parse(withKeyHelper(argv, helper).at(-1));
-    expect(merged(["-p", "--settings", '{"permissions":{"deny":["WebFetch"]}}'])).toEqual({ apiKeyHelper: helper, permissions: { deny: ["WebFetch"] } });
-    expect(merged(["-p", "--settings", file])).toEqual({ apiKeyHelper: helper, hooks: { PreToolUse: [] } });
-    expect(merged(["-p", "--settings", '{"a":1}', `--settings=${file}`])).toEqual({ apiKeyHelper: helper, hooks: { PreToolUse: [] } });
-    expect(withKeyHelper(["-p", "--settings", '{"a":1}', "--settings", '{"b":2}'], helper).filter((arg) => arg === "--settings")).toHaveLength(1);
-  });
-
-  test("keeps a caller's own apiKeyHelper", () => {
-    expect(JSON.parse(withKeyHelper(["-p", "--settings", '{"apiKeyHelper":"mine"}'], helper).at(-1)).apiKeyHelper).toBe("mine");
-  });
-
-  test("only print-mode runs are billed to the API", () => {
-    expect(isPrintMode(["-p", "x"])).toBe(true);
-    expect(isPrintMode(["--print"])).toBe(true);
-    expect(isPrintMode(["--version"])).toBe(false);
-    expect(isPrintMode([])).toBe(false);
+    expect(JSON.parse(mergedSettings(undefined, "h"))).toEqual({ apiKeyHelper: "h" });
+    expect(JSON.parse(mergedSettings('{"permissions":{"deny":["WebFetch"]}}', "h"))).toEqual({ apiKeyHelper: "h", permissions: { deny: ["WebFetch"] } });
+    expect(JSON.parse(mergedSettings(file, "h"))).toEqual({ apiKeyHelper: "h", hooks: { PreToolUse: [] } });
+    expect(JSON.parse(mergedSettings('{"apiKeyHelper":"mine"}', "h")).apiKeyHelper).toBe("mine");
   });
 });
 
 describe("credit check", () => {
   const check = (status, body) => checkCredit("k", { fetchImpl: async () => response(status, body) });
 
-  test("classifies the API's answer", async () => {
-    expect((await check(200, { content: [] })).status).toBe("ok");
+  test("classifies the API's answer, spend limits included", async () => {
+    expect((await check(200, {})).status).toBe("ok");
     expect((await check(401, { error: { message: "invalid x-api-key" } })).status).toBe("invalid");
     expect((await check(400, { error: { message: "Your credit balance is too low to access the Anthropic API." } })).status).toBe("exhausted");
+    expect((await check(400, { error: { message: "You have reached your specified API usage limits." } })).status).toBe("exhausted");
     expect((await check(402, { error: { message: "billing problem" } })).status).toBe("exhausted");
     expect((await check(429, { error: { message: "rate limited" } })).status).toBe("unknown");
     expect((await check(400, "not json")).status).toBe("unknown");
+  });
+
+  test("a failed request or a body that cannot be read is inconclusive, not a crash", async () => {
     expect((await checkCredit("k", { fetchImpl: async () => { throw new Error("offline"); } })).status).toBe("unknown");
+    const stalled = { status: 200, text: async () => { throw new Error("The operation timed out."); } };
+    expect(await checkCredit("k", { fetchImpl: async () => stalled })).toEqual({ status: "unknown", detail: "request failed: The operation timed out." });
   });
 
   test("sends the key in a header and asks for one token of Haiku", async () => {
@@ -75,50 +72,43 @@ describe("credit check", () => {
 describe("decision", () => {
   const counting = (status) => {
     const calls = [];
-    const check = async (key) => {
-      calls.push(key);
-      return { status, detail: status };
-    };
-    return { calls, check };
+    return { calls, check: async (key) => { calls.push(key); return { status, detail: status }; } };
   };
 
-  test("without a key file, runs on the subscription without checking", async () => {
+  test("without a key file, the subscription, without a check", async () => {
     const { calls, check } = counting("ok");
     rmSync(join(root, "key"));
     expect((await decide({ env, check })).mode).toBe("subscription");
     expect(calls).toHaveLength(0);
   });
 
-  test("a working key means the API, cached for the OK interval", async () => {
-    const { calls, check } = counting("ok");
-    const now = Date.now();
-    expect((await decide({ env, now, check })).mode).toBe("api");
-    expect(calls).toEqual(["sk-test-key"]);
-    expect((await decide({ env, now: now + OK_TTL_MS - 1, check })).mode).toBe("api");
-    expect(calls).toHaveLength(1);
-    await decide({ env, now: now + OK_TTL_MS + 1, check });
-    expect(calls).toHaveLength(2);
-  });
-
-  test("exhausted credit or a refused key falls back to the subscription and is rechecked later", async () => {
-    for (const status of ["exhausted", "invalid"]) {
+  test("each status is cached for its interval, inconclusive ones briefly", async () => {
+    for (const [status, mode] of [["ok", "api"], ["exhausted", "subscription"], ["invalid", "subscription"], ["unknown", "api"]]) {
       rmSync(join(root, "state"), { recursive: true, force: true });
       const { calls, check } = counting(status);
       const now = Date.now();
-      const decision = await decide({ env, now, check });
-      expect([decision.mode, decision.reason.startsWith(status)]).toEqual(["subscription", true]);
-      expect((await decide({ env, now: now + UNAVAILABLE_TTL_MS - 1, check })).mode).toBe("subscription");
+      expect((await decide({ env, now, check })).mode).toBe(mode);
+      expect((await decide({ env, now: now + TTL_MS[status] - 1, check })).mode).toBe(mode);
       expect(calls).toHaveLength(1);
-      await decide({ env, now: now + UNAVAILABLE_TTL_MS + 1, check });
+      await decide({ env, now: now + TTL_MS[status] + 1, check });
       expect(calls).toHaveLength(2);
     }
   });
 
-  test("an inconclusive check stays on the API and is not cached", async () => {
-    const { calls, check } = counting("unknown");
+  test("a cached result belongs to its key; a new key is checked again", async () => {
+    const { calls, check } = counting("invalid");
+    expect((await decide({ env, check })).mode).toBe("subscription");
+    writeFileSync(join(root, "key"), "sk-new-key\n");
+    await decide({ env, check });
+    expect(calls).toEqual(["sk-test-key", "sk-new-key"]);
+  });
+
+  test("a damaged state file means a fresh check", async () => {
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "state.json"), "{bad");
+    const { calls, check } = counting("ok");
     expect((await decide({ env, check })).mode).toBe("api");
-    expect((await decide({ env, check })).mode).toBe("api");
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -131,92 +121,106 @@ describe("plan", () => {
     return dir;
   };
 
-  test("finds the real claude past the api-first shim", () => {
+  test("finds the real claude past the shim, also through a link to the checkout", () => {
     const dir = fakeBin();
     expect(realClaude({ PATH: `${SHIM}:${dir}` })).toBe(join(dir, "claude"));
-    expect(realClaude({ PATH: dir, CLAUDE_API_REAL_BIN: "/x/claude" })).toBe("/x/claude");
-    expect(() => realClaude({ PATH: SHIM })).toThrow("no claude executable");
-    // The shim through a link to the checkout, as ~/.claude/bin/api-first is.
     const link = join(root, "linked-bin");
     symlinkSync(join(SHIM, ".."), link);
     expect(realClaude({ PATH: `${join(link, "api-first")}:${dir}` })).toBe(join(dir, "claude"));
+    expect(realClaude({ PATH: dir, API_FIRST_REAL_BIN: "/x/claude" })).toBe("/x/claude");
     expect(() => realClaude({ PATH: join(link, "api-first") })).toThrow("no claude executable");
   });
 
-  test("knows when it was started directly by itself", () => {
-    expect(startedBySelf({ CLAUDE_API_WRAPPER_PID: "41" }, 41)).toBe(true);
-    expect(startedBySelf({ CLAUDE_API_WRAPPER_PID: "41" }, 42)).toBe(false);
-    expect(startedBySelf({}, 41)).toBe(false);
+  test("passes through runs that are not print mode or that bring their own auth", async () => {
+    const base = { ...env, PATH: fakeBin() };
+    expect((await plan(["--version"], { env: base, check: statusOf("ok") })).mode).toBe("passthrough");
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"]) {
+      const result = await plan(["-p", "x"], { env: { ...base, [name]: "set" }, check: statusOf("ok") });
+      expect([result.mode, result.reason, result.settings]).toEqual(["passthrough", `caller set ${name}`, undefined]);
+    }
   });
 
-  test("never passes key variables on; only print mode is changed", async () => {
-    const dir = fakeBin();
-    const base = { ...env, PATH: dir, ANTHROPIC_API_KEY: "leak", ANTHROPIC_AUTH_TOKEN: "leak" };
-    const interactive = await plan(["--version"], { env: base, check: async () => ({ status: "ok", detail: "" }) });
-    expect([interactive.argv, interactive.decision, interactive.env.ANTHROPIC_API_KEY, interactive.env.ANTHROPIC_AUTH_TOKEN]).toEqual([["--version"], null, undefined, undefined]);
-    const api = await plan(["-p", "hi"], { env: base, check: async () => ({ status: "ok", detail: "" }) });
-    expect(api.decision.mode).toBe("api");
-    expect(JSON.parse(api.argv.at(-1))).toEqual({ apiKeyHelper: `cat '${join(root, "key")}'` });
-    expect(api.env.ANTHROPIC_API_KEY).toBeUndefined();
+  test("API mode carries the merged settings; the subscription carries none", async () => {
+    const base = { ...env, PATH: fakeBin() };
+    const api = await plan(["-p", "x", "--settings", '{"a":1}'], { env: base, check: statusOf("ok") });
+    expect(api.mode).toBe("api");
+    expect(JSON.parse(api.settings)).toEqual({ apiKeyHelper: `cat '${join(root, "key")}'`, a: 1 });
     rmSync(join(root, "state"), { recursive: true, force: true });
-    const fallback = await plan(["-p", "hi"], { env: base, check: async () => ({ status: "exhausted", detail: "" }) });
-    expect([fallback.decision.mode, fallback.argv, fallback.env.ANTHROPIC_API_KEY]).toEqual(["subscription", ["-p", "hi"], undefined]);
+    const fallback = await plan(["-p", "x"], { env: base, check: statusOf("exhausted") });
+    expect([fallback.mode, fallback.settings]).toEqual(["subscription", undefined]);
   });
-});
 
-describe("loop guard", () => {
-  test("a wrapper whose real claude is its own shim stops instead of looping", async () => {
-    const proc = Bun.spawn([WRAPPER, "--version"], { env: { ...env, PATH: process.env.PATH, CLAUDE_API_REAL_BIN: join(SHIM, "claude") }, stderr: "pipe" });
-    const timer = setTimeout(() => proc.kill("SIGKILL"), 10_000);
-    const code = await proc.exited;
-    clearTimeout(timer);
-    expect(code).toBe(70);
-    expect(await new Response(proc.stderr).text()).toContain("started by itself");
+  test("past the nesting limit it stops", async () => {
+    await expect(plan(["-p", "x"], { env: { ...env, PATH: fakeBin(), API_FIRST_DEPTH: String(MAX_DEPTH + 1) } })).rejects.toThrow("loop");
   });
 });
 
 describe("end to end", () => {
-  // A fake claude that records its argv and whether a key variable reached it, then
-  // exits with FAKE_EXIT.
+  // A fake claude that records its argv, its process id and whether a key variable
+  // reached it, then exits with FAKE_EXIT.
   function fakeClaude() {
     const dir = join(root, "real");
-    mkdirSync(dir);
-    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\n[ -n "$ANTHROPIC_API_KEY" ] && echo key-visible > "${join(root, "leak.txt")}"\nexit "\${FAKE_EXIT:-0}"\n`);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\necho $$ > "${join(root, "pid.txt")}"\n[ -n "\${ANTHROPIC_API_KEY:-}" ] && echo visible > "${join(root, "key-env.txt")}"\nexit "\${FAKE_EXIT:-0}"\n`);
     chmodSync(join(dir, "claude"), 0o755);
     return dir;
   }
 
-  async function runWrapper(args, { apiStatus, exit = 0, viaShim = false }) {
-    const server = Bun.serve({ port: 0, fetch: () => apiStatus === 200 ? response(200, { content: [] }) : response(apiStatus, { error: { message: "Your credit balance is too low" } }) });
+  async function runWrapper(args, { apiStatus = 200, exit = 0, viaShim = false, extraEnv = {} } = {}) {
+    const server = Bun.serve({ port: 0, fetch: () => apiStatus === 200 ? response(200, {}) : response(apiStatus, { error: { message: "Your credit balance is too low" } }) });
     try {
       const real = fakeClaude();
-      const program = viaShim ? join(SHIM, "claude") : WRAPPER;
-      const proc = Bun.spawn([program, ...args], {
-        env: { ...env, PATH: `${viaShim ? `${SHIM}:` : ""}${real}:${process.env.PATH}`, CLAUDE_API_BASE_URL: `http://localhost:${server.port}`, FAKE_EXIT: String(exit), ANTHROPIC_API_KEY: "leak" },
+      const proc = Bun.spawn([viaShim ? join(SHIM, "claude") : WRAPPER, ...args], {
+        env: { ...env, PATH: `${viaShim ? `${SHIM}:` : ""}${real}:${process.env.PATH}`, API_FIRST_BASE_URL: `http://localhost:${server.port}`, FAKE_EXIT: String(exit), ...extraEnv },
         stderr: "pipe",
       });
       const code = await proc.exited;
-      return { code, stderr: await new Response(proc.stderr).text(), argv: readFileSync(join(root, "argv.txt"), "utf8").trim().split("\n") };
+      const read = (name) => readFileSync(join(root, name), "utf8").trim();
+      return { code, pid: proc.pid, stderr: await new Response(proc.stderr).text(), argv: read("argv.txt").split("\n"), claudePid: Number(read("pid.txt")) };
     } finally {
       server.stop(true);
     }
   }
-  const decisions = () => readFileSync(join(root, "state", "claude-api", "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  const decisions = () => readFileSync(join(root, "state", "decisions.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
 
-  test("with credit, the run gets the key helper, no key variable, and the child's exit status", async () => {
-    const run = await runWrapper(["-p", "hello"], { apiStatus: 200, exit: 3 });
+  test("with credit: claude replaces the wrapper, gets the key helper, no key variable, and its exit status stands", async () => {
+    const run = await runWrapper(["-p", "hello"], { exit: 3 });
     expect(run.code).toBe(3);
+    // exec: the process the caller started is claude itself, so killing it kills claude.
+    expect(run.claudePid).toBe(run.pid);
     expect(run.argv.slice(0, 3)).toEqual(["-p", "hello", "--settings"]);
     expect(JSON.parse(run.argv[3]).apiKeyHelper).toContain(join(root, "key"));
-    expect(() => readFileSync(join(root, "leak.txt"))).toThrow();
+    expect(() => readFileSync(join(root, "key-env.txt"))).toThrow();
     expect(decisions().map((entry) => entry.mode)).toEqual(["api"]);
   });
 
-  test("without credit, the run falls back to the subscription and says so; the shim works the same", async () => {
+  test("the merged settings go before a -- marker, and earlier --settings are dropped", async () => {
+    const run = await runWrapper(["-p", "--settings", '{"a":1}', "--", "--settings is prompt text"]);
+    expect(run.argv.slice(0, 2)).toEqual(["-p", "--settings"]);
+    expect(JSON.parse(run.argv[2])).toMatchObject({ a: 1 });
+    expect(run.argv.slice(3)).toEqual(["--", "--settings is prompt text"]);
+  });
+
+  test("without credit, the subscription, said on stderr; the shim works the same", async () => {
     const run = await runWrapper(["-p", "hello"], { apiStatus: 400, viaShim: true });
-    expect(run.code).toBe(0);
-    expect(run.argv).toEqual(["-p", "hello"]);
+    expect([run.code, run.argv]).toEqual([0, ["-p", "hello"]]);
     expect(run.stderr).toContain("running on the subscription (exhausted");
     expect(decisions().map((entry) => entry.mode)).toEqual(["subscription"]);
+  });
+
+  test("a caller's own key is left alone", async () => {
+    const run = await runWrapper(["-p", "hello"], { extraEnv: { ANTHROPIC_API_KEY: "callers-own" } });
+    expect(run.argv).toEqual(["-p", "hello"]);
+    expect(readFileSync(join(root, "key-env.txt"), "utf8").trim()).toBe("visible");
+    expect(decisions().at(-1)).toMatchObject({ mode: "passthrough", reason: "caller set ANTHROPIC_API_KEY" });
+  });
+
+  test("a loop through the shim stops at the nesting limit", async () => {
+    const proc = Bun.spawn([WRAPPER, "--version"], { env: { ...env, PATH: process.env.PATH, API_FIRST_REAL_BIN: join(SHIM, "claude") }, stderr: "pipe" });
+    const timer = setTimeout(() => proc.kill("SIGKILL"), 15_000);
+    const code = await proc.exited;
+    clearTimeout(timer);
+    expect(code).toBe(70);
+    expect(await new Response(proc.stderr).text()).toContain("which means a loop");
   });
 });

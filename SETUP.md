@@ -214,19 +214,24 @@ last run; `weekly uninstall` removes the job. The living task list is
 Unattended print-mode runs (`claude -p`) go through `~/.claude/bin/claude-api`: the
 factory by default (`CLAUDE_FACTORY_BIN` overrides) and the live suites
 (`CLAUDE_LIVE_BIN` overrides). It bills the Anthropic API while the account has credit
-and falls back to the claude.ai subscription otherwise:
+and falls back to the claude.ai subscription otherwise. The planner,
+`claude/bin/api-first.js`, documents the details; in short:
 
-- The key file is `CLAUDE_API_KEY_FILE`, default
+- The key file is `API_FIRST_KEY_FILE`, default
   `~/.local/share/codex-skills/anthropic-api-key` (mode 600, shared with the codex-skills
-  pipeline). Claude Code reads it through an `apiKeyHelper` merged into the run's
-  `--settings`, so the key never enters the environment an agent's commands can read.
-- A one-token Haiku request checks for credit; the answer is cached in
-  `~/.local/state/claude-api/` for 10 minutes while the API works and 30 minutes once it
-  does not. Without a key file, or when credit is exhausted or the key is refused, runs
-  use the subscription and say so on stderr. Every decision goes to `decisions.jsonl`
-  there, and the weekly summary counts them.
-- Interactive use is never changed. For scripts that call `claude` by name, put
-  `~/.claude/bin/api-first` first on `PATH` for that run only, never in a login profile.
+  pipeline). Claude Code gets it through an `apiKeyHelper` merged into the run's last
+  `--settings`, so it is not in the environment, where an `env` dump would expose it by
+  accident. It is not hidden from the agent: a session running as you can read the file.
+- A one-token Haiku request checks for credit; the answer is cached per key in
+  `~/.local/state/claude-api/` (10 minutes while the API works, 30 once credit is out or
+  the key is refused, 1 when the check is inconclusive). Without a key file or credit, runs
+  use the subscription and say so on stderr. Every decision goes to `decisions.jsonl` there,
+  and the weekly summary counts them.
+- Runs that are not print mode, or that set `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+  `ANTHROPIC_BASE_URL` themselves, pass through untouched. The script replaces itself with
+  the real claude, so killing the process a caller started kills claude.
+- For scripts that call `claude` by name, put `~/.claude/bin/api-first` first on `PATH` for
+  that run only, never in a login profile. A nesting limit stops a loop.
 
 ## Verification
 

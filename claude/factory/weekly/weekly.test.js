@@ -36,7 +36,7 @@ process.exit(Number(process.env["FAKE_EXIT_" + command] ?? 0));
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "claude-factory-weekly-"));
-  setEnv({ CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_WEEKLY_CLI: fakeCli(), FAKE_LOG: join(scratch, "log.jsonl") });
+  setEnv({ CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_WEEKLY_CLI: fakeCli(), FAKE_LOG: join(scratch, "log.jsonl"), API_FIRST_STATE: join(scratch, "api-state") });
 });
 afterEach(() => {
   for (const [name, value] of Object.entries(saved)) {
@@ -87,6 +87,26 @@ describe("runWeekly", () => {
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
   });
 
+  test("the summary reports the week's billing, or why it could not", async () => {
+    const decisions = join(scratch, "api-state", "decisions.jsonl");
+    mkdirSync(join(scratch, "api-state"), { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(decisions, [
+      { at: now, mode: "api", reason: "ok" },
+      { at: now, mode: "subscription", reason: "exhausted: HTTP 400: credit" },
+      { at: now, mode: "passthrough", reason: "caller set ANTHROPIC_API_KEY" },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    await runWeekly({ pr: false });
+    let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain("## Billing (last 7 days)");
+    expect(summary).toContain("1 on the API, 1 on the subscription");
+    expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit to move back.");
+    writeFileSync(decisions, '{"at":"x","mode":"api"}\n{damaged\n');
+    expect(await runWeekly({ pr: false })).toBe(0);
+    summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toMatch(/- Unavailable: .*decisions\.jsonl:2: malformed/);
+  });
+
   test("unaccepted audit findings mark the run as needing attention", async () => {
     setEnv({ FAKE_EXIT_audit: "1" });
     expect(await runWeekly({ pr: false })).toBe(1);
@@ -135,7 +155,7 @@ describe("billing", () => {
       { at: at(3), mode: "api", reason: "ok" },
       { at: at(4), mode: "subscription", reason: "exhausted: HTTP 400" },
       { at: at(5), mode: "api", reason: "ok" },
-    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n{partial");
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
     const summary = billingSummary(path, Date.parse(at(2)));
     expect([summary.api, summary.subscription, summary.lastFallback.reason]).toEqual([2, 1, "exhausted: HTTP 400"]);
   });

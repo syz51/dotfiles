@@ -12,7 +12,7 @@ export const STRUCTURED_TOOL = "StructuredOutput";
 // By default the API-first wrapper: billed to the API while it has credit, else the
 // subscription (claude/bin/claude-api).
 export const API_FIRST = join(import.meta.dir, "..", "..", "bin", "claude-api");
-const bin = () => process.env.CLAUDE_FACTORY_BIN || API_FIRST;
+export const claudeBin = () => process.env.CLAUDE_FACTORY_BIN || API_FIRST;
 
 const quietEnv = (overrides = {}) => childEnv(process.env, {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -58,7 +58,7 @@ function eventsOf(result, what) {
 export async function judge({ prompt, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
-    const argv = [bin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
+    const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
@@ -95,7 +95,7 @@ export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
   permissionMode = "bypassPermissions", env = {}, addDirs = [],
 }) {
-  const argv = [bin(), "--print", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
+  const argv = [claudeBin(), "--print", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
   if (model) argv.push("--model", model);
   if (effort) argv.push("--effort", effort);

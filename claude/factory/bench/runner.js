@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { ClaudeCallError, partialEvents, runTask } from "../lib/claude.js";
+import { ClaudeCallError, claudeBin, partialEvents, runTask } from "../lib/claude.js";
 import { removeSessionArtifacts } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { resultEvent } from "../../tests/lib/stream.js";
@@ -27,7 +27,7 @@ export const benchSettings = () => ({
 });
 
 export async function cliVersion() {
-  const bin = process.env.CLAUDE_FACTORY_BIN || "claude";
+  const bin = claudeBin();
   const run = await runProcess([bin, "--version"], { env: childEnv(process.env), timeout: 30_000 });
   return run.stdout.trim().split("\n")[0] || null;
 }
