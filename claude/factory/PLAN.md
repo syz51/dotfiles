@@ -311,7 +311,18 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   atomically; runProcess kills once and tolerates EPERM; model mix priced per request;
   bench timeout cost via the shared partial-stream reader; private codex-skills details
   moved to the state folder's notes.
-- [ ] Merge #17, switch `~/.config` to main, then live-test and merge #16.
+- [x] Final verification (2026-11-05, with #16's rule applied): offline 476 pass; Python
+  suites pass; three full live runs each had one different model-driven failure:
+  (1) "Python checks run through uv run" was a harness false negative (the agent ran
+  `uv run check.py; echo "exit=$?"`), fixed in d584eb5; (2) the unattended sandbox check
+  failed once in nine runs, cause not reproduced (it logs every Bash call; keep the output
+  of the next failure); (3) "the guard hook blocks a force push to main" failed because
+  Haiku did not run the command (an existing test; the hook never ran). The last full run
+  passed every Claude configuration suite, including the policy suite under #16.
+- [x] codex-skills#2 merged (squash, e2222419).
+- [ ] Merge #17, switch `~/.config` to main, then merge #16.
+- [ ] Live-test flakes worth hardening later: the guard-hook scenario depends on Haiku
+  agreeing to run a force push; the sandbox check's rare failure needs its output.
 - [ ] Inherited host prompts of a forked session are not shown to the judge (the lib
   filters them); add if forks of slash-command sessions turn out to matter.
 
