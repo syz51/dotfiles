@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { countCorrections, isCorrection } from "./corrections.js";
 import { reverts } from "./github.js";
-import { humanPrompts, isHostPrompt } from "./prompts.js";
+import { isHostPrompt } from "../lib/transcripts.js";
 import { prUrls, sessionPrs } from "./prs.js";
 import { quantile } from "./stats.js";
 
@@ -55,8 +55,6 @@ describe("prompts", () => {
       "<command-name>/compact</command-name>\n<command-message>compact</command-message>",
     ]) expect(isHostPrompt(text)).toBe(true);
     expect(isHostPrompt("Continue where you left off, but use Rust")).toBe(false);
-    const session = { prompts: [{ text: "Build it" }, { text: "Continue where you left off." }, { text: "now test it" }] };
-    expect(humanPrompts(session).map((prompt) => prompt.text)).toEqual(["Build it", "now test it"]);
   });
 });
 

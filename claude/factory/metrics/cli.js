@@ -1,6 +1,6 @@
 // metrics: cost, effort and quality of Claude Code sessions in a window, compared with
 // the window before it, overall, per project and per pull request.
-import { closeSync, openSync, readSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
@@ -8,7 +8,6 @@ import { loadSessions } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
 import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
-import { humanPrompts } from "./prompts.js";
 import { sessionPrs } from "./prs.js";
 import { attributePrs, windowStats } from "./stats.js";
 
@@ -93,19 +92,6 @@ function parseArgs(argv) {
   return { ...options, since, until };
 }
 
-// The session a forked transcript copied its history from, or null. Forks repeat their
-// parent's records with a forkedFrom field; the first record shows it.
-function forkParent(file) {
-  const descriptor = openSync(file, "r");
-  try {
-    const buffer = Buffer.alloc(64 * 1024);
-    const text = buffer.toString("utf8", 0, readSync(descriptor, buffer, 0, buffer.length, 0));
-    return text.split("\n")[0].match(/"forkedFrom":\{"sessionId":"([^"]+)"/)?.[1] ?? null;
-  } finally {
-    closeSync(descriptor);
-  }
-}
-
 const tilde = (path) => (path && path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
 
 function mostCommon(values) {
@@ -146,8 +132,8 @@ export async function buildReport(options) {
       excluded.project++;
       continue;
     }
-    const prompts = humanPrompts(session);
-    excluded.hostPrompts += session.prompts.length - prompts.length;
+    const prompts = session.prompts;
+    excluded.hostPrompts += session.hostPrompts;
     entries[ended > since ? "current" : "previous"].push({ session, prompts, prs: sessionPrs(session), corrections: countCorrections(prompts) });
   }
   const all = [...entries.current, ...entries.previous];
@@ -190,8 +176,8 @@ export async function buildReport(options) {
   if (excluded.hostPrompts) notes.push(`${excluded.hostPrompts} prompts were host notices (PR updates, delegated-task results, resume nudges, slash commands) and are not counted as the person's prompts.`);
   const ids = new Set(all.map((entry) => entry.session.id));
   for (const { session } of all) {
-    const parent = forkParent(session.file);
-    if (parent) notes.push(`Session ${session.id.slice(0, 8)} (${session.title ?? "untitled"}) is a fork of ${parent.slice(0, 8)}${ids.has(parent) ? ", also counted here" : ""}; its copied history counts again in its prompts, tool calls and cost.`);
+    const parent = session.forkedFrom;
+    if (parent) notes.push(`Session ${session.id.slice(0, 8)} (${session.title ?? "untitled"}) is a fork of ${parent.slice(0, 8)}${ids.has(parent) ? ", also counted here" : ""}; only its own records count, not the history it copied.`);
   }
   if (previousSince < Date.now() - RETENTION_DAYS * DAY_MS)
     notes.push(`The previous window starts more than ${RETENTION_DAYS} days ago; Claude Code deletes older transcripts, so it is likely incomplete.`);

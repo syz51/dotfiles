@@ -7,7 +7,7 @@ import { ClaudeCallError, judge, runTask } from "./claude.js";
 import { normalizeUsage, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
-import { isAutomation, loadSessions, parseSession, readRecords, sessionFiles } from "./transcripts.js";
+import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, parseSession, readRecords, sessionFiles } from "./transcripts.js";
 
 const FAKE = join(import.meta.dir, "testing", "fake-claude.js");
 let scratch;
@@ -126,7 +126,49 @@ describe("transcripts", () => {
       const [session] = loadSessions({ root });
       expect(session.costSource).toBe("estimated");
       expect(session.costUSD).toBeCloseTo(20 + 0.5);
-      expect(session.subagents).toEqual([expect.objectContaining({ id: "agent-a1", agentType: "explorer", model: "claude-haiku-5-5", effort: "xhigh", costUSD: 0.5, toolCalls: 0 })]);
+      expect(session.subagents).toEqual([expect.objectContaining({ id: "agent-a1", agentType: "explorer", model: "claude-haiku-5-5", effort: "xhigh", costUSD: 0.5, assistantMessages: 1, toolCalls: 0 })]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a fork counts only its own records and names its parent", () => {
+    const parent = new Transcript();
+    const copied = { forkedFrom: { sessionId: parent.sessionId, messageUuid: "m" } };
+    const fork = new Transcript()
+      .prompt("Original task", copied)
+      .text("old answer", { ...copied, use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) })
+      .prompt("Follow-up in the fork")
+      .text("new answer", { use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
+    const root = writeProjects([{ transcript: fork }]);
+    try {
+      const [session] = loadSessions({ root });
+      expect(session.forkedFrom).toBe(parent.sessionId);
+      expect(session.prompts.map((prompt) => prompt.text)).toEqual(["Follow-up in the fork"]);
+      expect([session.assistantMessages, session.estimatedCostUSD]).toEqual([1, 20]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("host notices are not prompts; a delegation brief marks an agent-launched session", () => {
+    const delegated = new Transcript()
+      .prompt("Act as the implementation sub-agent for this task.")
+      .prompt("Update on pull request #3 (https://github.com/o/r/pull/3), which T3 Code is watching:")
+      .prompt("Context handoff (full_thread_summary):\nProvider context handoff.")
+      .prompt("<command-name>/compact</command-name>")
+      .prompt("Continue where you left off.");
+    const personal = new Transcript().prompt("Continue where you left off, but in Rust");
+    const empty = new Transcript().prompt("Delegated task node:delegated-task:x [completed]");
+    const root = writeProjects([{ transcript: delegated }, { transcript: personal }, { transcript: empty }]);
+    try {
+      const byId = Object.fromEntries(loadSessions({ root }).map((s) => [s.id, s]));
+      expect([byId[delegated.sessionId].prompts.length, byId[delegated.sessionId].hostPrompts, byId[delegated.sessionId].origin]).toEqual([1, 4, "agent"]);
+      expect([byId[personal.sessionId].prompts.length, byId[personal.sessionId].origin]).toEqual([1, "person"]);
+      expect([byId[empty.sessionId].prompts.length, byId[empty.sessionId].origin]).toEqual([0, null]);
+      expect(isHostPrompt("Delegated task node:delegated-task:abc")).toBe(true);
+      expect(isAgentBrief("Act as the research subagent")).toBe(true);
+      expect(isAgentBrief("Please act as the reviewer")).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -59,17 +59,34 @@ const excerpt = (text) => text.length <= OUTPUT_EXCERPT
 // Wrappers Claude Code puts around local command output and injected context.
 const INJECTED = /^\s*<(?:local-command-stdout|local-command-stderr|system-reminder|command-message|bash-stdout|bash-stderr)>/;
 
-// A prompt the person sent: not meta, not a compact summary, not a sidechain, not
-// injected by the host (promptSource "system"), and not only tool results.
-function humanPrompt(record) {
+// Notices T3 Code sends as ordinary prompts in the person's name, and slash commands.
+const HOST_PROMPT = [
+  /^\s*<command-name>/,
+  /^Update on pull request #\d+ \(https:\/\/github\.com\//,
+  /^Pull request #\d+ \(https:\/\/github\.com\/[^)]+\) was (?:closed|merged)/,
+  /^Delegated task node:delegated-task:/,
+  /^Continue where you left off\./,
+  /^Context handoff \(full_thread_summary\):/,
+];
+export const isHostPrompt = (text) => HOST_PROMPT.some((pattern) => pattern.test(text));
+
+// The brief an orchestrating agent starts a delegated T3 Code thread with.
+const AGENT_BRIEF = [/^Act as the [\w -]+ sub-?agent\b/i, /^Delegated task\b/];
+export const isAgentBrief = (text) => AGENT_BRIEF.some((pattern) => pattern.test(text));
+
+// A user prompt record's text, unless it is meta, a compact summary, a sidechain, a
+// prompt the host injected (promptSource "system"), only tool results, or an interrupt.
+function promptText(record) {
   if (record.type !== "user" || record.isMeta || record.isCompactSummary || record.isSidechain) return null;
   if (record.promptSource === "system" || record.isVisibleInTranscriptOnly) return null;
   const content = record.message?.content;
   if (Array.isArray(content) && content.some((block) => block?.type === "tool_result")) return null;
   const text = textOf(content);
   if (!text.trim() || text.startsWith(INTERRUPT) || INJECTED.test(text)) return null;
-  return { at: record.timestamp ?? null, text, source: record.promptSource ?? record.entrypoint ?? null };
+  return text;
 }
+
+const asPrompt = (record, text) => ({ at: record.timestamp ?? null, text, source: record.promptSource ?? record.entrypoint ?? null });
 
 // Usage and calls of a stream of records. Claude Code writes one assistant record per
 // content block, each repeating the message's usage, so usage counts once per message id.
@@ -159,6 +176,7 @@ function parseSubagents(dir) {
       effort: mostCommon(Object.entries(summary.efforts).flatMap(([effort, count]) => Array(count).fill(effort))),
       usage: summary.usage,
       costUSD: summary.estimatedCostUSD,
+      assistantMessages: summary.assistantMessages,
       toolCalls: summary.toolCalls.length,
       toolErrors: summary.toolCalls.filter((call) => call.ok === false).length,
       malformedLines: malformed,
@@ -175,11 +193,17 @@ export function isAutomation(cwd, { temp = [tmpdir(), "/private/tmp", "/tmp", "/
 }
 
 export function parseSession(file, { project = basename(join(file, "..")) } = {}) {
-  const { records, malformed } = readRecords(file);
-  const id = records.find((record) => record.sessionId)?.sessionId ?? basename(file, ".jsonl");
+  const { records: all, malformed } = readRecords(file);
+  const id = all.find((record) => record.sessionId)?.sessionId ?? basename(file, ".jsonl");
+  // A forked session starts with a copy of its parent's history, each copied record
+  // marked forkedFrom; only the fork's own records count, or the parent counts twice.
+  const forkedFrom = all.find((record) => record.forkedFrom)?.forkedFrom?.sessionId ?? null;
+  const records = all.filter((record) => !record.forkedFrom);
   const main = summarize(records);
+  const texts = records.map((record) => [record, promptText(record)]).filter(([, text]) => text);
+  const prompts = texts.filter(([, text]) => !isHostPrompt(text)).map(([record, text]) => asPrompt(record, text));
   const subagents = parseSubagents(join(file.slice(0, -".jsonl".length), "subagents"));
-  const cwd = records.find((record) => record.cwd)?.cwd ?? null;
+  const cwd = all.find((record) => record.cwd)?.cwd ?? null;
   const costState = records.findLast((record) => record.type === "cost-state");
   const customTitle = records.findLast((record) => record.type === "custom-title")?.customTitle;
   const aiTitle = records.findLast((record) => record.type === "ai-title")?.aiTitle;
@@ -198,12 +222,17 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
     project,
     cwd,
     file,
-    entrypoint: mostCommon(records.map((record) => record.entrypoint)),
+    entrypoint: mostCommon(all.map((record) => record.entrypoint)),
     title: customTitle ?? aiTitle ?? null,
     ...timestamps(records),
     models: main.models,
     efforts: main.efforts,
-    prompts: records.map(humanPrompt).filter(Boolean),
+    // The person's prompts, without host notices; origin is "agent" when the session
+    // started from a delegation brief, "person" otherwise, null without prompts.
+    prompts,
+    hostPrompts: texts.length - prompts.length,
+    origin: prompts.length ? (isAgentBrief(prompts[0].text) ? "agent" : "person") : null,
+    forkedFrom,
     assistantMessages: main.assistantMessages,
     toolCalls: main.toolCalls,
     usage: main.usage,

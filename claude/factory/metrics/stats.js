@@ -76,9 +76,7 @@ function modelMix(sessions) {
     for (const agent of session.subagents) {
       const entry = row(agent.agentType ?? "unknown", agent.model ?? "unknown");
       entry.runs++;
-      // Subagent message counts need lib/transcripts.js to expose them per agent.
-      const messages = agent.assistantMessages ?? (agent.models ? sum(Object.values(agent.models)) : null);
-      entry.messages = entry.messages === null || messages === null ? null : entry.messages + messages;
+      entry.messages += agent.assistantMessages;
       entry.costUSD += agent.costUSD;
     }
   }
@@ -94,8 +92,11 @@ export function windowStats(entries, prInfo) {
   const costs = sessions.map((session) => session.costUSD);
   const totalCost = sum(costs);
   const totalPrompts = sum(promptCounts);
-  const followUps = sum(entries.map((entry) => entry.corrections.followUps));
-  const corrections = sum(entries.map((entry) => entry.corrections.corrections));
+  // Follow-ups in an agent-launched thread come from the orchestrating agent, so only
+  // sessions a person ran count toward the correction rate.
+  const personEntries = entries.filter((entry) => entry.session.origin !== "agent");
+  const followUps = sum(personEntries.map((entry) => entry.corrections.followUps));
+  const corrections = sum(personEntries.map((entry) => entry.corrections.corrections));
   const known = sessions.flatMap((session) => session.toolCalls.filter((call) => call.ok !== null));
   const mainErrors = known.filter((call) => call.ok === false).length;
   const agents = sessions.flatMap((session) => session.subagents);
@@ -128,6 +129,11 @@ export function windowStats(entries, prInfo) {
     apiErrors,
     compactions: { total: compactions, perSession: ratio(compactions, sessions.length) },
     subagents: { runs: agents.length, costUSD: subagentCost, share: ratio(subagentCost, estimatedTotal) },
+    // Sessions a person ran vs threads an orchestrating agent launched with a brief.
+    origin: Object.fromEntries(["person", "agent"].map((origin) => {
+      const of = sessions.filter((session) => (session.origin ?? "person") === origin);
+      return [origin, { sessions: of.length, costUSD: sum(of.map((session) => session.costUSD)) }];
+    })),
     modelMix: modelMix(sessions),
   };
 }

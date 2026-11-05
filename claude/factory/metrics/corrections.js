@@ -3,7 +3,7 @@
 // fails, and "why did you" complaints. It reads only the prompt text, so it misses quiet
 // corrections and catches some questions; reports label it as a heuristic, and the
 // scoring judge refines it. A session's first prompt is the task, never a correction.
-import { isHostPrompt } from "./prompts.js";
+import { isHostPrompt } from "../lib/transcripts.js";
 
 // Only the start of a prompt is read: long prompts are mostly quoted output or new tasks.
 const READ = 400;
@@ -46,7 +46,7 @@ export function isCorrection(text) {
 }
 
 // Corrections among a session's follow-up prompts; prompts are the person's prompts in
-// order (see humanPrompts), so the first one is skipped.
+// order (session.prompts), so the first one is skipped.
 export function countCorrections(prompts) {
   const followUps = prompts.slice(1);
   return { followUps: followUps.length, corrections: followUps.filter((prompt) => isCorrection(prompt.text)).length };

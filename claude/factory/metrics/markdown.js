@@ -31,6 +31,8 @@ function change(current, previous, kind) {
 
 export const HEADLINE = [
   ["Sessions", (s) => s.sessions, "count"],
+  ["Sessions launched by an agent", (s) => s.origin.agent.sessions, "count"],
+  ["Cost of agent-launched sessions", (s) => s.origin.agent.costUSD, "usd"],
   ["Prompts per session, mean", (s) => s.prompts.meanPerSession, "number"],
   ["Prompts per session, median", (s) => s.prompts.medianPerSession, "number"],
   ["Cost, total", (s) => s.cost.totalUSD, "usd"],
@@ -40,7 +42,7 @@ export const HEADLINE = [
   ["Cost per merged PR (its sessions)", (s) => s.prs.costPerMergedUSD, "usd"],
   ["Spend per merged PR (all sessions)", (s) => s.prs.spendPerMergedUSD, "usd"],
   ["Prompts per merged PR (its sessions)", (s) => s.prs.promptsPerMerged, "number"],
-  ["Correction rate (heuristic)", (s) => s.corrections.rate, "rate"],
+  ["Correction rate (heuristic, sessions a person ran)", (s) => s.corrections.rate, "rate"],
   ["Interrupts per session", (s) => s.interrupts.perSession, "number"],
   ["Tool error rate, main sessions", (s) => s.toolErrors.main.rate, "rate"],
   ["Tool error rate, subagents", (s) => s.toolErrors.subagents.rate, "rate"],

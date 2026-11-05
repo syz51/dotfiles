@@ -69,3 +69,6 @@ uv
 .env
 .env.*
 !.env.example
+
+# Claude Code subagent worktrees.
+/.claude/

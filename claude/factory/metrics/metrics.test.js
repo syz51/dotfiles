@@ -162,7 +162,7 @@ describe("session metrics", () => {
     expect(current.subagents.share).toBeCloseTo(0.5 / 20.5);
     expect(current.modelMix.map(({ role, model, runs, messages, costUSD }) => [role, model, runs, messages, Number(costUSD.toFixed(1))])).toEqual([
       ["main", "claude-opus-5-5", 1, 5, 20],
-      ["explorer", "claude-haiku-5-5", 1, null, 0.5],
+      ["explorer", "claude-haiku-5-5", 1, 2, 0.5],
     ]);
     expect(notes.some((note) => note.includes("1 prompts were host notices"))).toBe(true);
   });
@@ -173,14 +173,25 @@ describe("session metrics", () => {
     expect(topSessions.map((entry) => [entry.title, entry.costUSD, entry.prompts])).toEqual([["Task 9", 9, 1], ["Task 7", 7, 1], ["Task 5", 5, 1], ["Task 3", 3, 1], ["Task 2", 2, 1]]);
   });
 
-  test("notes forks, whose copied history counts twice", async () => {
+  test("counts only a fork's own records and notes the fork", async () => {
     const parent = session("2026-11-03T10:00:00Z");
     const fork = new Transcript({ start: at("2026-11-03T10:00:00Z") })
       .prompt("Do the task", { forkedFrom: { sessionId: parent.sessionId, messageUuid: "m" } })
       .prompt("now something else");
     write([{ transcript: parent }, { transcript: fork }]);
-    const { notes } = await report("--no-gh");
-    expect(notes).toContainEqual(expect.stringContaining(`is a fork of ${parent.sessionId.slice(0, 8)}, also counted here`));
+    const { notes, current } = await report("--no-gh");
+    expect(notes).toContainEqual(expect.stringContaining(`is a fork of ${parent.sessionId.slice(0, 8)}, also counted here; only its own records count`));
+    // The parent's one prompt and the fork's own one; the copied prompt is not counted again.
+    expect(current.prompts.total).toBe(2);
+  });
+
+  test("splits sessions a person ran from agent-launched ones", async () => {
+    write([
+      { transcript: session("2026-11-03T10:00:00Z", { cost: 2 }) },
+      { transcript: new Transcript({ start: at("2026-11-03T11:00:00Z") }).prompt("Act as the review sub-agent for this task.").costState(5) },
+    ]);
+    const { current } = await report("--no-gh");
+    expect(current.origin).toEqual({ person: { sessions: 1, costUSD: 2 }, agent: { sessions: 1, costUSD: 5 } });
   });
 });
 
@@ -265,7 +276,7 @@ describe("outputs", () => {
     write([{ transcript: session("2026-11-03T10:00:00Z") }, { transcript: session("2026-10-30T10:00:00Z") }]);
     const json = await report("--no-gh");
     expect(Object.keys(json).sort()).toEqual(["current", "excluded", "filters", "generatedAt", "notes", "previous", "previousWindow", "projects", "prs", "topSessions", "window"]);
-    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "interrupts", "modelMix", "prompts", "prs", "sessions", "subagents", "toolErrors"]);
+    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "interrupts", "modelMix", "origin", "prompts", "prs", "sessions", "subagents", "toolErrors"]);
     expect(json.filters).toEqual({ project: null, includeAutomation: false, gh: false });
     expect(json.projects[0]).toMatchObject({ project: "-Users-test-project", current: { sessions: 1 }, previous: { sessions: 1 } });
     const reports = join(scratch, "state", "reports");
