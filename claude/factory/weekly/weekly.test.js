@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failed, internal, LABEL, plist, run, runWeekly, steps } from "./cli.js";
+import { failed, internal, LABEL, needsAttention, plist, run, runWeekly, steps } from "./cli.js";
 
 let scratch;
 const saved = {};
@@ -58,8 +58,11 @@ describe("steps", () => {
     expect(steps({ scoreUsd: "1", sample: "2" }).find(([name]) => name === "score")[1]).toEqual(["score", "--sample", "2", "--max-total-usd", "1"]);
   });
 
-  test("audit exit 1 means findings, not failure; other nonzero exits and crashes fail", () => {
+  test("audit exit 1 needs attention rather than failing; other nonzero exits and crashes fail", () => {
     expect(failed({ name: "audit", code: 1 })).toBe(false);
+    expect(needsAttention({ name: "audit", code: 1 })).toBe(true);
+    expect(needsAttention({ name: "audit", code: 0 })).toBe(false);
+    expect(needsAttention({ name: "audit", code: 1, error: "unreadable output" })).toBe(false);
     expect(failed({ name: "audit", code: 2 })).toBe(true);
     expect(failed({ name: "score", code: 1 })).toBe(true);
     expect(failed({ name: "metrics", code: 0, error: "unreadable output" })).toBe(true);
@@ -69,7 +72,6 @@ describe("steps", () => {
 
 describe("runWeekly", () => {
   test("runs every step in order and writes a summary with the highlights", async () => {
-    setEnv({ FAKE_EXIT_audit: "1" });
     expect(await runWeekly({ pr: false })).toBe(0);
     expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "propose"]);
     expect(calls()[3]).toContain("--dry-run");
@@ -80,9 +82,16 @@ describe("runWeekly", () => {
     expect(summary).toContain("429s 3");
     expect(summary).toContain("Unaccepted findings: 1 high, 0 medium, 0 low");
     expect(summary).toContain("- Unsandboxed review");
-    expect(summary).toContain("## audit: ok (exit 1");
+    expect(summary).toContain("## audit: ok (exit 0");
     expect(summary).toContain("scored 2 sessions");
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
+  });
+
+  test("unaccepted audit findings mark the run as needing attention", async () => {
+    setEnv({ FAKE_EXIT_audit: "1" });
+    expect(await runWeekly({ pr: false })).toBe(1);
+    const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
+    expect(readFileSync(last.summary, "utf8")).toContain("## audit: ATTENTION (exit 1");
   });
 
   test("a failing step is reported, the rest still run, and the run exits 1", async () => {

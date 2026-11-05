@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
-import { loadSessions } from "../lib/transcripts.js";
+import { loadSessions, mostCommon } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
 import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
@@ -94,11 +94,6 @@ function parseArgs(argv) {
 
 const tilde = (path) => (path && path.startsWith(homedir()) ? `~${path.slice(homedir().length)}` : path);
 
-function mostCommon(values) {
-  const counts = new Map();
-  for (const value of values) if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
-  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
-}
 
 const localDate = (ms) => {
   const date = new Date(ms);

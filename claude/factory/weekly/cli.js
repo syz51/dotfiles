@@ -78,14 +78,16 @@ async function runStep([name, argv, kind], env) {
   }
 }
 
-// A step failed when it crashed or exited nonzero, except audit, whose exit 1 only means
-// it found unaccepted findings (reported in the summary).
-export const failed = (step) => step.error !== undefined || step.code === null || (step.code !== 0 && !(step.name === "audit" && step.code === 1));
+// A step failed when it crashed or exited nonzero, except audit, whose exit 1 means it
+// ran and found unaccepted findings at or above medium: that needs attention instead.
+export const needsAttention = (step) => step.name === "audit" && step.code === 1 && step.error === undefined;
+export const failed = (step) => step.error !== undefined || step.code === null || (step.code !== 0 && !needsAttention(step));
+const stepStatus = (step) => (failed(step) ? "FAILED" : needsAttention(step) ? "ATTENTION" : "ok");
 
 function renderSummary(run) {
   const lines = [`# Factory weekly run, ${run.startedAt.slice(0, 10)}`, "", `Started ${run.startedAt}, finished ${run.finishedAt}.`, ""];
   for (const step of run.steps) {
-    lines.push(`## ${step.name}: ${failed(step) ? "FAILED" : "ok"} (exit ${step.code ?? "none"}, ${Math.round(step.durationMs / 1000)} s)`, "");
+    lines.push(`## ${step.name}: ${stepStatus(step)} (exit ${step.code ?? "none"}, ${Math.round(step.durationMs / 1000)} s)`, "");
     for (const line of step.highlights ?? []) lines.push(line.startsWith("- ") ? line : `- ${line}`);
     if (step.output) lines.push("```", step.output, "```");
     if (step.error) lines.push(`Error: ${step.error}`);
@@ -115,7 +117,13 @@ function acquireLock(path) {
 
 async function notify(title, message) {
   const quote = (text) => `"${text.replace(/["\\]/g, "\\$&")}"`;
-  await runProcess(["osascript", "-e", `display notification ${quote(message)} with title ${quote(title)}`], { timeout: 10_000 }).catch(() => {});
+  // The report is already written, so a failed notification is logged, not fatal.
+  try {
+    const shown = await runProcess(["osascript", "-e", `display notification ${quote(message)} with title ${quote(title)}`], { timeout: 10_000 });
+    if (shown.code !== 0) console.error(`Notification failed (exit ${shown.code}): ${shown.stderr.trim()}`);
+  } catch (error) {
+    console.error(`Notification failed: ${error.message}`);
+  }
 }
 
 export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = false, env = childEnv(process.env) } = {}) {
@@ -132,9 +140,11 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
     writeFileSync(path, renderSummary(run));
     writeJsonAtomic(statePath("weekly-last.json"), { ...run, summary: path });
     const failures = run.steps.filter(failed).map((step) => step.name);
+    const attention = run.steps.filter(needsAttention).map((step) => step.name);
     console.log(path);
-    if (notifyDone) await notify("Factory weekly run", failures.length ? `Failed: ${failures.join(", ")}` : "Report ready");
-    return failures.length ? 1 : 0;
+    const message = [failures.length && `Failed: ${failures.join(", ")}`, attention.length && `Needs attention: ${attention.join(", ")}`].filter(Boolean).join("; ");
+    if (notifyDone) await notify("Factory weekly run", message || "Report ready");
+    return failures.length || attention.length ? 1 : 0;
   } finally {
     rmSync(lock, { force: true });
   }
@@ -232,7 +242,7 @@ async function status() {
   const last = statePath("weekly-last.json");
   if (existsSync(last)) {
     const run = JSON.parse(readFileSync(last, "utf8"));
-    console.log(`Last run: ${run.startedAt}; summary ${run.summary}; failed steps: ${run.steps.filter(failed).map((step) => step.name).join(", ") || "none"}`);
+    console.log(`Last run: ${run.startedAt}; summary ${run.summary}; failed steps: ${run.steps.filter(failed).map((step) => step.name).join(", ") || "none"}; needs attention: ${run.steps.filter(needsAttention).map((step) => step.name).join(", ") || "none"}`);
   } else console.log("Last run: none");
   return 0;
 }
