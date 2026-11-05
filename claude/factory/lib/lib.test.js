@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../cli.js";
-import { ClaudeCallError, judge, runTask } from "./claude.js";
+import { API_FIRST, ClaudeCallError, judge, runTask } from "./claude.js";
 import { normalizeUsage, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
@@ -324,6 +324,13 @@ describe("claude runner", () => {
   test("runTask fails with the exit status when there is no stream", async () => {
     fake("exit", { FAKE_CLAUDE_EXIT: "5" });
     await expect(runTask({ prompt: "x", cwd: scratch })).rejects.toThrow("exit 5");
+  });
+});
+
+describe("default binary", () => {
+  test("is the API-first wrapper, which exists and is executable", () => {
+    expect(API_FIRST.endsWith("claude/bin/claude-api")).toBe(true);
+    expect(statSync(API_FIRST).mode & 0o111).toBeGreaterThan(0);
   });
 });
 

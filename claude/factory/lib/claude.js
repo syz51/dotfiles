@@ -9,7 +9,10 @@ import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { completed, parseStream, resultEvent } from "../../tests/lib/stream.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
-const bin = () => process.env.CLAUDE_FACTORY_BIN || "claude";
+// By default the API-first wrapper: billed to the API while it has credit, else the
+// subscription (claude/bin/claude-api).
+export const API_FIRST = join(import.meta.dir, "..", "..", "bin", "claude-api");
+const bin = () => process.env.CLAUDE_FACTORY_BIN || API_FIRST;
 
 const quietEnv = (overrides = {}) => childEnv(process.env, {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",

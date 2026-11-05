@@ -21,7 +21,8 @@ export function configuredEffort(model) {
 }
 export const EFFORT = process.env.CLAUDE_LIVE_EFFORT || configuredEffort(MODEL);
 export const HAIKU = "claude-haiku-5-5";
-const BIN = process.env.CLAUDE_LIVE_BIN || "claude";
+// Billed to the API while it has credit, else the subscription (claude/bin/claude-api).
+const BIN = process.env.CLAUDE_LIVE_BIN || join(import.meta.dir, "..", "..", "bin", "claude-api");
 const TIMEOUT = Number(process.env.CLAUDE_LIVE_TIMEOUT_MS) || 0;
 const HOOKS = join(import.meta.dir, "hooks");
 

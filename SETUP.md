@@ -209,6 +209,25 @@ ids, not transcript text, because the repository is public. `weekly status` show
 last run; `weekly uninstall` removes the job. The living task list is
 [`claude/factory/PLAN.md`](claude/factory/PLAN.md).
 
+### Billing: API first, subscription as fallback
+
+Unattended print-mode runs (`claude -p`) go through `~/.claude/bin/claude-api`: the
+factory by default (`CLAUDE_FACTORY_BIN` overrides) and the live suites
+(`CLAUDE_LIVE_BIN` overrides). It bills the Anthropic API while the account has credit
+and falls back to the claude.ai subscription otherwise:
+
+- The key file is `CLAUDE_API_KEY_FILE`, default
+  `~/.local/share/codex-skills/anthropic-api-key` (mode 600, shared with the codex-skills
+  pipeline). Claude Code reads it through an `apiKeyHelper` merged into the run's
+  `--settings`, so the key never enters the environment an agent's commands can read.
+- A one-token Haiku request checks for credit; the answer is cached in
+  `~/.local/state/claude-api/` for 10 minutes while the API works and 30 minutes once it
+  does not. Without a key file, or when credit is exhausted or the key is refused, runs
+  use the subscription and say so on stderr. Every decision goes to `decisions.jsonl`
+  there, and the weekly summary counts them.
+- Interactive use is never changed. For scripts that call `claude` by name, put
+  `~/.claude/bin/api-first` first on `PATH` for that run only, never in a login profile.
+
 ## Verification
 
 From the repository root, run the focused local suites:

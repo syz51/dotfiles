@@ -1,0 +1,5 @@
+#!/bin/sh
+# Put this folder first on PATH for a run whose scripts call `claude` by name, to bill
+# their print-mode calls to the API first (see ../claude-api). Not for a login PATH:
+# interactive sessions would pass through, but tools that start claude would not.
+exec "$(dirname "$0")/../claude-api" "$@"

@@ -1,0 +1,179 @@
+#!/usr/bin/env bun
+// claude, billed to the Anthropic API while the account has credit, otherwise to the
+// claude.ai subscription. It is for unattended print-mode runs (-p/--print): the factory,
+// the live tests and research scripts. Anything else passes straight through unchanged.
+//
+// The key stays out of the environment, so an agent's commands cannot read it: Claude Code
+// fetches it through an apiKeyHelper merged into the run's --settings (only the last
+// --settings counts, so the caller's own settings are kept in the merge). The key file is
+// CLAUDE_API_KEY_FILE, default ~/.local/share/codex-skills/anthropic-api-key (mode 600).
+//
+// Credit is checked with a one-token Haiku request. The answer is cached in
+// ${XDG_STATE_HOME:-~/.local/state}/claude-api for 10 minutes while the API works and 30
+// minutes once it does not, so a top-up is noticed. Every decision is appended to
+// decisions.jsonl there. Credit running out in the middle of a run fails that run; the
+// next check moves later runs to the subscription.
+import { spawn } from "node:child_process";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, join, resolve } from "node:path";
+
+export const OK_TTL_MS = 10 * 60 * 1000;
+export const UNAVAILABLE_TTL_MS = 30 * 60 * 1000;
+const SHIM_DIR = resolve(import.meta.dir, "api-first");
+// Set on the child, so a copy of this wrapper started directly by this one (a loop through
+// the shim) can tell; one started further down, by a session's own commands, is fine.
+const PARENT_VARIABLE = "CLAUDE_API_WRAPPER_PID";
+
+const real = (path) => {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return null;
+    throw error;
+  }
+};
+
+export const startedBySelf = (env = process.env, ppid = process.ppid) => env[PARENT_VARIABLE] === String(ppid);
+
+export const keyFile = (env = process.env) => env.CLAUDE_API_KEY_FILE || join(env.HOME || homedir(), ".local", "share", "codex-skills", "anthropic-api-key");
+export const stateDir = (env = process.env) => join(env.XDG_STATE_HOME || join(env.HOME || homedir(), ".local", "state"), "claude-api");
+export const isPrintMode = (argv) => argv.some((arg) => arg === "-p" || arg === "--print");
+
+// The real claude: CLAUDE_API_REAL_BIN, else the first claude on PATH that is neither this
+// wrapper's api-first shim nor a link back to it, however PATH spells it (~/.claude is a
+// link to the dotfiles checkout).
+export function realClaude(env = process.env) {
+  if (env.CLAUDE_API_REAL_BIN) return env.CLAUDE_API_REAL_BIN;
+  const own = new Set([real(SHIM_DIR), real(join(SHIM_DIR, "claude")), real(join(import.meta.dir, "claude-api"))].filter(Boolean));
+  for (const dir of (env.PATH ?? "").split(delimiter)) {
+    if (!dir || own.has(real(dir))) continue;
+    const candidate = join(dir, "claude");
+    if (own.has(real(candidate))) continue;
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "EACCES" && error.code !== "ENOTDIR") throw error;
+    }
+  }
+  throw new Error("claude-api: no claude executable on PATH");
+}
+
+// argv with the apiKeyHelper merged into the last --settings (a file path or JSON), every
+// earlier --settings dropped as Claude Code would, and the merged value passed inline. A
+// caller's own apiKeyHelper is kept.
+export function withKeyHelper(argv, helper) {
+  const rest = [];
+  let value;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (arg === "--settings") value = argv[++index];
+    else if (arg.startsWith("--settings=")) value = arg.slice("--settings=".length);
+    else rest.push(arg);
+  }
+  let settings = {};
+  if (value !== undefined) settings = value.trim().startsWith("{") ? JSON.parse(value) : JSON.parse(readFileSync(value, "utf8"));
+  return [...rest, "--settings", JSON.stringify({ apiKeyHelper: helper, ...settings })];
+}
+
+// ok: the key works and the account has credit. exhausted: out of credit. invalid: the
+// key was refused. unknown: the check could not tell (network, rate limit, outage).
+export async function checkCredit(key, { baseUrl = "https://api.anthropic.com", fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl}/v1/messages`, {
+      method: "POST",
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    return { status: "unknown", detail: `request failed: ${error.message}` };
+  }
+  const body = await response.text();
+  if (response.ok) return { status: "ok", detail: "HTTP 200" };
+  const message = (() => {
+    try {
+      return JSON.parse(body)?.error?.message ?? body;
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return body;
+    }
+  })().slice(0, 200);
+  if (response.status === 401 || response.status === 403) return { status: "invalid", detail: `HTTP ${response.status}: ${message}` };
+  if ([400, 402].includes(response.status) && /credit balance|billing|insufficient/i.test(message)) return { status: "exhausted", detail: `HTTP ${response.status}: ${message}` };
+  return { status: "unknown", detail: `HTTP ${response.status}: ${message}` };
+}
+
+function writeState(dir, state) {
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "state.json");
+  writeFileSync(`${path}.${process.pid}`, JSON.stringify(state));
+  renameSync(`${path}.${process.pid}`, path);
+}
+
+function readState(dir) {
+  try {
+    return JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+// { mode: "api" | "subscription", reason }. A fresh cached check is reused; an unknown
+// result is not cached and leaves the run on the API, where Claude Code retries and
+// reports the error itself.
+export async function decide({ env = process.env, now = Date.now(), check = checkCredit } = {}) {
+  const file = keyFile(env);
+  if (!existsSync(file)) return { mode: "subscription", reason: `no key file at ${file}` };
+  const dir = stateDir(env);
+  const cached = readState(dir);
+  if (cached && now - cached.checkedAt < (cached.status === "ok" ? OK_TTL_MS : UNAVAILABLE_TTL_MS))
+    return { mode: cached.status === "ok" ? "api" : "subscription", reason: `${cached.status} (checked ${new Date(cached.checkedAt).toISOString()})` };
+  const key = readFileSync(file, "utf8").trim();
+  const result = await check(key, env.CLAUDE_API_BASE_URL ? { baseUrl: env.CLAUDE_API_BASE_URL } : {});
+  if (result.status !== "unknown") writeState(dir, { status: result.status, checkedAt: now, detail: result.detail });
+  return result.status === "ok" || result.status === "unknown"
+    ? { mode: "api", reason: `${result.status}: ${result.detail}` }
+    : { mode: "subscription", reason: `${result.status}: ${result.detail}` };
+}
+
+// The command and environment for argv. Key variables never reach the child: on the API
+// the helper supplies the key, on the subscription none must override the login.
+export async function plan(argv, { env = process.env, check } = {}) {
+  const { ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ...childEnv } = env;
+  const bin = realClaude(env);
+  if (!isPrintMode(argv)) return { bin, argv, env: childEnv, decision: null };
+  const decision = await decide({ env, check });
+  const helper = `cat '${keyFile(env).replace(/'/g, "'\\''")}'`;
+  return { bin, argv: decision.mode === "api" ? withKeyHelper(argv, helper) : argv, env: childEnv, decision };
+}
+
+if (import.meta.main) {
+  if (startedBySelf()) {
+    console.error("claude-api: started by itself, so the real claude was not found; set CLAUDE_API_REAL_BIN");
+    process.exit(70);
+  }
+  const argv = process.argv.slice(2);
+  const { bin, argv: args, env, decision } = await plan(argv);
+  if (decision) {
+    const dir = stateDir();
+    mkdirSync(dir, { recursive: true });
+    appendFileSync(join(dir, "decisions.jsonl"), `${JSON.stringify({ at: new Date().toISOString(), mode: decision.mode, reason: decision.reason, cwd: process.cwd() })}\n`);
+    if (decision.mode === "subscription") console.error(`claude-api: running on the subscription (${decision.reason})`);
+  }
+  const child = spawn(bin, args, { stdio: "inherit", env: { ...env, [PARENT_VARIABLE]: String(process.pid) } });
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => child.kill(signal));
+  child.on("error", (error) => {
+    console.error(`claude-api: ${error.message}`);
+    process.exit(127);
+  });
+  child.on("exit", (code, signal) => {
+    if (!signal) process.exit(code ?? 1);
+    // End the same way the child did, without the forwarding handler catching it.
+    process.removeAllListeners(signal);
+    process.kill(process.pid, signal);
+  });
+}

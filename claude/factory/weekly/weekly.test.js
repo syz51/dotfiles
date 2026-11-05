@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { failed, internal, LABEL, needsAttention, plist, run, runWeekly, stepEnv, steps } from "./cli.js";
+import { billingSummary, failed, internal, LABEL, needsAttention, plist, run, runWeekly, stepEnv, steps } from "./cli.js";
 
 let scratch;
 const saved = {};
@@ -122,6 +122,22 @@ describe("runWeekly", () => {
     expect(await runWeekly({ pr: false })).toBe(3);
     writeFileSync(lock, "999999999");
     expect(await runWeekly({ pr: false })).toBe(0);
+  });
+});
+
+describe("billing", () => {
+  test("counts the week's API and subscription calls and names the latest fallback", () => {
+    const path = join(scratch, "decisions.jsonl");
+    expect(billingSummary(path, 0)).toBeNull();
+    const at = (day) => `2026-11-0${day}T10:00:00.000Z`;
+    writeFileSync(path, [
+      { at: at(1), mode: "subscription", reason: "too old" },
+      { at: at(3), mode: "api", reason: "ok" },
+      { at: at(4), mode: "subscription", reason: "exhausted: HTTP 400" },
+      { at: at(5), mode: "api", reason: "ok" },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n{partial");
+    const summary = billingSummary(path, Date.parse(at(2)));
+    expect([summary.api, summary.subscription, summary.lastFallback.reason]).toEqual([2, 1, "exhausted: HTTP 400"]);
   });
 });
 

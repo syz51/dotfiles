@@ -38,6 +38,7 @@ uv
 !/claude/rules/
 !/claude/skills/
 !/claude/tests/
+!/claude/bin/
 !/claude/factory/
 /claude/skills/*
 !/claude/skills/headless-browser/

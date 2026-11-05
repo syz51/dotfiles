@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
+import { stateDir as apiStateDir } from "../../bin/claude-api";
 import { detectorDimensions } from "../scoring/rubric.js";
 
 // CLAUDE_FACTORY_WEEKLY_CLI replaces the factory CLI the steps run (tests use a fake).
@@ -84,8 +85,30 @@ export const needsAttention = (step) => step.name === "audit" && step.code === 1
 export const failed = (step) => step.error !== undefined || step.code === null || (step.code !== 0 && !needsAttention(step));
 const stepStatus = (step) => (failed(step) ? "FAILED" : needsAttention(step) ? "ATTENTION" : "ok");
 
+// Which billing the API-first wrapper chose for the week's print-mode calls (its
+// decisions.jsonl), so a fallback to the subscription is seen.
+export function billingSummary(path, since) {
+  if (!existsSync(path)) return null;
+  const recent = readFileSync(path, "utf8").split("\n").filter((line) => line.trim()).flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return [];
+    }
+  }).filter((entry) => Date.parse(entry.at) >= since);
+  const fallbacks = recent.filter((entry) => entry.mode === "subscription");
+  return { api: recent.length - fallbacks.length, subscription: fallbacks.length, lastFallback: fallbacks.at(-1) ?? null };
+}
+
 function renderSummary(run) {
   const lines = [`# Factory weekly run, ${run.startedAt.slice(0, 10)}`, "", `Started ${run.startedAt}, finished ${run.finishedAt}.`, ""];
+  if (run.billing) {
+    const { api, subscription, lastFallback } = run.billing;
+    lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} on the API, ${subscription} on the subscription.`);
+    if (lastFallback) lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason}. Top up API credit to move back.`);
+    lines.push("");
+  }
   for (const step of run.steps) {
     lines.push(`## ${step.name}: ${stepStatus(step)} (exit ${step.code ?? "none"}, ${Math.round(step.durationMs / 1000)} s)`, "");
     for (const line of step.highlights ?? []) lines.push(line.startsWith("- ") ? line : `- ${line}`);
@@ -152,6 +175,7 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
     const run = { startedAt: new Date().toISOString(), steps: [] };
     for (const step of steps({ pr, scoreUsd, sample })) run.steps.push(await runStep(step, { ...env, CLAUDE_FACTORY_STATE: stateDir() }));
     run.finishedAt = new Date().toISOString();
+    run.billing = billingSummary(join(apiStateDir(env), "decisions.jsonl"), Date.parse(run.startedAt) - 7 * 86_400_000);
     const path = statePath("reports", `weekly-${run.startedAt.slice(0, 10)}.md`);
     writeFileSync(path, renderSummary(run));
     writeJsonAtomic(statePath("weekly-last.json"), { ...run, summary: path });
