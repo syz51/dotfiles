@@ -77,7 +77,10 @@ const scenarios = [
     },
     writable: ["orders/total.js", "orders/invoice.js", "orders/receipt.js", "orders/summary.js"],
     prompt: "Rename calcTotal to orderTotal across orders/, in its definition and every use, without changing behavior. Verify with check.js and report the result. Only files in orders/ may change.",
-    check: { tool: "bun", script: "check.js" },
+    // No strict check proof: a multi-file rename is naturally run as one command with a glob
+    // (sed -i … orders/*.js && bun check.js), which the proof grammar cannot read. The bun
+    // rule is held by avoid, and the result by the independent re-run.
+    avoid: ["node", "npm"],
     verify: ["bun", "check.js"],
   },
   {
