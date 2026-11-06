@@ -16,6 +16,7 @@ options
   --reduced-motion   emulate prefers-reduced-motion: reduce
   --timeout MS       timeout for navigation and each step (default 15000)
   --strict           exit 1 when the page threw or logged an error
+  --dir DIR          folder for screenshots without a PATH (default $TMPDIR/headless-browser)
 
 steps, run in the order given
   --click SEL        click an element (CSS or Playwright selector)
@@ -32,7 +33,7 @@ steps, run in the order given
   --element SEL[=PATH]  screenshot one element
 
 With no --shot, --full or --element step, one viewport screenshot is taken at
-the end. PATH defaults to a numbered PNG in $TMPDIR/headless-browser/.`;
+the end. PATH defaults to a numbered PNG in the --dir folder.`;
 
 type Step = { kind: string; arg?: string };
 
@@ -50,7 +51,7 @@ if (!existsSync(join(import.meta.dir, '..', 'node_modules', 'playwright'))) {
 }
 const playwright = await import('playwright');
 
-const opts = { width: 1280, height: 900, scale: 1, scheme: undefined as 'light' | 'dark' | undefined, reducedMotion: false, timeout: 15000, strict: false };
+const opts = { width: 1280, height: 900, scale: 1, scheme: undefined as 'light' | 'dark' | undefined, reducedMotion: false, timeout: 15000, strict: false, dir: join(process.env.TMPDIR ?? tmpdir(), 'headless-browser') };
 const steps: Step[] = [];
 let url = '';
 const takesArg = new Set(['click', 'hover', 'fill', 'press', 'scroll', 'wait', 'wait-for', 'goto', 'eval', 'element']);
@@ -82,6 +83,7 @@ for (let i = 0; i < args.length; i++) {
     case 'reduced-motion': opts.reducedMotion = true; break;
     case 'timeout': opts.timeout = Number(next()); break;
     case 'strict': opts.strict = true; break;
+    case 'dir': opts.dir = resolve(next()); break;
     default:
       if (takesArg.has(name)) steps.push({ kind: name, arg: next() });
       else if (optionalArg.has(name)) {
@@ -94,11 +96,10 @@ if (!url) fail('missing url');
 if (!/^[a-z]+:/i.test(url)) url = /^(localhost|127\.|\[::1\])/.test(url) ? `http://${url}` : `https://${url}`;
 if (!steps.some((s) => ['shot', 'full', 'element'].includes(s.kind))) steps.push({ kind: 'shot' });
 
-const outDir = join(process.env.TMPDIR ?? tmpdir(), 'headless-browser');
 const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 let shotCount = 0;
 const shotPath = (p?: string) => {
-  const out = p ? resolve(p) : join(outDir, `${stamp}-${++shotCount}.png`);
+  const out = p ? resolve(p) : join(opts.dir, `${stamp}-${++shotCount}.png`);
   mkdirSync(dirname(out), { recursive: true });
   return out;
 };
