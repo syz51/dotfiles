@@ -254,15 +254,14 @@ and falls back to the claude.ai subscription otherwise. The planner,
 [agent-board](https://github.com/syz51/agent-board) is the shared work board that the
 "Work board" rule in `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
 a host in the tailnet
-([deployment](https://github.com/syz51/agent-board/blob/build/v0/docs/DEPLOY.md)); each Mac
+([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
 `claude/hooks/board-hook.sh` from `~/.claude/hooks`, so link it there like the other hook
 scripts. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
 with a device token created on the server host:
 
 ```sh
-# build/v0 holds the board crate until it merges to main.
-cargo install --git https://github.com/syz51/agent-board --branch build/v0 --locked board
+cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
 # Reads the token until end of input: pipe it from a file or paste it and press Ctrl-D.
 board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>
 claude mcp add --scope user board -- "$HOME/.cargo/bin/board" mcp
