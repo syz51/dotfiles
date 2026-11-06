@@ -4,6 +4,13 @@ source "${${(%):-%N}:A:h}/cache.zsh"
 # Drop repeated PATH and fpath entries. The first occurrence wins, as in lookup.
 typeset -U path fpath
 
+# In Claude Code's Bash tool an unmatched glob, as in `grep -r --include=*.md`, reaches
+# the command as written, as in bash, instead of failing the whole command line. The
+# tool's shell snapshot records the option.
+if [[ -n $CLAUDECODE ]]; then
+  setopt no_nomatch
+fi
+
 # Atuin's init script is static for a given binary, configuration and ATUIN_*
 # settings, so it is cached; the variables excluded here are ones the script
 # itself maintains. The output is sourced or evaluated at top level, as before.
