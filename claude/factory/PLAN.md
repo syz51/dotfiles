@@ -157,6 +157,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   branch in the headline and the PR section; PR links a server prints on push (`remote:`
   lines) link the PR. GitHub prints none for an existing PR, and `-q` pushes print nothing.
   7-day real run: 62 branches (61 new) from 39 sessions.
+- [x] Correction heuristic vs the scoring judge (board task dotfiles-4, 2026-11-07): 203
+  follow-up prompts of 16 judged sessions, compared prompt by prompt with the judge's
+  `corrections`. After tightening "still running/using" (it, this or that in a statement,
+  not a description of other things still running or a question): agreement 87%,
+  precision 0.44, recall 0.29; leaving out changed-requirements entries, 91%, 0.38 and
+  0.40. Some heuristic-only hits are "I meant X" corrections the judge left out; most
+  misses are quiet ones (a short "fix it properly", a complaint without a correction
+  word) or follow a quoted line without a `>` marker. The rate stays labelled a heuristic.
 
 ### 2. Scoring and proposals (`scoring/`)
 
