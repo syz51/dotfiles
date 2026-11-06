@@ -33,7 +33,11 @@ const CORRECTION = [
   /\bwhy (?:is|was|are) (?:it|this|that|the \w+)\b.*\bagain\b/,
   /\b(?:doesn'?t|does not|didn'?t|did not|isn'?t|is not|still not) work(?:s|ing)?\b/,
   /\bnot working\b/,
-  /\bstill (?:broken|failing|fails|wrong|not|doesn'?t|isn'?t|there|running|using|showing|happening)\b/,
+  /\bstill (?:broken|failing|fails|wrong|not|doesn'?t|isn'?t|there)\b/,
+  // "It's still running" reports a problem; "move the jobs still running X" or "are they
+  // still using X?" describes or asks, so only it, this or that (a noun may follow: "this
+  // worker is still running") in a statement counts.
+  /\b(?:it|(?:this|that)(?:\s+\w+)?)(?:'s|\s+is|\s+are)?\s+still\s+(?:running|using|showing|happening)\b(?![^.!?\n]*\?)/,
   /\b(?:failed|failing|broken|broke) again\b/,
   /\b(?:revert|undo) (?:that|this|it|the change)\b/,
   /^instead of\b/,

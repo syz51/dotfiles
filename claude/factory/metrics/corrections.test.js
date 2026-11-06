@@ -21,6 +21,9 @@ describe("correction heuristic", () => {
     "instead of localhost, use the tailscale URL",
     "stop, revert that",
     "**Status:** All done.\nno, the tests never ran",
+    "it's still running after ten minutes",
+    "that is still showing the old title",
+    "this worker is still running at high effort. did you set that?",
   ])("counts %p", (text) => expect(isCorrection(text)).toBe(true));
 
   test.each([
@@ -35,6 +38,10 @@ describe("correction heuristic", () => {
     "Update on pull request #3 (https://github.com/o/r/pull/3), which T3 Code is watching for you:\n- Checks failed, still failing",
     "<command-name>/compact</command-name>",
     "Could you also add a dark mode?",
+    // "Still running/using" that describes or asks, as the judge read these (dotfiles-4).
+    "also, move all the jobs still running the old tool over to the new one",
+    "The scripts that start are still using the shared key, right?",
+    "is it still running?",
   ])("does not count %p", (text) => expect(isCorrection(text)).toBe(false));
 
   test("never counts the first prompt", () => {
