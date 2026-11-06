@@ -2,11 +2,11 @@
 // and task sessions for benchmarks and proposals. CLAUDE_FACTORY_BIN replaces `claude`
 // (tests point it at a fake). Every call is bounded by a budget and a deadline and is
 // not saved as a session, so the factory's own calls never get scored or captured.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { completed, parseStream, resultEvent } from "../../tests/lib/stream.js";
+import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused } from "../../tests/lib/stream.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
 // By default the API-first wrapper: billed to the API while it has credit, else the
@@ -30,19 +30,6 @@ export class ClaudeCallError extends Error {
   }
 }
 
-// Events of a stream cut off mid-run: complete lines only. The last line of a killed
-// process is usually truncated, so an unparsable line is expected here, not an error.
-export function partialEvents(stdout = "") {
-  return stdout.split("\n").filter((line) => line.trim()).flatMap((line) => {
-    try {
-      return [JSON.parse(line)];
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      return [];
-    }
-  });
-}
-
 // Events of a run's stdout; a run with no parseable stream fails with its exit status.
 function eventsOf(result, what) {
   try {
@@ -54,23 +41,39 @@ function eventsOf(result, what) {
 
 // A tool-less call that must answer with JSON matching schema. No settings, CLAUDE.md,
 // MCP servers, skills or slash commands load; a session that exposes or uses any tool
-// other than the structured-output one fails closed.
-export async function judge({ prompt, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
+// other than the structured-output one fails closed. system holds instructions that stay
+// the same from call to call. They replace Claude Code's default system prompt, which is
+// written for coding sessions with tools, and keep its short identity line, which
+// appending would turn into "You are Claude Code". Passed from a file, so their size is
+// not bound by argv limits, they fall inside the prefix Claude Code caches, and a run of
+// judge calls reads them from the cache. prompt, the part that changes per call, goes on
+// stdin.
+export async function judge({ prompt, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
     const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
-    let result;
-    try {
-      result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });
-    } catch (error) {
-      // A deadline, the output bound or a spawn failure: one failed call, not a crash of
-      // the caller's loop. The partial stream may still say what it cost.
-      throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events: partialEvents(error.stdout), stderr: (error.stderr ?? "").slice(-2000) });
+    if (system) {
+      const file = join(cwd, "judge-system.md");
+      writeFileSync(file, system);
+      argv.push("--system-prompt-file", file);
     }
-    const events = eventsOf(result, "Judge call");
+    // A call the API refused for credit or the key before it did anything runs once more,
+    // on the subscription.
+    const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
+      let result;
+      try {
+        result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {}), timeout, input: prompt });
+      } catch (error) {
+        // A deadline, the output bound or a spawn failure: one failed call, not a crash of
+        // the caller's loop. The partial stream may still say what it cost.
+        throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events: partialEvents(error.stdout), stderr: (error.stderr ?? "").slice(-2000) });
+      }
+      return { result, events: eventsOf(result, "Judge call") };
+    }, timeoutMs);
+    const spentUSD = refused ? cost(refused.events) : 0;
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init"
         && ((event.tools ?? []).some((tool) => tool !== STRUCTURED_TOOL) || (event.mcp_servers ?? []).length))
@@ -79,7 +82,7 @@ export async function judge({ prompt, schema, model, effort = "medium", budgetUs
         throw new ClaudeCallError("Judge session used a tool", { events });
     }
     const final = resultEvent(events);
-    const costUSD = final?.total_cost_usd ?? 0;
+    const costUSD = spentUSD + (final?.total_cost_usd ?? 0);
     if (!completed(events) || !final.structured_output || typeof final.structured_output !== "object")
       throw new ClaudeCallError(`Judge call failed: ${final?.subtype ?? "no result"}${final?.api_error_status ? ` (HTTP ${final.api_error_status})` : ""}`, { events, code: result.code });
     return { output: final.structured_output, costUSD, events };
@@ -104,16 +107,18 @@ export async function runTask({
   if (tools) argv.push("--tools", tools.join(","));
   // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
   for (const dir of addDirs) argv.push("--add-dir", dir);
-  const result = await runProcess(argv, { cwd, env: quietEnv(env), timeout: timeoutMs, input: prompt });
-  const events = eventsOf(result, "Task run");
+  const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
+    const result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env), timeout, input: prompt });
+    return { result, events: eventsOf(result, "Task run") };
+  }, timeoutMs);
   const final = resultEvent(events);
   return {
     events,
     ok: completed(events),
     finalText: typeof final?.result === "string" ? final.result : "",
-    costUSD: final?.total_cost_usd ?? 0,
+    costUSD: (refused ? cost(refused.events) : 0) + (final?.total_cost_usd ?? 0),
     turns: final?.num_turns ?? null,
-    durationMs: result.durationMs,
+    durationMs: result.durationMs + (refused?.result.durationMs ?? 0),
     code: result.code,
     stderr: result.stderr.slice(-2000),
   };

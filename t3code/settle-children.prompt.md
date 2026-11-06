@@ -1,9 +1,9 @@
-# Settle idle subagent threads and prune merged T3 branches
+# Settle idle subagent threads and prune finished T3 branches
 
 T3 Code does not settle a thread's subagent children when the thread is settled, and
-its storage cleanup removes a merged thread's worktree but keeps the branch. This
-routine settles idle children and deletes those merged branches. Follow these steps
-exactly. Start no subagents, and do not read or quote any thread's contents.
+its storage cleanup removes the worktree of a merged or long-settled thread but keeps
+the branch. This routine settles idle children and deletes those branches once their
+commits are kept elsewhere. Follow these steps exactly. Start no subagents, and do not read or quote any thread's contents.
 
 1. Plan. Run:
 
@@ -13,7 +13,7 @@ exactly. Start no subagents, and do not read or quote any thread's contents.
    ```
 
    It prints the thread ids to settle, one per line, and logs them. If the command
-   fails, settle nothing: reply with its error and stop, leaving this thread unsettled.
+   fails, settle nothing: record its error and go to step 4.
 2. Settle. For each printed id, call `t3_thread_organize` once with
    `action: "settle"` and that id verbatim as `threadId`, in parallel batches of up to
    30. Never archive, delete or unsettle a thread, and never settle an id the plan did
@@ -27,10 +27,15 @@ exactly. Start no subagents, and do not read or quote any thread's contents.
      --log ~/.local/state/t3-settle-children/prune.jsonl
    ```
 
-   It deletes merged local branches of T3 threads whose worktrees are gone and prints
-   each as `<repository> <branch>`. Delete no branch or worktree yourself.
+   It deletes the local branches of T3 threads whose worktrees are gone once they are
+   merged, pushed, or abandoned with every thread on them archived or deleted. It
+   prints each as `<repository> <branch>`, followed by `archived as <ref>` when it
+   saved a pushed or abandoned branch's tip under that ref first. A repository it could not
+   prune, or a failed remote lookup, makes it exit 1 with a `failed:` line on stderr
+   naming the repository; everything else is still pruned.
+   Delete no branch or worktree yourself.
 5. Report in at most five lines: ids planned, settled, refused or failed with the
-   reasons, ids still listed after verify, and branches pruned or the prune error.
+   reasons, ids still listed after verify, branches pruned and any prune failures.
 6. If nothing failed, the prune succeeded and verify listed only refused ids or none,
    settle this thread by calling `t3_thread_organize` with `action: "settle"` and no
    `threadId`.

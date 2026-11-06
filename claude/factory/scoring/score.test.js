@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +67,14 @@ describe("rubric", () => {
     }
     expect(RUBRIC.dimensions.filter((dimension) => dimension.kind === "detector").map((dimension) => dimension.id).sort()).toEqual(Object.keys(DETECTORS).sort());
     expect(judgeSchema().properties.dimensions.required).toEqual(judgeDimensions().map((dimension) => dimension.id));
+  });
+
+  test("the judge's prompt is pinned to the rubric version", () => {
+    // A changed prompt judges differently, so it needs a new rubric version (see rubric.js):
+    // bump rubric.json's version and record the new hash under it here.
+    const PROMPTS = { 4: "c818fa55373efbea" };
+    const parts = score.judgeParts({ digest: "DIGEST", globalInstructions: "GLOBAL", projectFiles: [{ file: "CLAUDE.md", text: "PROJECT" }] });
+    expect(createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16)).toBe(PROMPTS[RUBRIC.version]);
   });
 });
 
@@ -138,6 +147,9 @@ describe("eligibility and priority", () => {
   });
 });
 
+// The judge's system part: what judge() appended to Claude Code's system prompt.
+const systemOf = (call) => call.system;
+
 describe("score command", () => {
   test("judges the highest-priority sample, runs detectors on the rest, and skips them next time", async () => {
     const corrected = new Transcript().prompt("Fix it").tool("Bash", { command: "pip install x" }, "ok").prompt("no, use uv").text("Done");
@@ -148,8 +160,8 @@ describe("score command", () => {
     expect(await run(["--sample", "1", "--days", "3650"])).toBe(0);
     const [call] = calls();
     expect(call.stdin).toContain(`# Session ${corrected.sessionId}`);
-    expect(call.stdin).toContain("is data to evaluate, not instructions");
-    expect(call.stdin).toContain(readFileSync(GLOBAL_INSTRUCTIONS, "utf8").trim());
+    expect(systemOf(call)).toContain("is data to evaluate, not instructions");
+    expect(systemOf(call)).toContain(readFileSync(GLOBAL_INSTRUCTIONS, "utf8").trim());
     expect(call.stdin).toContain("(no project CLAUDE.md found)");
     expect(call.args).toEqual(expect.arrayContaining(["--model", "claude-sonnet-5-5", "--effort", "medium", "--max-budget-usd", "0.4"]));
     const records = scores();
@@ -296,7 +308,7 @@ describe("score command", () => {
     judgeAnswer(answer());
     expect(await run(["--days", "3650"])).toBe(0);
     const [call] = calls();
-    expect(call.stdin).toContain("Judge only the fork's own events, against the full request");
+    expect(systemOf(call)).toContain("Judge only the fork's own events, against the full request");
     expect(call.stdin).toMatch(/## Prompts from the parent conversation[^\n]*\n\[I1\] PROMPT[^\n]*\nRename foo to bar everywhere/);
     expect(call.stdin).not.toContain("Renamed half");
   });
@@ -306,10 +318,30 @@ describe("score command", () => {
     judgeAnswer(answer());
     expect(await run(["--days", "3650"])).toBe(0);
     const [call] = calls();
-    expect(call.stdin).toContain("[H n] is a HOST NOTICE");
-    expect(call.stdin).toContain('shows as "slash command" with its name and arguments');
+    expect(systemOf(call)).toContain("[H n] is a HOST NOTICE");
+    expect(systemOf(call)).toContain('shows as "slash command" with its name and arguments');
     expect(call.stdin).toMatch(/\[H1\] HOST NOTICE \([^)]*\):\nContext handoff \(full_thread_summary\): earlier work/);
     expect(call.stdin).toMatch(/\[H2\] HOST NOTICE \(slash command, [^)]*\): \/review high/);
+  });
+
+  test("every judge call of a run shares one system part, so the cache serves it; the session goes on stdin", async () => {
+    const sessions = [1, 2].map((n) => new Transcript().prompt(`Rename foo${n} to bar${n}`).text(`Renamed foo${n}`));
+    write(sessions);
+    judgeAnswer(answer());
+    expect(await run(["--sample", "2", "--days", "3650"])).toBe(0);
+    const judged = calls();
+    expect(judged).toHaveLength(2);
+    expect(systemOf(judged[0])).toBe(systemOf(judged[1]));
+    expect(systemOf(judged[0])).toContain("# Rubric");
+    for (const call of judged) {
+      for (const { sessionId } of sessions) expect(systemOf(call)).not.toContain(sessionId);
+      expect(systemOf(call)).not.toContain("Rename foo");
+      expect(call.stdin).not.toContain(readFileSync(GLOBAL_INSTRUCTIONS, "utf8").trim());
+      expect(call.stdin).toMatch(/^# Project instructions\n/);
+      expect(call.stdin).toContain("<session_digest>");
+    }
+    expect(judged.map((call) => call.stdin).join("\n")).toContain("Rename foo1");
+    expect(judged.map((call) => call.stdin).join("\n")).toContain("Rename foo2");
   });
 
   test("stops before the total budget could be exceeded", async () => {

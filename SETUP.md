@@ -203,7 +203,9 @@ bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals. Proposals open draft PRs on this
+audit, scoring (judge budget $3) and proposals ($3 per proposer session; no session
+starts once the next one could take the run past $10, though a session can end slightly
+over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
 ids, not transcript text, because the repository is public. `weekly status` shows the
 last run; `weekly uninstall` removes the job. The living task list is
@@ -222,11 +224,25 @@ and falls back to the claude.ai subscription otherwise. The planner,
   pipeline). Claude Code gets it through an `apiKeyHelper` merged into the run's last
   `--settings`, so it is not in the environment, where an `env` dump would expose it by
   accident. It is not hidden from the agent: a session running as you can read the file.
-- A one-token Haiku request checks for credit; the answer is cached per key in
-  `~/.local/state/claude-api/` (10 minutes while the API works, 30 once credit is out or
-  the key is refused, 1 when the check is inconclusive). Without a key file or credit, runs
-  use the subscription and say so on stderr. Every decision goes to `decisions.jsonl` there,
-  and the weekly summary counts them.
+- A plain one-token Haiku request checks the key and its credit. The answer is cached per
+  key and kind of check in `~/.local/state/claude-api/` (10 minutes while the API works,
+  30 once credit is out, the key is refused or the request is refused any other way, 1
+  when the check is inconclusive). Without a key file or credit, runs use the
+  subscription and say so on stderr. Every decision goes to `decisions.jsonl` there, and
+  the weekly summary counts them.
+- The check cannot foresee every refusal: the API can refuse Claude Code's own requests
+  for credit while plain ones are served, and refuses requests that only look like Claude
+  Code's even while Claude Code is served, so no check request can stand in for a run. So
+  API runs report back: `StopFailure` and `Stop` hooks merged into the same settings save
+  their input under `reports/` there (with `sh` and `cat`, since Claude Code kills
+  `StopFailure` hooks when it exits), and the next run's plan folds them in. A run the API
+  refuses for credit or the key moves later runs to the subscription for 30 minutes,
+  doubling with each further refusal while the check keeps passing, up to 8 hours; runs
+  refused together count once, a run that goes through clears the count, and plans
+  running together take turns with the state. The factory and the live suites run a call
+  the API refused for credit or the key before it did anything once more, with
+  `API_FIRST_SUBSCRIPTION=1` so it goes to the subscription even when the refused run's
+  hook was cut off before it reported.
 - Runs that are not print mode, or that set `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
   `ANTHROPIC_BASE_URL` themselves, pass through untouched. The script replaces itself with
   the real claude, so killing the process a caller started kills claude.
@@ -249,19 +265,55 @@ Run the routine in ~/.config/t3code/settle-children.prompt.md exactly as written
 ```
 
 T3 Code's own storage cleanup removes worktrees, with `"storageCleanup":
-{"worktreeOnMerge": true}` in `~/.t3/userdata/settings.json` (Settings > Storage >
-Delete merged worktrees). Its hourly sweep removes a thread's worktree once the
-thread's pull request is merged, unless the worktree has uncommitted or untracked
-changes, an open terminal or a running thread, and keeps the branch.
-`t3code/prune_branches.py` deletes those branches: local branches of T3 worktree
-threads that no worktree has checked out, whose threads are idle, and whose tips
-`origin/HEAD` already contains. It never deletes the default branch or a branch
-no T3 thread uses, and skips repositories without `origin/HEAD`.
+{"worktreeOnMerge": true, "worktreeSettledAfterDays": 7}` in
+`~/.t3/userdata/settings.json` (Settings > Storage > Delete merged worktrees and
+Delete settled worktrees). Its hourly sweep removes a linked worktree under
+`~/.t3/worktrees` once its thread's pull request is merged, or once the thread, or
+the parent a subagent thread belongs to, has been settled for 7 days. It keeps
+worktrees with uncommitted or untracked changes, an open terminal or a running
+thread, and keeps the branch. Ignored files, such as build output, go with the
+worktree. A resumed thread gets its worktree back from its local branch, or, once
+that is pruned, from `origin/<branch>` or a fresh branch off the default branch.
+`t3code/prune_branches.py` deletes those branches once their commits are kept
+elsewhere: local branches of T3 worktree threads that no worktree has checked out,
+rebases or bisects, whose threads are idle, and whose worktree folders are gone or
+now hold another branch. It deletes such a branch when:
+
+- it is merged: `origin/HEAD` contains its tip as of the last fetch, which T3's sweep
+  refreshes, or, for a github.com origin, GitHub has a merged pull request from it
+  into the default branch whose head is its tip or a commit known to descend from
+  it, which covers squash and rebase merges;
+- it is pushed: `origin/<branch>`, both as last fetched and as read live, is its
+  tip or a known descendant, so a resumed thread gets the work back;
+- it is abandoned: every thread on it, with a worktree or not, is archived or
+  deleted.
+
+Before deleting a pushed or abandoned branch it saves the tip as
+`refs/t3-archive/<branch>@<12 hex digits>`, which `git branch` does not list and which
+keeps the work after origin's branch is gone. List those refs with
+`git for-each-ref refs/t3-archive/`, restore one with
+`git branch <branch> refs/t3-archive/<branch>@<digits>`, and drop one with
+`git update-ref -d <ref>`. Other branches stay, such as an unpushed branch of a
+thread that can still be resumed. An origin counts as github.com after `insteadOf`
+rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses resolves
+a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
+conditions are checked again just before deleting. It never deletes the default
+branch or a branch no T3 worktree thread uses, and skips repositories without
+`origin/HEAD`. Remote lookups are batched per repository. On github.com, one
+GraphQL query through `gh` per 50 branches the default branch lacks has aliased
+fields for each branch's newest 100 merged pull requests and its live branch; a
+failed query stops that repository's later ones but keeps what earlier ones found.
+Elsewhere, one `git ls-remote --heads`, which asks the server for branches only,
+checks the branches the last fetch saw on origin. A repository whose branches are all
+merged by ancestry makes no call, nor does one off GitHub whose other branches were
+never fetched from origin. Lookups never prompt and time out after 60 seconds. It
+exits 1 when a repository or a remote lookup fails, still pruning the rest.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and
-verify, with the thread ids, and `prune.jsonl` one line per prune, with the deleted,
-kept and skipped branches. Edit the prompt file to change the routine. Change the interval,
+verify, with the thread ids, and `prune.jsonl` one line per prune, with the deleted
+and kept branches, the skipped projects, and the failed repositories and lookups. A settle failure still
+lets the prune run. Edit the prompt file to change the routine. Change the interval,
 pause or delete the task in T3's scheduled tasks, or ask an agent to call
 `schedule_task` with `enabled: false` or `delete_scheduled_task`. Run the scripts by
 hand to see what the next run would settle and prune:
@@ -329,7 +381,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   the commit's SHA, in one background agent on the session's model in a worktree. A
   follow-up sent as soon as the first turn ends is answered while the review runs, and
   the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. The guard hook blocks a force push to `main`.
+  worktrees as they were. The guard hooks block a force push to `main` and a bare
+  `python3`, while `uv run python` still runs.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a

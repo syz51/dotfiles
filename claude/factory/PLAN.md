@@ -107,8 +107,10 @@ review on sai** for the feasibility notes the user asked about.
   prLinks: [{ url, number, repository, at }], automation, malformedLines }
 ```
 
-`lib/claude.js`: `judge({ prompt, schema, model, effort, budgetUsd })` returns
-`{ output, costUSD, events }`; `runTask({ prompt, cwd, model, effort, agent, settings,
+`lib/claude.js`: `judge({ prompt, system, schema, model, effort, budgetUsd })` returns
+`{ output, costUSD, events }`; `system`, the part shared by every call of a run, goes to
+the cached system prompt (it replaces Claude Code's default one), `prompt` (per call) to
+stdin; a call the API refused before it did anything runs once more; `runTask({ prompt, cwd, model, effort, agent, settings,
 budgetUsd, timeoutMs })` returns `{ events, costUSD, ok, finalText }`. A `CLAUDE_FACTORY_BIN`
 override points both at a fake CLI in tests.
 
@@ -399,5 +401,31 @@ in its own thread; follow `board/PLAN.md`.
   handles `--`, treats spend limits as exhausted and leaves a caller's own auth alone. The codex-skills pipeline is handled in the "Review Agent
   Instructions" thread (its own API path since a98a27c; fallback proposal awaiting the
   user). The masters project's AGENTS.md now routes experiment billing through the wrapper.
+- 2026-11-06: Every API-mode run failed with "Credit balance is too low" while the credit
+  check passed. Cause: the API refuses requests carrying Claude Code's
+  `claude-code-20250219` beta for this account's credit, while the same key and body
+  without it succeed; the check never sent it. The check now sends the beta, so such runs
+  fall back to the subscription, and results cached by the old check are ignored. The
+  judge now puts its shared instructions and rubric in `--append-system-prompt-file`, inside
+  Claude Code's cached prefix (second call of a run: 8.2k cached tokens read instead of
+  3.7k).
+- 2026-11-06: Review follow-ups. By 07:27 real Claude Code runs on the key were served
+  again (Haiku and Opus, with the user's settings and judge-shaped), while any raw request
+  carrying Claude Code's beta or its Agent SDK identity line was still refused for credit:
+  the beta check said "exhausted" for a key Claude Code could use, so no check request can
+  stand in for a run. The check is a plain Messages request again (cached entries of the
+  beta check are ignored), and API runs report back through `StopFailure`/`Stop` hooks
+  that only save their input (Claude Code kills `StopFailure` hooks when it exits: a
+  2-second hook was cut off), folded in by the next plan; a refused run moves later runs
+  to the subscription, repeated refusals back off from 30 minutes to 8 hours, runs refused
+  together count once, and the weekly summary counts them. Any other definite 4xx of the check is
+  `refused` (subscription) instead of falling through to the API. Judge and task calls,
+  and live sessions, refused before doing anything run once more, on the subscription
+  (`API_FIRST_SUBSCRIPTION=1`), since the refused run's hook may not have reported. A lock
+  keeps plans running together from overwriting each other's state. The judge's instructions
+  now replace the default system prompt (`--system-prompt-file`): appending had turned its
+  identity into "You are Claude Code" and carried 9k characters of coding-session
+  guidance (second call: 6.5k cached tokens read, valid judgement). Rubric v4 rescores
+  sessions under the new prompt; a test pins the prompt's hash to the version.
 - 2026-11-06: Area 6 opened: a shared agent work board, designed in a dedicated thread
   (`board/PLAN.md`).

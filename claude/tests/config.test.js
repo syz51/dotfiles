@@ -2,7 +2,7 @@
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
@@ -112,6 +112,11 @@ describe("global instructions", () => {
     expect(meta.description.length).toBeGreaterThan(20);
   });
 
+  test("headless-browser screenshots go to the session scratchpad when there is one", () => {
+    expect(read("claude/skills/headless-browser/SKILL.md")).toContain("`--dir <scratchpad>/headless-browser`");
+    expect(read("claude/skills/headless-browser/scripts/browse.ts")).toMatch(/case 'dir': opts\.dir = resolve\(next\(\)\)/);
+  });
+
   // No live scenario covers continuing an agent: it needs a defect to surface after a
   // track returns, which a fixture cannot trigger reliably.
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
@@ -148,11 +153,19 @@ describe("settings", () => {
     expect(settings.disableClaudeAiConnectors).toBeUndefined();
   });
 
-  test("the guard is registered for Bash PreToolUse", () => {
+  test.each(["guard-git-push.js", "guard-runtimes.js"])("the %s guard is registered for Bash PreToolUse", (script) => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
-      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/guard-git-push.js")));
+      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
     expect(guard).toHaveLength(1);
+  });
+
+  // Claude Code's built-in computer use only runs in interactive sessions, and T3 Code sessions
+  // run through the SDK, so the hook that enabled it in every project was removed. Other
+  // hooks and MCP servers, including a computer-use server of your own, are unaffected.
+  test("no hook enables Claude Code's built-in computer use", () => {
+    expect(handlers.some((hook) => hook.command?.includes("enable-computer-use"))).toBe(false);
+    expect(existsSync(join(REPO, "claude/hooks/enable-computer-use.js"))).toBe(false);
   });
 });
 
