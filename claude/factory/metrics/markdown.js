@@ -1,5 +1,7 @@
 // The metrics report as Markdown: a headline table comparing the window with the previous
 // one, then cost, effort and quality, models, projects, pull requests and notes.
+import { HARNESSES } from "./stats.js";
+
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 
 const usd = (value) => (value === null || value === undefined ? "n/a" : value.toLocaleString("en-US", { style: "currency", currency: "USD" }));
@@ -72,9 +74,9 @@ export function renderMarkdown(report) {
   lines.push("## Cost", "");
   lines.push(`Total ${usd(current.cost.totalUSD)} API-equivalent over ${current.sessions} sessions: ${current.cost.sources["cost-state"]} from Claude Code's cost-state record, ${current.cost.sources.estimated} estimated from token usage`
     + `${current.cost.unpricedSessions ? ` (${current.cost.unpricedSessions} used a model without a known price, counted as $0)` : ""}.`, "");
-  lines.push(`By harness: ${["claude", "codex"].map((harness) => {
+  lines.push(`By harness: ${Object.entries(HARNESSES).map(([harness, name]) => {
     const entry = current.harness[harness];
-    return `${harness === "claude" ? "Claude Code" : "Codex"} ${entry.sessions} sessions, ${usd(entry.costUSD)}, ${num(entry.tokens / 1e6)}M tokens, ${entry.subagentRuns} subagent runs${entry.unpricedSessions ? ` (${entry.unpricedSessions} sessions unpriced)` : ""}`;
+    return `${name} ${entry.sessions} sessions, ${usd(entry.costUSD)}, ${num(entry.tokens / 1e6)}M tokens, ${entry.subagentRuns} subagent runs${entry.unpricedSessions ? ` (${entry.unpricedSessions} sessions unpriced)` : ""}`;
   }).join("; ")}. Codex records no cost, and models without a known price count as $0, so compare Codex work by tokens.`, "");
   lines.push("### Costliest sessions", "");
   lines.push(report.topSessions.length
@@ -122,7 +124,9 @@ export function renderMarkdown(report) {
 // The history file as a Markdown table, oldest first.
 export function renderHistory(entries) {
   if (!entries.length) return "No metrics runs recorded yet.";
-  return table(["Run (UTC)", "Window", "Project", "Sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
-    entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions, usd(entry.costUSD),
+  return table(["Run (UTC)", "Window", "Project", "Sessions", "Codex sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
+    entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions,
+      // Runs before Codex was included have no count: their sessions are Claude Code only.
+      entry.codexSessions ?? "not read", usd(entry.costUSD),
       num(entry.mergedPRs), usd(entry.costPerMergedPRUSD), num(entry.promptsPerSession), pct(entry.correctionRate), pct(entry.toolErrorRate), entry.api429]));
 }

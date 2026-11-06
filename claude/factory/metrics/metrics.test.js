@@ -229,6 +229,16 @@ describe("session metrics", () => {
     expect(markdown).toContain("| Codex sessions | 1 | 1 | 0 |");
     expect(markdown).toContain("Codex 1 sessions, $0.00, 1.5M tokens, 1 subagent runs (1 sessions unpriced)");
     expect(readJsonl(join(scratch, "state", "metrics-history.jsonl"))[0]).toMatchObject({ codexSessions: 1, codexTokens: 1_500_000 });
+    // History marks runs from before Codex was read.
+    const [entry] = readJsonl(join(scratch, "state", "metrics-history.jsonl"));
+    const { codexSessions, codexTokens, ...legacy } = entry;
+    writeFileSync(join(scratch, "state", "metrics-history.jsonl"), `${JSON.stringify(legacy)}\n${JSON.stringify(entry)}\n`);
+    output.length = 0;
+    expect(await run(["--history"])).toBe(0);
+    const rows = output.join("\n").split("\n");
+    expect(rows[0]).toContain("| Sessions | Codex sessions |");
+    expect(rows[2]).toContain("| 2 | not read |");
+    expect(rows[3]).toContain("| 2 | 1 |");
   });
 });
 
@@ -271,6 +281,17 @@ describe("pull requests", () => {
     expect(prs.find((entry) => entry.number === 2)).toMatchObject({ title: "Add widget", state: "MERGED", additions: 10, revertedBy: { number: 8 } });
     expect(prs.find((entry) => entry.number === 1).revertedBy).toBeNull();
     expect(ghCalls().filter((args) => args[1] === "list")).toEqual([["pr", "list", "--repo", "o/r", "--state", "merged", "--search", "Revert in:title", "--json", "number,title,body,url,mergedAt", "--limit", "100"]]);
+  });
+
+  test("cost per merged PR leaves out PRs of sessions with an unknown cost", async () => {
+    write([{ transcript: session("2026-11-03T10:00:00Z", { cost: 6 }).prLink("https://github.com/o/r/pull/1") }]);
+    const codex = new Rollout({ start: at("2026-11-04T10:00:00Z") })
+      .exec('tools.mcp__t3_code__link_pull_request({url:"https://github.com/o/r/pull/2"})');
+    writeRollouts([codex], join(scratch, "codex", "sessions"));
+    gh({ prs: { "https://github.com/o/r/pull/1": pr(1), "https://github.com/o/r/pull/2": pr(2) } });
+    const { current } = await report();
+    expect(current.prs).toMatchObject({ linked: 2, merged: 2, costPerMergedUSD: 6, spendPerMergedUSD: 6 });
+    expect(current.prs.promptsPerMerged).toBe(0.5);
   });
 
   test("caches merged PRs for good and refreshes open ones after an hour", async () => {

@@ -144,12 +144,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `origin` marks agent-launched threads (54 of 73 sessions this week, $309), subagent
   message counts.
 - [x] Tests (synthetic transcripts, fake gh); real 7- and 30-day runs.
-- [x] Codex sessions (`lib/codex.js`, board task dotfiles-5): rollouts under
-  `$CODEX_HOME/sessions` with tokens, models, efforts, prompts, tool calls, interrupts,
-  compactions and turn errors; subagent threads skip the parent history they copy and count
-  with their root session. Report: per-harness sessions, cost and tokens, a Tokens column in
-  the model mix, cost quantiles over sessions with a known cost. GPT models are unpriced
-  until the pricing fallback (dotfiles-6).
+- [x] Codex sessions (`lib/codex.js`, board task dotfiles-5): threads under
+  `$CODEX_HOME/sessions` (a long thread spans several segment files) with tokens, models,
+  efforts, prompts, tool calls, interrupts, compactions, turn errors and PRs (`gh pr create`
+  output, T3 Code's link tool); subagent threads skip the parent history they copy and count
+  with their root session, which spans them in time. Report: per-harness sessions, cost and
+  tokens, a Tokens column in the model mix, cost quantiles and cost per merged PR over
+  sessions with a known cost, a Codex column in the history. GPT models are unpriced until
+  the pricing fallback (dotfiles-6).
 
 ### 2. Scoring and proposals (`scoring/`)
 
@@ -398,5 +400,5 @@ coordination). This file keeps the goal, evidence, decisions and log.
   into the report and into proposals, which may change the board's defaults, coordinator
   prompt and rule (`board/PLAN.md`, feedback loop).
 - 2026-11-07: Metrics include Codex sessions. 7-day real run: 340 sessions, 160 of them Codex
-  with 771 subagent runs and 6.4B tokens (Claude Code: 180 sessions, 5.1B tokens); parsing
-  the 4.5 GB of rollouts in the two windows takes about 5 seconds.
+  with 771 subagent runs and 8.0B tokens (Claude Code: 180 sessions, 5.2B tokens); 112 merged
+  PRs. Reading the two windows' rollouts takes about 7 seconds.

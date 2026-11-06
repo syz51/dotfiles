@@ -1,8 +1,8 @@
 // Synthetic Codex rollouts for tests, shaped like real ones (Codex CLI 0.166): a
 // session_meta first record, turn_context and thread_settings_applied for model and effort,
-// response items for prompts and tool calls, one token_usage_record per response, and
-// subagent threads that start with a copy of their parent's history before
-// subagent_history_start_ordinal.
+// response items for prompts and tool calls, one token_usage_record per response, long
+// threads continued in segment files, and subagent threads that start with a copy of their
+// parent's history before subagent_history_start_ordinal.
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,15 +18,16 @@ export const codexUsage = (input = 1000, output = 100, { cached = 800, cacheWrit
 
 export class Rollout {
   constructor({ id = crypto.randomUUID(), cwd = "/Users/test/project", start = Date.parse("2026-11-01T10:00:00Z"), model = "gpt-test", effort = "high", parent = null, role = "worker", path = "/root/task", originator = "T3 Code" } = {}) {
-    Object.assign(this, { id, cwd, clock: start, records: [], ordinal: 0, counter: 0, turn: null, parent });
+    Object.assign(this, { id, cwd, clock: start, records: [], ordinal: 0, counter: 0, turn: null, parent, splits: [] });
     const source = parent ? { subagent: { thread_spawn: { parent_thread_id: parent.id, depth: 1, agent_path: path, agent_nickname: "Nick", agent_role: role } } } : "vscode";
     this.push("session_meta", {
       id, session_id: parent ? parent.id : id, cwd, originator, cli_version: "0.166.0", source, model_provider: "openai",
       ...(parent ? { forked_from_id: parent.id, parent_thread_id: parent.id, thread_source: "subagent", agent_role: role, agent_path: path } : {}),
     });
     if (parent) {
-      // A forked subagent's file starts with its parent's history, then its own settings.
-      for (const record of parent.records.slice(1)) this.records.push({ ...record, ordinal: this.ordinal++ });
+      // A forked subagent's file starts with its parent's history (the parent's own
+      // session_meta included), then its own settings.
+      for (const record of parent.records) this.records.push({ ...record, ordinal: this.ordinal++ });
       this.records[0].payload.subagent_history_start_ordinal = this.ordinal;
       this.event({ type: "thread_settings_applied", thread_id: id, thread_settings: { model, reasoning_effort: effort } });
     } else this.turnContext(model, effort);
@@ -35,6 +36,12 @@ export class Rollout {
   push(type, payload, extra = {}) {
     this.clock += 1000;
     this.records.push({ timestamp: new Date(this.clock).toISOString(), ordinal: this.ordinal++, type, payload, ...extra });
+    return this;
+  }
+
+  // Moves the clock, so the next record comes later.
+  at(iso) {
+    this.clock = Date.parse(iso);
     return this;
   }
 
@@ -59,7 +66,7 @@ export class Rollout {
 
   // One model response with its usage, logged twice as real rollouts do (token_count too).
   response(use = codexUsage(), { text = "ok" } = {}) {
-    const responseId = `resp_${++this.counter}`;
+    const responseId = `resp_${this.id.slice(0, 8)}_${++this.counter}`;
     if (text) this.item({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
     this.push("token_usage_record", { thread_id: this.id, turn_id: this.turn, response_id: responseId, usage: use });
     return this.event({ type: "token_count", info: { last_token_usage: use, total_token_usage: use } });
@@ -93,20 +100,40 @@ export class Rollout {
     return this.push("compacted", { message: "", replacement_history: [] });
   }
 
-  jsonl() {
-    return `${this.records.map((record) => JSON.stringify(record)).join("\n")}\n`;
+  // Continues the thread in a new segment file, as Codex does for a long thread: its
+  // session_meta names the thread, and ordinals restart a little below the last one.
+  continueInSegment() {
+    this.splits.push(this.records.length);
+    this.ordinal -= 2;
+    return this.push("session_meta", { id: this.id, session_id: this.id, cwd: this.cwd, history_base: { thread_id: this.id } });
+  }
+
+  // The segment files' records: [{ records, segment }], segment null for the first file.
+  segments() {
+    const bounds = [0, ...this.splits, this.records.length];
+    return bounds.slice(0, -1).map((from, index) => ({ records: this.records.slice(from, bounds[index + 1]), segment: index ? crypto.randomUUID() : null }));
   }
 }
 
-// Writes rollouts into a fresh sessions folder as YYYY/MM/DD/rollout-<time>-<id>.jsonl
-// (dated by each rollout's first record) and returns the folder. tail is raw text appended.
-export function writeRollouts(rollouts, root = mkdtempSync(join(tmpdir(), "claude-factory-codex-"))) {
+// Writes rollouts into a sessions folder as YYYY/MM/DD/rollout-<time>-<id>.jsonl, later
+// segments as rollout-<time>-<id>_<segment>.jsonl, dated by each file's first record (in
+// UTC; Codex uses local time). An entry is a Rollout or { rollout, head, tail }: head
+// replaces the first file's first line and tail is appended to the last file, both raw
+// text. Returns the folder; files lists each rollout's files by id.
+export function writeRollouts(rollouts, root = mkdtempSync(join(tmpdir(), "claude-factory-codex-")), files = {}) {
   for (const entry of rollouts) {
-    const { rollout, tail = "" } = entry instanceof Rollout ? { rollout: entry } : entry;
-    const started = rollout.records[0].timestamp;
-    const dir = join(root, started.slice(0, 4), started.slice(5, 7), started.slice(8, 10));
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `rollout-${started.slice(0, 19).replace(/:/g, "-")}-${rollout.id}.jsonl`), rollout.jsonl() + tail);
+    const { rollout, head, tail = "" } = entry instanceof Rollout ? { rollout: entry } : entry;
+    const segments = rollout.segments();
+    files[rollout.id] = segments.map(({ records, segment }, index) => {
+      const started = records[0].timestamp;
+      const dir = join(root, started.slice(0, 4), started.slice(5, 7), started.slice(8, 10));
+      mkdirSync(dir, { recursive: true });
+      const lines = records.map((record) => JSON.stringify(record));
+      if (index === 0 && head !== undefined) lines[0] = head;
+      const file = join(dir, `rollout-${started.slice(0, 19).replace(/:/g, "-")}-${rollout.id}${segment ? `_${segment}` : ""}.jsonl`);
+      writeFileSync(file, `${lines.join("\n")}\n${index === segments.length - 1 ? tail : ""}`);
+      return file;
+    });
   }
   return root;
 }

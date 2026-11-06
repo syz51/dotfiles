@@ -8,7 +8,8 @@ const sum = (values) => values.reduce((total, value) => total + value, 0);
 // ({ [model]: normalized usage }).
 const usageTokens = (entry) => entry.input + entry.output + entry.cacheRead + entry.cacheWrite5m + entry.cacheWrite1h;
 const tokens = (usage) => sum(Object.values(usage).map(usageTokens));
-export const HARNESSES = ["claude", "codex"];
+// Harnesses a session can come from, with their names in reports.
+export const HARNESSES = { claude: "Claude Code", codex: "Codex" };
 const ratio = (part, whole) => (whole ? part / whole : null);
 
 // Linear-interpolation quantile of values (q in [0, 1]); null for no values.
@@ -35,11 +36,19 @@ export function attributePrs(entries) {
   return [...prs.values()];
 }
 
-function prStats(entries, prInfo, totalCost, totalPrompts) {
+// A session's cost is unknown when it is a usage estimate with an unpriced model, such as
+// every Codex session until GPT models have prices: its $0 is partial, not a cost.
+export const costKnown = (session) => !(session.unpriced && session.costSource === "estimated");
+
+function prStats(entries, prInfo, totalPrompts) {
   const linked = attributePrs(entries);
   if (!prInfo) return { linked: linked.length, known: 0, merged: null, open: null, closed: null, reverted: null, costPerMergedUSD: null, spendPerMergedUSD: null, promptsPerMerged: null, promptsAllPerMerged: null };
   const state = (pr) => prInfo.get(pr.key)?.state;
   const merged = linked.filter((pr) => state(pr) === "MERGED");
+  // Cost per merged PR counts only PRs whose sessions all have a known cost.
+  const unknown = new Set(entries.filter(({ session }) => !costKnown(session)).map(({ session }) => session.id));
+  const priced = merged.filter((pr) => pr.sessions.every((id) => !unknown.has(id)));
+  const knownSpend = sum(entries.filter(({ session }) => !unknown.has(session.id)).map(({ session }) => session.costUSD));
   return {
     linked: linked.length,
     known: linked.filter((pr) => prInfo.has(pr.key)).length,
@@ -48,9 +57,9 @@ function prStats(entries, prInfo, totalCost, totalPrompts) {
     closed: linked.filter((pr) => state(pr) === "CLOSED").length,
     reverted: merged.filter((pr) => prInfo.get(pr.key).revertedBy).length,
     // Mean cost of the sessions behind each merged PR, split across their PRs.
-    costPerMergedUSD: ratio(sum(merged.map((pr) => pr.costUSD)), merged.length),
-    // All spend in the window, PR or not, over the PRs that merged.
-    spendPerMergedUSD: ratio(totalCost, merged.length),
+    costPerMergedUSD: ratio(sum(priced.map((pr) => pr.costUSD)), priced.length),
+    // All known spend in the window, PR or not, over the merged PRs of known cost.
+    spendPerMergedUSD: ratio(knownSpend, priced.length),
     promptsPerMerged: ratio(sum(merged.map((pr) => pr.prompts)), merged.length),
     // All prompts in the window over the PRs that merged.
     promptsAllPerMerged: ratio(totalPrompts, merged.length),
@@ -97,7 +106,7 @@ export function windowStats(entries, prInfo) {
   const sessions = entries.map((entry) => entry.session);
   const promptCounts = entries.map((entry) => entry.prompts.length);
   const costs = sessions.map((session) => session.costUSD);
-  const pricedCosts = sessions.filter((session) => !(session.unpriced && session.costSource === "estimated")).map((session) => session.costUSD);
+  const pricedCosts = sessions.filter(costKnown).map((session) => session.costUSD);
   const totalCost = sum(costs);
   const totalPrompts = sum(promptCounts);
   // Follow-ups in an agent-launched thread come from the orchestrating agent, so only
@@ -129,7 +138,7 @@ export function windowStats(entries, prInfo) {
       sources: { "cost-state": sessions.filter((session) => session.costSource === "cost-state").length, estimated: sessions.filter((session) => session.costSource === "estimated").length },
       unpricedSessions: sessions.filter((session) => session.unpriced).length,
     },
-    prs: prStats(entries, prInfo, totalCost, totalPrompts),
+    prs: prStats(entries, prInfo, totalPrompts),
     corrections: { heuristic: true, followUps, corrections, rate: ratio(corrections, followUps) },
     interrupts: { total: interrupts, perSession: ratio(interrupts, sessions.length) },
     toolErrors: {
@@ -140,7 +149,7 @@ export function windowStats(entries, prInfo) {
     compactions: { total: compactions, perSession: ratio(compactions, sessions.length) },
     subagents: { runs: agents.length, costUSD: subagentCost, share: ratio(subagentCost, estimatedTotal) },
     // Sessions, cost and tokens (subagents included) per harness: Claude Code or Codex.
-    harness: Object.fromEntries(HARNESSES.map((harness) => {
+    harness: Object.fromEntries(Object.keys(HARNESSES).map((harness) => {
       const of = sessions.filter((session) => session.harness === harness);
       return [harness, {
         sessions: of.length,
