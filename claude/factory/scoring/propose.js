@@ -27,6 +27,8 @@ scored sessions, as a draft PR.
   --model MODEL     proposer model (default claude-opus-5-5)
   --effort LEVEL    proposer effort (default high)
   --budget-usd N    budget of each proposer session (default 3)
+  --max-total-usd N stop starting sessions that could take this run past N (default 10);
+                    the dimensions left over qualify again next run
   --repo PATH       repository to clone (default: the one holding this file)
   --list            print the qualifying dimensions and their evidence; run nothing
   --dry-run         run the proposer and the tests, but commit, push and open nothing
@@ -229,6 +231,7 @@ function parseOptions(argv) {
       model: { type: "string", default: "claude-opus-5-5" },
       effort: { type: "string", default: "high" },
       "budget-usd": { type: "string", default: "3" },
+      "max-total-usd": { type: "string", default: "10" },
       repo: { type: "string", default: REPO_ROOT },
       list: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
@@ -250,6 +253,7 @@ function parseOptions(argv) {
     model: values.model,
     effort: values.effort,
     budgetUsd: number("budget-usd"),
+    maxTotalUsd: number("max-total-usd"),
     repo: values.repo,
     list: values.list,
     dryRun: values["dry-run"],
@@ -393,7 +397,14 @@ export async function run(argv, { now = Date.now() } = {}) {
     return 0;
   }
   let failed = 0;
-  for (const group of qualifying) {
+  let spent = 0;
+  for (const [index, group] of qualifying.entries()) {
+    // A session may cost its whole budget, so start one only while that still fits.
+    if (spent + options.budgetUsd > options.maxTotalUsd + 1e-9) {
+      const left = qualifying.slice(index).map((each) => each.dimension.id);
+      console.log(`\nStopped at the run's limit: spent $${spent.toFixed(2)} of $${options.maxTotalUsd.toFixed(2)}, and the next session may cost $${options.budgetUsd.toFixed(2)}. Not proposed this run: ${left.join(", ")}.`);
+      break;
+    }
     console.log(`\nProposing for ${group.dimension.id} with ${options.model} (${options.effort})${options.dryRun ? ", dry run" : ""}…`);
     const started = newRecord(group, options, now);
     let record;
@@ -405,6 +416,7 @@ export async function run(argv, { now = Date.now() } = {}) {
       record = { ...started, branch: started.pushed ? started.branch : null, status: "error", error: error.message };
     }
     appendJsonl(proposalsFile(), record);
+    spent += record.costUSD;
     if (!["proposed", "dry-run", "no-change"].includes(record.status)) failed++;
     console.log(`  ${record.status}: ${record.title ?? record.resultSubtype ?? ""}${record.prUrl ? ` ${record.prUrl}` : ""}`);
     if (record.error) console.log(`  error: ${record.error}`);
