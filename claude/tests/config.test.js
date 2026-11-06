@@ -173,7 +173,7 @@ describe("rejected frontend defaults list", () => {
     expect(tracked("claude/frontend-avoid.md")).toBe(true);
     const list = read("claude/frontend-avoid.md");
     expect(list).toMatch(/do not use them unless the brief, a reference, or the existing project calls for them/);
-    expect(list).toMatch(/rejects a pattern as an unwanted default, not for feedback on a single design/);
+    expect(list).toMatch(/explicitly rejects a pattern as an unwanted default, not for feedback on a single design/);
     expect(list).toMatch(/one per line/);
   });
 
