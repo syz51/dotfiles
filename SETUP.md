@@ -362,6 +362,41 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+## Disk space alert
+
+`disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
+The `com.syz51.disk-space-alert` LaunchAgent runs its `check` every 10 minutes. Below
+30 GB free (10^9 bytes, as `statvfs` reports space available to you) the level is
+low, and below 20 GB it is critical. Falling to a worse level alerts at once, and
+staying low or critical alerts again every 24 hours. A level eases only once free
+space is 2 GB above its threshold, so a reading that hovers near one does not flap.
+
+An alert posts a macOS notification and messages T3 Code. The first alert of an
+episode starts a thread in T3's "No project" (`~/.t3/scratch`), asking for a
+read-only summary of where the space went and what could be cleaned, without
+deleting anything. Later alerts in the episode go to that thread, or start a new
+one if it is gone. When T3 Code is not running, each check retries the message
+without repeating the notification. A start that timed out or printed no thread id
+is not retried, since it may have gone through. Getting back above 32 GB posts one "recovered"
+notification and ends the episode. The state is in
+`~/.local/state/disk-space-alert/state.json`, each alert adds a line to
+`events.jsonl` there, and launchd writes errors to `launchd.log`.
+
+Install it on each Mac from the main checkout, which the plist points to, and send a
+test alert through both channels:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py test
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py status
+```
+
+`install --dry-run` prints the plist without loading it, and `uninstall` unloads and
+removes it. To change a threshold, run `install` again with `--low-gb` or
+`--critical-gb`, which it writes into the plist. A one-off run with
+`check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
+the real state.
+
 ## Verification
 
 From the repository root, run the focused local suites:
@@ -372,6 +407,7 @@ uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests 
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and

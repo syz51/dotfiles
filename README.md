@@ -21,6 +21,7 @@ there is no repository-wide installer.
 | `claude/`                | Claude Code instructions, subagents, settings, Bash guards, and a browser skill. |
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
+| `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
