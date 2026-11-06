@@ -24,6 +24,8 @@ const boardBin = () => process.env.CLAUDE_FACTORY_BOARD || join(homedir(), ".car
 // The board `board feedback` files on unless a device configures another.
 export const FEEDBACK_BOARD = "board-feedback";
 const CLOSED = new Set(["done", "dropped"]);
+// The most tasks the server returns at once.
+const LIST_LIMIT = 1000;
 const STAT_FIELDS = ["days", "tasks_created", "tasks_done", "claims_refused", "tasks_taken_stale", "lease_conflicts", "asks_created", "asks_answered", "done_without_check_evidence"];
 
 // One board call's JSON, or an error naming the call.
@@ -53,6 +55,8 @@ function checkStats(stats) {
 function checkFeedback(tasks) {
   if (!Array.isArray(tasks) || tasks.some((task) => typeof task?.id !== "string" || typeof task.title !== "string" || typeof task.status !== "string"))
     throw new Error("board ls: expected a list of tasks with id, title and status");
+  // The server lists closed tasks too, in no promised order: a full page may hide open ones.
+  if (tasks.length >= LIST_LIMIT) throw new Error(`board ls: ${tasks.length} tasks on ${FEEDBACK_BOARD}, the most one call returns, so open feedback may be missing; close or drop old feedback`);
   return tasks.filter((task) => !CLOSED.has(task.status))
     .map(({ id, title, body, status, created_at, updated_at }) => ({ id, title, body: typeof body === "string" ? body : "", status, created_at, updated_at }));
 }
@@ -61,7 +65,7 @@ export async function collect({ days }) {
   const snapshot = { collectedAt: new Date().toISOString(), days, stats: null, feedback: null, errors: [] };
   const [stats, feedback] = await Promise.allSettled([
     call(["stats", "--days", String(days), "--json"]).then(checkStats),
-    call(["ls", "--board", FEEDBACK_BOARD, "--json", "--limit", "1000"]).then(checkFeedback),
+    call(["ls", "--board", FEEDBACK_BOARD, "--json", "--limit", String(LIST_LIMIT)]).then(checkFeedback),
   ]);
   if (stats.status === "fulfilled") snapshot.stats = stats.value;
   else snapshot.errors.push(stats.reason.message);
@@ -72,15 +76,16 @@ export async function collect({ days }) {
 
 const minutes = (value) => (typeof value === "number" ? `${Math.round(value)} min` : "n/a");
 
+// The stats as lines, for the weekly report and the public PR body.
+export const statsLines = (s) => [
+  `Tasks: ${s.tasks_created} created, ${s.tasks_done} done (${s.done_without_check_evidence} without check evidence); median ${minutes(s.doing_minutes_median)} in doing`,
+  `Claims refused ${s.claims_refused}; tasks taken from stale owners ${s.tasks_taken_stale}; lease conflicts ${s.lease_conflicts}`,
+  `Asks: ${s.asks_answered} of ${s.asks_created} answered; median answer ${minutes(s.ask_answer_minutes_median)}`,
+];
+
 // Summary lines of a snapshot; feedback titles are agent-written, so they appear quoted.
 export function summaryLines(snapshot) {
-  const lines = [];
-  const s = snapshot.stats;
-  if (s) lines.push(
-    `Tasks: ${s.tasks_created} created, ${s.tasks_done} done (${s.done_without_check_evidence} without check evidence); median ${minutes(s.doing_minutes_median)} in doing`,
-    `Claims refused ${s.claims_refused}; tasks taken from stale owners ${s.tasks_taken_stale}; lease conflicts ${s.lease_conflicts}`,
-    `Asks: ${s.asks_answered} of ${s.asks_created} answered; median answer ${minutes(s.ask_answer_minutes_median)}`,
-  );
+  const lines = snapshot.stats ? statsLines(snapshot.stats) : [];
   if (snapshot.feedback) {
     lines.push(`Open feedback tasks: ${snapshot.feedback.length}`);
     for (const task of snapshot.feedback.slice(0, 10)) lines.push(`- ${task.id}: ${JSON.stringify(clip(task.title, 100))}`);

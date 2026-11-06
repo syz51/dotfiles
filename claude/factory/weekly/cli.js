@@ -14,6 +14,9 @@ import { detectorDimensions } from "../scoring/rubric.js";
 const cli = () => process.env.CLAUDE_FACTORY_WEEKLY_CLI || join(import.meta.dir, "..", "cli.js");
 export const LABEL = "com.syz51.claude-factory.weekly";
 const STEP_TIMEOUT = 45 * 60 * 1000;
+// Proposals run up to three sessions of 15 minutes, each followed by its tests (a cold
+// agent-board build among them), so they get longer.
+const PROPOSE_TIMEOUT = 150 * 60 * 1000;
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall|status> [options]
 
@@ -70,7 +73,7 @@ function highlights(name, output) {
 async function runStep([name, argv, kind], env) {
   const started = Date.now();
   try {
-    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: STEP_TIMEOUT });
+    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: name === "propose" ? PROPOSE_TIMEOUT : STEP_TIMEOUT });
     const step = { name, code: result.code, durationMs: Date.now() - started, stderr: tail(result.stderr, 8) };
     if (kind === "json") {
       try {

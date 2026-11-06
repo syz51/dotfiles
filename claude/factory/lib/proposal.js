@@ -1,7 +1,7 @@
 // What every proposal attempt shares, whatever proposed it: the proposer's read denies,
 // the leak check, git in a fresh clone, the paths a session changed, the offline suites,
 // the local patch, and the push with its draft PR.
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
@@ -70,7 +70,13 @@ export async function changedPaths(cwd) {
 
 // A test command's result: ok, the command, a one-line summary and the output's tail.
 export async function runSuite(cwd, argv, { env = childEnv(process.env), timeout = 600_000 } = {}) {
-  const result = await runProcess(argv, { cwd, env, timeout });
+  let result;
+  try {
+    result = await runProcess(argv, { cwd, env, timeout });
+  } catch (error) {
+    // A suite that could not start (its tool is missing) or did not finish failed.
+    return { ok: false, command: argv.join(" "), summary: `did not finish: ${error.message}`, tail: `${error.stdout ?? ""}\n${error.stderr ?? ""}`.slice(-3000) };
+  }
   const output = `${result.stdout}\n${result.stderr}`;
   // bun prints "N pass"; cargo prints "test result: ok. N passed; M failed; …" per crate.
   const lines = output.split("\n").map((line) => line.trim());
@@ -122,7 +128,20 @@ export async function publish(clone, { branch, base, title, body, onPushed }) {
   return pr.stdout.trim().split("\n").at(-1);
 }
 
-export const proposerSettings = () => JSON.stringify({ permissions: { deny: readDenies([stateDir(), projectsRoot()]) } });
+// The board client keeps its token and cache in BOARD_HOME when that is set.
+export const proposerSettings = () => JSON.stringify({ permissions: { deny: readDenies([stateDir(), projectsRoot(), ...(process.env.BOARD_HOME ? [process.env.BOARD_HOME] : [])]) } });
+
+// Every file under a clone's .git with its size and modification time. Only the proposer
+// runs between two readings, so a difference means it wrote there: a hook or a config
+// entry that the git calls after it would run. Read it before any git call does. The index
+// is left out: Claude Code's own git status at session start may refresh it.
+export function gitState(clone) {
+  const root = join(clone, ".git");
+  return readdirSync(root, { recursive: true }).filter((path) => path !== "index").sort().map((path) => {
+    const stat = statSync(join(root, path));
+    return `${path} ${stat.isDirectory() ? "dir" : `${stat.size} ${stat.mtimeMs}`}`;
+  }).join("\n");
+}
 
 // Proposal outcomes that do not count as having proposed: dry runs and errors, so the next
 // run tries again. A proposer that failed for any reason but its budget (an API error or

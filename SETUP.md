@@ -213,14 +213,18 @@ ids, not transcript text, because the repository is public.
 The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
 board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
 `board-snapshot.json` in the state folder; the report shows the stats and the open
-feedback, and a failing `board` call fails the step. Proposals read that snapshot: new
-feedback, or stats past a threshold (once in 30 days), start one proposer session with
-clones of this repository and agent-board. It may change only the "Work board" section of
+feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
+one proposer session with clones of this repository and agent-board, which sees only that
+feedback. It may change only the "Work board" section of
 `claude/CLAUDE.md` and `codex/AGENTS.md` (identically), agent-board's coordinator prompt
 and docs, and the values of the server defaults in `impl Default for Settings`. The tool
 tests each changed repository (`cargo test --workspace --locked` for agent-board, its
 build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
-against agent-board's `main` once it holds the server and `build/v0` until then. Feedback
+against agent-board's `main` once it holds the server and `build/v0` until then. A change
+that breaks a test pinning a default stays a local patch for a person to finish, as with
+rule text. If the second PR fails after the first opened, the record says
+`partly-proposed` and is not retried. Feedback
 is agent-written and private: the proposer gets it as quoted data, and PR bodies list
 feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
 so its folder is on the job's `PATH`. `weekly status` shows the

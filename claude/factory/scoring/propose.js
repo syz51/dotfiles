@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 import { resultEvent } from "../../tests/lib/stream.js";
 import { attemptBoard, BOARD_ID, BOARD_REPO, boardCandidate, newBoardRecord, readSnapshot } from "../board/proposal.js";
 import { runTask } from "../lib/claude.js";
-import { addedLines, changedPaths, clip, cloneRepository, leakedEvidence, originalText, proposerReply, proposerSettings, publish, readDenies, retryable, runTests, stagedPatch, stamp, today, toolRejection, TOOLS, writePatch } from "../lib/proposal.js";
+import { addedLines, changedPaths, clip, cloneRepository, gitState, leakedEvidence, originalText, proposerReply, proposerSettings, publish, readDenies, retryable, runTests, stagedPatch, stamp, today, toolRejection, TOOLS, writePatch } from "../lib/proposal.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { REPO_ROOT, RUBRIC, section } from "./rubric.js";
 import { scoresFile } from "./score.js";
@@ -233,6 +233,7 @@ async function attempt(group, options, record) {
     // prompt, which a print session denies. Credentials stay unread whatever the
     // user's settings allow. Until the stream says what it cost, assume the budget.
     record.costUSD = options.budgetUsd;
+    const gitBefore = gitState(clone);
     const task = await runTask({
       prompt: proposerPrompt({ group, instructions }),
       cwd: clone,
@@ -248,6 +249,8 @@ async function attempt(group, options, record) {
     record.proposerOk = task.ok;
     const rejected = toolRejection(task, record);
     if (rejected) return rejected;
+    // Before any git call, which would run what the session put in .git.
+    if (gitState(clone) !== gitBefore) return { ...record, status: "rejected-paths", rejected: [".git"] };
     record.paths = await changedPaths(clone);
     // The change as a local patch for the reviewer; it never leaves the machine unless
     // every check below passes.
@@ -310,12 +313,21 @@ export async function run(argv, { now = Date.now() } = {}) {
     console.log(`${group.dimension.id.padEnd(26)} ${String(count).padStart(3)} failing sessions  ${note}`);
     if (count >= options.threshold && !previous) qualifying.push({ id: group.dimension.id, group, start: newRecord, attempt });
   }
+  let failed = 0;
   if (options.boardSnapshot) {
-    // A missing snapshot means the board step failed, and the weekly report says so.
-    const snapshot = readSnapshot(options.boardSnapshot);
-    const { group, note } = snapshot ? boardCandidate(snapshot, proposals, now) : { group: null, note: "no snapshot (the board step did not write one)" };
-    console.log(`${BOARD_ID.padEnd(26)} ${note}`);
-    if (group) qualifying.push({ id: BOARD_ID, group, start: newBoardRecord, attempt: attemptBoard });
+    // A missing snapshot means the board step failed, and the weekly report says so; a
+    // damaged one fails this run, after the dimensions had their turn.
+    let snapshot = null;
+    let note = "no snapshot (the board step did not write one)";
+    try {
+      snapshot = readSnapshot(options.boardSnapshot);
+    } catch (error) {
+      note = error.message;
+      failed++;
+    }
+    const candidate = snapshot ? boardCandidate(snapshot, proposals, now) : { group: null, note };
+    console.log(`${BOARD_ID.padEnd(26)} ${candidate.note}`);
+    if (candidate.group) qualifying.push({ id: BOARD_ID, group: candidate.group, start: newBoardRecord, attempt: attemptBoard });
   }
   if (options.list) {
     for (const { id, group } of qualifying) {
@@ -328,14 +340,13 @@ export async function run(argv, { now = Date.now() } = {}) {
       console.log(`\n## ${id} (section "${group.dimension.section}")`);
       for (const failure of group.failures) console.log(`- ${failure.sessionId} (${failure.project ?? "?"}): ${failure.evidence[0] ?? ""}`);
     }
-    return 0;
+    return failed ? 1 : 0;
   }
   // Sources never attempted go first, then the longest-waiting, so the run's limit
   // cannot starve the ones at the end of the rubric while earlier ones keep retrying.
   const lastAttempt = (id) => proposals.filter((proposal) => proposal.dimension === id)
     .reduce((latest, proposal) => (proposal.createdAt > latest ? proposal.createdAt : latest), "");
   qualifying.sort((a, b) => lastAttempt(a.id).localeCompare(lastAttempt(b.id)));
-  let failed = 0;
   let spent = 0;
   for (const [index, source] of qualifying.entries()) {
     // A session may cost its whole budget, so start one only while that still fits.
