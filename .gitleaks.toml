@@ -10,6 +10,14 @@ paths = ['''^mpv/scripts/uosc/main\.lua$''']
 regexTarget = "secret"
 regexes = ['''^b0rd16N0bp7DETMpO4pYZwIqmQkZbYQr$''']
 
+# A placeholder key hash, the hex digits in order, in the claude-api planner tests.
+[[allowlists]]
+description = "Placeholder key hash in claude-api tests"
+condition = "AND"
+paths = ['''^claude/tests/claude-api\.test\.js$''']
+regexTarget = "secret"
+regexes = ['''^0123456789abcdef$''']
+
 [[rules]]
 id = "container-registry-auth"
 description = "Container registry credentials stored as base64 auth"
