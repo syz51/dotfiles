@@ -272,8 +272,23 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agent-board.watch.
 
 For Codex, add the `[mcp_servers.board]` block that `board install codex` prints to
 `~/.codex/config.toml`, and link `codex/AGENTS.md` to `~/.codex/AGENTS.md` so Codex gets the
-rule. Codex asks you to review new or changed hooks before it runs them: approve the
-board hooks after checking that they run `board-hook.sh`.
+rule. Codex runs a new or changed hook only after it is approved: run
+`bun ~/.config/codex/trust-hooks.js --trust` to approve the hooks this repository tracks
+(it lists them first without `--trust`, and approves only hooks from `~/.codex/hooks.json`
+whose command is in `codex/hooks.json`). Run it again after `codex/hooks.json` changes.
+
+Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
+token in `~/.local/share/agent-board/token` (mode 0600) instead.
+
+To host autopilot coordinators on a Mac, map each board repository to its local T3 Code
+project folder in `~/.local/share/agent-board/config.toml` and list the Mac among the
+board's home devices (`board board update <slug> --home-device <first> --home-device <second>`
+replaces the list, in order of preference):
+
+```toml
+[projects]
+"github.com/<owner>/<repo>" = "/path/to/the/t3/project"
+```
 
 The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
 token in the macOS Keychain, outside this repository. When a hook finds the server
