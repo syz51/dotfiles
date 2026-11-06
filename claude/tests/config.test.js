@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
 const CLAUDE = join(import.meta.dir, "..");
@@ -86,7 +86,6 @@ describe("global instructions", () => {
 
   test("every ~/.claude file they reference is tracked in this repository", () => {
     const references = [...globalInstructions.matchAll(/~\/\.claude\/([\w./-]+)/g)].map((match) => match[1]);
-    expect(references).toContain("frontend-avoid.md");
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
@@ -136,6 +135,25 @@ describe("settings", () => {
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  // A copied hook that cannot load a module it imports exits 1, a non-blocking hook error, so
+  // the guards would fail open; SETUP.md has the whole hooks directory linked for this reason.
+  test("every module a hook script imports is tracked beside it", () => {
+    const pending = handlers.flatMap((hook) =>
+      [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+\.js)/g)].map((match) => `claude/${match[1]}`));
+    const seen = new Set();
+    while (pending.length > 0) {
+      const path = pending.pop();
+      if (seen.has(path)) continue;
+      seen.add(path);
+      for (const [, relative] of read(path).matchAll(/^import .* from "(\.{1,2}\/[^"]+)";$/gm)) {
+        const imported = join(dirname(path), relative);
+        expect(tracked(imported), `${path} imports ${imported}`).toBe(true);
+        pending.push(imported);
+      }
+    }
+    expect(seen).toContain("claude/hooks/shell.js");
+  });
+
   // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read
   // 300K-970K of context on every turn; 56% of two weeks' usage came from requests above 200K.
   test("conversations compact at 300K tokens, not near the 1M window", () => {
@@ -168,6 +186,24 @@ test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(instructions).not.toMatch(/^\s*@/m);
   expect(instructions).toMatch(/clean up temporary test files/);
   expect(instructions).toMatch(/^- Keep the test suite in step with every change/m);
+});
+
+describe("rejected frontend defaults list", () => {
+  test("is tracked and keeps its rule for using and adding patterns", () => {
+    expect(tracked("claude/frontend-avoid.md")).toBe(true);
+    const list = read("claude/frontend-avoid.md");
+    expect(list).toMatch(/do not use them unless the brief, a reference, or the existing project calls for them/);
+    expect(list).toMatch(/explicitly rejects a pattern as an unwanted default, not for feedback on a single design/);
+    expect(list).toMatch(/one per line/);
+  });
+
+  // The skill feedback pipeline proposes additions as "- <pattern>" lines in this section.
+  test("ends with a Patterns section of one-line entries", () => {
+    const parts = read("claude/frontend-avoid.md").split(/^## Patterns\n/m);
+    expect(parts).toHaveLength(2);
+    expect(parts[1]).not.toMatch(/^## /m);
+    for (const line of parts[1].split("\n").filter((text) => text.trim())) expect(line).toMatch(/^- \S/);
+  });
 });
 
 // The work board (github.com/syz51/agent-board) hooks into every Claude Code and Codex
@@ -275,7 +311,13 @@ describe("rules the live suites test", () => {
     expect(skills).toMatch(/load `frontend-ui` first/);
     expect(skills).toMatch(/unrelated work in a TypeScript or Rust repository needs neither language skill/i);
     expect(skills).toMatch(/data-visualization skill/);
-    expect(skills).toContain("~/.claude/frontend-avoid.md");
+  });
+
+  // The installed frontend-ui skill tells Claude Code and Codex to read the list, and the
+  // list states its own rule, so the global instructions don't repeat either; the live
+  // chart scenario checks that the read still happens.
+  test("the rejected frontend defaults list is left to the frontend-ui skill", () => {
+    expect(globalInstructions).not.toContain("frontend-avoid");
   });
 
   test("Working preferences keep uv and bun with project lockfiles", () => {
@@ -354,5 +396,14 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/explicit output-only or structured-format requirement/);
     expect(workflow).toMatch(/Do not duplicate Chinese-only replies/);
     expect(workflow).toMatch(/`headless-browser` skill/);
+  });
+
+  // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
+  // refusals; plain one-command calls pass its checks the first time.
+  test("Workflow says how to run git in a worktree-isolated session", () => {
+    const workflow = section("Workflow");
+    expect(workflow).toMatch(/worktree-isolated session/);
+    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
   });
 });

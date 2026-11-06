@@ -163,6 +163,8 @@ before creating a local `codex/config.toml`, which is intentionally ignored.
 Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
+Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
+`claude/hooks/shell.js`, and a guard that cannot load it fails open.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
@@ -276,8 +278,8 @@ and falls back to the claude.ai subscription otherwise. The planner,
 a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/build/v0/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
-`claude/hooks/board-hook.sh` from `~/.claude/hooks`, so link it there like the other hook
-scripts. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
+`claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
+provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
 with a device token created on the server host:
 
 ```sh
@@ -380,6 +382,41 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+## Disk space alert
+
+`disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
+The `com.syz51.disk-space-alert` LaunchAgent runs its `check` every 10 minutes. Below
+30 GB free (10^9 bytes, as `statvfs` reports space available to you) the level is
+low, and below 20 GB it is critical. Falling to a worse level alerts at once, and
+staying low or critical alerts again every 24 hours. A level eases only once free
+space is 2 GB above its threshold, so a reading that hovers near one does not flap.
+
+An alert posts a macOS notification and messages T3 Code. The first alert of an
+episode starts a thread in T3's "No project" (`~/.t3/scratch`), asking for a
+read-only summary of where the space went and what could be cleaned, without
+deleting anything. Later alerts in the episode go to that thread, or start a new
+one if it is gone. When T3 Code is not running, each check retries the message
+without repeating the notification. A start that timed out or printed no thread id
+is not retried, since it may have gone through. Getting back above 32 GB posts one "recovered"
+notification and ends the episode. The state is in
+`~/.local/state/disk-space-alert/state.json`, each alert adds a line to
+`events.jsonl` there, and launchd writes errors to `launchd.log`.
+
+Install it on each Mac from the main checkout, which the plist points to, and send a
+test alert through both channels:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py test
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py status
+```
+
+`install --dry-run` prints the plist without loading it, and `uninstall` unloads and
+removes it. To change a threshold, run `install` again with `--low-gb` or
+`--critical-gb`, which it writes into the plist. A one-off run with
+`check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
+the real state.
+
 ## Verification
 
 From the repository root, run the focused local suites:
@@ -390,6 +427,7 @@ uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests 
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and
@@ -397,7 +435,10 @@ in CI:
 
 - `config.test.js`: agent frontmatter against the delegation policy, files and agents
   that `claude/CLAUDE.md` references, hook scripts in `claude/settings.json`, the rules
-  the live suites test, and the root `CLAUDE.md`.
+  the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
+  which the installed `frontend-ui` skill tells sessions to read rather than
+  `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback
+  proposals append to.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
   runner, two-message conversations, session cleanup, reports and language detection.
