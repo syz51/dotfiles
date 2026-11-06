@@ -203,8 +203,9 @@ bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals ($3 per proposer session, at most $10
-per run). Proposals open draft PRs on this
+audit, scoring (judge budget $3) and proposals ($3 per proposer session; no session
+starts once the next one could take the run past $10, though a session can end slightly
+over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
 ids, not transcript text, because the repository is public. `weekly status` shows the
 last run; `weekly uninstall` removes the job. The living task list is

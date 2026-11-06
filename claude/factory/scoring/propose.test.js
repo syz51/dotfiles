@@ -387,6 +387,30 @@ describe("propose command", () => {
     expect(proposals().map((entry) => entry.dimension)).toEqual(["scope-creep", "delegation-fit", "concise-reporting"]);
   });
 
+  test("never-attempted dimensions go before ones that keep retrying, so the limit starves none", async () => {
+    const { source } = repository();
+    scores(["scope-creep", "delegation-fit"].flatMap((dimension) => ["1", "2", "3"].map((n) => record(`${dimension}-${n}`, { dimension }))));
+    appendJsonl(join(scratch, "state", "proposals.jsonl"), { dimension: "scope-creep", status: "error", createdAt: new Date(NOW - 3_600_000).toISOString(), sessions: ["scope-creep-1"] });
+    edits({ "claude/CLAUDE.md": CLEARER });
+    expect(await run(["--repo", source, "--max-total-usd", "3"], { now: NOW })).toBe(0);
+    expect(proposals().map((entry) => entry.dimension)).toEqual(["scope-creep", "delegation-fit"]);
+    expect(output.join("\n")).toContain("Not proposed this run: scope-creep.");
+  });
+
+  test("a session whose stream never reported its cost counts at its budget", async () => {
+    const { source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    setEnv({ FAKE_RESULT: JSON.stringify({ type: "assistant", message: { content: [] } }) });
+    await run(["--repo", source], { now: NOW });
+    expect(proposals()[0].costUSD).toBe(3);
+  });
+
+  test("a session budget above the run's limit is rejected before anything runs", async () => {
+    expect(await run(["--budget-usd", "12"])).toBe(2);
+    expect(output.join("\n")).toContain("--budget-usd 12 is more than --max-total-usd 10");
+    expect(log("claude.jsonl")).toHaveLength(0);
+  });
+
   test("a failed session counts at its budget toward the run's total", async () => {
     const { source } = repository();
     scores(["scope-creep", "delegation-fit"].flatMap((dimension) => ["1", "2", "3"].map((n) => record(`${dimension}-${n}`, { dimension }))));

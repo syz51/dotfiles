@@ -245,6 +245,8 @@ function parseOptions(argv) {
   };
   const known = new Set(RUBRIC.dimensions.map((dimension) => dimension.id));
   for (const id of values.dimension) if (!known.has(id)) throw new Error(`Unknown dimension ${id}`);
+  if (number("budget-usd") > number("max-total-usd"))
+    throw new Error(`--budget-usd ${values["budget-usd"]} is more than --max-total-usd ${values["max-total-usd"]}, so no session could start`);
   return {
     help: values.help,
     days: number("days"),
@@ -310,7 +312,8 @@ async function attempt(group, options, record) {
       permissionMode: "acceptEdits",
       budgetUsd: options.budgetUsd,
     });
-    record.costUSD = task.costUSD;
+    // A stream without a result event never said what it cost: keep the budget.
+    if (resultEvent(task.events)) record.costUSD = task.costUSD;
     record.proposerOk = task.ok;
     // Fail closed if the session had more than the file tools (an MCP server or a
     // built-in that slipped through), whatever it changed.
@@ -396,6 +399,11 @@ export async function run(argv, { now = Date.now() } = {}) {
     }
     return 0;
   }
+  // Dimensions never attempted go first, then the longest-waiting, so the run's limit
+  // cannot starve the ones at the end of the rubric while earlier ones keep retrying.
+  const lastAttempt = (id) => proposals.filter((proposal) => proposal.dimension === id)
+    .reduce((latest, proposal) => (proposal.createdAt > latest ? proposal.createdAt : latest), "");
+  qualifying.sort((a, b) => lastAttempt(a.dimension.id).localeCompare(lastAttempt(b.dimension.id)));
   let failed = 0;
   let spent = 0;
   for (const [index, group] of qualifying.entries()) {
