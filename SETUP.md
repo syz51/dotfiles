@@ -254,14 +254,17 @@ Delete merged worktrees). Its hourly sweep removes a thread's worktree once the
 thread's pull request is merged, unless the worktree has uncommitted or untracked
 changes, an open terminal or a running thread, and keeps the branch.
 `t3code/prune_branches.py` deletes those branches: local branches of T3 worktree
-threads that no worktree has checked out, whose threads are idle, and whose tips
-`origin/HEAD` already contains. It never deletes the default branch or a branch
-no T3 thread uses, and skips repositories without `origin/HEAD`.
+threads that no worktree has checked out, rebases or bisects, whose threads are idle
+and whose tips `origin/HEAD` contains as of the last fetch, which T3's sweep
+refreshes. Branches of squash or rebase merges stay. It never deletes the default
+branch or a branch no T3 thread uses, skips repositories without `origin/HEAD`, and
+exits 1 when a repository fails while still pruning the others.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and
-verify, with the thread ids, and `prune.jsonl` one line per prune, with the deleted,
-kept and skipped branches. Edit the prompt file to change the routine. Change the interval,
+verify, with the thread ids, and `prune.jsonl` one line per prune, with the deleted
+and kept branches and the skipped or failed repositories. A settle failure still
+lets the prune run. Edit the prompt file to change the routine. Change the interval,
 pause or delete the task in T3's scheduled tasks, or ask an agent to call
 `schedule_task` with `enabled: false` or `delete_scheduled_task`. Run the scripts by
 hand to see what the next run would settle and prune:

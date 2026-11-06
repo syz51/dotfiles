@@ -25,6 +25,9 @@ create table orchestration_v2_projection_threads (
 create table orchestration_v2_projection_runs (
   run_id text primary key, thread_id text not null, status text not null
 );
+create table orchestration_v2_projection_runtime_requests (
+  runtime_request_id text primary key, thread_id text not null, status text not null
+);
 """
 
 
@@ -75,7 +78,7 @@ class Fixture:
             (project_id, str(root), "2026-01-03T00:00:00Z" if deleted else None),
         )
 
-    def thread(self, project_id, branch, worktree=True, run=None):
+    def thread(self, project_id, branch, worktree=True, run=None, request=None):
         self.counter += 1
         thread_id = f"thread-{self.counter}"
         payload = {
@@ -90,6 +93,11 @@ class Fixture:
             self.db.execute(
                 "insert into orchestration_v2_projection_runs values (?, ?, ?)",
                 (f"run-{self.counter}", thread_id, run),
+            )
+        if request is not None:
+            self.db.execute(
+                "insert into orchestration_v2_projection_runtime_requests values (?, ?, ?)",
+                (f"request-{self.counter}", thread_id, request),
             )
         return thread_id
 
@@ -111,9 +119,13 @@ class PruneTest(unittest.TestCase):
         root = Path(tmp.name).resolve()
         config = root / "gitconfig"
         config.write_text("[user]\n\tname = Test\n\temail = test@example.com\n[advice]\n\tdetachedHead = false\n")
-        env = mock.patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
+        env = mock.patch.dict(os.environ)
         env.start()
         self.addCleanup(env.stop)
+        # An inherited GIT_DIR or GIT_WORK_TREE, as in a git hook, would aim git at another repository.
+        for name in [name for name in os.environ if name.startswith("GIT_")]:
+            del os.environ[name]
+        os.environ.update({"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
         self.fx = Fixture(root)
         self.addCleanup(self.fx.db.close)
         self.fx.project("p", self.fx.repo)
@@ -140,12 +152,16 @@ class PruneTest(unittest.TestCase):
             self.fx.branch(f"t3/{status}")
             self.fx.thread("p", f"t3/{status}", run="completed")
             self.fx.thread("p", f"t3/{status}", run=status)
+        self.fx.branch("t3/asking")
+        self.fx.thread("p", "t3/asking", request="resolved")
+        self.fx.thread("p", "t3/asking", request="pending")
         result = self.fx.prune()
         self.assertEqual(result["deleted"], [])
         reasons = {entry["branch"]: entry["reason"] for entry in result["kept"]}
         self.assertEqual(reasons, {
             "t3/open": "not merged",
             "t3/in-worktree": "checked out",
+            "t3/asking": "thread is active",
             **{f"t3/{status}": "thread is active" for status in prune_branches.ACTIVE_RUN_STATUSES},
         })
         for name in reasons:
@@ -193,11 +209,12 @@ class PruneTest(unittest.TestCase):
             self.fx.project(project_id, root)
             self.fx.thread(project_id, "t3/other")
         result = self.fx.prune()
-        self.assertEqual(result["skipped"], [
-            {"project": str(self.fx.root / "missing"), "reason": "not a git repository"},
-            {"project": str(plain), "reason": "not a git repository"},
-            {"project": str(other), "reason": "origin/HEAD is not set"},
-        ])
+        skipped = [(entry["project"], entry["reason"]) for entry in result["skipped"]]
+        self.assertEqual(skipped[0], (str(self.fx.root / "missing"), "folder is missing"))
+        self.assertEqual(skipped[1][0], str(plain))
+        self.assertIn("not a git repository", skipped[1][1])
+        self.assertEqual(skipped[2], (str(other), "origin/HEAD is not set"))
+        self.assertEqual((len(skipped), result["failed"]), (3, []))
         self.assertTrue(has_branch(other, "t3/other"))
 
     def test_dry_run_lists_without_deleting(self):
@@ -210,8 +227,59 @@ class PruneTest(unittest.TestCase):
     def test_a_branch_that_moved_since_the_check_stays(self):
         stale = self.fx.branch("t3/moving")
         git(self.fx.repo, "update-ref", "refs/heads/t3/moving", "main")
-        self.assertFalse(prune_branches.delete_branch(self.fx.repo, "t3/moving", stale))
+        self.assertEqual(prune_branches.delete_branch(self.fx.repo, "t3/moving", stale), "moved since check")
         self.assertTrue(has_branch(self.fx.repo, "t3/moving"))
+
+    def test_configuration_of_a_longer_branch_name_stays(self):
+        for name in ("t3/fix", "t3/fix.v2", "t3/z"):
+            self.fx.branch(name, merged=name != "t3/fix.v2")
+            git(self.fx.repo, "config", f"branch.{name}.remote", "origin")
+            self.fx.thread("p", name)
+        result = self.fx.prune()
+        self.assertEqual([e["branch"] for e in result["deleted"]], ["t3/fix", "t3/z"])
+        names = git(self.fx.repo, "config", "--local", "--name-only", "--list").splitlines()
+        self.assertEqual([n for n in names if n.startswith("branch.t3/")], ["branch.t3/fix.v2.remote"])
+
+    def test_a_branch_a_worktree_is_rebasing_stays(self):
+        self.fx.branch("t3/rebasing")
+        worktree = self.fx.root / "wt"
+        git(self.fx.repo, "worktree", "add", "-q", str(worktree), "t3/rebasing")
+        with mock.patch.dict(os.environ, {"GIT_SEQUENCE_EDITOR": "sed -i.bak s/^pick/edit/"}):
+            git(worktree, "rebase", "-q", "-i", "HEAD~1")
+        self.assertIn("rebase in progress", git(worktree, "status"))
+        self.fx.thread("p", "t3/rebasing")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/rebasing", "in use by a worktree")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/rebasing"))
+
+    def test_a_symbolic_branch_is_deleted_without_its_target(self):
+        self.fx.branch("side")
+        git(self.fx.repo, "symbolic-ref", "refs/heads/t3/alias", "refs/heads/side")
+        self.fx.thread("p", "t3/alias")
+        result = self.fx.prune()
+        self.assertEqual([e["branch"] for e in result["deleted"]], ["t3/alias"])
+        self.assertFalse(has_branch(self.fx.repo, "t3/alias"))
+        self.assertTrue(has_branch(self.fx.repo, "side"))
+
+    def test_a_git_error_fails_its_repository_and_is_logged_with_the_others(self):
+        other = self.fx.make_repo("other")
+        git(other, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone")
+        self.fx.branch("t3/other", repo=other)
+        self.fx.project("other", other)
+        self.fx.thread("other", "t3/other")
+        self.fx.branch("t3/done")
+        self.fx.thread("p", "t3/done")
+        self.fx.db.commit()
+        log = self.fx.root / "prune.jsonl"
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            self.assertEqual(prune_branches.main(["--db", str(self.fx.db_path), "--log", str(log)]), 1)
+        self.assertEqual(stdout.getvalue(), f"{self.fx.repo} t3/done\n")
+        self.assertIn(f"failed: {other}: merge-base", stderr.getvalue())
+        (record,) = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual([e["branch"] for e in record["deleted"]], ["t3/done"])
+        self.assertEqual([f["project"] for f in record["failed"]], [str(other)])
+        self.assertTrue(has_branch(other, "t3/other"))
 
     def test_main_prints_deleted_branches_and_logs_the_call(self):
         self.fx.branch("t3/done")
