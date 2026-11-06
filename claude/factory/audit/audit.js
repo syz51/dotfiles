@@ -119,8 +119,8 @@ function settingsFindings(sources) {
   if (get("disableClaudeAiConnectors") === true)
     findings.push(finding("mcp.claude-ai-connectors-off", "info", "disableClaudeAiConnectors is true: claude.ai connectors are not loaded", "None needed"));
   else
-    findings.push(finding("mcp.claude-ai-connectors-on", "low", "disableClaudeAiConnectors is not true: claude.ai connectors load into every session",
-      "Set disableClaudeAiConnectors: true unless you use them"));
+    findings.push(finding("mcp.claude-ai-connectors-on", "info", "claude.ai connectors load into every session, such as Gmail",
+      "None needed; turn off connectors you do not use in /mcp or deniedMcpServers"));
 
   const plugins = Object.entries(get("enabledPlugins") ?? {}).filter(([, on]) => on === true).map(([name]) => name);
   if (plugins.length)

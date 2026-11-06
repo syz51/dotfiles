@@ -142,6 +142,12 @@ describe("settings", () => {
     expect(settings.worktree).toEqual({ baseRef: "head" });
   });
 
+  // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
+  // signs in only on claude.ai, so it loads only through claude.ai connectors.
+  test("claude.ai connectors load, so the Gmail connector is available", () => {
+    expect(settings.disableClaudeAiConnectors).toBeUndefined();
+  });
+
   test("the guard is registered for Bash PreToolUse", () => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
