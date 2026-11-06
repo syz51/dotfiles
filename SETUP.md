@@ -251,16 +251,23 @@ Run the routine in ~/.config/t3code/settle-children.prompt.md exactly as written
 ```
 
 T3 Code's own storage cleanup removes worktrees, with `"storageCleanup":
-{"worktreeOnMerge": true}` in `~/.t3/userdata/settings.json` (Settings > Storage >
-Delete merged worktrees). Its hourly sweep removes a thread's worktree once the
-thread's pull request is merged, unless the worktree has uncommitted or untracked
-changes, an open terminal or a running thread, and keeps the branch.
-`t3code/prune_branches.py` deletes those branches: local branches of T3 worktree
-threads that no worktree has checked out, rebases or bisects, whose threads are idle
-and whose tips `origin/HEAD` contains as of the last fetch, which T3's sweep
-refreshes. Branches of squash or rebase merges stay. It never deletes the default
-branch or a branch no T3 thread uses, skips repositories without `origin/HEAD`, and
-exits 1 when a repository fails while still pruning the others.
+{"worktreeOnMerge": true, "worktreeSettledAfterDays": 7}` in
+`~/.t3/userdata/settings.json` (Settings > Storage > Delete merged worktrees and
+Delete settled worktrees). Its hourly sweep removes a linked worktree under
+`~/.t3/worktrees` once its thread's pull request is merged, or once the thread, or
+the parent a subagent thread belongs to, has been settled for 7 days. It keeps
+worktrees with uncommitted or untracked changes, an open terminal or a running
+thread, and keeps the branch, so a resumed thread gets its worktree back from it.
+Ignored files, such as build output, go with the worktree.
+`t3code/prune_branches.py` deletes those branches once merged: local branches of T3
+worktree threads whose worktree folders are gone, that no worktree has checked out,
+rebases or bisects, and whose threads are idle. A branch counts as merged when
+`origin/HEAD` contains its tip as of the last fetch, which T3's sweep refreshes, or,
+for a GitHub origin, when `gh` finds a merged pull request from it into the default
+branch whose head is exactly its tip, which covers squash and rebase merges. It never
+deletes the default branch or a branch no T3 thread uses, skips repositories without
+`origin/HEAD`, and exits 1 when a repository or a pull request lookup fails while
+still pruning the rest.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and

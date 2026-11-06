@@ -83,7 +83,8 @@ class Fixture:
         thread_id = f"thread-{self.counter}"
         payload = {
             "branch": branch,
-            "worktreePath": str(self.root / "worktrees" / thread_id) if worktree else None,
+            "worktreePath": (str(worktree) if isinstance(worktree, Path) else str(self.root / "worktrees" / thread_id))
+            if worktree else None,
         }
         self.db.execute(
             "insert into orchestration_v2_projection_threads values (?, ?, ?)",
@@ -104,6 +105,15 @@ class Fixture:
     def prune(self, **kwargs):
         self.db.commit()
         return prune_branches.prune(self.db_path, **kwargs)
+
+
+FAKE_GH = """#!/bin/sh
+echo "$@" >> "$FAKE_GH_LOG"
+if [ -n "$FAKE_GH_FAIL" ]; then echo "HTTP 401: Bad credentials" >&2; exit 1; fi
+while [ $# -gt 0 ]; do [ "$1" = --head ] && head=$2; shift; done
+file="$FAKE_GH_DIR/$(echo "$head" | tr / _).json"
+if [ -f "$file" ]; then cat "$file"; else echo "[]"; fi
+"""
 
 
 def has_branch(repo, name):
@@ -129,6 +139,31 @@ class PruneTest(unittest.TestCase):
         self.fx = Fixture(root)
         self.addCleanup(self.fx.db.close)
         self.fx.project("p", self.fx.repo)
+        # A fake gh answers pull request lookups from one JSON file per head branch.
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "gh").write_text(FAKE_GH)
+        (bin_dir / "gh").chmod(0o755)
+        self.pulls = root / "pulls"
+        self.pulls.mkdir()
+        self.gh_log = root / "gh.log"
+        os.environ.update({
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "FAKE_GH_DIR": str(self.pulls),
+            "FAKE_GH_LOG": str(self.gh_log),
+        })
+
+    def on_github(self):
+        """Point origin's fetch URL at GitHub while pushes still reach the local origin."""
+        origin = git(self.fx.repo, "remote", "get-url", "origin")
+        git(self.fx.repo, "config", "remote.origin.pushurl", origin)
+        git(self.fx.repo, "config", "remote.origin.url", "git@github.com:acme/repo.git")
+
+    def pull(self, branch, *pulls):
+        (self.pulls / f"{branch.replace('/', '_')}.json").write_text(json.dumps(list(pulls)))
+
+    def gh_calls(self):
+        return self.gh_log.read_text().splitlines() if self.gh_log.exists() else []
 
     def test_deletes_a_merged_branch_and_its_configuration(self):
         tip = self.fx.branch("t3/done")
@@ -166,6 +201,16 @@ class PruneTest(unittest.TestCase):
         })
         for name in reasons:
             self.assertTrue(has_branch(self.fx.repo, name))
+
+    def test_keeps_a_branch_whose_thread_still_has_its_worktree_folder(self):
+        self.fx.branch("t3/detached")
+        worktree = self.fx.root / "wt"
+        git(self.fx.repo, "worktree", "add", "-q", "--detach", str(worktree), "t3/detached")
+        self.fx.thread("p", "t3/detached", worktree=worktree)
+        self.fx.thread("p", "t3/detached")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/detached", "worktree still exists")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/detached"))
 
     def test_keeps_the_default_branch_even_when_nothing_has_it_checked_out(self):
         git(self.fx.repo, "switch", "-q", "--detach")
@@ -297,6 +342,70 @@ class PruneTest(unittest.TestCase):
         self.assertEqual([e["branch"] for e in record["kept"]], ["t3/open"])
         self.assertFalse(record["dryRun"])
         self.assertIn("at", record)
+
+    def test_a_squash_merged_branch_is_deleted_when_the_pull_request_head_is_its_tip(self):
+        self.on_github()
+        tip = self.fx.branch("t3/squashed", merged=False)
+        self.fx.branch("t3/merged")
+        self.pull("t3/squashed", {"number": 6, "headRefOid": "0" * 40}, {"number": 7, "headRefOid": tip})
+        self.fx.thread("p", "t3/squashed")
+        self.fx.thread("p", "t3/merged")
+        result = self.fx.prune()
+        self.assertEqual(
+            [(e["branch"], e.get("pullRequest")) for e in result["deleted"]],
+            [("t3/merged", None), ("t3/squashed", 7)],
+        )
+        self.assertFalse(has_branch(self.fx.repo, "t3/squashed"))
+        # Only the branch ancestry did not cover is looked up, in origin's repository.
+        self.assertEqual(self.gh_calls(), [
+            "pr list --repo acme/repo --head t3/squashed --base main --state merged --json number,headRefOid --limit 100",
+        ])
+
+    def test_a_branch_with_commits_after_its_merged_pull_request_stays(self):
+        self.on_github()
+        self.fx.branch("t3/continued", merged=False)
+        self.pull("t3/continued", {"number": 7, "headRefOid": "0" * 40})
+        self.fx.thread("p", "t3/continued")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/continued", "not merged")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/continued"))
+
+    def test_a_failed_lookup_fails_only_its_branch(self):
+        self.on_github()
+        self.fx.branch("t3/unknown", merged=False)
+        self.fx.branch("t3/merged")
+        self.fx.thread("p", "t3/unknown")
+        self.fx.thread("p", "t3/merged")
+        self.fx.db.commit()
+        stderr = io.StringIO()
+        with mock.patch.dict(os.environ, {"FAKE_GH_FAIL": "1"}), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(prune_branches.main(["--db", str(self.fx.db_path)]), 1)
+        self.assertEqual(
+            stderr.getvalue(),
+            f"failed: {self.fx.repo} t3/unknown: gh pr list: HTTP 401: Bad credentials\n",
+        )
+        self.assertFalse(has_branch(self.fx.repo, "t3/merged"))
+        self.assertTrue(has_branch(self.fx.repo, "t3/unknown"))
+
+    def test_origins_off_github_are_not_looked_up(self):
+        self.fx.branch("t3/open", merged=False)
+        self.fx.thread("p", "t3/open")
+        self.assertEqual([e["reason"] for e in self.fx.prune()["kept"]], ["not merged"])
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_github_repository_reads_origin_urls(self):
+        for url, expected in (
+            ("https://github.com/acme/repo.git", "acme/repo"),
+            ("https://github.com/acme/repo", "acme/repo"),
+            ("git@github.com:acme/repo.git", "acme/repo"),
+            ("ssh://git@github.com/acme/re.po.git", "acme/re.po"),
+            ("https://gitlab.com/acme/repo.git", None),
+            ("https://github.com/acme/repo/extra", None),
+        ):
+            with self.subTest(url=url):
+                git(self.fx.repo, "config", "remote.origin.url", url)
+                self.assertEqual(prune_branches.github_repository(self.fx.repo), expected)
 
     def test_missing_database_raises(self):
         with self.assertRaises(FileNotFoundError):
