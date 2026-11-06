@@ -239,6 +239,8 @@ async function attempt(group, options, record) {
       model: options.model,
       effort: options.effort,
       tools: TOOLS,
+      // The user's MCP servers would fail the tool check below after spending the budget.
+      strictMcp: true,
       settings: proposerSettings(),
       permissionMode: "acceptEdits",
       budgetUsd: options.budgetUsd,

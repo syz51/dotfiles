@@ -217,6 +217,12 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
   differs from it (null outside git), and `project` with the sha256 of each project
   CLAUDE.md the judge saw. Detector-only records do not read instructions.
+- [x] Proposers without MCP (board task dotfiles-10): `runTask({ strictMcp })` passes
+  `--strict-mcp-config` with no `--mcp-config`, and both proposers (`propose` and the
+  board's) use it. Before, the user's MCP servers loaded (`--tools` limits built-in tools
+  only), so the tool check rejected every real proposer run after spending its budget.
+  Checked live: without the flag the init event lists the board server and 13 MCP tools;
+  with it, none.
 - [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
   parallel scheduler, fresh fixture per run, agent override file plus `--agent`, installs
   and web blocked, overlay re-applied before the oracle so tests cannot be edited to
