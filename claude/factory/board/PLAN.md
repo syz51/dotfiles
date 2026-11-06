@@ -61,6 +61,8 @@ Each needs a decision, the technology chosen, the alternatives considered and wh
 8. **Agent rules**: the instructions in `CLAUDE.md` / `AGENTS.md` that make agents use it.
 9. **Migration**: moving the factory's open items onto the board as the first real test.
 10. **Testing and operations**: tests, deployment, backups, upgrades, monitoring.
+11. **Text format and framing**: the shape, wording and trust framing of everything the board
+    sends to agents, and the style of what agents write into it.
 
 ## Tasks
 
@@ -74,6 +76,10 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] Design each component above in `DESIGN.md`, with technology choices and sources.
 - [ ] User review of the design; record decisions below (`DESIGN.md`, "Decisions for the
   user").
+- [ ] Text format and framing (component 11, raised by the user): research how to format
+  what the board injects and returns (snapshot, deltas, alerts, tool output, tool
+  descriptions) and what agents write into it (titles, notes, handoffs); then measure the
+  candidates with the factory's bench before fixing the format.
 
 ### Build (after the design is accepted; phases from `DESIGN.md`)
 

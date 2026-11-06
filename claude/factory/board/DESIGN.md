@@ -300,6 +300,23 @@ helper, not a sync.
   the newest backup is under 24 hours old; deploy is copying one binary and restarting the
   service; a restore drill once a month during the first quarter, then quarterly.
 
+## 11. Text format and framing (open)
+
+Not yet researched; the design so far fixes only size caps and "compact text for agents,
+`--json` for scripts". Questions to settle, then measure with the factory's bench:
+
+- **Shape**: plain lines, markdown, XML-tagged sections or JSON (or a compact tabular form
+  such as TOON) for the snapshot, deltas, alerts and tool output; the cost in tokens against
+  how reliably the agent acts on it.
+- **Trust framing**: notes and titles come from other agents, so injected text must read as
+  data, never as instructions (a peer's note must not be able to steer another thread).
+- **Actionability**: whether each item should carry its next step (task id, the tool to call).
+- **Stability**: deterministic ordering and delta-only updates, so repeated injections stay
+  small and do not disturb prompt caching.
+- **What agents write**: conventions for titles, notes, handoffs and acceptance checks, so
+  another thread can act on them without the author's context.
+- **Tool descriptions**: wording that keeps about ten MCP tools cheap and correctly chosen.
+
 ## Phases
 
 1. **Spike (about a day)**: server with tasks, claims and events; CLI; the concurrency test;
