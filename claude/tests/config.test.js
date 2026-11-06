@@ -157,8 +157,9 @@ describe("settings", () => {
   });
 
   // Claude Code only records computer use per project, so this hook turns it on in every one.
-  test("computer use is enabled in every project at session start", () => {
-    const hooks = (settings.hooks.SessionStart ?? []).filter((group) => group.matcher === undefined
+  // Only at startup: on clear, compact or resume it would undo a `/mcp` toggle mid-session.
+  test("computer use is enabled in every project when a session starts", () => {
+    const hooks = (settings.hooks.SessionStart ?? []).filter((group) => group.matcher === "startup"
       && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/enable-computer-use.js")));
     expect(hooks).toHaveLength(1);
   });
