@@ -3,26 +3,30 @@
 
 T3 Code's storage cleanup removes a thread's worktree once its pull request is merged
 or the thread has been settled for a while, but keeps the thread's local branch. This
-script deletes those branches once they are merged with `git branch -D`, which also removes their reflogs
-and `branch.<name>.*` configuration. It reads the T3 state database read-only.
+script deletes those branches once they are merged. It deletes with `git branch -D`,
+which also removes their reflogs and `branch.<name>.*` configuration, and reads the
+T3 state database read-only.
 
 A branch is deleted when all of these hold:
 - it is the branch of a T3 thread that has a worktree, in a project of that repository;
 - it is not the remote's default branch, no worktree has it checked out, and no
-  thread on it still has its worktree folder;
+  thread on it still has its worktree folder, unless another branch now has that
+  folder checked out;
 - no thread on that branch has a queued, preparing, starting, running or waiting run,
   or a pending request;
 - it is merged: its tip is reachable from `refs/remotes/origin/HEAD` as of the last
-  fetch, or, when origin is on GitHub, a merged pull request from it into the default
-  branch has exactly its tip as head, which covers squash and rebase merges.
+  fetch, or, when origin is on github.com, `gh` finds a merged pull request from it
+  into the default branch whose head is its tip or a known descendant of it, which
+  covers squash and rebase merges.
 
-The tip is checked again just before deletion, and git itself refuses to delete a
-branch that a worktree has checked out, is rebasing or is bisecting; such branches
-stay. Project folders that are missing or not in a repository, and repositories
-without `origin/HEAD`, are skipped. A git error fails only its repository, and a
-failed pull request lookup only its branch. Each call
-prints the deleted branches as `<repository> <branch>`, one per line, with `--log`
-appends one JSON line describing the call, and exits 1 when anything failed.
+These conditions are checked again from fresh state just before deleting, after any
+pull request lookups, and git itself refuses to delete a branch that a worktree has
+checked out, is rebasing or is bisecting. Project folders that are missing or not in
+a repository, and repositories without `origin/HEAD`, are skipped. An error fails
+only its repository. The first failed pull request lookup stops lookups for the rest
+of the call, and the branches that needed one stay. Each call prints the deleted
+branches as `<repository> <branch>`, one per line, with `--log` appends one JSON line
+describing the call, and exits 1 when anything failed.
 """
 
 from __future__ import annotations
@@ -35,11 +39,12 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple
 
 DEFAULT_DB = Path.home() / ".t3" / "userdata" / "statev2.sqlite"
 
 ACTIVE_RUN_STATUSES = ("queued", "preparing", "starting", "running", "waiting")
+
+LOOKUP_TIMEOUT_SECONDS = 60
 
 THREADS_SQL = f"""
 select
@@ -66,29 +71,50 @@ group by project.workspace_root, branch
 order by project.workspace_root, branch
 """
 
+GITHUB_URL = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$")
 
-class Usage(NamedTuple):
-    """How a repository's T3 threads use one branch."""
-
-    active: bool
-    worktrees: tuple[str, ...]
-
-    def merge(self, other: "Usage") -> "Usage":
-        return Usage(self.active or other.active, self.worktrees + other.worktrees)
+# A branch's use by T3 threads: whether any is active, and their worktree folders.
+Usage = tuple[bool, list[str]]
+NOT_USED: Usage = (False, [])
 
 
-def read_threads(db_path: Path) -> dict[str, dict[str, Usage]]:
-    """Map each project folder to the branches of its worktree threads."""
+def read_repositories(db_path: Path, skipped: list | None = None) -> dict[str, tuple[Path, dict[str, Usage]]]:
+    """Map each repository's common git directory to a project folder in it and the
+    branches its worktree threads use. Projects in one repository, such as a subfolder
+    project, share its branches. Folders that are not in a repository go to skipped."""
     if not db_path.is_file():
         raise FileNotFoundError(f"T3 state database not found: {db_path}")
     connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
     try:
-        projects: dict[str, dict[str, Usage]] = {}
-        for root, branch, active, worktrees in connection.execute(THREADS_SQL):
-            projects.setdefault(root, {})[branch] = Usage(bool(active), tuple(json.loads(worktrees)))
-        return projects
+        rows = connection.execute(THREADS_SQL).fetchall()
     finally:
         connection.close()
+    common_dirs: dict[str, str | None] = {}
+    repos: dict[str, tuple[Path, dict[str, Usage]]] = {}
+    for root, branch, active, worktrees in rows:
+        if root not in common_dirs:
+            common_dirs[root] = common_dir(Path(root), skipped)
+        common = common_dirs[root]
+        if common is None:
+            continue
+        branches = repos.setdefault(common, (Path(root), {}))[1]
+        was_active, paths = branches.get(branch, NOT_USED)
+        branches[branch] = (was_active or bool(active), paths + json.loads(worktrees))
+    return repos
+
+
+def common_dir(folder: Path, skipped: list | None) -> str | None:
+    reason = None
+    if not folder.is_dir():
+        reason = "folder is missing"
+    else:
+        found = git(folder, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
+        if found.returncode == 0:
+            return found.stdout.strip()
+        reason = (found.stderr.strip().splitlines() or ["not a git repository"])[-1]
+    if skipped is not None:
+        skipped.append({"project": str(folder), "reason": reason})
+    return None
 
 
 def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -100,104 +126,152 @@ def branch_tip(repo: Path, branch: str) -> str | None:
     return result.stdout.strip() if result.returncode == 0 else None
 
 
-GITHUB_URL = re.compile(r"^(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?$")
+def is_ancestor(repo: Path, commit: str, descendant: str) -> bool:
+    found = git(repo, "merge-base", "--is-ancestor", commit, descendant, check=False)
+    if found.returncode not in (0, 1):
+        raise subprocess.CalledProcessError(found.returncode, found.args, found.stdout, found.stderr)
+    return found.returncode == 0
+
+
+def worktree_branches(repo: Path) -> dict[str, str | None]:
+    """Each worktree's resolved folder and its checked-out branch, None when detached."""
+    worktrees: dict[str, str | None] = {}
+    folder = None
+    for line in git(repo, "worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("worktree "):
+            folder = str(Path(line.removeprefix("worktree ")).resolve())
+            worktrees[folder] = None
+        elif line.startswith("branch refs/heads/") and folder is not None:
+            worktrees[folder] = line.removeprefix("branch refs/heads/")
+    return worktrees
+
+
+def blocking_reason(branch: str, usage: Usage, default_branch: str, worktrees: dict[str, str | None]) -> str | None:
+    """Why the branch must stay regardless of whether it is merged, or None."""
+    active, paths = usage
+    if branch == default_branch:
+        return "default branch"
+    if branch in worktrees.values():
+        return "checked out"
+    for path in paths:
+        folder = Path(path)
+        # A folder another branch now has checked out no longer belongs to this branch.
+        if folder.exists() and worktrees.get(str(folder.resolve()), branch) in (None, branch):
+            return "worktree still exists"
+    if active:
+        return "thread is active"
+    return None
 
 
 def github_repository(repo: Path) -> str | None:
-    """`owner/name` of origin when it is on GitHub, from its configured URL."""
-    url = git(repo, "config", "--get", "remote.origin.url", check=False).stdout.strip()
+    """`owner/name` of origin when it is on github.com, after `insteadOf` rewriting."""
+    url = git(repo, "remote", "get-url", "origin", check=False).stdout.strip()
     match = GITHUB_URL.match(url)
     return match[1] if match else None
 
 
-def merged_pull_request(github: str, branch: str, tip: str, base: str) -> int | None:
-    """The number of a merged pull request from branch into base whose head is tip."""
+def merged_pull_request(repo: Path, github: str, branch: str, tip: str, base: str) -> int | None:
+    """A merged pull request from branch into base whose head is tip, or a commit this
+    repository knows that descends from tip, such as after GitHub's Update branch."""
     found = subprocess.run(
-        ["gh", "pr", "list", "--repo", github, "--head", branch, "--base", base, "--state", "merged",
-         "--json", "number,headRefOid", "--limit", "100"],
-        capture_output=True, text=True, check=True,
+        ["gh", "pr", "list", "--repo", f"github.com/{github}", "--head", branch, "--base", base,
+         "--state", "merged", "--json", "number,headRefOid", "--limit", "100"],
+        capture_output=True, text=True, check=True, timeout=LOOKUP_TIMEOUT_SECONDS,
     )
-    return next((pr["number"] for pr in json.loads(found.stdout) if pr["headRefOid"] == tip), None)
+    pulls = json.loads(found.stdout)
+    for pull in pulls:
+        if pull["headRefOid"] == tip:
+            return pull["number"]
+    for pull in pulls:
+        known = git(repo, "cat-file", "-e", f"{pull['headRefOid']}^{{commit}}", check=False).returncode == 0
+        if known and is_ancestor(repo, tip, pull["headRefOid"]):
+            return pull["number"]
+    return None
 
 
-def command_error(error: subprocess.CalledProcessError) -> str:
-    detail = (error.stderr or error.stdout or "").strip().splitlines()
-    command = error.cmd[3:] if error.cmd[0] == "git" else error.cmd[:3]
-    return f"{' '.join(command)}: {detail[-1] if detail else f'exit {error.returncode}'}"
+def describe(label: str, error: Exception) -> str:
+    if isinstance(error, subprocess.CalledProcessError):
+        detail = (error.stderr or error.stdout or "").strip().splitlines()
+        return f"{label}: {detail[-1] if detail else f'exit {error.returncode}'}"
+    if isinstance(error, subprocess.TimeoutExpired):
+        return f"{label}: timed out after {error.timeout:g}s"
+    return f"{label}: {error}"
 
 
 def prune(db_path: Path, dry_run: bool = False) -> dict:
     result: dict = {"dryRun": dry_run, "deleted": [], "kept": [], "skipped": [], "failed": []}
-    # Projects in one repository, such as a subfolder project, share its branches.
-    repos: dict[str, tuple[Path, dict[str, Usage]]] = {}
-    for root, branches in read_threads(db_path).items():
-        folder = Path(root)
-        if not folder.is_dir():
-            result["skipped"].append({"project": root, "reason": "folder is missing"})
-            continue
-        common = git(folder, "rev-parse", "--path-format=absolute", "--git-common-dir", check=False)
-        if common.returncode != 0:
-            lines = common.stderr.strip().splitlines()
-            result["skipped"].append({"project": root, "reason": lines[-1] if lines else "not a git repository"})
-            continue
-        repo, merged = repos.setdefault(common.stdout.strip(), (folder, {}))
-        for branch, usage in branches.items():
-            merged[branch] = merged[branch].merge(usage) if branch in merged else usage
-
-    for repo, branches in repos.values():
+    lookups = {"available": True}
+    candidates: dict[str, list[dict]] = {}
+    repos = read_repositories(db_path, result["skipped"])
+    for common, (repo, branches) in repos.items():
         try:
-            prune_repository(repo, branches, dry_run, result)
-        except subprocess.CalledProcessError as error:
-            result["failed"].append({"project": str(repo), "error": command_error(error)})
+            candidates[common] = find_candidates(repo, branches, lookups, result)
+        except (subprocess.CalledProcessError, OSError) as error:
+            result["failed"].append({"project": str(repo), "error": describe("git", error)})
+    if dry_run:
+        for entries in candidates.values():
+            result["deleted"] += [{k: v for k, v in entry.items() if k != "defaultBranch"} for entry in entries]
+        return result
+
+    # Lookups can take a while, so recheck what may have changed from fresh state.
+    fresh = read_repositories(db_path)
+    for common, entries in candidates.items():
+        if not entries:
+            continue
+        repo = repos[common][0]
+        try:
+            worktrees = worktree_branches(repo)
+            for entry in entries:
+                default_branch = entry.pop("defaultBranch")
+                usage = fresh.get(common, (repo, {}))[1].get(entry["branch"], NOT_USED)
+                reason = blocking_reason(entry["branch"], usage, default_branch, worktrees)
+                if reason is None:
+                    reason = delete_branch(repo, entry["branch"], entry["sha"])
+                if reason is None:
+                    result["deleted"].append(entry)
+                else:
+                    result["kept"].append({**entry, "reason": reason})
+        except (subprocess.CalledProcessError, OSError) as error:
+            result["failed"].append({"project": str(repo), "error": describe("git", error)})
     return result
 
 
-def prune_repository(repo: Path, branches: dict[str, Usage], dry_run: bool, result: dict) -> None:
+def find_candidates(repo: Path, branches: dict[str, Usage], lookups: dict, result: dict) -> list[dict]:
+    """The repository's merged branches that nothing holds, with the default branch name."""
     default_ref = git(repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD", check=False).stdout.strip()
     if not default_ref:
         result["skipped"].append({"project": str(repo), "reason": "origin/HEAD is not set"})
-        return
+        return []
     default_branch = default_ref.removeprefix("refs/remotes/origin/")
     github = github_repository(repo)
-    checked_out = {
-        line.removeprefix("branch refs/heads/")
-        for line in git(repo, "worktree", "list", "--porcelain").stdout.splitlines()
-        if line.startswith("branch refs/heads/")
-    }
+    worktrees = worktree_branches(repo)
+    candidates = []
     for branch, usage in sorted(branches.items()):
         tip = branch_tip(repo, branch)
         if tip is None:
             continue
         entry = {"repository": str(repo), "branch": branch, "sha": tip}
-        reason = (
-            "default branch" if branch == default_branch
-            else "checked out" if branch in checked_out
-            else "worktree still exists" if any(Path(path).exists() for path in usage.worktrees)
-            else "thread is active" if usage.active
-            else None
-        )
+        reason = blocking_reason(branch, usage, default_branch, worktrees)
+        if reason is None and not is_ancestor(repo, tip, default_ref):
+            reason = "not merged"
+            if github is not None and not lookups["available"]:
+                reason = "pull request lookup unavailable"
+            elif github is not None:
+                try:
+                    number = merged_pull_request(repo, github, branch, tip, default_branch)
+                except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                    lookups["available"] = False
+                    result["failed"].append({"project": str(repo), "branch": branch, "error": describe("gh pr list", error)})
+                    reason = "pull request lookup unavailable"
+                else:
+                    if number is not None:
+                        reason = None
+                        entry["pullRequest"] = number
         if reason is None:
-            ancestor = git(repo, "merge-base", "--is-ancestor", tip, default_ref, check=False)
-            if ancestor.returncode not in (0, 1):
-                raise subprocess.CalledProcessError(ancestor.returncode, ancestor.args, ancestor.stdout, ancestor.stderr)
-            if ancestor.returncode == 1:
-                reason = "not merged"
-        if reason == "not merged" and github is not None:
-            try:
-                number = merged_pull_request(github, branch, tip, default_branch)
-            except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
-                cause = command_error(error) if isinstance(error, subprocess.CalledProcessError) else repr(error)
-                result["failed"].append({"project": str(repo), "branch": branch, "error": cause})
-                continue
-            if number is not None:
-                reason = None
-                entry["pullRequest"] = number
-        if reason is None and not dry_run:
-            reason = delete_branch(repo, branch, tip)
-        if reason is not None:
-            result["kept"].append({**entry, "reason": reason})
+            candidates.append({**entry, "defaultBranch": default_branch})
         else:
-            result["deleted"].append(entry)
+            result["kept"].append({**entry, "reason": reason})
+    return candidates
 
 
 def delete_branch(repo: Path, branch: str, tip: str) -> str | None:
