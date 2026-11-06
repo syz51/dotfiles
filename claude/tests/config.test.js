@@ -155,11 +155,11 @@ describe("settings", () => {
     expect(guard).toHaveLength(1);
   });
 
-  // Computer use stays off: Claude Code only offers it in interactive sessions, and T3 Code
-  // sessions run through the SDK. No hook or server may turn it on or stand in for it.
-  test("nothing enables computer use", () => {
-    expect(JSON.stringify(settings)).not.toMatch(/computer-use/);
-    expect(settings.hooks.SessionStart).toBeUndefined();
+  // Claude Code's built-in computer use only runs in interactive sessions, and T3 Code sessions
+  // run through the SDK, so the hook that enabled it in every project was removed. Other
+  // hooks and MCP servers, including a computer-use server of your own, are unaffected.
+  test("no hook enables Claude Code's built-in computer use", () => {
+    expect(handlers.some((hook) => hook.command?.includes("enable-computer-use"))).toBe(false);
     expect(existsSync(join(REPO, "claude/hooks/enable-computer-use.js"))).toBe(false);
   });
 });
