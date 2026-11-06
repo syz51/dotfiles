@@ -1,0 +1,9 @@
+# Shared Git settings, included from ~/.gitconfig, which keeps identity and
+# credentials:
+#   git config --global --add include.path ~/.config/git/shared.gitconfig
+# Not named git/config: Git would read that as global configuration and, on a
+# machine without ~/.gitconfig, `git config --global` would write into it.
+[core]
+	# Remember untracked-file scans in the index. Status output is unchanged;
+	# only directories modified since the last scan are read again.
+	untrackedCache = true
