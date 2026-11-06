@@ -147,18 +147,22 @@ recognizes its own earlier result, so the installer works on both Macs' layouts:
   which drops repeated `PATH` and `fpath` entries (the first one wins, as in command
   lookup) and loads Atuin's init script from a cache.
 - The uv and uvx completions load through `shell/completions.zsh`, right after Oh My
-  Zsh runs `compinit`. Zsh initializes completions once, after adding
-  `~/.zsh/functions` where that directory was set up.
+  Zsh runs `compinit`, for whichever of the two is on `PATH` there. Zsh initializes
+  completions once, after adding `~/.zsh/functions` where that directory was set up;
+  the installer refuses a configuration that runs `compinit` again elsewhere, which
+  would drop those completions.
 - fnm keeps its directory-change hook, with zsh selected explicitly; bash loads
   Atuin's PATH setup before its initialization.
 
 `shell/cache.zsh` keeps the output of these static init commands in
 `${XDG_CACHE_HOME:-$HOME/.cache}/shell-cache`, private to you, and regenerates an
 entry when the resolved executable, its arguments, a configuration file it reads
-or a setting it bakes in changes: Atuin's `config.toml` and `ATUIN_*` variables,
-and zoxide's `_ZO_*` variables, for the zoxide init in `explore/explore.zsh`. The
+or a setting it bakes in changes: Atuin's `config.toml` (in `$ATUIN_CONFIG_DIR`,
+`${ATUIN_HOME:-~/.atuin}` or `~/.config/atuin`) and `ATUIN_*` variables, and zoxide's
+`_ZO_*` variables, for the zoxide init in `explore/explore.zsh`. With Atuin's
+`[dotfiles]` enabled, its init also prints synced aliases, so it runs live. The
 cached output is sourced at the top level, exactly as `eval` ran it. An unusable
-cache falls back to live generation. The uv and uvx completions are autoloaded
+cache falls back to live generation; an empty or truncated entry is regenerated. The uv and uvx completions are autoloaded
 from that cache, so zsh reads their large definitions on the first completion
 instead of at every startup. Open a new shell after applying.
 
@@ -193,12 +197,19 @@ configure feedback capture, or create the daily maintenance and audit jobs;
 those are configured separately through the managed skills workflow. Keep
 machine-specific links, credentials and job state outside this repository.
 
-Git reads `git/config` and `git/ignore` from `~/.config/git` on its own, as
-global configuration that `~/.gitconfig` overrides. The shared config turns on Git's
-untracked cache, which leaves `git status` output unchanged and makes it, and the
-prompt's dirty check, faster in large repositories. Keep identity and credentials
-in `~/.gitconfig`: without that file, `git config --global` writes to the tracked
-`git/config`. To name the ignore file explicitly anyway:
+Git reads `git/ignore` from `~/.config/git` on its own. Include the shared settings
+in `git/shared.gitconfig` from `~/.gitconfig`, which keeps identity and credentials:
+
+```sh
+git config --global --get-all include.path | grep -qxF '~/.config/git/shared.gitconfig' ||
+  git config --global --add include.path '~/.config/git/shared.gitconfig'
+```
+
+The file is deliberately not `git/config`, which Git would read as global
+configuration and, without a `~/.gitconfig`, write `git config --global` changes
+into. It turns on Git's untracked cache, which leaves `git status` output unchanged
+and makes it, and the prompt's dirty check, faster in large repositories. To name
+the ignore file explicitly anyway:
 
 ```sh
 git config --global core.excludesFile "$HOME/.config/git/ignore"
@@ -418,7 +429,7 @@ the real state.
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests claude/factory
+bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v

@@ -45,7 +45,8 @@ _shell_cache() {
   shift
 
   resolved=${executable:A}
-  zmodload zsh/stat 2>/dev/null || { _shell_cache_live "$executable" "$@"; return }
+  # Load only zstat: the module's stat builtin would shadow /usr/bin/stat.
+  zmodload -F zsh/stat b:zstat 2>/dev/null || { _shell_cache_live "$executable" "$@"; return }
   zstat -H metadata -- "$resolved" 2>/dev/null || { _shell_cache_live "$executable" "$@"; return }
   signature="# shell-cache $name $executable $resolved $metadata[device] $metadata[inode] $metadata[size] $metadata[mtime] $metadata[ctime]"
   for item in "$@"; do
@@ -83,7 +84,8 @@ _shell_cache() {
       _shell_cache_live "$executable" "$@"
       return
     fi
-    IFS= read -r cached_signature < "$cache_file" || { _shell_cache_live "$executable" "$@"; return }
+    # An empty or truncated file has no signature line, so it is regenerated.
+    IFS= read -r cached_signature < "$cache_file" || cached_signature=
   fi
   if [[ $cached_signature != "$signature" ]]; then
     if ! code=$("$executable" "$@"); then

@@ -200,6 +200,14 @@ _uv; _uvx
         self.assertIn('insecure cache file', result.stderr)
         self.assertNotIn('UNEXPECTED_SOURCE', result.stdout)
 
+    def test_missing_tools_get_no_completions_and_no_diagnostics(self):
+        (self.bin / 'uv').unlink()
+        (self.bin / 'uvx').unlink()
+        script = 'compdef() { print -r -- "compdef:$*"; }; source "$1"'
+        result = self.zsh(script, ROOT / 'completions.zsh')
+        self.assertEqual((result.stdout, result.stderr), ('', ''))
+        self.assertFalse(self.cache.exists())
+
     def test_unusable_cache_path_falls_back(self):
         unusable = self.root / 'not-a-directory'
         unusable.touch()
@@ -256,6 +264,27 @@ _shell_cache -e 'TOOL_*' -f "$2" tool-init.zsh -- tool other; print -r -- "rc:$?
         self.zsh(script, ROOT / 'cache.zsh', self.depfile, TOOL_SETTING='y')
         self.assertEqual(self.calls('tool'), 6)
 
+    def test_stat_command_is_not_shadowed(self):
+        script = '''source "$1"; _shell_cache -f "$2" tool-init.zsh -- tool init >/dev/null
+print -r -- "${(k)builtins[(I)(z|)stat]}"; whence -w stat'''
+        result = self.zsh(script, ROOT / 'cache.zsh', self.depfile)
+        self.assertEqual(result.stdout, 'zstat\nstat: command\n')
+
+    def test_empty_or_truncated_cache_is_regenerated(self):
+        self.load('init')
+        cache_file = self.cache / 'tool-init.zsh'
+        for content in ['', '# shell-cache tool-init.zsh truncated']:
+            with self.subTest(content=content):
+                cache_file.write_text(content)
+                calls = self.calls('tool')
+                result = self.zsh('''source "$1"
+_shell_cache -f "$2" -e 'TOOL_*' -x TOOL_RUNTIME tool-init.zsh -- tool init; print -r -- "rc:$?"''',
+                                  ROOT / 'cache.zsh', self.depfile)
+                self.assertEqual((result.stdout, result.stderr), ('rc:0\n', ''))
+                self.assertEqual(self.calls('tool'), calls + 1)
+                self.assertIn('seen:unset:init comments:on', self.load('init'))
+                self.assertEqual(self.calls('tool'), calls + 1)
+
     def test_missing_command_reports_without_output(self):
         script = 'source "$1"; _shell_cache missing -- no-such-tool init; print -r -- "rc:$? reply:[$REPLY]"'
         result = self.zsh(script, ROOT / 'cache.zsh')
@@ -266,6 +295,9 @@ _shell_cache -e 'TOOL_*' -f "$2" tool-init.zsh -- tool other; print -r -- "rc:$?
 class InteractiveTests(FixtureTest):
     def setUp(self):
         super().setUp()
+        self.home = self.root / 'home'
+        self.home.mkdir()
+        self.env['HOME'] = str(self.home)
         self.script('atuin', 'atuin', '''printf 'typeset ATUIN_FAKE=%s\\n' "${ATUIN_NOBIND-bound}"
 echo 'setopt interactive_comments' ''')
 
@@ -283,11 +315,43 @@ print -r -- "fpath:${(j.:.)fpath}"
         self.assertEqual(self.calls('atuin'), 1)
         self.assertIn('atuin:true', self.load(ATUIN_NOBIND='true'))
         self.assertEqual(self.calls('atuin'), 2)
-        config = self.root / 'config' / 'atuin' / 'config.toml'
+
+    def test_every_atuin_config_location_invalidates(self):
+        custom = self.root / 'custom'
+        for label, config, env in [
+            ('default home', self.home / '.atuin' / 'config.toml', {}),
+            ('ATUIN_HOME', self.root / 'atuin-home' / 'config.toml',
+             {'ATUIN_HOME': str(self.root / 'atuin-home')}),
+            ('XDG', self.root / 'config' / 'atuin' / 'config.toml', {}),
+            ('ATUIN_CONFIG_DIR', custom / 'config.toml', {'ATUIN_CONFIG_DIR': str(custom)}),
+        ]:
+            with self.subTest(label):
+                self.load(**env)
+                calls = self.calls('atuin')
+                config.parent.mkdir(parents=True, exist_ok=True)
+                config.write_text('[tmux]\nenabled = true\n')
+                self.load(**env)
+                self.load(**env)
+                self.assertEqual(self.calls('atuin'), calls + 1)
+
+    def test_atuin_dotfiles_generate_init_live(self):
+        config = self.home / '.atuin' / 'config.toml'
         config.parent.mkdir(parents=True)
-        config.write_text('[tmux]\nenabled = true\n')
-        self.load(ATUIN_NOBIND='true')
-        self.assertEqual(self.calls('atuin'), 3)
+        for label, text, env, live in [
+            ('section', '[dotfiles]\nenabled = true\n', {}, True),
+            ('indented, later table', 'a = 1\n  [dotfiles]\n  enabled=true\n[ui]\n', {}, True),
+            ('dotted key', 'dotfiles.enabled = true\n', {}, True),
+            ('inline table', 'dotfiles = { enabled = true }\n', {}, True),
+            ('environment', '', {'ATUIN_DOTFILES__ENABLED': 'true'}, True),
+            ('commented out', '[dotfiles]\n# enabled = true\n', {}, False),
+            ('disabled', '[dotfiles]\nenabled = false\n[tmux]\nenabled = true\n', {}, False),
+        ]:
+            with self.subTest(label):
+                config.write_text(text)
+                calls = self.calls('atuin')
+                for _ in range(2):
+                    self.assertIn('atuin:bound comments:on', self.load(**env))
+                self.assertEqual(self.calls('atuin') - calls, 2 if live else 1)
 
     def test_duplicate_path_entries_keep_first_occurrence(self):
         path = f'{self.bin}:/usr/bin:{self.bin}:/bin:/usr/bin'
@@ -388,6 +452,12 @@ class InstallerTests(ScratchTest):
         self.assertIn('already installed', self.install('--apply').stdout)
         self.assertEqual(self.snapshot(), installed)
 
+    def test_commented_lines_are_ignored(self):
+        comments = '# source $ZSH/oh-my-zsh.sh\n# fnm env --use-on-cd sets PATH\n'
+        self.write(comments + PLAIN_ZSHRC, PLAIN_BASHRC)
+        self.install('--apply')
+        self.assertEqual(self.zsh.read_text(), comments + PLAIN_ZSHRC_INSTALLED)
+
     def assert_refused_without_changes(self, diagnostic):
         original = self.snapshot()
         result = self.install('--apply', succeeds=False)
@@ -405,6 +475,10 @@ class InstallerTests(ScratchTest):
             ('mixed uv', PLAIN_ZSHRC_INSTALLED + 'eval "$(uv generate-shell-completion zsh)"\n'),
             ('no Oh My Zsh', PLAIN_ZSHRC.replace('source $ZSH/oh-my-zsh.sh\n', '')),
             ('unknown fnm', PLAIN_ZSHRC.replace(' --version-file-strategy=recursive --shell zsh', '')),
+            ('later compinit', PLAIN_ZSHRC + 'autoload -Uz compinit && compinit\n'),
+            ('installed, later compinit', PLAIN_ZSHRC_INSTALLED + 'compinit -C\n'),
+            ('quoted Oh My Zsh only', '# source $ZSH/oh-my-zsh.sh\n' + PLAIN_ZSHRC.replace(
+                'source $ZSH/oh-my-zsh.sh\n', 'source "$ZSH/oh-my-zsh.sh"\n')),
         ]:
             with self.subTest(label):
                 self.write(zshrc, PLAIN_BASHRC)

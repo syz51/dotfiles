@@ -23,7 +23,7 @@ there is no repository-wide installer.
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
-| `git/`                   | Shared Git settings and ignore patterns, read from `~/.config/git`.              |
+| `git/`                   | Shared Git ignore patterns, and settings that `~/.gitconfig` includes.           |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
 Original contributions are [MIT licensed](LICENSE). Bundled and adapted code

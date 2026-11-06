@@ -4,6 +4,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import tempfile
@@ -40,22 +41,30 @@ def move_compinit(text: str) -> str:
     return text.replace(old_source, new_source, 1)
 
 
+# Whole, uncommented lines only: a commented-out copy must never match.
+OMZ_LINE = re.compile(r"^" + re.escape(OMZ_SOURCE), re.MULTILINE)
+# Any compinit after Oh My Zsh's reloads the dump and drops the uv registrations.
+OTHER_COMPINIT = re.compile(r"^[ \t]*[^#\n]*\bcompinit\b", re.MULTILINE)
+
+
 def install_completions(text: str) -> str:
     """Load the cached uv and uvx completions once Oh My Zsh has run compinit."""
+    if OTHER_COMPINIT.search(text):
+        raise ValueError("Unexpected compinit outside Oh My Zsh; refusing configuration drift")
     if UV_EVALS in text:
         return replace_exact(text, UV_EVALS, COMPLETIONS, "uv completion initialization")
     if text.count(COMPLETIONS) == 1 and "generate-shell-completion" not in text:
         return text
-    if COMPLETIONS in text or "generate-shell-completion" in text or text.count(OMZ_SOURCE) != 1:
+    if COMPLETIONS in text or "generate-shell-completion" in text or len(OMZ_LINE.findall(text)) != 1:
         raise ValueError("Unexpected uv completion initialization; refusing configuration drift")
-    return text.replace(OMZ_SOURCE, OMZ_SOURCE + COMPLETIONS, 1)
+    return OMZ_LINE.sub(lambda _: OMZ_SOURCE + COMPLETIONS, text, count=1)
 
 
 def select_fnm_shell(text: str) -> str:
     """Name zsh explicitly wherever fnm's environment is generated without a shell."""
     lines = text.splitlines(keepends=True)
     for index, line in enumerate(lines):
-        if "fnm env" in line and "--shell" not in line:
+        if "fnm env" in line and "--shell" not in line and not line.lstrip().startswith("#"):
             if line.count(FNM_OLD) != 1:
                 raise ValueError("Unexpected fnm initialization; refusing configuration drift")
             lines[index] = line.replace(FNM_OLD, FNM_NEW)
