@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. A SessionStart hook turns on Claude Code's computer use in every project outside temporary folders; for it to work, grant Accessibility and Screen Recording to each app that runs `claude`, such as Ghostty and T3 Code. |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -278,12 +278,11 @@ rebases or bisects, whose threads are idle, and whose worktree folders are gone 
 now hold another branch. It deletes such a branch when:
 
 - it is merged: `origin/HEAD` contains its tip as of the last fetch, which T3's sweep
-  refreshes, or, for a github.com origin, `gh` finds a merged pull request from it
+  refreshes, or, for a github.com origin, GitHub has a merged pull request from it
   into the default branch whose head is its tip or a commit known to descend from
   it, which covers squash and rebase merges;
-- it is pushed: `origin/<branch>`, both as last fetched and as `gh` or
-  `git ls-remote` reads it live, is its tip or a known descendant, so a resumed
-  thread gets the work back;
+- it is pushed: `origin/<branch>`, both as last fetched and as read live, is its
+  tip or a known descendant, so a resumed thread gets the work back;
 - it is abandoned: every thread on it, with a worktree or not, is archived or
   deleted.
 
@@ -298,9 +297,15 @@ rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses reso
 a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
 conditions are checked again just before deleting. It never deletes the default
 branch or a branch no T3 worktree thread uses, and skips repositories without
-`origin/HEAD`. It exits 1 when a repository or a remote lookup fails, still pruning
-the rest. Lookups never prompt and time out after 60 seconds; after a failed one it
-skips the remaining remote lookups in that repository.
+`origin/HEAD`. Remote lookups are batched per repository. On github.com, one
+GraphQL query through `gh` per 50 branches the default branch lacks has aliased
+fields for each branch's newest 100 merged pull requests and its live branch; a
+failed query stops that repository's later ones but keeps what earlier ones found.
+Elsewhere, one `git ls-remote --heads`, which asks the server for branches only,
+checks the branches the last fetch saw on origin. A repository whose branches are all
+merged by ancestry makes no call, nor does one off GitHub whose other branches were
+never fetched from origin. Lookups never prompt and time out after 60 seconds. It
+exits 1 when a repository or a remote lookup fails, still pruning the rest.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and

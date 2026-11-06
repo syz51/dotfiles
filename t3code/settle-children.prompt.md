@@ -32,8 +32,7 @@ commits are kept elsewhere. Follow these steps exactly. Start no subagents, and 
    prints each as `<repository> <branch>`, followed by `archived as <ref>` when it
    saved a pushed or abandoned branch's tip under that ref first. A repository it could not
    prune, or a failed remote lookup, makes it exit 1 with a `failed:` line on stderr
-   naming the repository and, for a lookup, the branch; everything else is still
-   pruned.
+   naming the repository; everything else is still pruned.
    Delete no branch or worktree yourself.
 5. Report in at most five lines: ids planned, settled, refused or failed with the
    reasons, ids still listed after verify, branches pruned and any prune failures.
