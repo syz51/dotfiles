@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -248,6 +248,36 @@ and falls back to the claude.ai subscription otherwise. The planner,
   the real claude, so killing the process a caller started kills claude.
 - For scripts that call `claude` by name, put `~/.claude/bin/api-first` first on `PATH` for
   that run only, never in a login profile. A nesting limit stops a loop.
+
+## Work board
+
+[agent-board](https://github.com/syz51/agent-board) is the shared work board that
+`claude/CLAUDE.md`'s "Work board" rule refers to. One server runs on a host in the
+tailnet ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md));
+each Mac runs the `board` binary. The hooks in `claude/settings.json` and
+`codex/hooks.json` call `~/.cargo/bin/board` and do nothing until it is installed. On each
+Mac, with a device token created on the server host:
+
+```sh
+cargo install --git https://github.com/syz51/agent-board board
+board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>  # paste the token
+claude mcp add --scope user board -- "$HOME/.cargo/bin/board" mcp
+board install launchd --write
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agent-board.watch.plist
+```
+
+For Codex, add the MCP server to the local `codex/config.toml`:
+
+```toml
+[mcp_servers.board]
+command = "board"
+args = ["mcp"]
+env_vars = ["T3CODE_THREAD_ID"]
+```
+
+The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
+token in the macOS Keychain, outside this repository. With the server unreachable, a
+hook waits at most about 1.5 seconds once and then skips the server for a while.
 
 ## T3 Code thread cleanup
 

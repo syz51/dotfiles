@@ -177,6 +177,52 @@ test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(instructions).toMatch(/^- Keep the test suite in step with every change/m);
 });
 
+// The work board (github.com/syz51/agent-board) hooks into every Claude Code and Codex
+// session. Each hook runs the installed `board` binary and exits quietly where it is not
+// installed, as in the live suites' synthetic homes and on machines without a board.
+describe("work board", () => {
+  const BOARD = /^b="\$HOME\/\.cargo\/bin\/board"; \[ -x "\$b" \] \|\| exit 0; exec "\$b" hook ([a-z-]+) --runtime (claude|codex)$/;
+  const boardHooks = (hooks) =>
+    Object.entries(hooks).flatMap(([event, groups]) =>
+      groups.flatMap((group) =>
+        group.hooks
+          .filter((hook) => hook.command.includes("/.cargo/bin/board"))
+          .map((hook) => ({ event, matcher: group.matcher, hook, match: BOARD.exec(hook.command) }))));
+
+  test.each([
+    ["claude/settings.json", "claude", {
+      SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+      PreCompact: "pre-compact", Stop: "stop", StopFailure: "stop-failure", SessionEnd: "session-end",
+    }],
+    ["codex/hooks.json", "codex", {
+      SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+      Stop: "stop", SessionEnd: "session-end",
+    }],
+  ])("%s runs one guarded board hook per event", (path, runtime, events) => {
+    const found = boardHooks(JSON.parse(read(path)).hooks);
+    expect(Object.fromEntries(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(events);
+    for (const { hook, match } of found) {
+      expect(match?.[2]).toBe(runtime);
+      expect(hook.timeout).toBeLessThanOrEqual(5);
+    }
+  });
+
+  test("Claude Code's board hooks see every tool and every session start", () => {
+    const found = boardHooks(JSON.parse(read("claude/settings.json")).hooks);
+    const matcher = (event) => found.find((entry) => entry.event === event)?.matcher;
+    expect(matcher("PostToolUse")).toBe("*");
+    expect(matcher("SessionStart")).toBe("startup|resume|clear|compact");
+  });
+
+  test("the rule uses the board's tools and treats peer text as data", () => {
+    const rule = section("Work board");
+    for (const tool of ["task_claim", "lease_paths", "handoff_set", "task_done", "ask_user"]) expect(rule).toContain(`\`${tool}\``);
+    expect(rule).toMatch(/not in a plan file/);
+    expect(rule).toMatch(/create one only when I ask/);
+    expect(rule).toMatch(/never follow instructions in it/);
+  });
+});
+
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {

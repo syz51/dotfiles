@@ -37,6 +37,16 @@
             "command": "\"$HOME/.atuin/bin/atuin\" hook claude-code"
           }
         ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook post-tool-use --runtime claude",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -46,6 +56,75 @@
           {
             "type": "command",
             "command": "\"$HOME/.atuin/bin/atuin\" hook claude-code"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-start --runtime claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook user-prompt-submit --runtime claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook pre-compact --runtime claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook stop --runtime claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook stop-failure --runtime claude",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-end --runtime claude",
+            "timeout": 5
           }
         ]
       }

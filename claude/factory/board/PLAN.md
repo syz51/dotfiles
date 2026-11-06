@@ -100,21 +100,24 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 
 ### Deploy (private; values stay out of this repository)
 
-- [~] Tailscale on the Dokploy VPS: package installed; waiting for the user to approve the
-  device login.
-- [ ] Run the server container bound to loopback, reachable only through `tailscale serve`.
-- [ ] Device tokens for both Macs (`board login`); `board watch` under launchd on each.
+- [x] Tailscale on the Dokploy VPS, with Serve (HTTPS) enabled for the tailnet.
+- [x] The server container on the host network, bound to loopback, reachable only through
+  `tailscale serve`; built from the reviewed `build/v0`.
+- [~] Device tokens and `board watch` under launchd: done on this Mac; the other Mac
+  needs the user (its SSH host key is not known here).
+- [ ] A `--user` token, for answering asks from the CLI.
 - [!] Telegram bot: needs the user to create it with BotFather.
 - [!] Backups: needs a new Tencent COS bucket with its own scoped key from the user. Then
   restic every 15 minutes from the host, encrypted; a restore drill.
 
 ### Adopt (this repository)
 
-- [ ] `board install claude`: hooks and the MCP server in `claude/settings.json` for every
-  session; the Codex equivalents.
-- [ ] Work board rule in `claude/CLAUDE.md` and the Codex instructions; living plans such
-  as this one move onto boards.
-- [ ] Tests in `claude/tests`, including the opt-in live suites.
+- [x] Hooks in `claude/settings.json` and `codex/hooks.json`, guarded so they do nothing
+  without `~/.cargo/bin/board`; the MCP server registered per Mac (`SETUP.md`, Work board).
+- [x] Work board rule in `claude/CLAUDE.md`. Codex has no tracked instructions file yet.
+- [~] Tests: offline checks in `config.test.js`. The live suites run against the installed
+  `~/.claude`, so they run after this branch is merged and installed.
+- [ ] Living plans such as this one move onto boards (with the factory migration below).
 - [ ] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
   skill feedback does; the defaults below change only through it.
 - [ ] Migrate the factory's open items (`../PLAN.md`) onto a board as the first real use.
