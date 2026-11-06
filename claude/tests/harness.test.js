@@ -86,6 +86,15 @@ describe("policy final verification boundary", () => {
     assertCleanedUp();
   }, 30_000);
 
+  test("a run the API refused before it did anything is run once more", async () => {
+    const marker = join(root, "refused");
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_REFUSE_ONCE: marker });
+    expect(run.code, output(run)).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+    expect(output(run)).toMatch(/policy: 1 sessions, total \$0\.0010/);
+    assertCleanedUp();
+  }, 30_000);
+
   test("a single-track fix handed to a subagent fails", async () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-delegated");
     expect(run.code).not.toBe(0);

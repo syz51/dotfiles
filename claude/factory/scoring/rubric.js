@@ -1,7 +1,9 @@
 // The scoring rubric (rubric.json): detector and judge dimensions, each tied to the
 // `## Heading` of claude/CLAUDE.md it tests, the judge's JSON schema and the validation
-// of its answers. Bump rubric.json's version whenever a dimension's meaning changes, so
-// sessions get scored again.
+// of its answers. Bump rubric.json's version whenever a dimension's meaning or the judge's
+// prompt changes (score.js judgeParts, or how judge() passes it), so sessions get scored
+// again: proposals count only records of the current version, and judgements from another
+// prompt are not comparable.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

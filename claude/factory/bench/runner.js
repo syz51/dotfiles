@@ -4,10 +4,10 @@
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import { ClaudeCallError, claudeBin, partialEvents, runTask } from "../lib/claude.js";
+import { ClaudeCallError, claudeBin, runTask } from "../lib/claude.js";
 import { removeSessionArtifacts } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { resultEvent } from "../../tests/lib/stream.js";
+import { partialEvents, resultEvent } from "../../tests/lib/stream.js";
 import { applyOverlay, materialize, writeAgentOverride } from "./cases.js";
 
 const CLAUDE_ROOT = join(import.meta.dir, "..", "..");

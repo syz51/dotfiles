@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [

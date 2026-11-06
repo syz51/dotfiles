@@ -3,7 +3,7 @@
 // reports, and behaves according to FAKE_MODE. It also writes a session entry under
 // ~/.claude/projects despite --no-session-persistence, so cleanup is put to the test.
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { projectName } from "./cleanup.js";
@@ -71,6 +71,15 @@ const skill = (name) => tool("Skill", { skill: name }, () => ({ text: `Launching
 
 emit({ type: "system", subtype: "init", cwd, session_id: sessionId, model: option("--model"), agents: ["explorer"], skills: [] });
 runHooks("InstructionsLoaded", { file_path: join(home, ".claude", "CLAUDE.md"), memory_type: "User" });
+// With FAKE_REFUSE_ONCE (a marker path), the first run ends as Claude Code ends one the API
+// refuses for credit.
+if (process.env.FAKE_REFUSE_ONCE && !existsSync(process.env.FAKE_REFUSE_ONCE)) {
+  writeFileSync(process.env.FAKE_REFUSE_ONCE, "");
+  runHooks("StopFailure", { error: "billing_error", last_assistant_message: "Credit balance is too low" });
+  emit({ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: "Credit balance is too low", total_cost_usd: 0, num_turns: 1 });
+  for (const event of events) console.log(JSON.stringify(event));
+  process.exit(1);
+}
 if (mode === "incomplete") {
   console.log(JSON.stringify(events[0]));
   process.exit(0);

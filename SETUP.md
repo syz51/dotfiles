@@ -222,13 +222,25 @@ and falls back to the claude.ai subscription otherwise. The planner,
   pipeline). Claude Code gets it through an `apiKeyHelper` merged into the run's last
   `--settings`, so it is not in the environment, where an `env` dump would expose it by
   accident. It is not hidden from the agent: a session running as you can read the file.
-- A one-token Haiku request checks for credit that Claude Code can spend: it carries
-  Claude Code's beta, because credit that plain API calls can use may still be refused to
-  Claude Code. The answer is cached per key and kind of check in
-  `~/.local/state/claude-api/` (10 minutes while the API works, 30 once credit is out or
-  the key is refused, 1 when the check is inconclusive). Without a key file or credit, runs
-  use the subscription and say so on stderr. Every decision goes to `decisions.jsonl` there,
-  and the weekly summary counts them.
+- A plain one-token Haiku request checks the key and its credit. The answer is cached per
+  key and kind of check in `~/.local/state/claude-api/` (10 minutes while the API works,
+  30 once credit is out, the key is refused or the request is refused any other way, 1
+  when the check is inconclusive). Without a key file or credit, runs use the
+  subscription and say so on stderr. Every decision goes to `decisions.jsonl` there, and
+  the weekly summary counts them.
+- The check cannot foresee every refusal: the API can refuse Claude Code's own requests
+  for credit while plain ones are served, and refuses requests that only look like Claude
+  Code's even while Claude Code is served, so no check request can stand in for a run. So
+  API runs report back: `StopFailure` and `Stop` hooks merged into the same settings save
+  their input under `reports/` there (with `sh` and `cat`, since Claude Code kills
+  `StopFailure` hooks when it exits), and the next run's plan folds them in. A run the API
+  refuses for credit or the key moves later runs to the subscription for 30 minutes,
+  doubling with each further refusal while the check keeps passing, up to 8 hours; runs
+  refused together count once, a run that goes through clears the count, and plans
+  running together take turns with the state. The factory and the live suites run a call
+  the API refused for credit or the key before it did anything once more, with
+  `API_FIRST_SUBSCRIPTION=1` so it goes to the subscription even when the refused run's
+  hook was cut off before it reported.
 - Runs that are not print mode, or that set `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
   `ANTHROPIC_BASE_URL` themselves, pass through untouched. The script replaces itself with
   the real claude, so killing the process a caller started kills claude.

@@ -86,21 +86,29 @@ export const failed = (step) => step.error !== undefined || step.code === null |
 const stepStatus = (step) => (failed(step) ? "FAILED" : needsAttention(step) ? "ATTENTION" : "ok");
 
 // Which billing the API-first wrapper chose for the week's print-mode calls (its
-// decisions.jsonl), so a fallback to the subscription is seen.
+// decisions.jsonl), and the API runs the API refused, so a fallback to the subscription is
+// seen.
 export function billingSummary(path, since) {
   if (!existsSync(path)) return null;
   const recent = readJsonl(path).filter((entry) => Date.parse(entry.at) >= since);
-  const fallbacks = recent.filter((entry) => entry.mode === "subscription");
-  return { api: recent.filter((entry) => entry.mode === "api").length, subscription: fallbacks.length, lastFallback: fallbacks.at(-1) ?? null };
+  const of = (mode) => recent.filter((entry) => entry.mode === mode);
+  const [fallbacks, refusals] = [of("subscription"), of("refused")];
+  return { api: of("api").length, subscription: fallbacks.length, refused: refusals.length, lastFallback: fallbacks.at(-1) ?? null, lastRefusal: refusals.at(-1) ?? null };
 }
 
 function renderSummary(run) {
   const lines = [`# Factory weekly run, ${run.startedAt.slice(0, 10)}`, "", `Started ${run.startedAt}, finished ${run.finishedAt}.`, ""];
   if (run.billingError) lines.push("## Billing (last 7 days)", "", `- Unavailable: ${run.billingError}`, "");
   else if (run.billing) {
-    const { api, subscription, lastFallback } = run.billing;
-    lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} on the API, ${subscription} on the subscription.`);
-    if (lastFallback) lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason}. Top up API credit that Claude Code can spend to move back.`);
+    const { api, subscription, refused, lastFallback, lastRefusal } = run.billing;
+    lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} started on the API, ${subscription} on the subscription.`);
+    // Runs the API refused together are recorded once.
+    if (lastRefusal) lines.push(`- Refusals of API runs recorded: ${refused}; the latest ${lastRefusal.at}: ${String(lastRefusal.reason ?? "no reason").replace(/\.$/, "")}.`);
+    if (lastFallback) {
+      const reason = String(lastFallback.reason ?? "no reason").replace(/\.$/, "");
+      const advice = { exhausted: " Top up API credit that Claude Code can spend to move back.", invalid: " Replace the API key to move back." }[reason.split(/[ :]/)[0]] ?? "";
+      lines.push(`- Latest fallback ${lastFallback.at}: ${reason}.${advice}`);
+    }
     lines.push("");
   }
   for (const step of run.steps) {
