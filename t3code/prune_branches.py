@@ -17,12 +17,12 @@ A branch is held, and stays, when any of these is true:
 
 Otherwise it is deleted when its commits are kept elsewhere, checked in this order:
 1. Merged: `refs/remotes/origin/HEAD` contains its tip as of the last fetch, or, when
-   origin is on github.com, `gh` finds a merged pull request from it into the default
+   origin is on github.com, GitHub has a merged pull request from it into the default
    branch whose head is its tip or a known descendant of it, which covers squash and
    rebase merges.
-2. Pushed: origin's branch of the same name, both as last fetched and as read live
-   through `gh` on GitHub or `git ls-remote` elsewhere, is its tip or a known
-   descendant of it. A resumed thread gets its worktree back from that branch.
+2. Pushed: origin's branch of the same name, both as last fetched and as read live,
+   is its tip or a known descendant of it. A resumed thread gets its worktree back
+   from that branch.
 3. Abandoned: every T3 thread on it, with a worktree or not, is archived or deleted.
 A pushed or abandoned branch's tip is first saved as
 `refs/t3-archive/<branch>@<12 hex digits of the tip>`, which `git branch` does not
@@ -36,8 +36,10 @@ SSH command git uses resolves the host to github.com or ssh.github.com through
 fresh state just before deleting, and git itself refuses to delete a branch that a
 worktree has checked out, is rebasing or is bisecting. Project folders that are
 missing or not in a repository, and repositories without `origin/HEAD`, are skipped.
-An error fails only its repository, and the first failed remote lookup in a
-repository stops remote lookups in it. Each call prints the deleted branches as
+Remote lookups are batched per repository: on github.com, one GraphQL query through
+`gh` per 50 branches for their merged pull requests and live branches, and elsewhere
+one `git ls-remote` for the branches to check. A repository with nothing to look up
+makes no remote call. An error fails only its repository. Each call prints the deleted branches as
 `<repository> <branch>`, followed by `archived as <ref>` for archived ones, one per
 line, with `--log` appends one JSON line describing the call, and exits 1 when
 anything failed.
@@ -56,13 +58,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import quote
 
 DEFAULT_DB = Path.home() / ".t3" / "userdata" / "statev2.sqlite"
 
 ACTIVE_RUN_STATUSES = ("queued", "preparing", "starting", "running", "waiting")
 
 LOOKUP_TIMEOUT_SECONDS = 60
+
+# Branches per GitHub query, each asking for up to 100 pull requests, well inside
+# GitHub's limit of 500,000 nodes per query.
+GITHUB_BATCH = 50
 
 ARCHIVE_PREFIX = "refs/t3-archive/"
 
@@ -274,40 +279,60 @@ def github_repository(repo: Path) -> str | None:
     return path[1]
 
 
-def merged_pull_requests(github: str, branch: str, base: str) -> list[tuple[int, str]]:
-    """The number and head commit of each merged pull request from branch into base."""
-    found = subprocess.run(
-        ["gh", "pr", "list", "--repo", f"github.com/{github}", "--head", branch, "--base", base,
-         "--state", "merged", "--json", "number,headRefOid", "--limit", "100"],
-        capture_output=True, text=True, check=True, timeout=LOOKUP_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
-    )
-    return [(int(pull["number"]), str(pull["headRefOid"])) for pull in json.loads(found.stdout)]
+GITHUB_QUERY = """query($owner: String!, $name: String!, $base: String!{variables}) {{
+  repository(owner: $owner, name: $name) {{{fields}
+  }}
+}}"""
 
 
-def remote_branch(repo: Path, github: str | None, branch: str) -> str | None:
-    """The commit origin's branch of this name points at now, or None without one."""
-    if github is not None:
+def github_lookup(
+    github: str, base: str, branches: list[str], refs: set[str],
+) -> tuple[dict[str, list[tuple[int, str]]], dict[str, str | None]]:
+    """For each of branches, the number and head commit of each merged pull request
+    from it into base, and for each of those in refs, the commit origin's branch of
+    that name points at now, or None. One GraphQL query per GITHUB_BATCH branches."""
+    owner, name = github.split("/")
+    pulls: dict[str, list[tuple[int, str]]] = {}
+    heads: dict[str, str | None] = {}
+    for start in range(0, len(branches), GITHUB_BATCH):
+        batch = branches[start:start + GITHUB_BATCH]
+        variables, fields, args = [], [], ["-f", f"owner={owner}", "-f", f"name={name}", "-f", f"base={base}"]
+        for i, branch in enumerate(batch):
+            variables.append(f", $h{i}: String!")
+            fields.append(f"\n    p{i}: pullRequests(headRefName: $h{i}, baseRefName: $base, states: MERGED, first: 100)"
+                          " { nodes { number headRefOid } }")
+            args += ["-f", f"h{i}={branch}"]
+            if branch in refs:
+                variables.append(f", $r{i}: String!")
+                fields.append(f"\n    r{i}: ref(qualifiedName: $r{i}) {{ target {{ oid }} }}")
+                args += ["-f", f"r{i}=refs/heads/{branch}"]
+        query = GITHUB_QUERY.format(variables="".join(variables), fields="".join(fields))
         found = subprocess.run(
-            ["gh", "api", f"repos/{github}/git/ref/heads/{quote(branch, safe='/')}", "--hostname", "github.com"],
-            capture_output=True, text=True, timeout=LOOKUP_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
+            ["gh", "api", "graphql", "--hostname", "github.com", "-f", f"query={query}", *args],
+            capture_output=True, text=True, check=True, timeout=LOOKUP_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
         )
-        if found.returncode != 0 and "HTTP 404" in found.stderr:
-            return None
-        if found.returncode != 0:
-            raise subprocess.CalledProcessError(found.returncode, found.args, found.stdout, found.stderr)
-        ref = json.loads(found.stdout)
-        # GitHub lists refs under a prefix instead when no ref has exactly this name.
-        if isinstance(ref, list):
-            return None
-        if ref["ref"] != f"refs/heads/{branch}":
-            raise ValueError(f"gh api answered for {ref['ref']}")
-        return str(ref["object"]["sha"])
-    found = git(repo, "ls-remote", "--exit-code", "origin", f"refs/heads/{branch}", check=False, timeout=LOOKUP_TIMEOUT_SECONDS)
-    if found.returncode == 2:
-        return None
-    if found.returncode != 0:
-        raise subprocess.CalledProcessError(found.returncode, found.args, found.stdout, found.stderr)
-    return found.stdout.split()[0]
+        repository = json.loads(found.stdout)["data"]["repository"]
+        if repository is None:
+            raise ValueError(f"GitHub has no repository {github}")
+        for i, branch in enumerate(batch):
+            pulls[branch] = [(int(pull["number"]), str(pull["headRefOid"])) for pull in repository[f"p{i}"]["nodes"]]
+            if branch in refs:
+                ref = repository[f"r{i}"]
+                heads[branch] = None if ref is None else str(ref["target"]["oid"])
+    return pulls, heads
+
+
+def remote_heads(repo: Path, branches: set[str]) -> dict[str, str | None]:
+    """The commit each of origin's branches of these names points at now, or None,
+    from one `git ls-remote`, whose patterns protocol v2 sends to the server."""
+    found = git(repo, "ls-remote", "origin", *(f"refs/heads/{branch}" for branch in sorted(branches)),
+                timeout=LOOKUP_TIMEOUT_SECONDS)
+    listed = {}
+    for line in found.stdout.splitlines():
+        sha, _, ref = line.partition("\t")
+        listed[ref] = sha
+    # Patterns match the end of a ref name, so keep exact names only.
+    return {branch: listed.get(f"refs/heads/{branch}") for branch in branches}
 
 
 def describe(label: str, error: Exception) -> str:
@@ -370,15 +395,16 @@ def find_candidates(repo: Path, branches: dict[str, Usage], result: dict) -> lis
         result["skipped"].append({"project": str(repo), "reason": "origin/HEAD is not set"})
         return []
     default_branch = default_ref.removeprefix("refs/remotes/origin/")
-    lookups = {"available": True}
+    available = True
     try:
         github = github_repository(repo)
     except LOOKUP_ERRORS as error:
         # Which remote this is stays unknown, so it gets no remote lookups.
-        github, lookups["available"] = None, False
+        github, available = None, False
         result["failed"].append({"project": str(repo), "error": describe("ssh -G", error)})
     worktrees = worktree_branches(repo)
-    candidates = []
+    decided: list[tuple[dict, str | None]] = []
+    unmerged: list[tuple[dict, Usage]] = []
     for branch, usage in sorted(branches.items()):
         tip = branch_tip(repo, branch)
         if tip is None:
@@ -386,7 +412,31 @@ def find_candidates(repo: Path, branches: dict[str, Usage], result: dict) -> lis
         entry = {"repository": str(repo), "branch": branch, "sha": tip}
         reason = blocking_reason(branch, usage, default_branch, worktrees)
         if reason is None and not is_ancestor(repo, tip, default_ref):
-            reason = keep_elsewhere(repo, github, branch, tip, default_branch, usage, entry, lookups, result)
+            unmerged.append((entry, usage))
+        else:
+            decided.append((entry, reason))
+
+    # Origin's branch can only hold the work when the last fetch saw it hold it.
+    fetched = {
+        entry["branch"] for entry, _ in unmerged
+        if contains(repo, ref_tip(repo, f"refs/remotes/origin/{entry['branch']}"), entry["sha"])
+    }
+    pulls: dict[str, list[tuple[int, str]]] = {}
+    heads: dict[str, str | None] = {}
+    if available and unmerged and (github or fetched):
+        try:
+            if github:
+                pulls, heads = github_lookup(github, default_branch, [entry["branch"] for entry, _ in unmerged], fetched)
+            else:
+                heads = remote_heads(repo, fetched)
+        except LOOKUP_ERRORS as error:
+            available = False
+            result["failed"].append({"project": str(repo), "error": describe("gh api graphql" if github else "git ls-remote", error)})
+    for entry, usage in unmerged:
+        decided.append((entry, keep_elsewhere(repo, entry, usage, pulls, heads, available)))
+
+    candidates = []
+    for entry, reason in sorted(decided, key=lambda decision: decision[0]["branch"]):
         if reason is None:
             candidates.append({**entry, "defaultBranch": default_branch})
         else:
@@ -395,41 +445,25 @@ def find_candidates(repo: Path, branches: dict[str, Usage], result: dict) -> lis
 
 
 def keep_elsewhere(
-    repo: Path, github: str | None, branch: str, tip: str, default_branch: str, usage: Usage,
-    entry: dict, lookups: dict[str, bool], result: dict,
+    repo: Path, entry: dict, usage: Usage, pulls: dict[str, list[tuple[int, str]]],
+    heads: dict[str, str | None], available: bool,
 ) -> str | None:
     """Record in entry where a branch the default branch lacks keeps its commits, or
     return why it stays: a merged pull request, or an archive ref and either origin's
     branch or every thread on it being archived or deleted."""
-    if lookups["available"] and github:
-        try:
-            pulls = merged_pull_requests(github, branch, default_branch)
-        except LOOKUP_ERRORS as error:
-            lookup_failed(repo, branch, "gh pr list", error, lookups, result)
-            pulls = []
-        for number, head in sorted(pulls, key=lambda pull: pull[1] != tip):
-            if contains(repo, head, tip):
-                entry["pullRequest"] = number
-                return None
-    archive = f"{ARCHIVE_PREFIX}{branch}@{tip[:12]}"
-    if lookups["available"] and contains(repo, ref_tip(repo, f"refs/remotes/origin/{branch}"), tip):
-        try:
-            pushed = remote_branch(repo, github, branch)
-        except LOOKUP_ERRORS as error:
-            lookup_failed(repo, branch, "gh api" if github else "git ls-remote", error, lookups, result)
-            pushed = None
-        if contains(repo, pushed, tip):
-            entry.update(pushedTo=f"origin/{branch}", archivedAs=archive)
+    branch, tip = entry["branch"], entry["sha"]
+    for number, head in sorted(pulls.get(branch, []), key=lambda pull: pull[1] != tip):
+        if contains(repo, head, tip):
+            entry["pullRequest"] = number
             return None
+    archive = f"{ARCHIVE_PREFIX}{branch}@{tip[:12]}"
+    if contains(repo, heads.get(branch), tip):
+        entry.update(pushedTo=f"origin/{branch}", archivedAs=archive)
+        return None
     if usage.abandoned:
         entry.update(abandoned=True, archivedAs=archive)
         return None
-    return "not merged or pushed" if lookups["available"] else "remote lookup unavailable"
-
-
-def lookup_failed(repo: Path, branch: str, step: str, error: Exception, lookups: dict, result: dict) -> None:
-    lookups["available"] = False
-    result["failed"].append({"project": str(repo), "branch": branch, "error": describe(step, error)})
+    return "not merged or pushed" if available else "remote lookup unavailable"
 
 
 def delete_branch(repo: Path, branch: str, tip: str, archive: str | None = None) -> str | None:

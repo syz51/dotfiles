@@ -278,12 +278,11 @@ rebases or bisects, whose threads are idle, and whose worktree folders are gone 
 now hold another branch. It deletes such a branch when:
 
 - it is merged: `origin/HEAD` contains its tip as of the last fetch, which T3's sweep
-  refreshes, or, for a github.com origin, `gh` finds a merged pull request from it
+  refreshes, or, for a github.com origin, GitHub has a merged pull request from it
   into the default branch whose head is its tip or a commit known to descend from
   it, which covers squash and rebase merges;
-- it is pushed: `origin/<branch>`, both as last fetched and as `gh` or
-  `git ls-remote` reads it live, is its tip or a known descendant, so a resumed
-  thread gets the work back;
+- it is pushed: `origin/<branch>`, both as last fetched and as read live, is its
+  tip or a known descendant, so a resumed thread gets the work back;
 - it is abandoned: every thread on it, with a worktree or not, is archived or
   deleted.
 
@@ -298,9 +297,13 @@ rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses reso
 a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
 conditions are checked again just before deleting. It never deletes the default
 branch or a branch no T3 worktree thread uses, and skips repositories without
-`origin/HEAD`. It exits 1 when a repository or a remote lookup fails, still pruning
-the rest. Lookups never prompt and time out after 60 seconds; after a failed one it
-skips the remaining remote lookups in that repository.
+`origin/HEAD`. Each repository makes one remote call for all its branches: on
+github.com a GraphQL query through `gh`, with aliased fields for each branch's merged
+pull requests and live branch (one query per 50 branches), and elsewhere one
+`git ls-remote` naming the branches, which git's protocol v2 filters on the server.
+A repository whose branches are all merged or unpushed makes none. Lookups never
+prompt and time out after 60 seconds. It exits 1 when a repository or its remote
+lookup fails, still pruning the rest.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and
