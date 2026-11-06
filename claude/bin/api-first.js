@@ -10,6 +10,19 @@
 // an `env` dump would expose it by accident. It is not a secret from the agent: a session
 // running as you can still read the key file.
 //
+// The credit check is a plain one-token Messages request: it finds a bad key or no credit
+// at all. It cannot stand in for Claude Code's own requests, which the API may refuse for
+// credit while plain ones are served. Nor can a request made to look like Claude Code's:
+// on 2026-11-06 the API refused any request carrying Claude Code's beta or its Agent SDK
+// identity line, even while real Claude Code runs on the same key were served, and earlier
+// that day real runs were refused while minimal ones went through. So API runs report
+// back: hooks merged into the same settings run `api-first.js report`, which records a run
+// that the API refused for credit or the key (StopFailure: billing_error,
+// authentication_failed), so later runs use the subscription, and clears that record after
+// a run that went through (Stop). While the check keeps passing but runs keep being
+// refused, each refusal keeps runs on the subscription twice as long as the last, up to
+// MAX_BACKOFF_MS.
+//
 // Variables (named API_FIRST_* because callers strip CLAUDE_* from a child's environment):
 //   API_FIRST_KEY_FILE   key file, default ~/.local/share/codex-skills/anthropic-api-key
 //   API_FIRST_STATE      state folder, default ${XDG_STATE_HOME:-~/.local/state}/claude-api
@@ -22,13 +35,14 @@ import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { appendJsonl, readJson, writeJsonAtomic } from "../factory/lib/state.js";
 
-export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 30 * 60 * 1000, unknown: 60 * 1000 };
-// The beta on Claude Code's main-loop requests. The API gates them on their own credit rule:
-// a key whose plain Messages calls succeed can get "credit balance is too low" for the same
-// request with this beta (credits that cannot be spent on Claude Code), so the check sends
-// it too. A cached result counts only for the check that made it.
-export const CLAUDE_CODE_BETA = "claude-code-20250219";
-const CHECK = `messages+${CLAUDE_CODE_BETA}`;
+export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 30 * 60 * 1000, refused: 30 * 60 * 1000, unknown: 60 * 1000 };
+export const MAX_BACKOFF_MS = 8 * 60 * 60 * 1000;
+// Claude Code's StopFailure error types that mean this key cannot run Claude Code.
+export const RUN_REFUSALS = { billing_error: "exhausted", authentication_failed: "invalid" };
+// A cached result counts only for the check that made it. An earlier check sent Claude
+// Code's beta ("messages+claude-code-20250219"), which the API refused even for keys that
+// Claude Code could use.
+const CHECK = "messages";
 // A wrapped session may run a script that goes through the wrapper again; deeper than this
 // is a loop.
 export const MAX_DEPTH = 4;
@@ -82,22 +96,28 @@ export function readArgs(argv) {
   return { print, settings };
 }
 
-// The caller's settings (a file path or JSON) with the key helper added; a caller's own
-// apiKeyHelper is kept.
-export function mergedSettings(value, helper) {
+// The caller's settings (a file path or JSON) with the key helper and the report hooks
+// added after the caller's own hooks. A caller's own apiKeyHelper is kept, and then no
+// report hooks are added: its runs say nothing about this key.
+export function mergedSettings(value, helper, report) {
   const settings = value === undefined ? {} : JSON.parse(value.trim().startsWith("{") ? value : readFileSync(value, "utf8"));
-  return JSON.stringify({ apiKeyHelper: helper, ...settings });
+  if (settings.apiKeyHelper !== undefined || report === undefined) return JSON.stringify({ apiKeyHelper: helper, ...settings });
+  const hooks = { ...settings.hooks };
+  for (const event of ["StopFailure", "Stop"]) hooks[event] = [...(hooks[event] ?? []), { hooks: [{ type: "command", command: report }] }];
+  return JSON.stringify({ ...settings, apiKeyHelper: helper, hooks });
 }
 
-// ok: the key works and has credit for Claude Code. exhausted: out of credit (for Claude
-// Code) or past a spend limit. invalid: the key was refused. unknown: the check could not tell.
+// ok: the key works and has credit. exhausted: out of credit or past a spend limit. invalid: the key was refused. refused: any other definite
+// refusal of this fixed, valid request, whatever its wording, since a run would be refused
+// too. unknown: the check could not tell (no answer, a rate limit, a server error, or a
+// missing check model, which says nothing about the caller's model).
 export async function checkCredit(key, { baseUrl = "https://api.anthropic.com", fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
   let status;
   let body;
   try {
     const response = await fetchImpl(`${baseUrl}/v1/messages`, {
       method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-beta": CLAUDE_CODE_BETA, "content-type": "application/json" },
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -115,7 +135,8 @@ export async function checkCredit(key, { baseUrl = "https://api.anthropic.com", 
   }
   const detail = `HTTP ${status}: ${String(message).slice(0, 200)}`;
   if (status === 401 || status === 403) return { status: "invalid", detail };
-  if ([400, 402].includes(status) && /credit balance|billing|insufficient|usage limit|spend limit/i.test(message)) return { status: "exhausted", detail };
+  if ([400, 402].includes(status) && /credit|billing|insufficient|usage limit|spend limit/i.test(message)) return { status: "exhausted", detail };
+  if (status >= 400 && status < 500 && ![404, 408, 409, 429].includes(status)) return { status: "refused", detail };
   return { status: "unknown", detail };
 }
 
@@ -128,24 +149,62 @@ function readState(dir) {
   }
 }
 
-// { mode: "api" | "subscription", reason }. A cached check counts only for the same key and
-// check, within its status's interval; an inconclusive check leaves the run on the API,
-// where Claude Code reports the error itself.
-export async function decide({ env = process.env, now = Date.now(), check = checkCredit } = {}) {
+const hashOf = (key) => createHash("sha256").update(key).digest("hex").slice(0, 16);
+const onApi = (status) => ["ok", "unknown"].includes(status);
+
+// How long a state entry stands: its status's interval, doubled for each refusal a run
+// reported in a row (state.refusals), up to MAX_BACKOFF_MS.
+export function lifetime(state) {
+  const base = TTL_MS[state.status] ?? 0;
+  return state.source === "run" ? Math.min(base * 2 ** (state.refusals - 1), MAX_BACKOFF_MS) : base;
+}
+
+// The state entry for this key and check, or null when there is none.
+function currentState(env) {
   const file = keyFile(env);
-  if (!existsSync(file)) return { mode: "subscription", reason: `no key file at ${file}` };
+  if (!existsSync(file)) return { file, key: null, keyHash: null, cached: null };
   const key = readFileSync(file, "utf8").trim();
-  const keyHash = createHash("sha256").update(key).digest("hex").slice(0, 16);
-  const dir = stateDir(env);
-  const cached = readState(dir);
+  const keyHash = hashOf(key);
+  const cached = readState(stateDir(env));
+  return { file, key, keyHash, cached: cached?.keyHash === keyHash && cached.check === CHECK ? cached : null };
+}
+
+// { mode: "api" | "subscription", reason }. A cached entry counts only for the same key and
+// check, within its lifetime; an inconclusive check leaves the run on the API, where Claude
+// Code reports the error itself. A passing check keeps the count of refusals that runs
+// reported, so a refusal after it backs off further.
+export async function decide({ env = process.env, now = Date.now(), check = checkCredit } = {}) {
+  const { file, key, keyHash, cached } = currentState(env);
+  if (key === null) return { mode: "subscription", reason: `no key file at ${file}` };
   let result;
-  if (cached?.keyHash === keyHash && cached.check === CHECK && now - cached.checkedAt < (TTL_MS[cached.status] ?? 0)) result = { ...cached, cached: true };
+  if (cached && now - cached.checkedAt < lifetime(cached)) result = { ...cached, cached: true };
   else {
     result = await check(key, env.API_FIRST_BASE_URL ? { baseUrl: env.API_FIRST_BASE_URL } : {});
-    writeJsonAtomic(join(dir, "state.json"), { keyHash, check: CHECK, status: result.status, checkedAt: now, detail: result.detail });
+    const refusals = onApi(result.status) ? cached?.refusals ?? 0 : 0;
+    writeJsonAtomic(join(stateDir(env), "state.json"), { keyHash, check: CHECK, status: result.status, checkedAt: now, detail: result.detail, refusals });
   }
-  const reason = `${result.status}${result.cached ? ` (checked ${new Date(result.checkedAt).toISOString()})` : ""}: ${result.detail}`;
-  return { mode: ["ok", "unknown"].includes(result.status) ? "api" : "subscription", reason };
+  const since = result.source === "run" ? "reported" : "checked";
+  const reason = `${result.status}${result.cached ? ` (${since} ${new Date(result.checkedAt).toISOString()})` : ""}: ${result.detail}`;
+  return { mode: onApi(result.status) ? "api" : "subscription", reason };
+}
+
+// A hook's report on an API run (the hook input Claude Code passes on stdin). A refusal for
+// credit or the key moves later runs to the subscription; a run that went through clears
+// the refusal count, and ends a refusal still standing (a run started before it), so the
+// next run checks again. Returns the state written, or null when nothing changed.
+export function recordRun(input, { env = process.env, now = Date.now() } = {}) {
+  const { keyHash, cached } = currentState(env);
+  if (keyHash === null) return null;
+  const write = (state) => {
+    writeJsonAtomic(join(stateDir(env), "state.json"), state);
+    return state;
+  };
+  if (input.hook_event_name === "Stop") return cached?.refusals ? write({ ...cached, refusals: 0, ...(cached.source === "run" && { checkedAt: 0 }) }) : null;
+  const status = RUN_REFUSALS[input.error];
+  if (input.hook_event_name !== "StopFailure" || !status) return null;
+  const message = String(input.last_assistant_message ?? "").slice(0, 200);
+  return write({ keyHash, check: CHECK, status, checkedAt: now, source: "run", refusals: (cached?.refusals ?? 0) + 1,
+    detail: `a Claude Code run was refused (${input.error}): ${message}` });
 }
 
 // The plan for argv: { bin, mode: "api" | "subscription" | "passthrough", settings, reason }.
@@ -160,14 +219,24 @@ export async function plan(argv, { env = process.env, check } = {}) {
   if (own.length) return { bin, mode: "passthrough", reason: `caller set ${own.join(", ")}` };
   const decision = await decide({ env, check });
   if (decision.mode === "subscription") return { bin, ...decision };
-  const helper = `cat '${keyFile(env).replace(/'/g, "'\\''")}'`;
-  return { bin, ...decision, settings: mergedSettings(settings, helper) };
+  const helper = `cat ${quote(keyFile(env))}`;
+  const report = `${quote(process.execPath)} ${quote(join(import.meta.dir, "api-first.js"))} report`;
+  return { bin, ...decision, settings: mergedSettings(settings, helper, report) };
 }
+
+const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
 
 if (import.meta.main) {
   const [command, ...argv] = process.argv.slice(2);
+  if (command === "report") {
+    // A hook: Claude Code ignores StopFailure output, and Stop output must stay empty.
+    const state = recordRun(JSON.parse(await Bun.stdin.text()));
+    if (state?.source === "run")
+      appendJsonl(join(stateDir(), "decisions.jsonl"), { at: new Date().toISOString(), mode: "refused", reason: `${state.status}: ${state.detail}`, cwd: process.cwd() });
+    process.exit(0);
+  }
   if (command !== "plan") {
-    console.error("usage: bun api-first.js plan <claude args>");
+    console.error("usage: bun api-first.js plan <claude args> | report < hook-input.json");
     process.exit(64);
   }
   let result;

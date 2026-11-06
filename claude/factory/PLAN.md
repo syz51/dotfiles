@@ -109,7 +109,8 @@ review on sai** for the feasibility notes the user asked about.
 
 `lib/claude.js`: `judge({ prompt, system, schema, model, effort, budgetUsd })` returns
 `{ output, costUSD, events }`; `system`, the part shared by every call of a run, goes to
-the cached system prompt, `prompt` (per call) to stdin; `runTask({ prompt, cwd, model, effort, agent, settings,
+the cached system prompt (it replaces Claude Code's default one), `prompt` (per call) to
+stdin; a call the API refused before it did anything runs once more; `runTask({ prompt, cwd, model, effort, agent, settings,
 budgetUsd, timeoutMs })` returns `{ events, costUSD, ok, finalText }`. A `CLAUDE_FACTORY_BIN`
 override points both at a fake CLI in tests.
 
@@ -395,3 +396,17 @@ reports in the state folder's `reports/weekly-*.md`.
   judge now puts its shared instructions and rubric in `--append-system-prompt-file`, inside
   Claude Code's cached prefix (second call of a run: 8.2k cached tokens read instead of
   3.7k).
+- 2026-11-06: Review follow-ups. By 07:27 real Claude Code runs on the key were served
+  again (Haiku and Opus, with the user's settings and judge-shaped), while any raw request
+  carrying Claude Code's beta or its Agent SDK identity line was still refused for credit:
+  the beta check said "exhausted" for a key Claude Code could use, so no check request can
+  stand in for a run. The check is a plain Messages request again (cached entries of the
+  beta check are ignored), and API runs report back through `StopFailure`/`Stop` hooks;
+  a refused run moves later runs to the subscription, repeated refusals back off from 30
+  minutes to 8 hours, and the weekly summary counts them. Any other definite 4xx of the check is
+  `refused` (subscription) instead of falling through to the API. Judge and task calls,
+  and live sessions, refused before doing anything run once more. The judge's instructions
+  now replace the default system prompt (`--system-prompt-file`): appending had turned its
+  identity into "You are Claude Code" and carried 9k characters of coding-session
+  guidance (second call: 6.5k cached tokens read, valid judgement). Rubric v4 rescores
+  sessions under the new prompt; a test pins the prompt's hash to the version.

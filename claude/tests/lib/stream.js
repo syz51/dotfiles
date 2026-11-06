@@ -12,9 +12,32 @@ export function parseStream(text) {
   });
 }
 
+// Events of a stream cut off mid-run: complete lines only. The last line of a killed
+// process is usually truncated, so an unparsable line is expected here, not an error.
+export function partialEvents(stdout = "") {
+  return stdout.split("\n").filter((line) => line.trim()).flatMap((line) => {
+    try {
+      return [JSON.parse(line)];
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return [];
+    }
+  });
+}
+
 export const initEvent = (events) => events.find((event) => event.type === "system" && event.subtype === "init");
 export const resultEvent = (events) => events.findLast((event) => event.type === "result");
 export const cost = (events) => resultEvent(events)?.total_cost_usd ?? 0;
+
+// Whether the API refused the run before the session did anything: Claude Code ends it with
+// an error result carrying the refusal's HTTP status (400 for "Credit balance is too low",
+// 401/403 for a key), before any tool call. Through claude-api, its report hook has then
+// moved later runs to the subscription, so the same run once more can go through.
+export function refusedBeforeWork(events) {
+  const final = resultEvent(events);
+  return final?.is_error === true && [400, 401, 402, 403].includes(final.api_error_status)
+    && !events.some((event) => event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use"));
+}
 
 // Whether the session ended normally: every turn's result, one per turn in a
 // conversation, is a success. With allowMaxTurns, the last turn stopping at the turn

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
   agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
-  printedFrom, skillLoads, spawnEnds, subagentMessages, toolResults,
+  partialEvents, printedFrom, refusedBeforeWork, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
 
 describe("parsing", () => {
@@ -17,6 +17,25 @@ describe("parsing", () => {
     expect(initEvent(events).skills).toEqual(["rust"]);
     expect(cost(events)).toBe(0.5);
     expect(cost([init()])).toBe(0);
+  });
+});
+
+describe("cut-off streams and refusals", () => {
+  test("a cut-off stream keeps its complete lines", () => {
+    expect(partialEvents(`${JSON.stringify(init())}\n{"type":"assist`)).toEqual([init()]);
+    expect(partialEvents()).toEqual([]);
+  });
+
+  test("a run the API refused before any tool call is told apart from other failures", () => {
+    // Claude Code's result for "Credit balance is too low" (2.1.318).
+    const refused = result({ is_error: true, api_error_status: 400, result: "Credit balance is too low" });
+    expect(refusedBeforeWork([init(), refused])).toBe(true);
+    expect(refusedBeforeWork([init(), result({ is_error: true, api_error_status: 401 })])).toBe(true);
+    expect(refusedBeforeWork([init(), toolUse("Bash", { command: "rm x" }).event, refused]), "work was done").toBe(false);
+    expect(refusedBeforeWork([init(), result({ subtype: "error_during_execution", is_error: true, api_error_status: 429 })])).toBe(false);
+    expect(refusedBeforeWork([init(), result({ is_error: true, api_error_status: 500 })])).toBe(false);
+    expect(refusedBeforeWork([init(), result()])).toBe(false);
+    expect(refusedBeforeWork([init()])).toBe(false);
   });
 });
 

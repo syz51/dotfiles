@@ -8,7 +8,7 @@ import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
 import { childEnv, runProcess } from "./process.js";
 import { Ledger, reportDirectory, writeReport } from "./reports.js";
-import { bashRuns, completed, cost, initEvent, parseStream, resultEvent, skillLoads, toolUses } from "./stream.js";
+import { bashRuns, completed, cost, initEvent, parseStream, partialEvents, refusedBeforeWork, resultEvent, skillLoads, toolUses } from "./stream.js";
 
 export const LIVE = process.env.RUN_CLAUDE_LIVE === "1";
 // Behavioral scenarios run on this model at the effort it gets in real use; checks of
@@ -131,9 +131,17 @@ export function liveSuite(name) {
     try {
       let run;
       try {
-        run = await runProcess([BIN, ...args], {
+        const once = () => runProcess([BIN, ...args], {
           cwd, env, timeout: TIMEOUT || timeout, interact: followUp === undefined ? undefined : conversation(prompt, followUp),
         });
+        run = await once();
+        // Refused by the API before it did anything: once more (claude-api has moved runs to
+        // the subscription), recording only the run that counts.
+        if (run.stdout.trim() && refusedBeforeWork(partialEvents(run.stdout))) {
+          rmSync(recordDir, { recursive: true });
+          mkdirSync(recordDir);
+          run = await once();
+        }
       } catch (error) {
         stdout = error.stdout ?? "";
         entry.status = /timeout/i.test(error.message) ? "timeout" : "error";

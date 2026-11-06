@@ -93,6 +93,7 @@ describe("runWeekly", () => {
     const now = new Date().toISOString();
     writeFileSync(decisions, [
       { at: now, mode: "api", reason: "ok" },
+      { at: now, mode: "refused", reason: "exhausted: a Claude Code run was refused (billing_error): low" },
       { at: now, mode: "subscription", reason: "exhausted: HTTP 400: credit" },
       { at: now, mode: "passthrough", reason: "caller set ANTHROPIC_API_KEY" },
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
@@ -100,6 +101,7 @@ describe("runWeekly", () => {
     let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("## Billing (last 7 days)");
     expect(summary).toContain("1 on the API, 1 on the subscription");
+    expect(summary).toContain(`- API runs the API refused: 1, the latest ${now}: exhausted: a Claude Code run was refused (billing_error): low.`);
     expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit that Claude Code can spend to move back.");
     writeFileSync(decisions, '{"at":"x","mode":"api"}\n{damaged\n');
     expect(await runWeekly({ pr: false })).toBe(0);
@@ -146,7 +148,7 @@ describe("runWeekly", () => {
 });
 
 describe("billing", () => {
-  test("counts the week's API and subscription calls and names the latest fallback", () => {
+  test("counts the week's API and subscription calls and refused runs, and names the latest of each", () => {
     const path = join(scratch, "decisions.jsonl");
     expect(billingSummary(path, 0)).toBeNull();
     const at = (day) => `2026-11-0${day}T10:00:00.000Z`;
@@ -155,9 +157,11 @@ describe("billing", () => {
       { at: at(3), mode: "api", reason: "ok" },
       { at: at(4), mode: "subscription", reason: "exhausted: HTTP 400" },
       { at: at(5), mode: "api", reason: "ok" },
+      { at: at(6), mode: "refused", reason: "exhausted: a run was refused" },
     ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
     const summary = billingSummary(path, Date.parse(at(2)));
     expect([summary.api, summary.subscription, summary.lastFallback.reason]).toEqual([2, 1, "exhausted: HTTP 400"]);
+    expect([summary.refused, summary.lastRefusal.reason]).toEqual([1, "exhausted: a run was refused"]);
   });
 });
 
