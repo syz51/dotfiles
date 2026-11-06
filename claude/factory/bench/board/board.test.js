@@ -172,7 +172,8 @@ describe("run", () => {
     expect(() => claudeBin({ BOARD_BENCH_CLAUDE: "/x/bin/claude-api" })).toThrow(/subscription only/);
     expect(claudeBin({})).toBe("claude");
     const env = isolatedEnv({ PATH: "/bin", ANTHROPIC_API_KEY: "k", BOARD_TOKEN: "t", BOARD_DB: "d", CLAUDECODE: "1", CLAUDE_CODE_USE_BEDROCK: "1" }, { BOARD_HOME: "/h" });
-    expect(env).toEqual({ PATH: "/bin", BOARD_HOME: "/h" });
+    // childEnv turns the user's board hooks off in every child.
+    expect(env).toEqual({ PATH: "/bin", AGENT_BOARD_HOOKS: "off", BOARD_HOME: "/h" });
   });
 
   test("settings add every board hook to the install block and web denial; MCP names the session's agent", () => {
