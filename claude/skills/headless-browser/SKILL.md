@@ -54,9 +54,10 @@ they are this tool's installation, not task files.
   element and full-page shots at their current viewport position.
 - Use `--scheme dark` and `--scheme light` to check both themes, and
   `--reduced-motion` for motion-sensitive pages.
-- Screenshots default to `$TMPDIR/headless-browser/`. Delete the ones you made
-  when the task is done (`rm -rf "$TMPDIR/headless-browser"`), unless the user
-  wants to keep them. Save shots meant for the user elsewhere with an explicit
-  path.
+- When the session has a scratchpad directory, pass
+  `--dir <scratchpad>/headless-browser` so screenshots land there. Otherwise
+  they default to `$TMPDIR/headless-browser/`. Delete the ones you made when the
+  task is done, unless the user wants to keep them. Save shots meant for the
+  user elsewhere with an explicit path.
 - Pages served by a dev server need it running first. Start it in the
   background, and stop it afterwards if you started it.

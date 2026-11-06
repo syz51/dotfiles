@@ -13,16 +13,18 @@ import { basename, resolve } from "node:path";
 
 const DEFAULT_BRANCHES = ["main", "master"];
 const MAX_DEPTH = 8;
+const TOO_DEEP = "it nests shell commands too deeply to check.";
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
 const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
 // Commands that run another command, with their options that take a separate value.
 const WRAPPERS = {
+  arch: ["-e", "-arch"],
   builtin: [],
   caffeinate: ["-t", "-w"],
   command: [],
   doas: ["-u", "-C"],
-  env: ["-u", "-P"],
+  env: ["-u", "-P", "--unset"],
   exec: ["-a"],
   nice: ["-n"],
   nohup: [],
@@ -221,6 +223,12 @@ function program(argv, dir) {
       nested.push(argv.slice(i).join(" "));
       return { words: [], nested, dir };
     }
+    if (name === "command") {
+      // `command -v NAME` and `command -V NAME` look a command up without running it.
+      let j = i + 1;
+      while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested, dir };
+    }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     i += 1;
     while (i < argv.length && argv[i].startsWith("-")) {
@@ -394,11 +402,11 @@ function gitPush(words, dir, git) {
   return reason && `\`${words.join(" ")}\`: ${reason}`;
 }
 
-function inspect(source, state, git, depth) {
-  if (depth > MAX_DEPTH) return "it nests shell commands too deeply to check.";
+function inspect(source, state, visit, depth, tooDeep) {
+  if (depth > MAX_DEPTH) return tooDeep;
   const { commands, substitutions } = parseScript(source);
   for (const inner of substitutions) {
-    const violation = inspect(inner, { dir: state.dir }, git, depth + 1);
+    const violation = inspect(inner, { dir: state.dir }, visit, depth + 1, tooDeep);
     if (violation) return violation;
   }
   let pipeline = [];
@@ -413,13 +421,13 @@ function inspect(source, state, git, depth) {
       if (SHELLS.has(name)) scripts.push(shellScript(words));
       if (name === "eval") scripts.push(words.slice(1).join(" "));
       for (const script of scripts) {
-        const violation = script === undefined ? undefined : inspect(script, { dir }, git, depth + 1);
+        const violation = script === undefined ? undefined : inspect(script, { dir }, visit, depth + 1, tooDeep);
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd") state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       else if (name === "popd") state.dir = undefined;
-      else if (name === "git") {
-        const violation = gitPush(words, dir, git);
+      else if (words.length > 0) {
+        const violation = visit(words, dir);
         if (violation) return violation;
       }
     }
@@ -434,7 +442,17 @@ function inspect(source, state, git, depth) {
  * when git could not answer.
  */
 export function findViolation(command, cwd, git) {
-  return inspect(command, { dir: cwd }, git, 0);
+  return inspect(command, { dir: cwd }, (words, dir) => (basename(words[0]) === "git" ? gitPush(words, dir, git) : undefined), 0, TOO_DEEP);
+}
+
+/**
+ * Calls `visit(words, dir)` for every command `source` would run, after wrappers, through
+ * shells, substitutions and `eval`; `dir` is its directory when known. Returns the first
+ * reason `visit` gives for blocking one, or undefined. Scripts nested too deeply to follow
+ * are skipped, not blocked.
+ */
+export function visitCommands(source, cwd, visit) {
+  return inspect(source, { dir: cwd }, visit, 0, undefined);
 }
 
 function runGit(dir, args) {
