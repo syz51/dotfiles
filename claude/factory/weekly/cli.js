@@ -1,4 +1,4 @@
-// weekly: the factory loop in one run (metrics, audit, scoring, proposals) with a summary
+// weekly: the factory loop in one run (metrics, audit, scoring, the work board, proposals) with a summary
 // report, and the LaunchAgent that runs it every week on this Mac.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -7,16 +7,21 @@ import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { stateDir as apiStateDir } from "../../bin/api-first.js";
+import { summaryLines as boardLines } from "../board/cli.js";
 import { detectorDimensions } from "../scoring/rubric.js";
 
 // CLAUDE_FACTORY_WEEKLY_CLI replaces the factory CLI the steps run (tests use a fake).
 const cli = () => process.env.CLAUDE_FACTORY_WEEKLY_CLI || join(import.meta.dir, "..", "cli.js");
 export const LABEL = "com.syz51.claude-factory.weekly";
 const STEP_TIMEOUT = 45 * 60 * 1000;
+// Proposals run up to three sessions of 15 minutes, each followed by its tests (a cold
+// agent-board build among them), so they get longer.
+const PROPOSE_TIMEOUT = 150 * 60 * 1000;
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall|status> [options]
 
-  run        Run metrics, audit, scoring and proposals once and write a summary
+  run        Run metrics, audit, scoring, the board review and proposals once and
+             write a summary
     --no-pr            Dry-run proposals (no push, no PR)
     --score-usd N      Total judge budget for scoring (default 3)
     --sample N         Sessions to judge (default 8)
@@ -26,15 +31,18 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall
   uninstall  Unload and remove the LaunchAgent
   status     Show whether the LaunchAgent is loaded and the latest summary`;
 
-// The steps of one run: [name, argv for cli.js, how to read its result].
-export function steps({ pr = true, scoreUsd = "3", sample = "8" } = {}) {
+// The steps of one run: [name, argv for cli.js, how to read its result]. The board step
+// writes the snapshot the proposals read.
+export function steps({ pr = true, scoreUsd = "3", sample = "8", boardSnapshot = join(stateDir(), "board-snapshot.json") } = {}) {
   const detectors = detectorDimensions().flatMap((dimension) => ["--dimension", dimension.id]);
   return [
     ["metrics", ["metrics", "--days", "7", "--json"], "json"],
     ["audit", ["audit", "--json", "--fail-on", "medium"], "json"],
     ["score", ["score", "--sample", sample, "--max-total-usd", scoreUsd], "text"],
-    // Judge verdicts are not yet calibrated, so only detector dimensions can open PRs.
-    ["propose", ["propose", ...detectors, ...(pr ? [] : ["--dry-run"])], "text"],
+    ["board", ["board", "--days", "7", "--json", "--out", boardSnapshot], "json"],
+    // Judge verdicts are not yet calibrated, so only detector dimensions and the board can
+    // open PRs.
+    ["propose", ["propose", ...detectors, "--board-snapshot", boardSnapshot, ...(pr ? [] : ["--dry-run"])], "text"],
   ];
 }
 
@@ -57,6 +65,7 @@ function highlights(name, output) {
     const counts = ["high", "medium", "low"].map((severity) => `${open.filter((finding) => finding.severity === severity).length} ${severity}`);
     return [`Unaccepted findings: ${counts.join(", ")}`, ...open.filter((finding) => finding.severity === "high").map((finding) => `- ${finding.title}`)];
   }
+  if (name === "board") return boardLines(output);
   return [];
 }
 
@@ -64,7 +73,7 @@ function highlights(name, output) {
 async function runStep([name, argv, kind], env) {
   const started = Date.now();
   try {
-    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: STEP_TIMEOUT });
+    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: name === "propose" ? PROPOSE_TIMEOUT : STEP_TIMEOUT });
     const step = { name, code: result.code, durationMs: Date.now() - started, stderr: tail(result.stderr, 8) };
     if (kind === "json") {
       try {
@@ -248,8 +257,10 @@ const domain = () => `gui/${userInfo().uid}`;
 // The tools a run needs, found on this PATH, so launchd's minimal PATH can reach them.
 async function toolPath() {
   const dirs = new Set();
-  for (const tool of ["claude", "git", "gh", "uv"]) {
+  for (const tool of ["claude", "git", "gh", "uv", "cargo"]) {
     const found = await runProcess(["/usr/bin/which", tool], { timeout: 10_000 });
+    // cargo only tests agent-board proposals; without it they fail their tests, the rest runs.
+    if (found.code !== 0 && tool === "cargo") continue;
     if (found.code !== 0) throw new Error(`${tool} is not on PATH; install it before scheduling the weekly run`);
     dirs.add(dirname(found.stdout.trim()));
   }

@@ -163,6 +163,8 @@ before creating a local `codex/config.toml`, which is intentionally ignored.
 Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
+Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
+`claude/hooks/shell.js`, and a guard that cannot load it fails open.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
@@ -198,16 +200,36 @@ bun ~/.claude/factory/cli.js metrics            # last 7 days vs the week before
 bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
 bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
+bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals ($3 per proposer session; no session
-starts once the next one could take the run past $10, though a session can end slightly
-over its own budget). Proposals open draft PRs on this
+audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
+no session starts once the next one could take the run past $10, though a session can end
+slightly over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
-ids, not transcript text, because the repository is public. `weekly status` shows the
+ids, not transcript text, because the repository is public.
+
+The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
+board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
+`board-snapshot.json` in the state folder; the report shows the stats and the open
+feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
+one proposer session with clones of this repository and agent-board, which sees only that
+feedback. It may change only the "Work board" section of
+`claude/CLAUDE.md` and `codex/AGENTS.md` (identically), agent-board's coordinator prompt
+and docs, and the values of the server defaults in `impl Default for Settings`. The tool
+tests each changed repository (`cargo test --workspace --locked` for agent-board, its
+build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
+against agent-board's `main` once it holds the server and `build/v0` until then. A change
+that breaks a test pinning a default stays a local patch for a person to finish, as with
+rule text. If the second PR fails after the first opened, the record says
+`partly-proposed` and is not retried. Feedback
+is agent-written and private: the proposer gets it as quoted data, and PR bodies list
+feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
+so its folder is on the job's `PATH`. `weekly status` shows the
 last run; `weekly uninstall` removes the job. The living task list is
 [`claude/factory/PLAN.md`](claude/factory/PLAN.md).
 
@@ -256,8 +278,8 @@ and falls back to the claude.ai subscription otherwise. The planner,
 a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
-`claude/hooks/board-hook.sh` from `~/.claude/hooks`, so link it there like the other hook
-scripts. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
+`claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
+provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
 with a device token created on the server host:
 
 ```sh
@@ -374,6 +396,41 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+## Disk space alert
+
+`disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
+The `com.syz51.disk-space-alert` LaunchAgent runs its `check` every 10 minutes. Below
+30 GB free (10^9 bytes, as `statvfs` reports space available to you) the level is
+low, and below 20 GB it is critical. Falling to a worse level alerts at once, and
+staying low or critical alerts again every 24 hours. A level eases only once free
+space is 2 GB above its threshold, so a reading that hovers near one does not flap.
+
+An alert posts a macOS notification and messages T3 Code. The first alert of an
+episode starts a thread in T3's "No project" (`~/.t3/scratch`), asking for a
+read-only summary of where the space went and what could be cleaned, without
+deleting anything. Later alerts in the episode go to that thread, or start a new
+one if it is gone. When T3 Code is not running, each check retries the message
+without repeating the notification. A start that timed out or printed no thread id
+is not retried, since it may have gone through. Getting back above 32 GB posts one "recovered"
+notification and ends the episode. The state is in
+`~/.local/state/disk-space-alert/state.json`, each alert adds a line to
+`events.jsonl` there, and launchd writes errors to `launchd.log`.
+
+Install it on each Mac from the main checkout, which the plist points to, and send a
+test alert through both channels:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py test
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py status
+```
+
+`install --dry-run` prints the plist without loading it, and `uninstall` unloads and
+removes it. To change a threshold, run `install` again with `--low-gb` or
+`--critical-gb`, which it writes into the plist. A one-off run with
+`check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
+the real state.
+
 ## Verification
 
 From the repository root, run the focused local suites:
@@ -384,6 +441,7 @@ uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests 
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and
@@ -449,7 +507,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   replies stay as asked.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,
-`gh` and `launchctl` programs. Its live sandbox check runs real Haiku sessions (about
+`gh`, `launchctl`, `board` and `cargo` programs. Its live sandbox check runs real Haiku sessions (about
 $0.01) and verifies that the strict profile blocks writes outside the working folder and
 unlisted hosts:
 

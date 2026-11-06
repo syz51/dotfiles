@@ -387,3 +387,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   sessions under the new prompt; a test pins the prompt's hash to the version.
 - 2026-11-06: Area 6 opened: a shared agent work board, designed in a dedicated thread
   (`board/PLAN.md`).
+- 2026-11-07: The weekly run gained a board step: the work board's stats and open feedback go
+  into the report and into proposals, which may change the board's defaults, coordinator
+  prompt and rule (`board/PLAN.md`, feedback loop).

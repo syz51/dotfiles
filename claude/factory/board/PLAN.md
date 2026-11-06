@@ -125,8 +125,11 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   reports as its parent thread unless it sets `AGENT_BOARD_HOOKS=off`. The board should
   tell such sessions apart on its own (agent-board design work).
 - [ ] Living plans such as this one move onto boards (with the factory migration below).
-- [ ] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
-  skill feedback does; the defaults below change only through it.
+- [x] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
+  skill feedback does; the defaults below change only through it. The factory's weekly
+  run has a board step (`claude/factory/board/cli.js`) whose snapshot the proposal step
+  reads (`claude/factory/board/proposal.js`); see `SETUP.md`, Factory. It needs
+  `board stats` in the installed CLI, and fails the step in the report until then.
 - [ ] Migrate the factory's open items (`../PLAN.md`) onto a board as the first real use.
 - [ ] Format benchmark (`DESIGN.md` section 11): three formats × three framings, Claude
   Code only, run on the subscription (not the API), at least 20 runs per cell.

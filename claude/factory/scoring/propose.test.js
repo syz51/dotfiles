@@ -264,6 +264,7 @@ describe("propose command", () => {
     ["a settings file", { "claude/settings.json": '{"permissions":{"allow":["Bash"]}}\n' }, ["claude/settings.json"]],
     ["a test, which the suite would run as code", { "claude/tests/scope.test.js": 'import { test } from "bun:test";\ntest("x", () => {});\n' }, ["claude/tests/scope.test.js"]],
     ["an ignored file, such as one Bun loads into the test run's environment", { ".env.test": "X=1\n" }, [".env.test"]],
+    ["a git hook, which the commit would run", { ".git/hooks/pre-commit": "#!/bin/sh\nexit 0\n" }, [".git"]],
   ])("rejects a change to %s without running the tests or pushing", async (_, extra, rejected) => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));

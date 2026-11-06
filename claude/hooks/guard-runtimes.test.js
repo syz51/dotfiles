@@ -44,6 +44,38 @@ describe("blocks", () => {
     ["env --unset FOO node check.js"],
     ["arch -arm64 python3 check.py"],
     ["arch -arch x86_64 node check.js"],
+    // options with attached values, read as getopt reads them
+    ["sudo -uubuntu python3 check.py"],
+    ["xargs -IFILE python3 FILE"],
+    ["env -uTMP python3 check.py"],
+    ["ssh -lsunyizhe host python3 check.py"],
+    ["ssh host -t python3 check.py"],
+    ["ssh host -- python3 check.py"],
+    ["echo 'python3 x' | ssh -lme host"],
+    ["ssh host 'cd app && bash -s' <<'EOF'\npython3 x.py\nEOF"],
+    ["ssh -o ProxyCommand='python3 proxy.py' host ls"],
+    ["fish --command 'python3 x'"],
+    ["fish -C 'node x.js'"],
+    ["{ echo 'python3 x'; } | sh"],
+    ["(echo 'python3 x') | sh"],
+    ["sudo -iu me python3 check.py"],
+    ["sudo -Eu me node check.js"],
+    ["coproc python3 server.py"],
+    ["coproc worker { node server.js; }"],
+    // other Python programs
+    ["ipython"],
+    ["ipython3 -c 'print(1)'"],
+    ["pypy3 check.py"],
+    // find -exec, piped scripts and ssh
+    ["find . -name '*.py' -exec python3 -m py_compile {} \\;"],
+    ["find src -execdir node lint.js {} +"],
+    ["echo 'python3 check.py' | sh"],
+    ["printf 'node check.js\\n' | bash -s"],
+    ["ssh host python3 check.py"],
+    ["ssh -o ConnectTimeout=5 -p 2222 host 'cd app && pytest -q'"],
+    ["ssh -t host 'bash -lc \"node check.js\"'"],
+    ["ssh host <<'EOF'\npython3 check.py\nEOF"],
+    ["ssh host bash -s <<'EOF'\npip install x\nEOF"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeDefined();
   });
@@ -75,6 +107,15 @@ describe("allows", () => {
     ["git log --oneline # python3 check.py"],
     ["ls node_modules/.bin"],
     ["bun run node_modules/.bin/vite build"],
+    ["ssh host 'uv run python check.py'"],
+    ["ssh -i ~/.ssh/key host ls node_modules"],
+    ["ssh host"],
+    ["echo 'python3 check.py' > run.sh"],
+    ["echo 'python3 check.py' | tee notes.txt"],
+    ["find . -name '*.py' -exec grep -l python3 {} +"],
+    ["find . -name node_modules -prune"],
+    ["sudo -u me uv run python check.py"],
+    ["pipenv --version"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
