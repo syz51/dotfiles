@@ -84,7 +84,9 @@ of `~/.zshrc`:
 [[ -r "$HOME/.config/explore/explore.zsh" ]] && source "$HOME/.config/explore/explore.zsh"
 ```
 
-The file initializes zoxide when installed and adds one private ZLE binding.
+The file initializes zoxide when installed, caching its init script through
+`shell/cache.zsh` when the dotfiles' `shell/` folder sits beside it, and adds one
+private ZLE binding.
 It preserves the prompt and existing history bindings. Start a fresh shell,
 or source that line in an existing shell.
 

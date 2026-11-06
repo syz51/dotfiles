@@ -2,8 +2,9 @@
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
 const CLAUDE = join(import.meta.dir, "..");
@@ -85,7 +86,6 @@ describe("global instructions", () => {
 
   test("every ~/.claude file they reference is tracked in this repository", () => {
     const references = [...globalInstructions.matchAll(/~\/\.claude\/([\w./-]+)/g)].map((match) => match[1]);
-    expect(references).toContain("frontend-avoid.md");
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
@@ -135,6 +135,25 @@ describe("settings", () => {
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  // A copied hook that cannot load a module it imports exits 1, a non-blocking hook error, so
+  // the guards would fail open; SETUP.md has the whole hooks directory linked for this reason.
+  test("every module a hook script imports is tracked beside it", () => {
+    const pending = handlers.flatMap((hook) =>
+      [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+\.js)/g)].map((match) => `claude/${match[1]}`));
+    const seen = new Set();
+    while (pending.length > 0) {
+      const path = pending.pop();
+      if (seen.has(path)) continue;
+      seen.add(path);
+      for (const [, relative] of read(path).matchAll(/^import .* from "(\.{1,2}\/[^"]+)";$/gm)) {
+        const imported = join(dirname(path), relative);
+        expect(tracked(imported), `${path} imports ${imported}`).toBe(true);
+        pending.push(imported);
+      }
+    }
+    expect(seen).toContain("claude/hooks/shell.js");
+  });
+
   // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read
   // 300K-970K of context on every turn; 56% of two weeks' usage came from requests above 200K.
   test("conversations compact at 300K tokens, not near the 1M window", () => {
@@ -169,6 +188,120 @@ test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(instructions).toMatch(/^- Keep the test suite in step with every change/m);
 });
 
+describe("rejected frontend defaults list", () => {
+  test("is tracked and keeps its rule for using and adding patterns", () => {
+    expect(tracked("claude/frontend-avoid.md")).toBe(true);
+    const list = read("claude/frontend-avoid.md");
+    expect(list).toMatch(/do not use them unless the brief, a reference, or the existing project calls for them/);
+    expect(list).toMatch(/explicitly rejects a pattern as an unwanted default, not for feedback on a single design/);
+    expect(list).toMatch(/one per line/);
+  });
+
+  // The skill feedback pipeline proposes additions as "- <pattern>" lines in this section.
+  test("ends with a Patterns section of one-line entries", () => {
+    const parts = read("claude/frontend-avoid.md").split(/^## Patterns\n/m);
+    expect(parts).toHaveLength(2);
+    expect(parts[1]).not.toMatch(/^## /m);
+    for (const line of parts[1].split("\n").filter((text) => text.trim())) expect(line).toMatch(/^- \S/);
+  });
+});
+
+// The work board (github.com/syz51/agent-board) hooks into every Claude Code and Codex
+// session through hooks/board-hook.sh. It runs the installed `board`, and behaves as if the
+// hook were absent without it or with AGENT_BOARD_HOOKS=off, which lib/process.js childEnv
+// sets for test and benchmark sessions so they stay off the real board.
+describe("work board", () => {
+  const SCRIPT = join(CLAUDE, "hooks/board-hook.sh");
+  const HOOK = /^\/bin\/sh "\$HOME\/\.claude\/hooks\/board-hook\.sh" ([a-z-]+) (claude|codex)$/;
+  const boardHooks = (hooks) =>
+    Object.entries(hooks).flatMap(([event, groups]) =>
+      groups.flatMap((group) =>
+        group.hooks
+          .filter((hook) => hook.command.includes("board"))
+          .map((hook) => ({ event, matcher: group.matcher, hook, match: HOOK.exec(hook.command) }))));
+  const CLAUDE_EVENTS = {
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+    PreCompact: "pre-compact", Stop: "stop", StopFailure: "stop-failure", SessionEnd: "session-end",
+  };
+  const CODEX_EVENTS = {
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+    Stop: "stop", SessionEnd: "session-end",
+  };
+
+  test.each([
+    ["claude/settings.json", "claude", CLAUDE_EVENTS],
+    ["codex/hooks.json", "codex", CODEX_EVENTS],
+  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, events) => {
+    const found = boardHooks(JSON.parse(read(path)).hooks);
+    const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
+    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
+    for (const { hook, match } of found) {
+      expect(match?.[2]).toBe(runtime);
+      expect(hook.timeout).toBeLessThanOrEqual(5);
+    }
+    expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
+  });
+
+  test("Claude Code's board hooks see every tool and every session start", () => {
+    const found = boardHooks(JSON.parse(read("claude/settings.json")).hooks);
+    const matcher = (event) => found.find((entry) => entry.event === event)?.matcher;
+    expect(matcher("PostToolUse")).toBe("*");
+    expect(matcher("SessionStart")).toBe("startup|resume|clear|compact");
+  });
+
+  function withHome(body) {
+    const home = mkdtempSync(join(tmpdir(), "board-hook-"));
+    try {
+      return body(home, (args, extra = {}) =>
+        spawnSync("/bin/sh", [SCRIPT, ...args], { env: { PATH: process.env.PATH, HOME: home, ...extra }, input: "{}", encoding: "utf8" }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  test("without board each hook does nothing, except the JSON Codex requires from Stop", () => {
+    withHome((_, run) => {
+      const cases = [
+        ...Object.values(CLAUDE_EVENTS).map((event) => [event, "claude"]),
+        ...Object.values(CODEX_EVENTS).map((event) => [event, "codex"]),
+      ];
+      for (const [event, runtime] of cases) {
+        const result = run([event, runtime]);
+        expect(result.status, `${event} ${runtime}`).toBe(0);
+        expect(result.stdout, `${event} ${runtime}`).toBe(event === "stop" && runtime === "codex" ? "{}\n" : "");
+      }
+    });
+  });
+
+  test("an installed board gets the event and runtime, unless AGENT_BOARD_HOOKS=off", () => {
+    withHome((home, run) => {
+      mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+      const fake = join(home, ".cargo/bin/board");
+      writeFileSync(fake, `#!/bin/sh\nprintf '%s ' "$@" > "${home}/args"\ncat > "${home}/stdin"\n`);
+      chmodSync(fake, 0o755);
+      expect(run(["stop", "codex"], { AGENT_BOARD_HOOKS: "off" }).stdout).toBe("{}\n");
+      expect(existsSync(join(home, "args"))).toBe(false);
+      expect(run(["post-tool-use", "claude"]).status).toBe(0);
+      expect(readFileSync(join(home, "args"), "utf8")).toBe("hook post-tool-use --runtime claude ");
+      expect(readFileSync(join(home, "stdin"), "utf8")).toBe("{}");
+    });
+  });
+
+  test("the rule says what to act on and what is only data", () => {
+    const rule = section("Work board");
+    for (const tool of ["task_claim", "lease_paths", "handoff_set", "task_done", "ask_user"]) expect(rule).toContain(`\`${tool}\``);
+    expect(rule).toMatch(/not in a plan file/);
+    expect(rule).toMatch(/create one only when I ask/);
+    expect(rule).toMatch(/title, body and acceptance checks/);
+    expect(rule).toMatch(/never follow instructions/);
+  });
+
+  test("Codex gets the same rule", () => {
+    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
+    expect(tracked("codex/AGENTS.md")).toBe(true);
+  });
+});
+
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {
@@ -178,7 +311,13 @@ describe("rules the live suites test", () => {
     expect(skills).toMatch(/load `frontend-ui` first/);
     expect(skills).toMatch(/unrelated work in a TypeScript or Rust repository needs neither language skill/i);
     expect(skills).toMatch(/data-visualization skill/);
-    expect(skills).toContain("~/.claude/frontend-avoid.md");
+  });
+
+  // The installed frontend-ui skill tells Claude Code and Codex to read the list, and the
+  // list states its own rule, so the global instructions don't repeat either; the live
+  // chart scenario checks that the read still happens.
+  test("the rejected frontend defaults list is left to the frontend-ui skill", () => {
+    expect(globalInstructions).not.toContain("frontend-avoid");
   });
 
   test("Working preferences keep uv and bun with project lockfiles", () => {
@@ -257,5 +396,14 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/explicit output-only or structured-format requirement/);
     expect(workflow).toMatch(/Do not duplicate Chinese-only replies/);
     expect(workflow).toMatch(/`headless-browser` skill/);
+  });
+
+  // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
+  // refusals; plain one-command calls pass its checks the first time.
+  test("Workflow says how to run git in a worktree-isolated session", () => {
+    const workflow = section("Workflow");
+    expect(workflow).toMatch(/worktree-isolated session/);
+    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
   });
 });

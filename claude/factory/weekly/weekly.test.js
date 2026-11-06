@@ -28,6 +28,9 @@ if (command === "audit") console.log(JSON.stringify({ findings: [
   { id: "b", severity: "low", title: "Low thing", accepted: true },
   { id: "c", severity: "info", title: "Info", accepted: false } ] }));
 if (command === "score") console.log("scored 2 sessions, $0.30");
+if (command === "board") console.log(JSON.stringify({ collectedAt: "2026-11-09T13:30:00.000Z", days: 7, errors: process.env.FAKE_EXIT_board ? ["board stats exited 2: unrecognized subcommand"] : [],
+  stats: { days: 7, tasks_created: 9, tasks_done: 5, claims_refused: 1, tasks_taken_stale: 0, lease_conflicts: 2, asks_created: 3, asks_answered: 2, ask_answer_minutes_median: 41.5, doing_minutes_median: null, done_without_check_evidence: 1 },
+  feedback: [{ id: "board-feedback-4", title: "Leases expire mid-review", body: "x", status: "open" }] }));
 if (command === "propose") console.log("Nothing qualifies.");
 process.exit(Number(process.env["FAKE_EXIT_" + command] ?? 0));
 `);
@@ -55,6 +58,11 @@ describe("steps", () => {
     expect(propose.filter((arg, i) => propose[i - 1] === "--dimension").sort()).toEqual(["ai-attribution", "force-push", "package-runner", "ultra-effort"]);
     expect(propose).not.toContain("--dry-run");
     expect(steps({ pr: false }).find(([name]) => name === "propose")[1]).toContain("--dry-run");
+    // The board step writes the snapshot that the proposals read.
+    const all = steps({ boardSnapshot: "/s/board.json" });
+    expect(all.map(([name]) => name)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    expect(all[3][1]).toEqual(["board", "--days", "7", "--json", "--out", "/s/board.json"]);
+    expect(all[4][1].slice(-2)).toEqual(["--board-snapshot", "/s/board.json"]);
     expect(steps({ scoreUsd: "1", sample: "2" }).find(([name]) => name === "score")[1]).toEqual(["score", "--sample", "2", "--max-total-usd", "1"]);
   });
 
@@ -73,8 +81,8 @@ describe("steps", () => {
 describe("runWeekly", () => {
   test("runs every step in order and writes a summary with the highlights", async () => {
     expect(await runWeekly({ pr: false })).toBe(0);
-    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "propose"]);
-    expect(calls()[3]).toContain("--dry-run");
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    expect(calls()[4]).toContain("--dry-run");
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     const summary = readFileSync(last.summary, "utf8");
     expect(summary).toContain("Sessions: 4 (1 launched by an agent); cost $12.50");
@@ -84,6 +92,12 @@ describe("runWeekly", () => {
     expect(summary).toContain("- Unsandboxed review");
     expect(summary).toContain("## audit: ok (exit 0");
     expect(summary).toContain("scored 2 sessions");
+    expect(summary).toContain("## board: ok (exit 0");
+    expect(summary).toContain("- Tasks: 9 created, 5 done (1 without check evidence); median n/a in doing");
+    expect(summary).toContain("- Claims refused 1; tasks taken from stale owners 0; lease conflicts 2");
+    expect(summary).toContain("- Asks: 2 of 3 answered; median answer 42 min");
+    // Agent-written titles appear quoted.
+    expect(summary).toContain('- Open feedback tasks: 1\n- board-feedback-4: "Leases expire mid-review"');
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
   });
 
@@ -138,14 +152,25 @@ describe("runWeekly", () => {
   test("a failing step is reported, the rest still run, and the run exits 1", async () => {
     setEnv({ FAKE_EXIT_score: "4" });
     expect(await runWeekly({ pr: false })).toBe(1);
-    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "propose"]);
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     expect(readFileSync(last.summary, "utf8")).toContain("## score: FAILED (exit 4");
   });
 
-  test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables", () => {
+  test("a failing board command fails the board step in the report, and the proposals still run", async () => {
+    setEnv({ FAKE_EXIT_board: "1" });
+    expect(await runWeekly({ pr: false })).toBe(1);
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
+    const summary = readFileSync(last.summary, "utf8");
+    expect(summary).toContain("## board: FAILED (exit 1");
+    expect(summary).toContain("- Failed: board stats exited 2: unrecognized subcommand");
+    expect(last.steps.find((step) => step.name === "board").highlights).toContain("Open feedback tasks: 1");
+  });
+
+  test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables, and stay off the work board", () => {
     const env = stepEnv({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude" });
+    expect(env).toEqual({ PATH: "/bin", AGENT_BOARD_HOOKS: "off", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude" });
   });
 
   test("the lock is taken atomically: a second taker fails while the first holds it", () => {
@@ -206,9 +231,18 @@ describe("LaunchAgent", () => {
       chmodSync(join(tools, tool), 0o755);
     }
     setEnv({ CLAUDE_FACTORY_LAUNCH_AGENTS: agents, CLAUDE_FACTORY_LAUNCHCTL: launchctl, PATH: `${tools}:/usr/bin:/bin` });
+    // Without cargo, which only tests agent-board proposals, the run is still scheduled.
     expect(await run(["install"])).toBe(0);
     const file = join(agents, `${LABEL}.plist`);
     expect(readFileSync(file, "utf8")).toContain("<string>weekly</string>");
+    // With it, its folder is on the job's PATH.
+    const cargo = join(scratch, "cargo-bin");
+    mkdirSync(cargo);
+    writeFileSync(join(cargo, "cargo"), "#!/bin/sh\n");
+    chmodSync(join(cargo, "cargo"), 0o755);
+    setEnv({ PATH: `${tools}:${cargo}:/usr/bin:/bin` });
+    expect(await run(["install"])).toBe(0);
+    expect(readFileSync(file, "utf8")).toMatch(new RegExp(`<string>[^<]*${cargo}[^<]*</string>`));
     expect(readFileSync(log, "utf8")).toMatch(new RegExp(`bootout gui/\\d+/${LABEL}\\nbootstrap gui/\\d+ ${file.replace(/[.]/g, "\\.")}`));
     expect(await run(["uninstall"])).toBe(0);
     expect(existsSync(file)).toBe(false);

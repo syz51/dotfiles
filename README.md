@@ -12,16 +12,18 @@ there is no repository-wide installer.
 
 | Path                     | Purpose                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------- |
+| `shell/`                 | Zsh startup installer, cached init scripts and completions, with tests.          |
 | `ghostty/`               | Ghostty settings, themes, and a TUIOS session launcher with tests.               |
 | `tuios/`                 | TUIOS appearance, dock, sidebar, startup settings, and themes.                   |
 | `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
-| `claude/`                | Claude Code instructions, subagents, settings, push guard, and a browser skill.  |
+| `claude/`                | Claude Code instructions, subagents, settings, Bash guards, and a browser skill. |
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
-| `git/ignore`             | Shared Git ignore patterns.                                                      |
+| `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
+| `git/`                   | Shared Git ignore patterns, and settings that `~/.gitconfig` includes.           |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
 Original contributions are [MIT licensed](LICENSE). Bundled and adapted code

@@ -3,18 +3,21 @@
 // agent instructions, which are text, never code. The tool, not the model, checks every
 // file the session wrote, checks the change for evidence quoted from private
 // transcripts, runs the offline suites, and pushes a branch with a draft PR for the user
-// to review.
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+// to review. With --board-snapshot, the work board's stats and feedback are one more
+// source (../board/proposal.js), under the same budgets.
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { initEvent, resultEvent } from "../../tests/lib/stream.js";
+import { resultEvent } from "../../tests/lib/stream.js";
+import { attemptBoard, BOARD_ID, BOARD_REPO, boardCandidate, newBoardRecord, readSnapshot } from "../board/proposal.js";
 import { runTask } from "../lib/claude.js";
-import { appendJsonl, readJsonl, stateDir, statePath } from "../lib/state.js";
-import { projectsRoot } from "../lib/transcripts.js";
+import { addedLines, changedPaths, clip, cloneRepository, gitState, leakedEvidence, originalText, proposerReply, proposerSettings, publish, readDenies, retryable, runTests, stagedPatch, stamp, today, toolRejection, TOOLS, writePatch } from "../lib/proposal.js";
+import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { REPO_ROOT, RUBRIC, section } from "./rubric.js";
 import { scoresFile } from "./score.js";
+
+export { leakedEvidence, readDenies };
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js propose [options]
 
@@ -30,61 +33,23 @@ scored sessions, as a draft PR.
   --max-total-usd N stop starting sessions that could take this run past N (default 10);
                     the dimensions left over qualify again next run
   --repo PATH       repository to clone (default: the one holding this file)
+  --board-snapshot PATH
+                    also propose changes to the work board's defaults, coordinator
+                    prompt and rule from this snapshot (written by the board command)
+  --board-repo URL  agent-board repository to clone (default ${BOARD_REPO})
+  --board-base NAME agent-board base branch (default main)
   --list            print the qualifying dimensions and their evidence; run nothing
   --dry-run         run the proposer and the tests, but commit, push and open nothing
   --help`;
 
-const TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
-const TEST_PATHS = ["claude/hooks", "claude/tests", "claude/factory"];
 const RECENT_DAYS = 30;
-const EVIDENCE_CHARS = 400;
 const EVIDENCE_ITEMS = 25;
-// A verbatim run this long from the evidence in a pushed change counts as a leak.
-const LEAK_RUN = 40;
-// The proposer runs with the user's configuration; whatever it allows, these stay unread:
-// credentials, and the private sources the leak check never sees (raw transcripts, the
-// state folder with its scores and evidence files).
-const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**"];
-
-// Read deny rules for DENY_READ and the given absolute folders. A rule takes an absolute
-// path as //path; a folder under home gets its ~/ form as well.
-export function readDenies(folders, home = homedir()) {
-  const paths = [...DENY_READ];
-  for (const folder of folders.map((path) => resolve(path))) {
-    paths.push(`/${folder}/**`);
-    if (folder.startsWith(`${home}/`)) paths.push(`~/${relative(home, folder)}/**`);
-  }
-  return [...new Set(paths)].map((path) => `Read(${path})`);
-}
-
-const proposerSettings = () => JSON.stringify({ permissions: { deny: readDenies([stateDir(), projectsRoot()]) } });
-// Proposal outcomes that do not count as having proposed for these sessions.
-const RETRYABLE = new Set(["dry-run", "error"]);
 
 export const proposalsFile = () => statePath("proposals.jsonl");
 
 // Whether a repository path may change in a proposal: the global instructions and the
 // agent definitions. Tests are code the suite would run, so a person updates them.
 export const allowedPath = (path) => path === "claude/CLAUDE.md" || /^claude\/agents\/[^/]+\.md$/.test(path);
-
-// Whether text repeats a run of LEAK_RUN characters of any evidence line, whitespace
-// collapsed. Runs also found in publicText (what the repository already holds, such as
-// the rule a judge quoted) are not leaks.
-export function leakedEvidence(text, evidence, { publicText = [] } = {}) {
-  const collapse = (value) => String(value).replace(/\s+/g, " ");
-  const runs = (value) => {
-    const flat = collapse(value);
-    return Array.from({ length: Math.max(0, flat.length - LEAK_RUN + 1) }, (_, i) => flat.slice(i, i + LEAK_RUN));
-  };
-  const known = new Set(publicText.flatMap(runs));
-  const secret = new Set(evidence.flatMap(runs).filter((run) => !known.has(run)));
-  return runs(text).some((run) => secret.has(run));
-}
-
-const clip = (text, max = EVIDENCE_CHARS) => {
-  const flat = String(text).replace(/\s*\n\s*/g, " ");
-  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-};
 
 // Failing sessions per dimension, from the latest record of each session: the latest
 // judged record for judge dimensions, the latest record for detectors. Only records of
@@ -121,11 +86,6 @@ export function failureGroups(records, { since, rubric = RUBRIC }) {
 
 // A recent proposal for the dimension that already used one of these sessions; dry runs
 // and errors do not count, so the next run tries again.
-// A proposer that failed for any reason but its budget (an API error or rate limit, say)
-// is retried next run; one that used up its budget would again, so it waits.
-const retryable = (proposal) => RETRYABLE.has(proposal.status)
-  || (proposal.status === "proposer-failed" && proposal.resultSubtype !== "error_max_budget_usd");
-
 export function alreadyProposed(proposals, dimension, sessionIds, now) {
   const since = now - RECENT_DAYS * 86_400_000;
   return proposals.find((proposal) => proposal.dimension === dimension && !retryable(proposal)
@@ -164,38 +124,6 @@ Your task:
 Reply with a short paragraph on the cause and the change, then a last line "TITLE: <imperative summary under 70 characters>". The paragraph stays private for the reviewer; the title becomes the public commit message and pull request title, so it must not quote the evidence either.`;
 }
 
-const git = async (cwd, args, { allowFailure = false } = {}) => {
-  const result = await runProcess(["git", ...args], { cwd, env: process.env, timeout: 300_000 });
-  if (result.code !== 0 && !allowFailure) throw new Error(`git ${args.join(" ")} failed (${result.code}): ${result.stderr.trim() || result.stdout.trim()}`);
-  return result;
-};
-
-// Paths the working tree changed, untracked and ignored files included: a file the
-// proposer wrote anywhere counts, such as a .env.* file Bun would load into the tests.
-async function changedPaths(cwd) {
-  const { stdout } = await git(cwd, ["status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"]);
-  const paths = [];
-  const entries = stdout.split("\0").filter(Boolean);
-  for (let i = 0; i < entries.length; i++) {
-    const status = entries[i].slice(0, 2);
-    paths.push(entries[i].slice(3));
-    if (/[RC]/.test(status)) paths.push(entries[++i]);
-  }
-  return paths;
-}
-
-async function runTests(cwd) {
-  const paths = TEST_PATHS.filter((path) => existsSync(join(cwd, path)));
-  const result = await runProcess(["bun", "test", ...paths], { cwd, env: childEnv(process.env), timeout: 600_000 });
-  const output = `${result.stdout}\n${result.stderr}`;
-  const summary = output.split("\n").map((line) => line.trim()).filter((line) => /^\d+ (?:pass|fail|skip)\b|^Ran \d+ tests/.test(line)).join(", ");
-  return { ok: result.code === 0, command: `bun test ${paths.join(" ")}`, summary: summary || `exit ${result.code}`, tail: output.slice(-3000) };
-}
-
-const today = (now) => new Date(now).toISOString().slice(0, 10).replace(/-/g, "");
-// The UTC time of an attempt, YYYYMMDD-HHMMSS, which keeps each attempt's branch new.
-const stamp = (now) => new Date(now).toISOString().slice(0, 19).replace(/-|:/g, "").replace("T", "-");
-
 // The evidence, kept in the state folder: it quotes prompts and commands from private
 // transcripts, so it never goes into a PR body, which may be public.
 function evidenceMarkdown(group) {
@@ -233,6 +161,9 @@ function parseOptions(argv) {
       "budget-usd": { type: "string", default: "3" },
       "max-total-usd": { type: "string", default: "10" },
       repo: { type: "string", default: REPO_ROOT },
+      "board-snapshot": { type: "string" },
+      "board-repo": { type: "string", default: BOARD_REPO },
+      "board-base": { type: "string" },
       list: { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },
       help: { type: "boolean", default: false },
@@ -257,13 +188,16 @@ function parseOptions(argv) {
     budgetUsd: number("budget-usd"),
     maxTotalUsd: number("max-total-usd"),
     repo: values.repo,
+    boardSnapshot: values["board-snapshot"],
+    boardRepo: values["board-repo"],
+    boardBase: values["board-base"],
     list: values.list,
     dryRun: values["dry-run"],
   };
 }
 
 // The record of a proposal attempt before it starts.
-function newRecord(group, options, now) {
+export function newRecord(group, options, now) {
   return {
     dimension: group.dimension.id,
     section: group.dimension.section,
@@ -290,18 +224,15 @@ function newRecord(group, options, now) {
 async function attempt(group, options, record) {
   const { branch } = record;
   writeFileSync(record.evidenceFile, evidenceMarkdown(group));
-  const { stdout: originUrl } = await git(options.repo, ["remote", "get-url", "origin"]);
   const clone = mkdtempSync(join(tmpdir(), "claude-factory-proposal-"));
   try {
-    await git(tmpdir(), ["clone", "--quiet", "--no-local", options.repo, clone]);
-    await git(clone, ["remote", "set-url", "origin", originUrl.trim()]);
-    await git(clone, ["fetch", "--quiet", "origin", "main"]);
-    await git(clone, ["checkout", "--quiet", "-B", branch, "origin/main"]);
+    await cloneRepository(options.repo, clone, branch);
     const instructions = readFileSync(join(clone, "claude", "CLAUDE.md"), "utf8");
     // acceptEdits confines edits to the clone: an edit elsewhere needs a permission
     // prompt, which a print session denies. Credentials stay unread whatever the
     // user's settings allow. Until the stream says what it cost, assume the budget.
     record.costUSD = options.budgetUsd;
+    const gitBefore = gitState(clone);
     const task = await runTask({
       prompt: proposerPrompt({ group, instructions }),
       cwd: clone,
@@ -315,29 +246,24 @@ async function attempt(group, options, record) {
     // A stream without a result event never said what it cost: keep the budget.
     if (resultEvent(task.events)) record.costUSD = task.costUSD;
     record.proposerOk = task.ok;
-    // Fail closed if the session had more than the file tools (an MCP server or a
-    // built-in that slipped through), whatever it changed.
-    const init = initEvent(task.events);
-    record.tools = init?.tools ?? null;
-    if (!init || init.tools.some((tool) => !TOOLS.includes(tool)) || (init.mcp_servers ?? []).length)
-      return { ...record, status: "rejected-tools", mcpServers: init?.mcp_servers ?? null };
+    const rejected = toolRejection(task, record);
+    if (rejected) return rejected;
+    // Before any git call, which would run what the session put in .git.
+    if (gitState(clone) !== gitBefore) return { ...record, status: "rejected-paths", rejected: [".git"] };
     record.paths = await changedPaths(clone);
     // The change as a local patch for the reviewer; it never leaves the machine unless
     // every check below passes.
     const keepPatch = async () => {
-      await git(clone, ["add", "-A"]);
-      const { stdout } = await git(clone, ["diff", "--cached"]);
-      record.patchFile = record.evidenceFile.replace(/\.evidence\.md$/, ".patch");
-      writeFileSync(record.patchFile, stdout);
-      return stdout;
+      const patch = await stagedPatch(clone);
+      writePatch(record, patch);
+      return patch;
     };
     // A session that hit its budget, errored or stopped early left partial edits at best.
     if (!task.ok) {
       if (record.paths.length) await keepPatch();
       return { ...record, status: "proposer-failed", resultSubtype: resultEvent(task.events)?.subtype ?? null };
     }
-    const title = /^TITLE:\s*(.+)$/m.exec(task.finalText)?.[1].trim().slice(0, 72) || `Address repeated ${group.dimension.id} failures`;
-    const explanation = task.finalText.replace(/^TITLE:.*$/m, "").trim();
+    const { title, explanation } = proposerReply(task, `Address repeated ${group.dimension.id} failures`);
     Object.assign(record, { title, explanation: clip(explanation, 2000) });
     appendFileSync(record.evidenceFile, `\n## Proposer's explanation\n\n${explanation || "(none)"}\n`);
     if (!record.paths.length) return { ...record, status: "no-change" };
@@ -346,23 +272,16 @@ async function attempt(group, options, record) {
     if (outside.length) return { ...record, status: "rejected-paths", rejected: outside };
     // The evidence quotes private transcripts; what gets pushed must not repeat it,
     // beyond text the repository already holds.
-    const added = patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).map((line) => line.slice(1));
-    const original = await Promise.all(record.paths.map((path) => git(clone, ["show", `HEAD:${path}`], { allowFailure: true })));
     const evidence = shownFailures(group).flatMap((failure) => failure.evidence);
-    if (leakedEvidence([title, ...added].join("\n"), evidence, { publicText: original.filter((result) => result.code === 0).map((result) => result.stdout) }))
+    if (leakedEvidence([title, ...addedLines(patch)].join("\n"), evidence, { publicText: await originalText(clone, record.paths) }))
       return { ...record, status: "leak-suspected" };
     const tests = await runTests(clone);
     record.tests = { ok: tests.ok, command: tests.command, summary: tests.summary, ...(tests.ok ? {} : { tail: tests.tail }) };
     if (!tests.ok) return { ...record, status: "tests-failed" };
     if (options.dryRun) return { ...record, status: "dry-run" };
-    await git(clone, ["commit", "--quiet", "-m", title]);
-    await git(clone, ["push", "--quiet", "-u", "origin", `HEAD:refs/heads/${branch}`]);
-    record.pushed = true;
-    const gh = process.env.CLAUDE_FACTORY_GH || "gh";
     const body = prBody({ group, tests, evidenceName: basename(record.evidenceFile) });
-    const pr = await runProcess([gh, "pr", "create", "--draft", "--base", "main", "--head", branch, "--title", title, "--body", body], { cwd: clone, env: process.env, timeout: 120_000 });
-    if (pr.code !== 0) throw new Error(`${gh} pr create failed (${pr.code}) after pushing ${branch}: ${pr.stderr.trim()}`);
-    return { ...record, status: "proposed", prUrl: pr.stdout.trim().split("\n").at(-1) };
+    const prUrl = await publish(clone, { branch, base: "main", title, body, onPushed: () => (record.pushed = true) });
+    return { ...record, status: "proposed", prUrl };
   } finally {
     rmSync(clone, { recursive: true, force: true });
   }
@@ -383,6 +302,7 @@ export async function run(argv, { now = Date.now() } = {}) {
   const groups = failureGroups(readJsonl(scoresFile()), { since: now - options.days * 86_400_000 })
     .filter((group) => !options.dimensions.length || options.dimensions.includes(group.dimension.id));
   const proposals = readJsonl(proposalsFile());
+  // Each qualifying source: its id, its group, and how to start and attempt it.
   const qualifying = [];
   for (const group of groups) {
     const count = group.failures.length;
@@ -390,45 +310,67 @@ export async function run(argv, { now = Date.now() } = {}) {
     const previous = count >= options.threshold ? alreadyProposed(proposals, group.dimension.id, sessions, now) : null;
     const note = count < options.threshold ? "below threshold" : previous ? `already proposed ${previous.createdAt.slice(0, 10)} (${previous.status})` : "qualifies";
     console.log(`${group.dimension.id.padEnd(26)} ${String(count).padStart(3)} failing sessions  ${note}`);
-    if (count >= options.threshold && !previous) qualifying.push(group);
+    if (count >= options.threshold && !previous) qualifying.push({ id: group.dimension.id, group, start: newRecord, attempt });
+  }
+  let failed = 0;
+  if (options.boardSnapshot) {
+    // A missing snapshot means the board step failed, and the weekly report says so; a
+    // damaged one fails this run, after the dimensions had their turn.
+    let snapshot = null;
+    let note = "no snapshot (the board step did not write one)";
+    try {
+      snapshot = readSnapshot(options.boardSnapshot);
+    } catch (error) {
+      note = error.message;
+      failed++;
+    }
+    const candidate = snapshot ? boardCandidate(snapshot, proposals, now) : { group: null, note };
+    console.log(`${BOARD_ID.padEnd(26)} ${candidate.note}`);
+    if (candidate.group) qualifying.push({ id: BOARD_ID, group: candidate.group, start: newBoardRecord, attempt: attemptBoard });
   }
   if (options.list) {
-    for (const group of qualifying) {
-      console.log(`\n## ${group.dimension.id} (section "${group.dimension.section}")`);
+    for (const { id, group } of qualifying) {
+      if (id === BOARD_ID) {
+        console.log(`\n## ${BOARD_ID}`);
+        for (const signal of group.signals) console.log(`- signal: ${signal}`);
+        for (const item of group.feedback) console.log(`- feedback ${item.id}: ${JSON.stringify(clip(item.title, 120))}`);
+        continue;
+      }
+      console.log(`\n## ${id} (section "${group.dimension.section}")`);
       for (const failure of group.failures) console.log(`- ${failure.sessionId} (${failure.project ?? "?"}): ${failure.evidence[0] ?? ""}`);
     }
-    return 0;
+    return failed ? 1 : 0;
   }
-  // Dimensions never attempted go first, then the longest-waiting, so the run's limit
+  // Sources never attempted go first, then the longest-waiting, so the run's limit
   // cannot starve the ones at the end of the rubric while earlier ones keep retrying.
   const lastAttempt = (id) => proposals.filter((proposal) => proposal.dimension === id)
     .reduce((latest, proposal) => (proposal.createdAt > latest ? proposal.createdAt : latest), "");
-  qualifying.sort((a, b) => lastAttempt(a.dimension.id).localeCompare(lastAttempt(b.dimension.id)));
-  let failed = 0;
+  qualifying.sort((a, b) => lastAttempt(a.id).localeCompare(lastAttempt(b.id)));
   let spent = 0;
-  for (const [index, group] of qualifying.entries()) {
+  for (const [index, source] of qualifying.entries()) {
     // A session may cost its whole budget, so start one only while that still fits.
     if (spent + options.budgetUsd > options.maxTotalUsd + 1e-9) {
-      const left = qualifying.slice(index).map((each) => each.dimension.id);
+      const left = qualifying.slice(index).map((each) => each.id);
       console.log(`\nStopped at the run's limit: spent $${spent.toFixed(2)} of $${options.maxTotalUsd.toFixed(2)}, and the next session may cost $${options.budgetUsd.toFixed(2)}. Not proposed this run: ${left.join(", ")}.`);
       break;
     }
-    console.log(`\nProposing for ${group.dimension.id} with ${options.model} (${options.effort})${options.dryRun ? ", dry run" : ""}…`);
-    const started = newRecord(group, options, now);
+    console.log(`\nProposing for ${source.id} with ${options.model} (${options.effort})${options.dryRun ? ", dry run" : ""}…`);
+    const started = source.start(source.group, options, now);
     let record;
     try {
-      record = await attempt(group, options, started);
+      record = await source.attempt(source.group, options, started);
     } catch (error) {
-      // A failed git call, proposer run or `gh pr create` ends this dimension only; the
+      // A failed git call, proposer run or `gh pr create` ends this source only; the
       // record says how far it got, and an error does not block the next run's retry.
       record = { ...started, branch: started.pushed ? started.branch : null, status: "error", error: error.message };
     }
     appendJsonl(proposalsFile(), record);
     spent += record.costUSD;
     if (!["proposed", "dry-run", "no-change"].includes(record.status)) failed++;
-    console.log(`  ${record.status}: ${record.title ?? record.resultSubtype ?? ""}${record.prUrl ? ` ${record.prUrl}` : ""}`);
+    const urls = record.prUrls?.length ? record.prUrls.join(" ") : record.prUrl;
+    console.log(`  ${record.status}: ${record.title ?? record.resultSubtype ?? ""}${urls ? ` ${urls}` : ""}`);
     if (record.error) console.log(`  error: ${record.error}`);
-    if (record.paths.length) console.log(`  changed: ${record.paths.join(", ")}${record.rejected ? ` (outside the allowlist: ${record.rejected.join(", ")})` : ""}`);
+    if (record.paths.length) console.log(`  changed: ${record.paths.join(", ")}${record.rejected ? ` (not allowed: ${record.rejected.join(", ")})` : ""}`);
     if (record.tests) console.log(`  tests: ${record.tests.summary}`);
     if (record.patchFile) console.log(`  patch: ${record.patchFile}`);
     console.log(`  cost: $${record.costUSD.toFixed(2)}`);

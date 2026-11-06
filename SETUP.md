@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -131,8 +131,7 @@ ignores. For example, put `font-size = 17.0` there to override the shared size.
 
 ## Shell startup
 
-For the existing shell configuration on this Mac, review and apply the targeted
-startup changes with:
+Review and apply the targeted startup changes to `~/.zshrc` and `~/.bashrc` with:
 
 ```sh
 uv run --no-project ~/.config/shell/apply-startup-fixes.py
@@ -141,15 +140,34 @@ uv run --no-project ~/.config/shell/apply-startup-fixes.py --apply
 
 The installer checks the expected configuration and shell syntax before writing,
 keeps private backups beside `~/.zshrc` and `~/.bashrc`, and leaves an already
-updated configuration alone. Restore those backups to undo the changes.
+updated configuration alone. Restore those backups to undo the changes. Each step
+recognizes its own earlier result, so the installer works on both Macs' layouts:
 
-Zsh initializes completions once, after adding `~/.zsh/functions`. Generated uv
-and uvx completions are cached in
-`${XDG_CACHE_HOME:-$HOME/.cache}/shell-completions` and refreshed when the resolved
-executable or its metadata changes. An unusable cache falls back to live
-generation. fnm keeps its directory-change hook, with zsh selected explicitly;
-bash loads Atuin's PATH setup before its initialization. Open a new shell after
-applying.
+- `eval "$(atuin init zsh)"` becomes `source "$HOME/.config/shell/interactive.zsh"`,
+  which drops repeated `PATH` and `fpath` entries (the first one wins, as in command
+  lookup) and loads Atuin's init script from a cache. In Claude Code's Bash tool
+  (`CLAUDECODE` set) it also turns off `nomatch`, so an unmatched glob such as
+  `--include=*.md` reaches the command as written, as in bash, instead of failing
+  the whole command line.
+- The uv and uvx completions load through `shell/completions.zsh`, right after Oh My
+  Zsh runs `compinit`, for whichever of the two is on `PATH` there. Zsh initializes
+  completions once, after adding `~/.zsh/functions` where that directory was set up;
+  the installer refuses a configuration that runs `compinit` again elsewhere, which
+  would drop those completions.
+- fnm keeps its directory-change hook, with zsh selected explicitly; bash loads
+  Atuin's PATH setup before its initialization.
+
+`shell/cache.zsh` keeps the output of these static init commands in
+`${XDG_CACHE_HOME:-$HOME/.cache}/shell-cache`, private to you, and regenerates an
+entry when the resolved executable, its arguments, a configuration file it reads
+or a setting it bakes in changes: Atuin's `config.toml` (in `$ATUIN_CONFIG_DIR`,
+`${ATUIN_HOME:-~/.atuin}` or `~/.config/atuin`) and `ATUIN_*` variables, and zoxide's
+`_ZO_*` variables, for the zoxide init in `explore/explore.zsh`. With Atuin's
+`[dotfiles]` enabled, its init also prints synced aliases, so it runs live. The
+cached output is sourced at the top level, exactly as `eval` ran it. An unusable
+cache falls back to live generation; an empty or truncated entry is regenerated. The uv and uvx completions are autoloaded
+from that cache, so zsh reads their large definitions on the first completion
+instead of at every startup. Open a new shell after applying.
 
 ## Neovim and optional tools
 
@@ -163,6 +181,8 @@ before creating a local `codex/config.toml`, which is intentionally ignored.
 Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
+Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
+`claude/hooks/shell.js`, and a guard that cannot load it fails open.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
@@ -180,7 +200,19 @@ configure feedback capture, or create the daily maintenance and audit jobs;
 those are configured separately through the managed skills workflow. Keep
 machine-specific links, credentials and job state outside this repository.
 
-To use the shared Git ignore file, configure its location explicitly:
+Git reads `git/ignore` from `~/.config/git` on its own. Include the shared settings
+in `git/shared.gitconfig` from `~/.gitconfig`, which keeps identity and credentials:
+
+```sh
+git config --global --get-all include.path | grep -qxF '~/.config/git/shared.gitconfig' ||
+  git config --global --add include.path '~/.config/git/shared.gitconfig'
+```
+
+The file is deliberately not `git/config`, which Git would read as global
+configuration and, without a `~/.gitconfig`, write `git config --global` changes
+into. It turns on Git's untracked cache, which leaves `git status` output unchanged
+and makes it, and the prompt's dirty check, faster in large repositories. To name
+the ignore file explicitly anyway:
 
 ```sh
 git config --global core.excludesFile "$HOME/.config/git/ignore"
@@ -198,19 +230,40 @@ bun ~/.claude/factory/cli.js metrics            # last 7 days vs the week before
 bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
 bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
+bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals ($3 per proposer session; no session
-starts once the next one could take the run past $10, though a session can end slightly
-over its own budget). Proposals open draft PRs on this
+audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
+no session starts once the next one could take the run past $10, though a session can end
+slightly over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
-ids, not transcript text, because the repository is public. `weekly status` shows the
-last run; `weekly uninstall` removes the job. The living task list is
-[`claude/factory/PLAN.md`](claude/factory/PLAN.md).
+ids, not transcript text, because the repository is public.
+
+The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
+board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
+`board-snapshot.json` in the state folder; the report shows the stats and the open
+feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
+one proposer session with clones of this repository and agent-board, which sees only that
+feedback. It may change only the "Work board" section of
+`claude/CLAUDE.md` and `codex/AGENTS.md` (identically), agent-board's coordinator prompt
+and docs, and the values of the server defaults in `impl Default for Settings`. The tool
+tests each changed repository (`cargo test --workspace --locked` for agent-board, its
+build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
+against `main`. A change
+that breaks a test pinning a default stays a local patch for a person to finish, as with
+rule text. If the second PR fails after the first opened, the record says
+`partly-proposed` and is not retried. Feedback
+is agent-written and private: the proposer gets it as quoted data, and PR bodies list
+feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
+so its folder is on the job's `PATH`. `weekly status` shows the
+last run; `weekly uninstall` removes the job. Open factory tasks are on the `dotfiles`
+work board (`board ls --board dotfiles`);
+[`claude/factory/PLAN.md`](claude/factory/PLAN.md) keeps the goal, evidence and log.
 
 ### Billing: API first, subscription as fallback
 
@@ -249,6 +302,71 @@ and falls back to the claude.ai subscription otherwise. The planner,
   the real claude, so killing the process a caller started kills claude.
 - For scripts that call `claude` by name, put `~/.claude/bin/api-first` first on `PATH` for
   that run only, never in a login profile. A nesting limit stops a loop.
+
+## Work board
+
+[agent-board](https://github.com/syz51/agent-board) is the shared work board that the
+"Work board" rule in `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
+a host in the tailnet
+([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
+runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
+`claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
+provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
+with a device token created on the server host:
+
+```sh
+cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
+# Reads the token until end of input: pipe it from a file or paste it and press Ctrl-D.
+board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>
+claude mcp add --scope user board -- "$HOME/.cargo/bin/board" mcp
+board install launchd --write
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agent-board.watch.plist
+```
+
+For Codex, add the `[mcp_servers.board]` block that `board install codex` prints to
+`~/.codex/config.toml`, and link `codex/AGENTS.md` to `~/.codex/AGENTS.md` so Codex gets the
+rule. Codex runs a new or changed hook only after it is approved: run
+`bun ~/.config/codex/trust-hooks.js --trust` to approve the hooks this repository tracks
+(it lists them first without `--trust`). It approves hooks from `$CODEX_HOME/hooks.json`
+only while that file matches `codex/hooks.json` on `origin/main`, so pull first, and exits
+1 when hooks stay unapproved or Codex reports problems loading them. Run it again after
+`codex/hooks.json` changes.
+
+Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
+token in `~/.local/share/agent-board/token` (mode 0600) instead.
+
+Agents' asks reach you on Telegram, and you can answer them from a shell with a user token
+kept in its own `BOARD_HOME`, so it does not replace the device's token. Create it on the
+server (`board admin device <mac>-user --user`, which prints the token once) and pipe it
+straight into the login, then answer with the same `BOARD_HOME`:
+
+```sh
+mkdir -m 700 -p ~/.local/share/agent-board-user
+BOARD_HOME=~/.local/share/agent-board-user board login --server <url> --device <mac>-user
+BOARD_HOME=~/.local/share/agent-board-user board answer <ask id> <option>
+```
+
+To host autopilot coordinators on a Mac, map each board repository to its local T3 Code
+project folder in `~/.local/share/agent-board/config.toml` and list the Mac among the
+board's home devices (`board board update <slug> --home-device <first> --home-device <second>`
+replaces the list, in order of preference):
+
+```toml
+[projects]
+"github.com/<owner>/<repo>" = "/path/to/the/t3/project"
+```
+
+The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
+token in the macOS Keychain or, where `board login` fell back to it, the token file beside
+it, outside this repository. When a hook finds the server
+unreachable it waits at most about 1.5 seconds, and the Mac's hooks then use their cache
+without trying the server for a minute.
+
+Sessions started with `AGENT_BOARD_HOOKS=off` stay off the board. The test and
+benchmark runners set it through `childEnv` in `claude/tests/lib/process.js`. Set it
+for any other script that starts `claude -p` or `codex exec` from inside a thread:
+such a session inherits the thread's identity and would otherwise report as that
+thread.
 
 ## T3 Code thread cleanup
 
@@ -324,16 +442,52 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+## Disk space alert
+
+`disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
+The `com.syz51.disk-space-alert` LaunchAgent runs its `check` every 10 minutes. Below
+30 GB free (10^9 bytes, as `statvfs` reports space available to you) the level is
+low, and below 20 GB it is critical. Falling to a worse level alerts at once, and
+staying low or critical alerts again every 24 hours. A level eases only once free
+space is 2 GB above its threshold, so a reading that hovers near one does not flap.
+
+An alert posts a macOS notification and messages T3 Code. The first alert of an
+episode starts a thread in T3's "No project" (`~/.t3/scratch`), asking for a
+read-only summary of where the space went and what could be cleaned, without
+deleting anything. Later alerts in the episode go to that thread, or start a new
+one if it is gone. When T3 Code is not running, each check retries the message
+without repeating the notification. A start that timed out or printed no thread id
+is not retried, since it may have gone through. Getting back above 32 GB posts one "recovered"
+notification and ends the episode. The state is in
+`~/.local/state/disk-space-alert/state.json`, each alert adds a line to
+`events.jsonl` there, and launchd writes errors to `launchd.log`.
+
+Install it on each Mac from the main checkout, which the plist points to, and send a
+test alert through both channels:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py test
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py status
+```
+
+`install --dry-run` prints the plist without loading it, and `uninstall` unloads and
+removes it. To change a threshold, run `install` again with `--low-gb` or
+`--critical-gb`, which it writes into the plist. A one-off run with
+`check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
+the real state.
+
 ## Verification
 
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests claude/factory
+bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and
@@ -341,7 +495,10 @@ in CI:
 
 - `config.test.js`: agent frontmatter against the delegation policy, files and agents
   that `claude/CLAUDE.md` references, hook scripts in `claude/settings.json`, the rules
-  the live suites test, and the root `CLAUDE.md`.
+  the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
+  which the installed `frontend-ui` skill tells sessions to read rather than
+  `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback
+  proposals append to.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
   runner, two-message conversations, session cleanup, reports and language detection.
@@ -396,7 +553,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   replies stay as asked.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,
-`gh` and `launchctl` programs. Its live sandbox check runs real Haiku sessions (about
+`gh`, `launchctl`, `board` and `cargo` programs. Its live sandbox check runs real Haiku sessions (about
 $0.01) and verifies that the strict profile blocks writes outside the working folder and
 unlisted hosts:
 

@@ -97,8 +97,8 @@ describe.skipIf(!LIVE)("live skill dispatch", () => {
       if (scenario.first) expect(skills[0]).toBe(scenario.first);
     }), 400_000);
 
-  // Also ports the visual-direction routing case: the visual preferences file is read
-  // before the recommendation, and no TypeScript guidance is involved.
+  // Also ports the visual-direction routing case: the frontend-ui skill has the visual
+  // preferences file read before the recommendation, and no TypeScript guidance is involved.
   test.concurrent("chart work loads a data-visualization skill along with frontend-ui", () => suite.scenario("chart work", async ({ fixture, session }) => {
     const run = await session({
       cwd: fixture({ "brief.md": "A quiet personal reading dashboard for a web browser. Recommend a visual direction and an accessible chart for weekly completed books (week1: 2; week2: 5; week3: 3). Plain HTML/CSS is sufficient; no TypeScript is involved.\n" }),

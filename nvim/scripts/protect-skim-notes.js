@@ -16,8 +16,12 @@ function run(argv) {
     }
   }
 
+  // Only a running Skim holds unsaved notes. Asking by bundle identifier also
+  // works when Skim is not installed, where Application("Skim") would throw.
+  ObjC.import("AppKit");
+  var running = ObjC.unwrap($.NSRunningApplication.runningApplicationsWithBundleIdentifier("net.sourceforge.skim-app.skim"));
+  if (running.length === 0) return;
   var skim = Application("Skim");
-  if (!skim.running()) return;
   var documents = skim.documents.whose({ file: { _equals: Path(pdfPath) } });
   if (documents.length === 0) return;
   var document = documents[0];

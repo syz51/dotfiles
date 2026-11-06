@@ -5,9 +5,11 @@ import { spawn, spawnSync } from "node:child_process";
 // environment. A test's child `claude` must start as a fresh session, not inherit them.
 const SESSION_VARIABLE = /^(?:CLAUDECODE|CLAUDE_\w*|AI_AGENT|T3CODE_\w*)$/;
 
+// Test and benchmark sessions stay off the shared work board: claude/hooks/board-hook.sh
+// skips the board with AGENT_BOARD_HOOKS=off. An override can turn it back on.
 export function childEnv(base, overrides = {}) {
   const env = Object.fromEntries(Object.entries(base).filter(([name]) => !SESSION_VARIABLE.test(name)));
-  return { ...env, ...overrides };
+  return { ...env, AGENT_BOARD_HOOKS: "off", ...overrides };
 }
 
 // Process ids descending from pid, from one snapshot of the process table. A child that
