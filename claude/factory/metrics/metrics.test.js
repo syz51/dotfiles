@@ -264,6 +264,19 @@ describe("pull requests", () => {
     expect(ghCalls()).toEqual([]);
   });
 
+  test("counts branches pushed, each once, and shows them in the report", async () => {
+    write([
+      { transcript: session("2026-11-03T10:00:00Z").tool("Bash", { command: "git push -u origin b" }, "remote: https://github.com/o/r/pull/new/b\nTo https://github.com/o/r.git\n * [new branch]      b -> b\n") },
+      { transcript: session("2026-11-04T10:00:00Z").tool("Bash", { command: "git push" }, "To https://github.com/o/r.git\n   abc1234..def5678  b -> b\n   1234567..89abcde  c -> c\n") },
+      { transcript: session("2026-11-04T12:00:00Z").tool("Bash", { command: "git push -q" }, "") },
+    ]);
+    const { current } = await report("--no-gh");
+    expect(current.pushes).toEqual({ branches: 2, created: 1, sessions: 2 });
+    const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(markdown).toMatch(/\| Branches pushed \| 2 \|/);
+    expect(markdown).toContain("Branches pushed: 2 (1 new) from 2 sessions");
+  });
+
   test("merged-PR cost and prompts use GitHub state; reverts are found once per repository", async () => {
     linked();
     gh({
@@ -334,7 +347,7 @@ describe("outputs", () => {
     write([{ transcript: session("2026-11-03T10:00:00Z") }, { transcript: session("2026-10-30T10:00:00Z") }]);
     const json = await report("--no-gh");
     expect(Object.keys(json).sort()).toEqual(["current", "excluded", "filters", "generatedAt", "notes", "previous", "previousWindow", "projects", "prs", "topSessions", "window"]);
-    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "harness", "interrupts", "modelMix", "origin", "prompts", "prs", "sessions", "subagents", "toolErrors"]);
+    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "harness", "interrupts", "modelMix", "origin", "prompts", "prs", "pushes", "sessions", "subagents", "toolErrors"]);
     expect(json.filters).toEqual({ project: null, includeAutomation: false, gh: false });
     expect(json.projects[0]).toMatchObject({ project: "-Users-test-project", current: { sessions: 1 }, previous: { sessions: 1 } });
     const reports = join(scratch, "state", "reports");
