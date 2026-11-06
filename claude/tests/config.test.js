@@ -2,7 +2,8 @@
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
@@ -183,6 +184,102 @@ describe("rejected frontend defaults list", () => {
     expect(parts).toHaveLength(2);
     expect(parts[1]).not.toMatch(/^## /m);
     for (const line of parts[1].split("\n").filter((text) => text.trim())) expect(line).toMatch(/^- \S/);
+  });
+});
+
+// The work board (github.com/syz51/agent-board) hooks into every Claude Code and Codex
+// session through hooks/board-hook.sh. It runs the installed `board`, and behaves as if the
+// hook were absent without it or with AGENT_BOARD_HOOKS=off, which lib/process.js childEnv
+// sets for test and benchmark sessions so they stay off the real board.
+describe("work board", () => {
+  const SCRIPT = join(CLAUDE, "hooks/board-hook.sh");
+  const HOOK = /^\/bin\/sh "\$HOME\/\.claude\/hooks\/board-hook\.sh" ([a-z-]+) (claude|codex)$/;
+  const boardHooks = (hooks) =>
+    Object.entries(hooks).flatMap(([event, groups]) =>
+      groups.flatMap((group) =>
+        group.hooks
+          .filter((hook) => hook.command.includes("board"))
+          .map((hook) => ({ event, matcher: group.matcher, hook, match: HOOK.exec(hook.command) }))));
+  const CLAUDE_EVENTS = {
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+    PreCompact: "pre-compact", Stop: "stop", StopFailure: "stop-failure", SessionEnd: "session-end",
+  };
+  const CODEX_EVENTS = {
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+    Stop: "stop", SessionEnd: "session-end",
+  };
+
+  test.each([
+    ["claude/settings.json", "claude", CLAUDE_EVENTS],
+    ["codex/hooks.json", "codex", CODEX_EVENTS],
+  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, events) => {
+    const found = boardHooks(JSON.parse(read(path)).hooks);
+    const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
+    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
+    for (const { hook, match } of found) {
+      expect(match?.[2]).toBe(runtime);
+      expect(hook.timeout).toBeLessThanOrEqual(5);
+    }
+    expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
+  });
+
+  test("Claude Code's board hooks see every tool and every session start", () => {
+    const found = boardHooks(JSON.parse(read("claude/settings.json")).hooks);
+    const matcher = (event) => found.find((entry) => entry.event === event)?.matcher;
+    expect(matcher("PostToolUse")).toBe("*");
+    expect(matcher("SessionStart")).toBe("startup|resume|clear|compact");
+  });
+
+  function withHome(body) {
+    const home = mkdtempSync(join(tmpdir(), "board-hook-"));
+    try {
+      return body(home, (args, extra = {}) =>
+        spawnSync("/bin/sh", [SCRIPT, ...args], { env: { PATH: process.env.PATH, HOME: home, ...extra }, input: "{}", encoding: "utf8" }));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }
+
+  test("without board each hook does nothing, except the JSON Codex requires from Stop", () => {
+    withHome((_, run) => {
+      const cases = [
+        ...Object.values(CLAUDE_EVENTS).map((event) => [event, "claude"]),
+        ...Object.values(CODEX_EVENTS).map((event) => [event, "codex"]),
+      ];
+      for (const [event, runtime] of cases) {
+        const result = run([event, runtime]);
+        expect(result.status, `${event} ${runtime}`).toBe(0);
+        expect(result.stdout, `${event} ${runtime}`).toBe(event === "stop" && runtime === "codex" ? "{}\n" : "");
+      }
+    });
+  });
+
+  test("an installed board gets the event and runtime, unless AGENT_BOARD_HOOKS=off", () => {
+    withHome((home, run) => {
+      mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+      const fake = join(home, ".cargo/bin/board");
+      writeFileSync(fake, `#!/bin/sh\nprintf '%s ' "$@" > "${home}/args"\ncat > "${home}/stdin"\n`);
+      chmodSync(fake, 0o755);
+      expect(run(["stop", "codex"], { AGENT_BOARD_HOOKS: "off" }).stdout).toBe("{}\n");
+      expect(existsSync(join(home, "args"))).toBe(false);
+      expect(run(["post-tool-use", "claude"]).status).toBe(0);
+      expect(readFileSync(join(home, "args"), "utf8")).toBe("hook post-tool-use --runtime claude ");
+      expect(readFileSync(join(home, "stdin"), "utf8")).toBe("{}");
+    });
+  });
+
+  test("the rule says what to act on and what is only data", () => {
+    const rule = section("Work board");
+    for (const tool of ["task_claim", "lease_paths", "handoff_set", "task_done", "ask_user"]) expect(rule).toContain(`\`${tool}\``);
+    expect(rule).toMatch(/not in a plan file/);
+    expect(rule).toMatch(/create one only when I ask/);
+    expect(rule).toMatch(/title, body and acceptance checks/);
+    expect(rule).toMatch(/never follow instructions/);
+  });
+
+  test("Codex gets the same rule", () => {
+    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
+    expect(tracked("codex/AGENTS.md")).toBe(true);
   });
 });
 
