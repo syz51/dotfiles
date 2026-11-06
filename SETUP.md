@@ -279,12 +279,13 @@ in CI:
   the live suites test, and the root `CLAUDE.md`.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
-  runner, session cleanup, reports and language detection.
+  runner, two-message conversations, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
   check that tampers with the fixture when re-run fails, and so do a single-track task
   handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
-  too, as does a claimed but unsaved artifact or an unwritable report.
+  too, as does a claimed but unsaved artifact or an unwritable report. So do a review
+  the main session runs itself and a follow-up answered only after the background review.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
@@ -294,7 +295,7 @@ scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures 
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use
 `claude-haiku-5-5`. Each suite prints its sessions' cost and its total. A full run
-costs about $3.60 and takes about 8 minutes:
+costs about $5.80 and takes about 10 minutes:
 
 ```sh
 RUN_CLAUDE_LIVE=1 bun test claude/tests
@@ -312,7 +313,11 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   before its track returns, then brings both back, removes the worktrees and their
   branches, and runs the checks itself. Each check prints its own directory when it
   passes, so the session's output shows that the copy in the checkout, not a
-  worktree's, passed. The guard hook blocks a force push to `main`.
+  worktree's, passed. A high-impact commit's review runs `/code-review xhigh`, pinned to
+  the commit's SHA, in one background agent on the session's model in a worktree. A
+  follow-up sent as soon as the first turn ends is answered while the review runs, and
+  the review still finishes, reaches the reply and leaves the checkout, remote and
+  worktrees as they were. The guard hook blocks a force push to `main`.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a

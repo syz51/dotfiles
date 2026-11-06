@@ -16,13 +16,13 @@ export const initEvent = (events) => events.find((event) => event.type === "syst
 export const resultEvent = (events) => events.findLast((event) => event.type === "result");
 export const cost = (events) => resultEvent(events)?.total_cost_usd ?? 0;
 
-// Whether the session ended normally. With allowMaxTurns, stopping at the turn limit
-// also counts, for scenarios whose assertion needs only the first steps.
+// Whether the session ended normally: every turn's result, one per turn in a
+// conversation, is a success. With allowMaxTurns, the last turn stopping at the turn
+// limit also counts, for scenarios whose assertion needs only the first steps.
 export function completed(events, { allowMaxTurns = false } = {}) {
-  const result = resultEvent(events);
-  if (!result) return false;
-  if (result.subtype === "success") return result.is_error === false;
-  return allowMaxTurns && result.subtype === "error_max_turns";
+  const results = events.filter((event) => event.type === "result");
+  return results.length > 0 && results.every((result, index) => (result.subtype === "success" && result.is_error === false)
+    || (allowMaxTurns && index === results.length - 1 && result.subtype === "error_max_turns"));
 }
 
 // The final reply. Fails closed when the session produced none.

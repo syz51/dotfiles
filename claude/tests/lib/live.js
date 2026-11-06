@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { removeSessionArtifacts } from "./cleanup.js";
+import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
 import { childEnv, runProcess } from "./process.js";
 import { Ledger, reportDirectory, writeReport } from "./reports.js";
@@ -98,8 +99,9 @@ export function liveSuite(name) {
   // InstructionsLoaded hook input is recorded; installs, downloads and web access are
   // blocked. Throws unless the session completed (or, with maxTurns, stopped at the
   // limit) and left the configuration as it found it. Cost and duration go to the ledger
-  // even when it throws.
-  async function session(dir, { label, cwd, prompt, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report }) {
+  // even when it throws. With followUp, the prompt and the follow-up go in as a
+  // conversation (see conversation.js), and the stream has one result per turn.
+  async function session(dir, { label, cwd, prompt, followUp, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report }) {
     const id = `session-${String(++sequence).padStart(2, "0")}`;
     const recordDir = join(dir, `${id}-hooks`);
     mkdirSync(recordDir);
@@ -109,8 +111,8 @@ export function liveSuite(name) {
     writeFileSync(settings, JSON.stringify({
       hooks: { PreToolUse: [{ hooks: [record, block] }], InstructionsLoaded: [{ hooks: [record] }] },
     }));
-    const args = ["-p", prompt, "--model", model, "--effort", effort, "--no-session-persistence",
-      "--output-format", "stream-json", "--verbose", "--settings", settings];
+    const args = ["-p", ...(followUp === undefined ? [prompt] : ["--input-format", "stream-json"]), "--model", model, "--effort", effort,
+      "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--settings", settings];
     if (maxTurns) args.push("--max-turns", String(maxTurns));
     const env = childEnv(process.env, {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -129,7 +131,9 @@ export function liveSuite(name) {
     try {
       let run;
       try {
-        run = await runProcess([BIN, ...args], { cwd, env, timeout: TIMEOUT || timeout });
+        run = await runProcess([BIN, ...args], {
+          cwd, env, timeout: TIMEOUT || timeout, interact: followUp === undefined ? undefined : conversation(prompt, followUp),
+        });
       } catch (error) {
         stdout = error.stdout ?? "";
         entry.status = /timeout/i.test(error.message) ? "timeout" : "error";
