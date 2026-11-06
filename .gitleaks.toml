@@ -23,11 +23,3 @@ id = "container-registry-auth"
 description = "Container registry credentials stored as base64 auth"
 regex = '''(?i)"auth"\s*:\s*"([A-Za-z0-9+/]{12,}={0,2})"'''
 secretGroup = 1
-
-# A made-up key hash (the planner's 16 hex digits) in the API-first wrapper's tests.
-[[allowlists]]
-description = "Placeholder key hash in claude-api tests"
-condition = "AND"
-paths = ['''^claude/tests/claude-api\.test\.js$''']
-regexTarget = "secret"
-regexes = ['''^0123456789abcdef$''']
