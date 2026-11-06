@@ -76,18 +76,21 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] Design each component above in `DESIGN.md`, with technology choices and sources.
 - [ ] User review of the design; record decisions below (`DESIGN.md`, "Decisions for the
   user").
-- [ ] Text format and framing (component 11, raised by the user): research how to format
-  what the board injects and returns (snapshot, deltas, alerts, tool output, tool
-  descriptions) and what agents write into it (titles, notes, handoffs); then measure the
-  candidates with the factory's bench before fixing the format.
+- [x] Text format and framing research (component 11, raised by the user; delegated thread):
+  `DESIGN.md` section 11 has the formats per place, the trust rule (peer free text only in
+  tool results), writing conventions and the compact formats considered (TOON, BAML, MCP
+  structured content and others).
 
 ### Build (after the design is accepted; phases from `DESIGN.md`)
 
 - [ ] Spike: server with tasks, claims and events; CLI; concurrency test; deployed on the
   chosen host behind Tailscale; used from both Macs.
 - [ ] Verify in the spike: Claude Code passes `CLAUDE_CODE_SESSION_ID` to stdio MCP
-  children; Codex's file-edit tool name in `PostToolUse` and what Codex `PreCompact` output
-  does; T3 state database field names; Litestream 0.5 encryption.
+  children; what Codex `PreCompact` output does; T3 state database field names; Litestream
+  0.5 encryption; how Codex shows MCP `structuredContent`.
+- [ ] Format benchmark (`DESIGN.md` section 11): three formats × three framings on Claude
+  Code and Codex, at least 20 runs per cell, with the factory's bench; uses live model
+  calls, so confirm the budget with the user first.
 - [ ] First version: MCP proxy, hooks for Claude Code and Codex, handoffs, agent rules,
   backups, factory migration.
 - [ ] Phase 2: path leases and overlap alerts, web view, `board watch`, restore drills.
@@ -119,3 +122,6 @@ Wait for the user's review of `DESIGN.md` and the open questions, then start the
   `T3CODE_THREAD_ID` to the agent and ships `t3 thread list/start/send/show`; Codex forwards
   only listed `env_vars` to MCP servers. No existing tool fits whole (beads is closest; no
   expiring claims or alerts).
+- 2026-11-06: Format research done. Checked here: Claude Code 2.1.318 wraps hook text as
+  "<Hook> hook additional context" inside a system reminder, a more trusted channel than
+  tool results, so peer-written free text goes only in tool results.
