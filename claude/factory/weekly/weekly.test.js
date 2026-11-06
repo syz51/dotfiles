@@ -100,9 +100,15 @@ describe("runWeekly", () => {
     await runWeekly({ pr: false });
     let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("## Billing (last 7 days)");
-    expect(summary).toContain("1 on the API, 1 on the subscription");
-    expect(summary).toContain(`- API runs the API refused: 1, the latest ${now}: exhausted: a Claude Code run was refused (billing_error): low.`);
+    expect(summary).toContain("1 started on the API, 1 on the subscription");
+    expect(summary).toContain(`- Of the API runs, the API refused 1; the latest ${now}: exhausted: a Claude Code run was refused (billing_error): low.`);
     expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit that Claude Code can spend to move back.");
+    // Credit would not help a refusal for another reason.
+    writeFileSync(decisions, `${JSON.stringify({ at: now, mode: "subscription", reason: "refused: HTTP 400: This organization has been disabled." })}\n`);
+    await runWeekly({ pr: false });
+    summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain("refused: HTTP 400: This organization has been disabled.\n");
+    expect(summary).not.toContain("Top up");
     writeFileSync(decisions, '{"at":"x","mode":"api"}\n{damaged\n');
     expect(await runWeekly({ pr: false })).toBe(0);
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");

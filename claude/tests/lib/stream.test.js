@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
   agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
-  partialEvents, printedFrom, refusedBeforeWork, skillLoads, spawnEnds, subagentMessages, toolResults,
+  partialEvents, printedFrom, refusedBeforeWork, retryRefused, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
 
 describe("parsing", () => {
@@ -34,8 +34,37 @@ describe("cut-off streams and refusals", () => {
     expect(refusedBeforeWork([init(), toolUse("Bash", { command: "rm x" }).event, refused]), "work was done").toBe(false);
     expect(refusedBeforeWork([init(), result({ subtype: "error_during_execution", is_error: true, api_error_status: 429 })])).toBe(false);
     expect(refusedBeforeWork([init(), result({ is_error: true, api_error_status: 500 })])).toBe(false);
+    // Refused again on any billing: not for credit or the key.
+    expect(refusedBeforeWork([init(), result({ is_error: true, api_error_status: 400, result: "Prompt is too long" })])).toBe(false);
+    expect(refusedBeforeWork([init(), result({ is_error: true, api_error_status: 404, result: "There's an issue with the selected model" })])).toBe(false);
     expect(refusedBeforeWork([init(), result()])).toBe(false);
     expect(refusedBeforeWork([init()])).toBe(false);
+  });
+});
+
+describe("retrying a refused run", () => {
+  const refused = [init(), result({ is_error: true, api_error_status: 400, result: "Credit balance is too low", total_cost_usd: 0 })];
+
+  test("runs once more after a refusal, with the time left, and keeps the refused try", async () => {
+    const limits = [];
+    const outcomes = [{ events: refused, n: 1 }, { events: [init(), result()], n: 2 }, { events: refused, n: 3 }];
+    const attempt = async (limit) => {
+      limits.push(limit);
+      if (limits.length === 1) await Bun.sleep(30);
+      return outcomes[limits.length - 1];
+    };
+    const outcome = await retryRefused(attempt, 1000);
+    expect([outcome.n, outcome.refused.n]).toEqual([2, 1]);
+    expect(limits[0]).toBe(1000);
+    expect(limits[1]).toBeLessThanOrEqual(975);
+  });
+
+  test("anything else, a second refusal included, is returned as it is", async () => {
+    let calls = 0;
+    expect(await retryRefused(async () => ({ events: [init(), result()], n: ++calls }), 1000)).toEqual({ events: [init(), result()], n: 1 });
+    calls = 0;
+    const twice = await retryRefused(async () => ({ events: refused, n: ++calls }), 1000);
+    expect([twice.n, twice.refused.n, calls]).toEqual([2, 1, 2]);
   });
 });
 

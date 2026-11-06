@@ -101,9 +101,12 @@ function renderSummary(run) {
   if (run.billingError) lines.push("## Billing (last 7 days)", "", `- Unavailable: ${run.billingError}`, "");
   else if (run.billing) {
     const { api, subscription, refused, lastFallback, lastRefusal } = run.billing;
-    lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} on the API, ${subscription} on the subscription.`);
-    if (lastRefusal) lines.push(`- API runs the API refused: ${refused}, the latest ${lastRefusal.at}: ${lastRefusal.reason}.`);
-    if (lastFallback) lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason}. Top up API credit that Claude Code can spend to move back.`);
+    lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} started on the API, ${subscription} on the subscription.`);
+    if (lastRefusal) lines.push(`- Of the API runs, the API refused ${refused}; the latest ${lastRefusal.at}: ${lastRefusal.reason}.`);
+    if (lastFallback) {
+      const advice = { exhausted: " Top up API credit that Claude Code can spend to move back.", invalid: " Replace the API key to move back." }[lastFallback.reason.split(/[ :]/)[0]] ?? "";
+      lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason.replace(/\.$/, "")}.${advice}`);
+    }
     lines.push("");
   }
   for (const step of run.steps) {

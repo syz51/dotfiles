@@ -401,9 +401,11 @@ reports in the state folder's `reports/weekly-*.md`.
   carrying Claude Code's beta or its Agent SDK identity line was still refused for credit:
   the beta check said "exhausted" for a key Claude Code could use, so no check request can
   stand in for a run. The check is a plain Messages request again (cached entries of the
-  beta check are ignored), and API runs report back through `StopFailure`/`Stop` hooks;
-  a refused run moves later runs to the subscription, repeated refusals back off from 30
-  minutes to 8 hours, and the weekly summary counts them. Any other definite 4xx of the check is
+  beta check are ignored), and API runs report back through `StopFailure`/`Stop` hooks
+  that only save their input (Claude Code kills `StopFailure` hooks when it exits: a
+  2-second hook was cut off), folded in by the next plan; a refused run moves later runs
+  to the subscription, repeated refusals back off from 30 minutes to 8 hours, runs refused
+  together count once, and the weekly summary counts them. Any other definite 4xx of the check is
   `refused` (subscription) instead of falling through to the API. Judge and task calls,
   and live sessions, refused before doing anything run once more. The judge's instructions
   now replace the default system prompt (`--system-prompt-file`): appending had turned its

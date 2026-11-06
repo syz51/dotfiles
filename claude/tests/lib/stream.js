@@ -29,14 +29,28 @@ export const initEvent = (events) => events.find((event) => event.type === "syst
 export const resultEvent = (events) => events.findLast((event) => event.type === "result");
 export const cost = (events) => resultEvent(events)?.total_cost_usd ?? 0;
 
-// Whether the API refused the run before the session did anything: Claude Code ends it with
-// an error result carrying the refusal's HTTP status (400 for "Credit balance is too low",
-// 401/403 for a key), before any tool call. Through claude-api, its report hook has then
-// moved later runs to the subscription, so the same run once more can go through.
+// Whether the API refused the run for credit or its key before the session did anything:
+// Claude Code ends it with an error result carrying the refusal's HTTP status (400 with
+// "Credit balance is too low", 401/403 for a key), before any tool call. Other refusals,
+// such as a prompt that is too long, would only be refused again.
 export function refusedBeforeWork(events) {
   const final = resultEvent(events);
-  return final?.is_error === true && [400, 401, 402, 403].includes(final.api_error_status)
-    && !events.some((event) => event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use"));
+  if (final?.is_error !== true) return false;
+  const status = final.api_error_status;
+  const forAccount = [401, 403].includes(status) || ([400, 402].includes(status) && /credit|billing|spend limit|usage limit/i.test(String(final.result)));
+  return forAccount && !events.some((event) => event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use"));
+}
+
+// Runs attempt(timeoutMs) once more when the API refused its run for credit or the key
+// before it did anything: through claude-api, the second plan folds in the refusal that
+// the first run's hook reported and runs on the subscription. attempt returns
+// { events, ... }; the second try gets what is left of timeoutMs, and the result keeps the
+// refused try as `refused`.
+export async function retryRefused(attempt, timeoutMs) {
+  const started = Date.now();
+  const first = await attempt(timeoutMs);
+  if (!refusedBeforeWork(first.events)) return first;
+  return { ...(await attempt(Math.max(1, timeoutMs - (Date.now() - started)))), refused: first };
 }
 
 // Whether the session ended normally: every turn's result, one per turn in a

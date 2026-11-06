@@ -8,7 +8,7 @@ import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
 import { childEnv, runProcess } from "./process.js";
 import { Ledger, reportDirectory, writeReport } from "./reports.js";
-import { bashRuns, completed, cost, initEvent, parseStream, partialEvents, refusedBeforeWork, resultEvent, skillLoads, toolUses } from "./stream.js";
+import { bashRuns, completed, cost, initEvent, parseStream, partialEvents, resultEvent, retryRefused, skillLoads, toolUses } from "./stream.js";
 
 export const LIVE = process.env.RUN_CLAUDE_LIVE === "1";
 // Behavioral scenarios run on this model at the effort it gets in real use; checks of
@@ -128,19 +128,32 @@ export function liveSuite(name) {
     const started = Date.now();
     let stdout = "";
     let events = [];
+    let refusedCost = 0;
+    // The session's own folder of a run outside the suite root, for cleanup.
+    const noteOutside = (init) => {
+      if (init && !init.cwd.startsWith(`${root}/`)) outside.push({ cwd: init.cwd, id: init.session_id });
+    };
     try {
       let run;
       try {
-        const once = () => runProcess([BIN, ...args], {
-          cwd, env, timeout: TIMEOUT || timeout, interact: followUp === undefined ? undefined : conversation(prompt, followUp),
-        });
-        run = await once();
-        // Refused by the API before it did anything: once more (claude-api has moved runs to
-        // the subscription), recording only the run that counts.
-        if (run.stdout.trim() && refusedBeforeWork(partialEvents(run.stdout))) {
-          rmSync(recordDir, { recursive: true });
-          mkdirSync(recordDir);
-          run = await once();
+        // A run the API refused for credit or the key before it did anything runs once more,
+        // recording only the run that counts.
+        let tries = 0;
+        const attempt = async (limit) => {
+          if (tries++) {
+            rmSync(recordDir, { recursive: true });
+            mkdirSync(recordDir);
+          }
+          const run = await runProcess([BIN, ...args], {
+            cwd, env, timeout: limit, interact: followUp === undefined ? undefined : conversation(prompt, followUp),
+          });
+          return { run, events: partialEvents(run.stdout) };
+        };
+        const outcome = await retryRefused(attempt, TIMEOUT || timeout);
+        run = outcome.run;
+        if (outcome.refused) {
+          noteOutside(initEvent(outcome.refused.events));
+          refusedCost = cost(outcome.refused.events);
         }
       } catch (error) {
         stdout = error.stdout ?? "";
@@ -151,7 +164,7 @@ export function liveSuite(name) {
       if (run.code !== 0 && !stdout.trim()) throw new Error(`claude exited ${run.code} with no output: ${run.stderr.slice(-2000)}`);
       events = parseStream(stdout);
       const init = initEvent(events);
-      if (init && !init.cwd.startsWith(`${root}/`)) outside.push({ cwd: init.cwd, id: init.session_id });
+      noteOutside(init);
       if (!completed(events, { allowMaxTurns: !!maxTurns }))
         throw new Error(`claude exited ${run.code} with result ${JSON.stringify(resultEvent(events)?.subtype)}: ${run.stderr.slice(-2000)}`);
       assertGuarded(guard);
@@ -173,7 +186,7 @@ export function liveSuite(name) {
     } finally {
       if (stdout) {
         try {
-          entry.cost = cost(parseStream(stdout));
+          entry.cost = refusedCost + cost(parseStream(stdout));
         } catch {
           // A truncated stream has no cost to recover; the run is already failing.
         }

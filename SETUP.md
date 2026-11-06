@@ -231,12 +231,14 @@ and falls back to the claude.ai subscription otherwise. The planner,
 - The check cannot foresee every refusal: the API can refuse Claude Code's own requests
   for credit while plain ones are served, and refuses requests that only look like Claude
   Code's even while Claude Code is served, so no check request can stand in for a run. So
-  API runs report back through `StopFailure` and `Stop` hooks merged into the same
-  settings (`api-first.js report`): a run the API refuses for credit or the key moves later
-  runs to the subscription, for 30 minutes, doubling with each further refusal while the
-  check keeps passing, up to 8 hours; a run that goes through clears the count. The
-  factory and the live suites run a call the API refused before it did anything once more,
-  which then goes to the subscription.
+  API runs report back: `StopFailure` and `Stop` hooks merged into the same settings save
+  their input under `reports/` there (with `sh` and `cat`, since Claude Code kills
+  `StopFailure` hooks when it exits), and the next run's plan folds them in. A run the API
+  refuses for credit or the key moves later runs to the subscription for 30 minutes,
+  doubling with each further refusal while the check keeps passing, up to 8 hours; runs
+  refused together count once, and a run that goes through clears the count. The factory
+  and the live suites run a call the API refused for credit or the key before it did
+  anything once more, which then goes to the subscription.
 - Runs that are not print mode, or that set `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
   `ANTHROPIC_BASE_URL` themselves, pass through untouched. The script replaces itself with
   the real claude, so killing the process a caller started kills claude.

@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { completed, parseStream, partialEvents, refusedBeforeWork, resultEvent } from "../../tests/lib/stream.js";
+import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused } from "../../tests/lib/stream.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
 // By default the API-first wrapper: billed to the API while it has credit, else the
@@ -28,15 +28,6 @@ export class ClaudeCallError extends Error {
     this.name = "ClaudeCallError";
     Object.assign(this, { events, stderr, code, costUSD: resultEvent(events)?.total_cost_usd ?? null });
   }
-}
-
-// A call is run once more when the API refused it before it did anything (see
-// refusedBeforeWork): claude-api then runs it on the subscription. run() returns
-// { result, events }; the returned spentUSD adds what the refused try reported.
-async function withRetry(run) {
-  const first = await run();
-  if (!refusedBeforeWork(first.events)) return { ...first, spentUSD: 0 };
-  return { ...(await run()), spentUSD: resultEvent(first.events)?.total_cost_usd ?? 0 };
 }
 
 // Events of a run's stdout; a run with no parseable stream fails with its exit status.
@@ -69,17 +60,19 @@ export async function judge({ prompt, system, schema, model, effort = "medium", 
       writeFileSync(file, system);
       argv.push("--system-prompt-file", file);
     }
-    const { result, events, spentUSD } = await withRetry(async () => {
+    // A call the API refused for credit or the key before it did anything runs once more.
+    const { result, events, refused } = await retryRefused(async (timeout) => {
       let result;
       try {
-        result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });
+        result = await runProcess(argv, { cwd, env: quietEnv(), timeout, input: prompt });
       } catch (error) {
         // A deadline, the output bound or a spawn failure: one failed call, not a crash of
         // the caller's loop. The partial stream may still say what it cost.
         throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events: partialEvents(error.stdout), stderr: (error.stderr ?? "").slice(-2000) });
       }
       return { result, events: eventsOf(result, "Judge call") };
-    });
+    }, timeoutMs);
+    const spentUSD = refused ? cost(refused.events) : 0;
     for (const event of events) {
       if (event.type === "system" && event.subtype === "init"
         && ((event.tools ?? []).some((tool) => tool !== STRUCTURED_TOOL) || (event.mcp_servers ?? []).length))
@@ -113,18 +106,18 @@ export async function runTask({
   if (tools) argv.push("--tools", tools.join(","));
   // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
   for (const dir of addDirs) argv.push("--add-dir", dir);
-  const { result, events, spentUSD } = await withRetry(async () => {
-    const result = await runProcess(argv, { cwd, env: quietEnv(env), timeout: timeoutMs, input: prompt });
+  const { result, events, refused } = await retryRefused(async (timeout) => {
+    const result = await runProcess(argv, { cwd, env: quietEnv(env), timeout, input: prompt });
     return { result, events: eventsOf(result, "Task run") };
-  });
+  }, timeoutMs);
   const final = resultEvent(events);
   return {
     events,
     ok: completed(events),
     finalText: typeof final?.result === "string" ? final.result : "",
-    costUSD: spentUSD + (final?.total_cost_usd ?? 0),
+    costUSD: (refused ? cost(refused.events) : 0) + (final?.total_cost_usd ?? 0),
     turns: final?.num_turns ?? null,
-    durationMs: result.durationMs,
+    durationMs: result.durationMs + (refused?.result.durationMs ?? 0),
     code: result.code,
     stderr: result.stderr.slice(-2000),
   };
