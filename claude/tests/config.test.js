@@ -2,7 +2,7 @@
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
@@ -127,7 +127,6 @@ describe("settings", () => {
     const scripts = handlers.flatMap((hook) =>
       [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+)/g)].map((match) => match[1]));
     expect(scripts).toContain("hooks/guard-git-push.js");
-    expect(scripts).toContain("hooks/enable-computer-use.js");
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
@@ -156,12 +155,12 @@ describe("settings", () => {
     expect(guard).toHaveLength(1);
   });
 
-  // Claude Code only records computer use per project, so this hook turns it on in every one.
-  // Only at startup: on clear, compact or resume it would undo a `/mcp` toggle mid-session.
-  test("computer use is enabled in every project when a session starts", () => {
-    const hooks = (settings.hooks.SessionStart ?? []).filter((group) => group.matcher === "startup"
-      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/enable-computer-use.js")));
-    expect(hooks).toHaveLength(1);
+  // Claude Code's built-in computer use only runs in interactive sessions, and T3 Code sessions
+  // run through the SDK, so the hook that enabled it in every project was removed. Other
+  // hooks and MCP servers, including a computer-use server of your own, are unaffected.
+  test("no hook enables Claude Code's built-in computer use", () => {
+    expect(handlers.some((hook) => hook.command?.includes("enable-computer-use"))).toBe(false);
+    expect(existsSync(join(REPO, "claude/hooks/enable-computer-use.js"))).toBe(false);
   });
 });
 
