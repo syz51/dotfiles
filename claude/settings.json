@@ -49,16 +49,6 @@
           }
         ]
       }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/enable-computer-use.js\""
-          }
-        ]
-      }
     ]
   },
   "enabledPlugins": {},
