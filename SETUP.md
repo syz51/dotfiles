@@ -221,7 +221,8 @@ git config --global core.excludesFile "$HOME/.config/git/ignore"
 ## Factory
 
 `claude/factory/` measures and improves this Claude Code setup. It reads the session
-transcripts under `~/.claude/projects` and keeps its reports, scores, benchmark results
+transcripts under `~/.claude/projects`, and for metrics also the Codex rollouts under
+`${CODEX_HOME:-~/.codex}/sessions`, and keeps its reports, scores, benchmark results
 and proposal records in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/`, never in this
 repository. Commands that call a model state a budget and stay within it.
 

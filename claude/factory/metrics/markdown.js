@@ -1,5 +1,7 @@
 // The metrics report as Markdown: a headline table comparing the window with the previous
 // one, then cost, effort and quality, models, projects, pull requests and notes.
+import { HARNESSES } from "./stats.js";
+
 const sum = (values) => values.reduce((total, value) => total + value, 0);
 
 const usd = (value) => (value === null || value === undefined ? "n/a" : value.toLocaleString("en-US", { style: "currency", currency: "USD" }));
@@ -31,13 +33,15 @@ function change(current, previous, kind) {
 
 export const HEADLINE = [
   ["Sessions", (s) => s.sessions, "count"],
+  ["Codex sessions", (s) => s.harness.codex.sessions, "count"],
+  ["Codex tokens, millions (subagents included)", (s) => s.harness.codex.tokens / 1e6, "number"],
   ["Sessions launched by an agent", (s) => s.origin.agent.sessions, "count"],
   ["Cost of agent-launched sessions", (s) => s.origin.agent.costUSD, "usd"],
   ["Prompts per session, mean", (s) => s.prompts.meanPerSession, "number"],
   ["Prompts per session, median", (s) => s.prompts.medianPerSession, "number"],
   ["Cost, total", (s) => s.cost.totalUSD, "usd"],
-  ["Cost per session, median", (s) => s.cost.medianUSD, "usd"],
-  ["Cost per session, p90", (s) => s.cost.p90USD, "usd"],
+  ["Cost per session, median (known cost)", (s) => s.cost.medianUSD, "usd"],
+  ["Cost per session, p90 (known cost)", (s) => s.cost.p90USD, "usd"],
   ["Merged PRs", (s) => s.prs.merged, "count"],
   ["Cost per merged PR (its sessions)", (s) => s.prs.costPerMergedUSD, "usd"],
   ["Spend per merged PR (all sessions)", (s) => s.prs.spendPerMergedUSD, "usd"],
@@ -57,7 +61,7 @@ const sessionName = (session) => session.title ?? `untitled ${session.id.slice(0
 export function renderMarkdown(report) {
   const { window, previousWindow: before, current, previous: prior } = report;
   const lines = [];
-  lines.push(`# Claude Code metrics: ${day(window.since)} to ${day(window.until)}`, "");
+  lines.push(`# Claude Code and Codex metrics: ${day(window.since)} to ${day(window.until)}`, "");
   lines.push(`Window of ${num(window.days)} days, ending ${window.until}, compared with the previous ${num(window.days)} days (${day(before.since)} to ${day(before.until)}). `
     + `Sessions count in the window of their last activity. Generated ${report.generatedAt}.`, "");
   const filters = [`project: ${report.filters.project ?? "all"}`, `automation sessions: ${report.filters.includeAutomation ? "included" : `excluded (${report.excluded.automation})`}`, `GitHub lookups: ${report.filters.gh ? "on" : "off"}`];
@@ -70,6 +74,10 @@ export function renderMarkdown(report) {
   lines.push("## Cost", "");
   lines.push(`Total ${usd(current.cost.totalUSD)} API-equivalent over ${current.sessions} sessions: ${current.cost.sources["cost-state"]} from Claude Code's cost-state record, ${current.cost.sources.estimated} estimated from token usage`
     + `${current.cost.unpricedSessions ? ` (${current.cost.unpricedSessions} used a model without a known price, counted as $0)` : ""}.`, "");
+  lines.push(`By harness: ${Object.entries(HARNESSES).map(([harness, name]) => {
+    const entry = current.harness[harness];
+    return `${name} ${entry.sessions} sessions, ${usd(entry.costUSD)}, ${num(entry.tokens / 1e6)}M tokens, ${entry.subagentRuns} subagent runs${entry.unpricedSessions ? ` (${entry.unpricedSessions} sessions unpriced)` : ""}`;
+  }).join("; ")}. Codex records no cost, and models without a known price count as $0, so compare Codex work by tokens.`, "");
   lines.push("### Costliest sessions", "");
   lines.push(report.topSessions.length
     ? table(["Session", "Project", "Cost", "Prompts", "Cost source"], report.topSessions.map((session) => [sessionName(session), session.project, usd(session.costUSD), session.prompts, session.costSource]))
@@ -89,9 +97,9 @@ export function renderMarkdown(report) {
   lines.push("## Subagents and models", "");
   lines.push(`Subagents: ${current.subagents.runs} runs, ${usd(current.subagents.costUSD)} estimated, ${pct(current.subagents.share)} of the estimated cost (previous window ${pct(prior.subagents.share)}).`, "");
   lines.push(current.modelMix.length
-    ? table(["Role", "Model", "Runs", "Messages", "Estimated cost", "Share"], current.modelMix.map((row) => [row.role, row.model, row.runs, row.messages ?? "n/a", usd(row.costUSD), pct(row.share)]))
+    ? table(["Role", "Model", "Runs", "Messages", "Tokens (M)", "Estimated cost", "Share"], current.modelMix.map((row) => [row.role, row.model, row.runs, row.messages ?? "n/a", num((row.tokens ?? 0) / 1e6), usd(row.costUSD), pct(row.share)]))
     : "No model use in the window.", "");
-  lines.push("Runs are sessions for the main role and subagent runs otherwise. Costs here are usage estimates, which can differ from the cost-state totals above.", "");
+  lines.push("Runs are sessions for the main role and subagent runs otherwise; messages are API responses. Costs here are usage estimates, which can differ from the cost-state totals above.", "");
 
   lines.push("## Projects", "");
   lines.push(report.projects.length
@@ -116,7 +124,9 @@ export function renderMarkdown(report) {
 // The history file as a Markdown table, oldest first.
 export function renderHistory(entries) {
   if (!entries.length) return "No metrics runs recorded yet.";
-  return table(["Run (UTC)", "Window", "Project", "Sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
-    entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions, usd(entry.costUSD),
+  return table(["Run (UTC)", "Window", "Project", "Sessions", "Codex sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
+    entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions,
+      // Runs before Codex was included have no count: their sessions are Claude Code only.
+      entry.codexSessions ?? "not read", usd(entry.costUSD),
       num(entry.mergedPRs), usd(entry.costPerMergedPRUSD), num(entry.promptsPerSession), pct(entry.correctionRate), pct(entry.toolErrorRate), entry.api429]));
 }

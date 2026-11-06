@@ -52,7 +52,7 @@ export const textOf = (content) => typeof content === "string"
 
 // Tool output kept per call: the start and the end, where errors and PR URLs appear.
 export const OUTPUT_EXCERPT = 2000;
-const excerpt = (text) => text.length <= OUTPUT_EXCERPT
+export const excerpt = (text) => text.length <= OUTPUT_EXCERPT
   ? text
   : `${text.slice(0, OUTPUT_EXCERPT / 2)}\n[... ${text.length - OUTPUT_EXCERPT} characters omitted ...]\n${text.slice(-OUTPUT_EXCERPT / 2)}`;
 
@@ -94,7 +94,6 @@ const asPrompt = (record, text) => ({ at: record.timestamp ?? null, text, source
 function summarize(records) {
   const messages = new Map();
   const results = new Map();
-  const models = {};
   const toolCalls = [];
   const apiErrors = {};
   let interrupts = 0;
@@ -120,15 +119,27 @@ function summarize(records) {
       else if (typeof content === "string" && content.startsWith(INTERRUPT)) interrupts++;
     } else if (record.type === "system" && record.subtype === "compact_boundary") compactions++;
   }
+  for (const call of toolCalls) {
+    const result = results.get(call.id);
+    call.ok = result ? !result.isError : null;
+    call.output = result ? excerpt(result.output) : "";
+  }
+  const requests = [...messages.values()].map(({ model, usage, effort }) => ({ model, effort, usage: normalizeUsage(usage) }));
+  return { ...priceRequests(requests), toolCalls, apiErrors, interrupts, compactions, assistantMessages: messages.size };
+}
+
+// Messages per model and effort, usage per model and estimated cost of API requests
+// ([{ model, effort, usage }] with normalized usage), priced one by one.
+export function priceRequests(requests) {
+  const models = {};
+  const efforts = {};
   const usage = {};
   const costByModel = {};
   let estimated = 0;
   let unpriced = false;
-  const efforts = {};
-  for (const { model, usage: raw, effort } of messages.values()) {
+  for (const { model, effort, usage: normalized } of requests) {
     models[model] = (models[model] ?? 0) + 1;
     if (effort) efforts[effort] = (efforts[effort] ?? 0) + 1;
-    const normalized = normalizeUsage(raw);
     addUsage(usage[model] ??= emptyUsage(), normalized);
     const cost = requestCost(model, normalized);
     if (cost === null) unpriced = true;
@@ -137,18 +148,21 @@ function summarize(records) {
       costByModel[model] = (costByModel[model] ?? 0) + cost;
     }
   }
-  for (const call of toolCalls) {
-    const result = results.get(call.id);
-    call.ok = result ? !result.isError : null;
-    call.output = result ? excerpt(result.output) : "";
-  }
-  return { models, efforts, usage, costByModel, estimatedCostUSD: estimated, unpriced, toolCalls, apiErrors, interrupts, compactions, assistantMessages: messages.size };
+  return { models, efforts, usage, costByModel, estimatedCostUSD: estimated, unpriced };
 }
 
-function timestamps(records) {
-  const times = records.map((record) => Date.parse(record.timestamp)).filter(Number.isFinite);
-  return times.length
-    ? { startedAt: new Date(Math.min(...times)).toISOString(), endedAt: new Date(Math.max(...times)).toISOString() }
+// The earliest and latest of records' timestamps, without spreading them into arguments
+// (a long rollout has more records than a call takes).
+export function timestamps(records) {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const record of records) {
+    const time = Date.parse(record.timestamp);
+    if (time < first) first = time;
+    if (time > last) last = time;
+  }
+  return Number.isFinite(first)
+    ? { startedAt: new Date(first).toISOString(), endedAt: new Date(last).toISOString() }
     : { startedAt: null, endedAt: null };
 }
 
@@ -157,6 +171,9 @@ export function mostCommon(values) {
   for (const value of values) if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
   return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 }
+
+// The key with the highest count ({ key: count }), the first on a tie; null when empty.
+export const topKey = (counts) => Object.entries(counts).reduce((best, entry) => (best && best[1] >= entry[1] ? best : entry), null)?.[0] ?? null;
 
 function parseSubagents(dir) {
   if (!existsSync(dir)) return [];
@@ -179,8 +196,8 @@ function parseSubagents(dir) {
       agentType: meta.agentType ?? null,
       description: meta.description ?? null,
       toolUseId: meta.toolUseId ?? null,
-      model: mostCommon(Object.entries(summary.models).flatMap(([model, count]) => Array(count).fill(model))),
-      effort: mostCommon(Object.entries(summary.efforts).flatMap(([effort, count]) => Array(count).fill(effort))),
+      model: topKey(summary.models),
+      effort: topKey(summary.efforts),
       usage: summary.usage,
       costUSD: summary.estimatedCostUSD,
       assistantMessages: summary.assistantMessages,
@@ -231,6 +248,7 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
   const hasCostState = typeof costState?.totalCostUSD === "number" && estimated <= costState.totalCostUSD * 1.1 + 0.05;
   return {
     id,
+    harness: "claude",
     project,
     cwd,
     file,

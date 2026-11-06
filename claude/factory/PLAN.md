@@ -91,10 +91,12 @@ review on sai** for the feasibility notes the user asked about.
 
 ## Shared interfaces
 
-`Session` (from `lib/transcripts.js`):
+`Session` (from `lib/transcripts.js`, and from `lib/codex.js` for Codex rollouts, whose subagent
+threads become `subagents` of their root thread and whose cost is the usage estimate):
 
 ```
-{ id, project, cwd, file, entrypoint, title, startedAt, endedAt, models: {model: count},
+{ id, harness: "claude" | "codex", project, cwd, file, entrypoint, title, startedAt, endedAt,
+  models: {model: count},
   prompts: [{ at, text, source }],      // human-sent prompts only
   assistantMessages, efforts: {effort: count},
   toolCalls: [{ id, name, input, ok, output, at }],  // output: 2,000-char start+end excerpt
@@ -142,6 +144,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `origin` marks agent-launched threads (54 of 73 sessions this week, $309), subagent
   message counts.
 - [x] Tests (synthetic transcripts, fake gh); real 7- and 30-day runs.
+- [x] Codex sessions (`lib/codex.js`, board task dotfiles-5): threads under
+  `$CODEX_HOME/sessions` (a long thread spans several segment files) with tokens, models,
+  efforts, prompts, tool calls, interrupts, compactions, turn errors and PRs (`gh pr create`
+  output, T3 Code's link tool); subagent threads skip the parent history they copy and count
+  with their root session, which spans them in time. Report: per-harness sessions, cost and
+  tokens, a Tokens column in the model mix, cost quantiles and cost per merged PR over
+  sessions with a known cost, a Codex column in the history. GPT models are unpriced until
+  the pricing fallback (dotfiles-6).
 
 ### 2. Scoring and proposals (`scoring/`)
 
@@ -389,3 +399,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: The weekly run gained a board step: the work board's stats and open feedback go
   into the report and into proposals, which may change the board's defaults, coordinator
   prompt and rule (`board/PLAN.md`, feedback loop).
+- 2026-11-07: Metrics include Codex sessions. 7-day real run: 340 sessions, 160 of them Codex
+  with 771 subagent runs and 8.0B tokens (Claude Code: 180 sessions, 5.2B tokens); 112 merged
+  PRs. Reading the two windows' rollouts takes about 7 seconds.
