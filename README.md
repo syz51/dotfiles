@@ -20,6 +20,7 @@ there is no repository-wide installer.
 | `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
 | `claude/`                | Claude Code instructions, subagents, settings, push guard, and a browser skill.  |
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
+| `t3code/`                | A T3 Code routine that settles idle subagent threads of settled threads.         |
 | `git/ignore`             | Shared Git ignore patterns.                                                      |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
