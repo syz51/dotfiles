@@ -50,13 +50,27 @@ describe("projectKey", () => {
     expect(projectKey(join(scratch, "wt"))).toBe(repo);
   });
 
-  test("keeps a submodule's own root", () => {
-    const run = (dir, args) => ({
-      "rev-parse --show-toplevel": "/super/mod",
-      "rev-parse --path-format=absolute --absolute-git-dir": "/super/.git/modules/mod",
-      "rev-parse --path-format=absolute --git-common-dir": "/super/.git/modules/mod",
-    })[args.join(" ")];
-    expect(projectKey("/super/mod", run)).toBe("/super/mod");
+  test("is the bare repository for a worktree of one", () => {
+    const bare = join(scratch, "repo.git");
+    sh(scratch, "git", "init", "-q", "--bare", bare);
+    sh(scratch, "git", "-C", bare, "worktree", "add", "-q", "--orphan", join(scratch, "wt"));
+    expect(projectKey(join(scratch, "wt"))).toBe(bare);
+  });
+
+  // git answers: toplevel, git dir, common dir
+  const answering = (lines) => () => lines.join("\n");
+  test("keeps a submodule's own root, and the worktree's when the common dir is a checkout", () => {
+    expect(projectKey("/super/mod", answering(["/super/mod", "/super/.git/modules/mod", "/super/.git/modules/mod"]))).toBe("/super/mod");
+    expect(projectKey("/s/wt", answering(["/s/wt", "/s/.git/modules/mod/worktrees/wt", "/s/.git/modules/mod"]))).toBe("/s/.git/modules/mod");
+    const checkout = join(scratch, "co");
+    mkdirSync(join(checkout, ".git"), { recursive: true });
+    expect(projectKey("/s/wt", answering(["/s/wt", `${checkout}/worktrees/wt`, checkout]))).toBe("/s/wt");
+  });
+
+  test("is undefined when git cannot answer inside a repository", () => {
+    mkdirSync(join(scratch, "repo", ".git", "x"), { recursive: true });
+    expect(projectKey(join(scratch, "repo", ".git", "x"), () => undefined)).toBeUndefined();
+    expect(() => projectKey(scratch, () => { throw new Error("git timed out"); })).toThrow("git timed out");
   });
 });
 
@@ -94,6 +108,15 @@ describe("enableInFile", () => {
     expect(existsSync(`${config}.lock`)).toBe(true);
   });
 
+  test("returns without the lock when the server is already enabled", () => {
+    const config = join(scratch, ".claude.json");
+    writeFileSync(config, JSON.stringify({ projects: { "/repo": { enabledMcpServers: [SERVER] } } }));
+    mkdirSync(`${config}.lock`);
+    const start = Date.now();
+    expect(enableInFile(config, "/repo")).toBe(false);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
   test("releases the lock when the update throws", () => {
     const config = join(scratch, ".claude.json");
     expect(() => withConfigLock(config, () => { throw new Error("boom"); })).toThrow("boom");
@@ -102,10 +125,29 @@ describe("enableInFile", () => {
 });
 
 describe("hook", () => {
-  const runHook = (cwd, configDir) => spawnSync("bun", [HOOK], {
+  const runHook = (cwd, configDir, env = {}) => spawnSync("bun", [HOOK], {
     input: JSON.stringify({ hook_event_name: "SessionStart", cwd }),
     encoding: "utf8",
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, ...env },
+  });
+
+  test("ignores an inherited GIT_DIR", () => {
+    const home = join(scratch, "home");
+    mkdirSync(home);
+    writeFileSync(join(home, ".claude.json"), "{}");
+    const other = join(scratch, "other");
+    sh(scratch, "git", "init", "-q", other);
+    expect(runHook("/Users", home, { GIT_DIR: join(other, ".git"), GIT_WORK_TREE: other }).status).toBe(0);
+    expect(Object.keys(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).projects)).toEqual(["/Users"]);
+  });
+
+  test("reports a missing folder or malformed input without failing the session", () => {
+    for (const input of [JSON.stringify({ cwd: join(scratch, "gone") }), "not json"]) {
+      const result = spawnSync("bun", [HOOK], { input, encoding: "utf8" });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("enable-computer-use:");
+    }
   });
 
   test("enables the session's project and prints nothing into the context", () => {
