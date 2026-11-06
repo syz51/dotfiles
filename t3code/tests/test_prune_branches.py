@@ -21,7 +21,8 @@ create table projection_projects (
   project_id text primary key, workspace_root text not null, deleted_at text
 );
 create table orchestration_v2_projection_threads (
-  thread_id text primary key, project_id text not null, payload_json text not null
+  thread_id text primary key, project_id text not null, payload_json text not null,
+  archived_at text, deleted_at text
 );
 create table orchestration_v2_projection_runs (
   run_id text primary key, thread_id text not null, status text not null
@@ -79,7 +80,7 @@ class Fixture:
             (project_id, str(root), "2026-01-03T00:00:00Z" if deleted else None),
         )
 
-    def thread(self, project_id, branch, worktree=True, run=None, request=None):
+    def thread(self, project_id, branch, worktree=True, run=None, request=None, archived=False, deleted=False):
         self.counter += 1
         thread_id = f"thread-{self.counter}"
         payload = {
@@ -88,8 +89,9 @@ class Fixture:
             if worktree else None,
         }
         self.db.execute(
-            "insert into orchestration_v2_projection_threads values (?, ?, ?)",
-            (thread_id, project_id, json.dumps(payload)),
+            "insert into orchestration_v2_projection_threads values (?, ?, ?, ?, ?)",
+            (thread_id, project_id, json.dumps(payload),
+             "2026-01-04T00:00:00Z" if archived else None, "2026-01-05T00:00:00Z" if deleted else None),
         )
         if run is not None:
             self.db.execute(
@@ -113,9 +115,23 @@ echo "$@" >> "$FAKE_GH_LOG"
 if [ -n "$FAKE_GH_FAIL" ]; then echo "HTTP 401: Bad credentials" >&2; exit 1; fi
 if [ -n "$FAKE_GH_SLEEP" ]; then sleep "$FAKE_GH_SLEEP"; fi
 if [ -n "$FAKE_GH_GARBLE" ]; then echo "<html>"; exit 0; fi
+if [ "$1" = api ]; then
+  file="$FAKE_GH_DIR/ref_$(echo "${2#*/git/ref/heads/}" | tr / _).json"
+  if [ -f "$file" ]; then cat "$file"; exit 0; fi
+  echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1
+fi
 while [ $# -gt 0 ]; do [ "$1" = --head ] && head=$2; shift; done
 file="$FAKE_GH_DIR/$(echo "$head" | tr / _).json"
 if [ -f "$file" ]; then cat "$file"; else echo "[]"; fi
+"""
+
+# A fake ssh resolves the host aliases of `ssh -G` from FAKE_SSH_HOSTS, `alias=host` words.
+FAKE_SSH = """#!/bin/sh
+[ "$1" = -G ] || exit 255
+for pair in $FAKE_SSH_HOSTS; do
+  if [ "${pair%%=*}" = "$2" ]; then echo "user git"; echo "hostname ${pair#*=}"; exit 0; fi
+done
+echo "hostname $2"
 """
 
 
@@ -145,8 +161,9 @@ class PruneTest(unittest.TestCase):
         # A fake gh answers pull request lookups from one JSON file per head branch.
         bin_dir = root / "bin"
         bin_dir.mkdir()
-        (bin_dir / "gh").write_text(FAKE_GH)
-        (bin_dir / "gh").chmod(0o755)
+        for name, script in (("gh", FAKE_GH), ("ssh", FAKE_SSH)):
+            (bin_dir / name).write_text(script)
+            (bin_dir / name).chmod(0o755)
         self.pulls = root / "pulls"
         self.pulls.mkdir()
         self.gh_log = root / "gh.log"
@@ -197,7 +214,7 @@ class PruneTest(unittest.TestCase):
         self.assertEqual(result["deleted"], [])
         reasons = {entry["branch"]: entry["reason"] for entry in result["kept"]}
         self.assertEqual(reasons, {
-            "t3/open": "not merged",
+            "t3/open": "not merged or pushed",
             "t3/in-worktree": "checked out",
             "t3/asking": "thread is active",
             **{f"t3/{status}": "thread is active" for status in prune_branches.ACTIVE_RUN_STATUSES},
@@ -409,7 +426,7 @@ class PruneTest(unittest.TestCase):
         self.pull("t3/continued", {"number": 7, "headRefOid": "0" * 40})
         self.fx.thread("p", "t3/continued")
         result = self.fx.prune()
-        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/continued", "not merged")])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/continued", "not merged or pushed")])
         self.assertTrue(has_branch(self.fx.repo, "t3/continued"))
 
     def test_a_failed_lookup_is_reported_once_and_stops_later_lookups(self):
@@ -443,8 +460,8 @@ class PruneTest(unittest.TestCase):
         with mock.patch.dict(os.environ, env):
             result = self.fx.prune()
         self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [
-            ("t3/a", "pull request lookup unavailable"),
-            ("t3/b", "pull request lookup unavailable"),
+            ("t3/a", "remote lookup unavailable"),
+            ("t3/b", "remote lookup unavailable"),
         ])
         (failure,) = result["failed"]
         self.assertEqual(failure["branch"], "t3/a")
@@ -513,7 +530,7 @@ class PruneTest(unittest.TestCase):
     def test_origins_off_github_are_not_looked_up(self):
         self.fx.branch("t3/open", merged=False)
         self.fx.thread("p", "t3/open")
-        self.assertEqual([e["reason"] for e in self.fx.prune()["kept"]], ["not merged"])
+        self.assertEqual([e["reason"] for e in self.fx.prune()["kept"]], ["not merged or pushed"])
         self.assertEqual(self.gh_calls(), [])
 
     def test_github_repository_reads_origin_urls(self):
@@ -522,12 +539,44 @@ class PruneTest(unittest.TestCase):
             ("https://github.com/acme/repo", "acme/repo"),
             ("git@github.com:acme/repo.git", "acme/repo"),
             ("ssh://git@github.com/acme/re.po.git", "acme/re.po"),
+            ("https://user@github.com:443/acme/repo", "acme/repo"),
             ("https://gitlab.com/acme/repo.git", None),
             ("https://github.com/acme/repo/extra", None),
+            ("git@github-work:acme/repo.git", "acme/repo"),
+            ("github-work:acme/repo", "acme/repo"),
+            ("ssh://git@github-work:2222/acme/repo.git", "acme/repo"),
+            ("git+ssh://GitHub-Work/acme/repo", "acme/repo"),
+            ("git@gitlab-work:acme/repo.git", None),
+            ("git@example.com:acme/repo.git", None),
+            ("https://github-work/acme/repo.git", None),
+            ("/srv/git/acme/repo.git", None),
+            ("file:///srv/acme/repo.git", None),
         ):
-            with self.subTest(url=url):
+            with self.subTest(url=url), mock.patch.dict(os.environ, {
+                "FAKE_SSH_HOSTS": "github-work=github.com GitHub-Work=GitHub.com gitlab-work=gitlab.com",
+            }):
                 git(self.fx.repo, "config", "remote.origin.url", url)
                 self.assertEqual(prune_branches.github_repository(self.fx.repo), expected)
+
+    def test_an_ssh_alias_without_a_usable_ssh_is_not_github(self):
+        git(self.fx.repo, "config", "remote.origin.url", "git@github-work:acme/repo.git")
+        only_git = self.fx.root / "only-git"
+        only_git.mkdir()
+        (only_git / "git").symlink_to(shutil.which("git"))
+        with mock.patch.dict(os.environ, {"PATH": str(only_git)}):
+            self.assertIsNone(prune_branches.github_repository(self.fx.repo))
+        (self.fx.root / "bin" / "ssh").write_text("#!/bin/sh\necho 'hostname github.com'\nexit 255\n")
+        self.assertIsNone(prune_branches.github_repository(self.fx.repo))
+
+    def test_a_github_alias_origin_gets_pull_request_lookups(self):
+        self.on_github()
+        git(self.fx.repo, "config", "remote.origin.url", "git@github-work:acme/repo.git")
+        tip = self.fx.branch("t3/squashed", merged=False)
+        self.pull("t3/squashed", {"number": 7, "headRefOid": tip})
+        self.fx.thread("p", "t3/squashed")
+        with mock.patch.dict(os.environ, {"FAKE_SSH_HOSTS": "github-work=github.com"}):
+            result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["pullRequest"]) for e in result["deleted"]], [("t3/squashed", 7)])
 
     def test_missing_database_raises(self):
         with self.assertRaises(FileNotFoundError):
@@ -540,6 +589,160 @@ class PruneTest(unittest.TestCase):
         before = self.fx.db_path.read_bytes()
         self.fx.prune()
         self.assertEqual(self.fx.db_path.read_bytes(), before)
+
+    def test_a_pushed_branch_is_deleted_when_origin_holds_its_tip(self):
+        tip = self.fx.branch("t3/pushed", merged=False)
+        git(self.fx.repo, "push", "-q", "-u", "origin", "t3/pushed")
+        self.fx.thread("p", "t3/pushed")
+        result = self.fx.prune()
+        self.assertEqual(result["deleted"], [
+            {"repository": str(self.fx.repo), "branch": "t3/pushed", "sha": tip, "pushedTo": "origin/t3/pushed"},
+        ])
+        self.assertFalse(has_branch(self.fx.repo, "t3/pushed"))
+        self.assertEqual(git(self.fx.repo, "rev-parse", "origin/t3/pushed"), tip)
+
+    def test_a_pushed_branch_on_github_is_checked_live(self):
+        self.on_github()
+        tip = self.fx.branch("t3/pushed", merged=False)
+        self.fx.branch("t3/gone", merged=False)
+        for name in ("t3/pushed", "t3/gone"):
+            git(self.fx.repo, "push", "-q", "origin", name)
+            self.fx.thread("p", name)
+        # GitHub deleted t3/gone after the last fetch, so only t3/pushed is still there.
+        (self.pulls / "ref_t3_pushed.json").write_text(json.dumps(
+            {"ref": "refs/heads/t3/pushed", "object": {"sha": tip, "type": "commit"}}))
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["pushedTo"]) for e in result["deleted"]], [("t3/pushed", "origin/t3/pushed")])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/gone", "not merged or pushed")])
+        self.assertIn("api repos/acme/repo/git/ref/heads/t3/pushed --hostname github.com", self.gh_calls())
+        self.assertEqual(result["failed"], [])
+
+    def test_a_pushed_branch_with_later_local_commits_stays(self):
+        self.fx.branch("t3/ahead", merged=False)
+        git(self.fx.repo, "push", "-q", "origin", "t3/ahead")
+        tree = git(self.fx.repo, "rev-parse", "t3/ahead^{tree}")
+        later = git(self.fx.repo, "commit-tree", tree, "-p", "t3/ahead", "-m", "local only")
+        git(self.fx.repo, "update-ref", "refs/heads/t3/ahead", later)
+        self.fx.thread("p", "t3/ahead")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/ahead", "not merged or pushed")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/ahead"))
+
+    def test_a_branch_origin_deleted_or_moved_since_the_last_fetch_stays(self):
+        origin = git(self.fx.repo, "remote", "get-url", "origin")
+        for name in ("t3/deleted", "t3/moved"):
+            self.fx.branch(name, merged=False)
+            git(self.fx.repo, "push", "-q", "origin", name)
+            self.fx.thread("p", name)
+        git(origin, "update-ref", "-d", "refs/heads/t3/deleted")
+        git(origin, "update-ref", "refs/heads/t3/moved", "main")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [
+            ("t3/deleted", "not merged or pushed"), ("t3/moved", "not merged or pushed"),
+        ])
+        self.assertEqual(result["failed"], [])
+
+    def test_a_failed_ls_remote_stops_lookups_only_in_its_repository(self):
+        self.fx.branch("t3/a", merged=False)
+        self.fx.branch("t3/b", merged=False)
+        for name in ("t3/a", "t3/b"):
+            git(self.fx.repo, "push", "-q", "origin", name)
+            self.fx.thread("p", name)
+        git(self.fx.repo, "config", "remote.origin.url", str(self.fx.root / "missing.git"))
+        other = self.fx.make_repo("other")
+        self.fx.branch("t3/other", merged=False, repo=other)
+        git(other, "push", "-q", "origin", "t3/other")
+        self.fx.project("other", other)
+        self.fx.thread("other", "t3/other")
+        result = self.fx.prune()
+        (failure,) = result["failed"]
+        self.assertEqual((failure["project"], failure["branch"]), (str(self.fx.repo), "t3/a"))
+        self.assertTrue(failure["error"].startswith("git ls-remote: "), failure["error"])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [
+            ("t3/a", "remote lookup unavailable"), ("t3/b", "remote lookup unavailable"),
+        ])
+        self.assertEqual([e["branch"] for e in result["deleted"]], ["t3/other"])
+
+    def test_an_abandoned_unpushed_branch_is_archived_then_deleted(self):
+        tip = self.fx.branch("t3/abandoned", merged=False)
+        self.fx.branch("t3/deleted-thread", merged=False)
+        self.fx.thread("p", "t3/abandoned", archived=True)
+        self.fx.thread("p", "t3/abandoned", deleted=True)
+        self.fx.thread("p", "t3/deleted-thread", deleted=True)
+        self.fx.db.commit()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(prune_branches.main(["--db", str(self.fx.db_path)]), 0)
+        archive = f"refs/t3-archive/t3/abandoned@{tip[:12]}"
+        self.assertIn(f"{self.fx.repo} t3/abandoned archived as {archive}\n", stdout.getvalue())
+        self.assertFalse(has_branch(self.fx.repo, "t3/abandoned"))
+        self.assertFalse(has_branch(self.fx.repo, "t3/deleted-thread"))
+        self.assertEqual(git(self.fx.repo, "rev-parse", archive), tip)
+        self.assertNotIn("t3-archive", git(self.fx.repo, "branch", "--all"))
+        git(self.fx.repo, "branch", "t3/abandoned", archive)
+        self.assertEqual(git(self.fx.repo, "rev-parse", "t3/abandoned"), tip)
+
+    def test_a_branch_some_live_thread_still_uses_is_not_archived(self):
+        self.fx.branch("t3/shared", merged=False)
+        (self.fx.repo / "sub").mkdir()
+        self.fx.project("sub", self.fx.repo / "sub")
+        self.fx.thread("p", "t3/shared", archived=True)
+        self.fx.thread("sub", "t3/shared")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/shared", "not merged or pushed")])
+        self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
+
+    def test_an_abandoned_branch_is_archived_even_when_lookups_fail(self):
+        self.on_github()
+        tip = self.fx.branch("t3/abandoned", merged=False)
+        self.fx.thread("p", "t3/abandoned", archived=True)
+        with mock.patch.dict(os.environ, {"FAKE_GH_FAIL": "1"}):
+            result = self.fx.prune()
+        self.assertEqual([e["archivedAs"] for e in result["deleted"]], [f"refs/t3-archive/t3/abandoned@{tip[:12]}"])
+        self.assertEqual(len(result["failed"]), 1)
+
+    def test_dry_run_names_the_archive_without_creating_it(self):
+        tip = self.fx.branch("t3/abandoned", merged=False)
+        self.fx.thread("p", "t3/abandoned", archived=True)
+        result = self.fx.prune(dry_run=True)
+        self.assertEqual(result["deleted"], [{
+            "repository": str(self.fx.repo), "branch": "t3/abandoned", "sha": tip,
+            "archivedAs": f"refs/t3-archive/t3/abandoned@{tip[:12]}",
+        }])
+        self.assertTrue(has_branch(self.fx.repo, "t3/abandoned"))
+        self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
+
+    def test_a_thread_restored_during_lookups_keeps_its_branch_unarchived(self):
+        self.on_github()
+        tip = self.fx.branch("t3/restored", merged=False)
+        thread_id = self.fx.thread("p", "t3/restored", archived=True)
+
+        def restore_during_lookup(*args):
+            self.fx.db.execute("update orchestration_v2_projection_threads set archived_at = null where thread_id = ?",
+                               (thread_id,))
+            self.fx.db.commit()
+
+        with mock.patch.object(prune_branches, "merged_pull_request", side_effect=restore_during_lookup):
+            result = self.fx.prune()
+        self.assertEqual(result["kept"], [
+            {"repository": str(self.fx.repo), "branch": "t3/restored", "sha": tip, "reason": "thread was restored"},
+        ])
+        self.assertTrue(has_branch(self.fx.repo, "t3/restored"))
+        self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
+
+    def test_a_refused_deletion_removes_the_archive_it_created(self):
+        tip = self.fx.branch("t3/busy", merged=False)
+        git(self.fx.repo, "worktree", "add", "-q", str(self.fx.root / "wt"), "t3/busy")
+        archive = f"refs/t3-archive/t3/busy@{tip[:12]}"
+        self.assertEqual(prune_branches.delete_branch(self.fx.repo, "t3/busy", tip, archive), "in use by a worktree")
+        self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
+        # An archive an earlier call made stays, and is reused.
+        git(self.fx.repo, "update-ref", archive, tip)
+        self.assertEqual(prune_branches.delete_branch(self.fx.repo, "t3/busy", tip, archive), "in use by a worktree")
+        self.assertEqual(git(self.fx.repo, "rev-parse", archive), tip)
+        git(self.fx.repo, "worktree", "remove", str(self.fx.root / "wt"))
+        self.assertIsNone(prune_branches.delete_branch(self.fx.repo, "t3/busy", tip, archive))
+        self.assertFalse(has_branch(self.fx.repo, "t3/busy"))
 
 
 class RoutinePromptTest(unittest.TestCase):
