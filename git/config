@@ -1,0 +1,8 @@
+# Shared Git settings. Git reads this file as global configuration from
+# ${XDG_CONFIG_HOME:-~/.config}/git/config, before ~/.gitconfig, which keeps
+# identity and credentials. Keep a ~/.gitconfig: without one, `git config
+# --global` writes to this tracked file.
+[core]
+	# Remember untracked-file scans in the index. Status output is unchanged;
+	# only directories modified since the last scan are read again.
+	untrackedCache = true

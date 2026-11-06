@@ -12,6 +12,7 @@ there is no repository-wide installer.
 
 | Path                     | Purpose                                                                          |
 | ------------------------ | -------------------------------------------------------------------------------- |
+| `shell/`                 | Zsh startup installer, cached init scripts and completions, with tests.          |
 | `ghostty/`               | Ghostty settings, themes, and a TUIOS session launcher with tests.               |
 | `tuios/`                 | TUIOS appearance, dock, sidebar, startup settings, and themes.                   |
 | `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
@@ -22,7 +23,7 @@ there is no repository-wide installer.
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
-| `git/ignore`             | Shared Git ignore patterns.                                                      |
+| `git/`                   | Shared Git settings and ignore patterns, read from `~/.config/git`.              |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
 
 Original contributions are [MIT licensed](LICENSE). Bundled and adapted code

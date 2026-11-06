@@ -17,31 +17,58 @@ def replace_exact(text: str, old: str, new: str, label: str) -> str:
     raise ValueError(f"Unexpected or ambiguous {label}; refusing configuration drift")
 
 
-def transform_zsh(text: str) -> str:
-    # Treat these two moves as one operation so a partial install is rejected.
-    old_source = "source $ZSH/oh-my-zsh.sh\n"
+OMZ_SOURCE = "source $ZSH/oh-my-zsh.sh\n"
+COMPLETIONS = 'source "$HOME/.config/shell/completions.zsh"\n'
+UV_EVALS = 'eval "$(uv generate-shell-completion zsh)"\neval "$(uvx --generate-shell-completion zsh)"\n'
+FNM_OLD = "fnm env --use-on-cd --version-file-strategy=recursive"
+FNM_NEW = "fnm env --shell zsh --use-on-cd --version-file-strategy=recursive"
+
+
+def move_compinit(text: str) -> str:
+    """Run compinit once, through Oh My Zsh, after adding ~/.zsh/functions."""
+    old_source = OMZ_SOURCE
     new_source = "fpath=(~/.zsh/functions $fpath)\n" + old_source
     old_compinit = "\nfpath=(~/.zsh/functions $fpath)\nautoload -Uz compinit\ncompinit\n"
     early_autoload = "\nautoload -Uz compinit\n\n# fnm\n"
-    if old_compinit in text or early_autoload in text:
-        if text.count(old_compinit) != 1 or text.count(early_autoload) != 1 or text.count(old_source) != 1 or new_source in text:
-            raise ValueError("Unexpected compinit blocks; refusing configuration drift")
-        text = text.replace(old_compinit, "\n", 1)
-        text = text.replace(early_autoload, "\n# fnm\n", 1)
-        text = text.replace(old_source, new_source, 1)
-    elif text.count(new_source) != 1 or "autoload -Uz compinit" in text:
-        raise ValueError("Unexpected installed compinit blocks; refusing configuration drift")
-    text = replace_exact(
-        text,
-        'eval "$(uv generate-shell-completion zsh)"\neval "$(uvx --generate-shell-completion zsh)"\n',
-        'source "$HOME/.config/shell/completions.zsh"\n',
-        "uv completion initialization",
-    )
+    if old_compinit not in text and early_autoload not in text:
+        return text
+    # Treat these two moves as one operation so a partial install is rejected.
+    if text.count(old_compinit) != 1 or text.count(early_autoload) != 1 or text.count(old_source) != 1 or new_source in text:
+        raise ValueError("Unexpected compinit blocks; refusing configuration drift")
+    text = text.replace(old_compinit, "\n", 1)
+    text = text.replace(early_autoload, "\n# fnm\n", 1)
+    return text.replace(old_source, new_source, 1)
+
+
+def install_completions(text: str) -> str:
+    """Load the cached uv and uvx completions once Oh My Zsh has run compinit."""
+    if UV_EVALS in text:
+        return replace_exact(text, UV_EVALS, COMPLETIONS, "uv completion initialization")
+    if text.count(COMPLETIONS) == 1 and "generate-shell-completion" not in text:
+        return text
+    if COMPLETIONS in text or "generate-shell-completion" in text or text.count(OMZ_SOURCE) != 1:
+        raise ValueError("Unexpected uv completion initialization; refusing configuration drift")
+    return text.replace(OMZ_SOURCE, OMZ_SOURCE + COMPLETIONS, 1)
+
+
+def select_fnm_shell(text: str) -> str:
+    """Name zsh explicitly wherever fnm's environment is generated without a shell."""
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if "fnm env" in line and "--shell" not in line:
+            if line.count(FNM_OLD) != 1:
+                raise ValueError("Unexpected fnm initialization; refusing configuration drift")
+            lines[index] = line.replace(FNM_OLD, FNM_NEW)
+    return "".join(lines)
+
+
+def transform_zsh(text: str) -> str:
+    text = select_fnm_shell(install_completions(move_compinit(text)))
     return replace_exact(
         text,
-        'fnm env --use-on-cd --version-file-strategy=recursive',
-        'fnm env --shell zsh --use-on-cd --version-file-strategy=recursive',
-        "fnm initialization",
+        'eval "$(atuin init zsh)"\n',
+        'source "$HOME/.config/shell/interactive.zsh"\n',
+        "Atuin initialization",
     )
 
 
