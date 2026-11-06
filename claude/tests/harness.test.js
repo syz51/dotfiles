@@ -137,6 +137,30 @@ describe("configuration must not change during a run", () => {
     }, 30_000);
 });
 
+// The follow-up goes in over stream-json input while the session runs, so these also
+// prove the conversation keeps stdin open until the background review is done.
+describe("background review", () => {
+  const name = "background while the session answers";
+
+  test("a review in a background agent, with the follow-up answered meanwhile, passes", async () => {
+    const run = await runLive("live.test.js", name, "review-background");
+    expect(run.code, output(run)).toBe(0);
+    expect(output(run)).toMatch(/1 pass/);
+    assertCleanedUp();
+  }, 30_000);
+
+  for (const [mode, message] of [
+    ["review-foreground", "the review was not one background agent"],
+    ["review-late", "the follow-up was answered only after the review ended"],
+  ])
+    test(mode, async () => {
+      const run = await runLive("live.test.js", name, mode);
+      expect(run.code).not.toBe(0);
+      expect(output(run)).toContain(message);
+      assertCleanedUp();
+    }, 30_000);
+});
+
 test("a claimed artifact that was never saved fails the full skill run", async () => {
   const run = await runLive("live-dispatch.test.js", "drafting an article", "article-claim");
   expect(run.code).not.toBe(0);
