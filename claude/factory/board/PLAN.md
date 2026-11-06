@@ -8,6 +8,12 @@ them in conversation only.
 Started 2026-11-06 from a T3 Code thread that is dedicated to this task. Part of the factory
 effort (`../PLAN.md`, area 6).
 
+The code and its design now live in the open-source repository
+[syz51/agent-board](https://github.com/syz51/agent-board) (`docs/DESIGN.md`, `docs/API.md`).
+`DESIGN.md` here is the original research record. This file tracks the whole effort,
+including the parts that stay in this repository: deployment, global agent rules, hooks
+and the factory migration.
+
 **This repository is public.** The design and code can live here; board data never does.
 Keep server addresses, logins, tokens, task contents and transcript text out of every
 tracked file, this one included.
@@ -74,44 +80,82 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] Research, in three parallel tracks: existing agent task tools; storage, sync and
   networking across devices; integration points in Claude Code, Codex and T3 Code.
 - [x] Design each component above in `DESIGN.md`, with technology choices and sources.
-- [ ] User review of the design; record decisions below (`DESIGN.md`, "Decisions for the
-  user").
+- [x] User review of the design; decisions recorded below.
 - [x] Text format and framing research (component 11, raised by the user; delegated thread):
   `DESIGN.md` section 11 has the formats per place, the trust rule (peer free text only in
   tool results), writing conventions and the compact formats considered (TOON, BAML, MCP
   structured content and others).
 
-### Build (after the design is accepted; phases from `DESIGN.md`)
+### Build (in syz51/agent-board)
 
-- [ ] Spike: server with tasks, claims and events; CLI; concurrency test; deployed on the
-  chosen host behind Tailscale; used from both Macs.
-- [ ] Verify in the spike: Claude Code passes `CLAUDE_CODE_SESSION_ID` to stdio MCP
-  children; what Codex `PreCompact` output does; T3 state database field names; Litestream
-  0.5 encryption; how Codex shows MCP `structuredContent`.
-- [ ] Format benchmark (`DESIGN.md` section 11): three formats × three framings on Claude
-  Code and Codex, at least 20 runs per cell, with the factory's bench; uses live model
-  calls, so confirm the budget with the user first.
-- [ ] First version: MCP proxy, hooks for Claude Code and Codex, handoffs, agent rules,
-  backups, factory migration.
-- [ ] Phase 2: path leases and overlap alerts, web view, `board watch`, restore drills.
+- [x] Repository, MIT licence, CI, the protocol crate, `docs/API.md` and `docs/DESIGN.md`.
+- [~] Three parallel tracks on the branch `build/v0`: the server crate (storage, rules,
+  API, snapshots, Telegram), the `board` binary (CLI, MCP, hooks, `board watch`,
+  installers, coordinator prompt) and the web view. The first run stopped on the usage
+  limit; resumed.
+- [ ] Integrate: wire `board serve` and `board admin` to the server crate; container
+  image; workspace checks; PR; `/code-review xhigh`.
+- [ ] Verify against the running server: Claude Code passes `CLAUDE_CODE_SESSION_ID` to
+  stdio MCP children; T3 child thread ids in hooks; the hook budget on a cold start.
+
+### Deploy (private; values stay out of this repository)
+
+- [~] Tailscale on the Dokploy VPS: package installed; waiting for the user to approve the
+  device login.
+- [ ] Run the server container bound to loopback, reachable only through `tailscale serve`.
+- [ ] Device tokens for both Macs (`board login`); `board watch` under launchd on each.
+- [!] Telegram bot: needs the user to create it with BotFather.
+- [!] Backups: needs a new Tencent COS bucket with its own scoped key from the user. Then
+  restic every 15 minutes from the host, encrypted; a restore drill.
+
+### Adopt (this repository)
+
+- [ ] `board install claude`: hooks and the MCP server in `claude/settings.json` for every
+  session; the Codex equivalents.
+- [ ] Work board rule in `claude/CLAUDE.md` and the Codex instructions; living plans such
+  as this one move onto boards.
+- [ ] Tests in `claude/tests`, including the opt-in live suites.
+- [ ] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
+  skill feedback does; the defaults below change only through it.
+- [ ] Migrate the factory's open items (`../PLAN.md`) onto a board as the first real use.
+- [ ] Format benchmark (`DESIGN.md` section 11): three formats × three framings, Claude
+  Code only, run on the subscription (not the API), at least 20 runs per cell.
+
+### Upstream
+
+- [x] T3 Code: one Ideas discussion for `t3 thread watch`, offering a PR
+  ([#31947](https://github.com/pingdotgg/t3code/discussions/31947)). Feature work there
+  needs maintainer approval first; send the PR only if it is approved.
 
 ## Decisions
 
 - 2026-11-06: Design work lives in `claude/factory/board/`. Board data lives outside the
   repository.
-- 2026-11-06 (proposed, awaiting the user): build our own thin board; SQLite owned by one
-  Bun/TypeScript server; Tailscale plus per-device tokens; a local `board` binary as CLI,
-  stdio MCP server and hook handler; fail-fast writes offline.
+- 2026-11-06 (user): build our own, open source as syz51/agent-board under MIT. Rust for
+  the server and the `board` binary (measured start-up: 2.1 ms and 0.4 MB, against 6.3 ms
+  and 89 MB for a compiled Bun binary), TypeScript for the web view.
+- 2026-11-06 (user): host it as a container on the existing Dokploy VPS, reachable over
+  Tailscale only; per-device tokens; fail-fast writes and stale reads when offline.
+- 2026-11-06 (user): backups to a new Tencent COS bucket with its own scoped key.
+- 2026-11-06 (user): decisions and actions for the user arrive through a Telegram bot and
+  the web view; otherwise agents work unattended.
+- 2026-11-06 (user): autopilot runs one coordinator thread per project. It works the ready
+  queue one task at a time and delegates parts to child threads; no fixed concurrency cap;
+  it pauses on usage limits.
+- 2026-11-06 (user): defaults (stale owner 24 h, lease 45 min, one task in `doing` per
+  agent, evidence required for done, 30-day decay) and the agent rules evolve through
+  feedback, like skill feedback and the factory review.
+- 2026-11-06 (user): hooks run in every session globally. The format benchmark uses Claude
+  Code on the subscription only.
 
 ## Open questions
 
-- Host: a small dedicated VM (recommended) or a container on the Dokploy VPS?
-- Backup bucket: which S3-compatible service?
-- Is the Tailscale Personal plan's non-commercial term acceptable?
+- None blocking. The user provides the Telegram bot and the COS bucket key when ready.
 
 ## Next actions
 
-Wait for the user's review of `DESIGN.md` and the open questions, then start the spike.
+Integrate the three build tracks when they report, then deploy behind Tailscale once the
+user approves the device login.
 
 ## Log
 
@@ -125,3 +169,6 @@ Wait for the user's review of `DESIGN.md` and the open questions, then start the
 - 2026-11-06: Format research done. Checked here: Claude Code 2.1.318 wraps hook text as
   "<Hook> hook additional context" inside a system reminder, a more trusted channel than
   tool results, so peer-written free text goes only in tool results.
+- 2026-11-06: The user accepted the design with the decisions above. Built the repository,
+  protocol crate and API contract, then started three build tracks. Tailscale was already
+  on this Mac as the app (the CLI is not on `PATH`); installed it on the VPS.

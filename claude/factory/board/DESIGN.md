@@ -1,5 +1,9 @@
 # Agent work board: design
 
+> Superseded by `docs/DESIGN.md` in [syz51/agent-board](https://github.com/syz51/agent-board),
+> which has the decisions in `PLAN.md` applied. Kept as the research record: sources, local
+> evidence and the options considered.
+
 Status: draft for review, 2026-11-06. Requirements and tasks are in `PLAN.md`; this file
 holds the design. Facts were checked on 2026-11-06 against the sources at the end; items
 marked **(verify)** must be confirmed in the prototype before anything depends on them.
