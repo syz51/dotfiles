@@ -17,7 +17,7 @@ function fakeStdin() {
 
 const line = (event) => `${JSON.stringify(event)}\n`;
 const result = (text) => line({ type: "result", subtype: "success", result: text });
-const background = (...ids) => line({ type: "system", subtype: "background_tasks_changed", tasks: ids.map((task_id) => ({ task_id })) });
+const background = (...tasks) => line({ type: "system", subtype: "background_tasks_changed", tasks });
 
 test("user messages are stream-json input lines", () => {
   expect(JSON.parse(userMessage("hi"))).toEqual({ type: "user", message: { role: "user", content: "hi" } });
@@ -28,7 +28,7 @@ test("the follow-up goes out when the first turn ends; stdin ends once a turn en
   const stdin = fakeStdin();
   const listen = conversation("review it", "what is 17 * 23?")(stdin);
   expect(stdin.writes).toEqual(["review it"]);
-  listen(background("review"));
+  listen(background({ task_id: "review" }));
   // A result split across chunks counts once it is whole.
   const first = result("The review is running.");
   listen(first.slice(0, 10));
@@ -38,7 +38,8 @@ test("the follow-up goes out when the first turn ends; stdin ends once a turn en
   // The follow-up's answer ends a turn while the review still runs: stdin stays open.
   listen(result("391"));
   expect(stdin.writableEnded).toBe(false);
-  listen(`not json\n${background()}`);
+  // An ambient task, which Claude Code starts itself, is not the session's work.
+  listen(background({ task_id: "watcher", ambient: true }));
   expect(stdin.writableEnded).toBe(false);
   listen(result("The review found one defect."));
   expect(stdin.writableEnded).toBe(true);
@@ -52,4 +53,17 @@ test("a session with no background work ends after the follow-up's turn", () => 
   listen(result("Findings: none.") + result("391"));
   expect(stdin.writes).toEqual(["review it", "what is 17 * 23?"]);
   expect(stdin.writableEnded).toBe(true);
+});
+
+test("a malformed line fails the conversation with its cause", () => {
+  const listen = conversation("review it", "what is 17 * 23?")(fakeStdin());
+  expect(() => listen("{bad\n")).toThrow("Malformed stream line: {bad");
+  // A line split across chunks is not malformed, and blank lines are skipped.
+  const stdin = fakeStdin();
+  const split = conversation("review it", "next")(stdin);
+  const first = result("done");
+  split(first.slice(0, 5));
+  split(first.slice(5, 12));
+  split(`${first.slice(12)}\n`);
+  expect(stdin.writes).toEqual(["review it", "next"]);
 });

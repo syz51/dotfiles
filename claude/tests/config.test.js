@@ -226,12 +226,15 @@ describe("rules the live suites test", () => {
   // background the thread stays free and the review finishes.
   test("Review runs in one background agent, pinned to the commit, while this thread keeps answering", () => {
     const review = section("Review");
-    expect(review).toMatch(/Run that review in one background agent on this session's model, such as `general-purpose`, so this thread stays free to answer me/);
-    expect(review).toMatch(/its own worktree at the commit under review/);
-    expect(review).toMatch(/run `\/code-review` on that commit's diff pinned to its SHA, such as `\/code-review xhigh origin\/main\.\.\.<SHA>`/);
+    expect(review).toMatch(/Run that review in one background agent on this session's model, such as `general-purpose` \(not `explorer`\), so this thread stays free to answer me/);
+    expect(review).toMatch(/its own worktree holding exactly the final diff/);
+    expect(review).toMatch(/for a commit, have it run `\/code-review` pinned to its SHA, such as `\/code-review xhigh origin\/main\.\.\.<SHA>`/);
+    // A new worktree lacks uncommitted changes, and committing needs my say-so.
+    expect(review).toMatch(/for uncommitted work, transfer the diff as for any track/);
     expect(review).toMatch(/return the findings unchanged/);
-    expect(review).toMatch(/While it runs, answer my messages and continue other work, but don't push or report done until its findings are handled/);
-    expect(review).toMatch(/cancel and restart it only when I change what it reviews/);
+    expect(review).toMatch(/answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
+    // The review covers the final diff, so a change to it, mine or the session's, restarts it.
+    expect(review).toMatch(/cancel and restart it whenever the diff under review changes/);
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {

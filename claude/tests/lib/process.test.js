@@ -71,6 +71,31 @@ test("a listener that throws fails the run and kills the child", async () => {
   expect(error.stdout).toBe("ready\n");
 });
 
+test("an interact call that throws kills the child instead of leaking it", async () => {
+  const started = Date.now();
+  const error = await runProcess([bun, "-e", "setInterval(()=>{},1000)"], {
+    timeout: 30_000,
+    interact: () => {
+      throw new Error("interact failed");
+    },
+  }).catch((e) => e);
+  expect(error.message).toBe("interact failed");
+  expect(Date.now() - started).toBeLessThan(10_000);
+});
+
+test("after a listener fails, later output no longer reaches it", async () => {
+  let calls = 0;
+  const code = 'let i=0;const t=setInterval(()=>{console.log("line "+i);if(++i===50)clearInterval(t)},1)';
+  const error = await runProcess([bun, "-e", code], {
+    interact: () => () => {
+      calls++;
+      throw new Error("listener failed");
+    },
+  }).catch((e) => e);
+  expect(error.message).toBe("listener failed");
+  expect(calls).toBe(1);
+});
+
 test("a timeout also kills descendants that started their own process group", async () => {
   const root = mkdtempSync(join(tmpdir(), "process-test-"));
   const pidFile = join(root, "pid");

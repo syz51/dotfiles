@@ -54,9 +54,6 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
         if (error.code !== "EPIPE") failure ??= error;
       });
     if (input !== undefined) child.stdin.end(input);
-    const listen = interact?.(child.stdin);
-    // Keeps a character split across chunks whole in the listener's text.
-    const decoder = new TextDecoder();
     // Kills once: later chunks past the bound must not rescan the process table. A
     // descendant that is gone (ESRCH) or not ours to signal (EPERM, such as a pid reused by
     // another user since the snapshot) is skipped, so the group kill below always runs.
@@ -80,6 +77,17 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
       failure ??= new Error(`Process timeout after ${timeout} ms: ${argv[0]}`);
       kill();
     }, timeout);
+    // A listener, or an interact call, that throws fails the run like any other failure;
+    // once the run has failed, the listener gets no more output.
+    let listen;
+    try {
+      listen = interact?.(child.stdin);
+    } catch (error) {
+      failure ??= error;
+      kill();
+    }
+    // Keeps a character split across chunks whole in the listener's text.
+    const decoder = new TextDecoder();
     for (const [stream, chunks] of [[child.stdout, out], [child.stderr, err]])
       stream.on("data", (chunk) => {
         size += chunk.length;
@@ -88,8 +96,7 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
           kill();
         } else {
           chunks.push(Buffer.from(chunk));
-          // A listener that throws fails the run like any other failure.
-          if (listen && stream === child.stdout)
+          if (listen && !failure && stream === child.stdout)
             try {
               listen(decoder.decode(chunk, { stream: true }));
             } catch (error) {

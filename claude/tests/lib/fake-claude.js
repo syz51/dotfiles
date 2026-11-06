@@ -42,11 +42,15 @@ function runHooks(event, input) {
   return null;
 }
 
+// The Agent calls each subagent was spawned by, by tool_use id, for its hook records.
+const agentTypes = new Map();
+
 function tool(name, input, execute, parent = null) {
   const id = `toolu_fake_${++counter}`;
   emit({ type: "assistant", parent_tool_use_id: parent, message: { id: `msg_${counter}`, model: option("--model"), content: [{ type: "tool_use", id, name, input }] } });
-  const blocked = runHooks("PreToolUse", { tool_name: name, tool_input: input, tool_use_id: id, effort: { level: option("--effort") }, ...(parent ? { agent_type: "explorer" } : {}) });
+  const blocked = runHooks("PreToolUse", { tool_name: name, tool_input: input, tool_use_id: id, effort: { level: option("--effort") }, ...(parent ? { agent_type: agentTypes.get(parent) } : {}) });
   const { text, isError = false, meta } = blocked ? { text: blocked, isError: true } : execute();
+  if (name === "Agent") agentTypes.set(id, input.subagent_type ?? "general-purpose");
   emit({ type: "user", parent_tool_use_id: parent, tool_use_result: meta, message: { content: [{ type: "tool_result", tool_use_id: id, content: text, ...(isError ? { is_error: true } : {}) }] } });
   return id;
 }
@@ -107,7 +111,9 @@ if (mode.startsWith("review-")) {
   // A conversation over stream-json input: each turn's events go out when the turn ends,
   // and the session exits once stdin ends. review-background hands the review to a
   // background agent and answers the follow-up while it runs; review-late does the same
-  // but answers only after the review; review-foreground runs the review itself.
+  // but answers only after the review; review-foreground runs the review itself. As in
+  // Claude Code, agents run in the background without a flag, and stdin ending while the
+  // review still runs stops it.
   const lines = (async function* () {
     let pending = "";
     for await (const chunk of process.stdin) {
@@ -132,20 +138,30 @@ if (mode.startsWith("review-")) {
     await nextMessage();
     turn("391");
   } else {
-    const spawn = tool("Agent", { subagent_type: "general-purpose", run_in_background: true, isolation: "worktree", prompt: "Review it." },
+    const spawn = tool("Agent", { subagent_type: "general-purpose", isolation: "worktree", prompt: "Review it." },
       () => ({ text: "Async agent launched successfully." }));
+    emit({ type: "system", subtype: "task_started", task_id: "task_review", tool_use_id: spawn, is_backgrounded: true });
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
     tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }), spawn);
-    const finish = () => {
-      emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status: "completed" });
+    const finish = (status = "completed") => {
+      emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
     };
     turn("The review is running in the background.");
-    await nextMessage();
+    if (await nextMessage() === null) {
+      finish("stopped");
+      turn("Stopped.");
+      process.exit(0);
+    }
     if (mode === "review-late") finish();
     turn("391");
-    if (mode !== "review-late") finish();
-    turn(findings);
+    if (mode !== "review-late") {
+      // The review takes a moment; stdin closing meanwhile stops it.
+      const closed = await Promise.race([nextMessage().then((message) => message === null), Bun.sleep(300).then(() => false)]);
+      finish(closed ? "stopped" : "completed");
+      turn(closed ? "The review was stopped." : findings);
+      if (closed) process.exit(0);
+    } else turn(findings);
   }
   while (await nextMessage() !== null);
   process.exit(0);

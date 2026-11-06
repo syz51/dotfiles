@@ -35,6 +35,14 @@ describe("completion", () => {
     expect(completed([init(), result({ subtype: "error_during_execution" })], { allowMaxTurns: true })).toBe(false);
   });
 
+  test("needs every turn of a conversation to succeed", () => {
+    expect(completed([init(), result({ result: "Running." }), result({ result: "391" })])).toBe(true);
+    expect(completed([init(), result({ subtype: "error_during_execution", is_error: true }), result()])).toBe(false);
+    expect(completed([init(), result({ is_error: true }), result()])).toBe(false);
+    const limited = [init(), result({ subtype: "error_max_turns", is_error: true }), result()];
+    expect(completed(limited, { allowMaxTurns: true }), "only the last turn may stop at the limit").toBe(false);
+  });
+
   test("the final answer fails closed", () => {
     expect(finalText([result({ result: "Fixed." })])).toBe("Fixed.");
     expect(() => finalText([init()])).toThrow("Missing final answer");
