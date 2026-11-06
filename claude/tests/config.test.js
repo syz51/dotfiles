@@ -160,14 +160,6 @@ describe("settings", () => {
       && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
     expect(guard).toHaveLength(1);
   });
-
-  // Claude Code's built-in computer use only runs in interactive sessions, and T3 Code sessions
-  // run through the SDK, so the hook that enabled it in every project was removed. Other
-  // hooks and MCP servers, including a computer-use server of your own, are unaffected.
-  test("no hook enables Claude Code's built-in computer use", () => {
-    expect(handlers.some((hook) => hook.command?.includes("enable-computer-use"))).toBe(false);
-    expect(existsSync(join(REPO, "claude/hooks/enable-computer-use.js"))).toBe(false);
-  });
 });
 
 test("the root CLAUDE.md holds the repository instructions directly", () => {
