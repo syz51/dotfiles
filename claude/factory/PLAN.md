@@ -407,7 +407,9 @@ reports in the state folder's `reports/weekly-*.md`.
   to the subscription, repeated refusals back off from 30 minutes to 8 hours, runs refused
   together count once, and the weekly summary counts them. Any other definite 4xx of the check is
   `refused` (subscription) instead of falling through to the API. Judge and task calls,
-  and live sessions, refused before doing anything run once more. The judge's instructions
+  and live sessions, refused before doing anything run once more, on the subscription
+  (`API_FIRST_SUBSCRIPTION=1`), since the refused run's hook may not have reported. A lock
+  keeps plans running together from overwriting each other's state. The judge's instructions
   now replace the default system prompt (`--system-prompt-file`): appending had turned its
   identity into "You are Claude Code" and carried 9k characters of coding-session
   guidance (second call: 6.5k cached tokens read, valid judgement). Rubric v4 rescores

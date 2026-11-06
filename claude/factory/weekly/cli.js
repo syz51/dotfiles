@@ -102,10 +102,12 @@ function renderSummary(run) {
   else if (run.billing) {
     const { api, subscription, refused, lastFallback, lastRefusal } = run.billing;
     lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} started on the API, ${subscription} on the subscription.`);
-    if (lastRefusal) lines.push(`- Of the API runs, the API refused ${refused}; the latest ${lastRefusal.at}: ${lastRefusal.reason}.`);
+    // Runs the API refused together are recorded once.
+    if (lastRefusal) lines.push(`- Refusals of API runs recorded: ${refused}; the latest ${lastRefusal.at}: ${String(lastRefusal.reason ?? "no reason").replace(/\.$/, "")}.`);
     if (lastFallback) {
-      const advice = { exhausted: " Top up API credit that Claude Code can spend to move back.", invalid: " Replace the API key to move back." }[lastFallback.reason.split(/[ :]/)[0]] ?? "";
-      lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason.replace(/\.$/, "")}.${advice}`);
+      const reason = String(lastFallback.reason ?? "no reason").replace(/\.$/, "");
+      const advice = { exhausted: " Top up API credit that Claude Code can spend to move back.", invalid: " Replace the API key to move back." }[reason.split(/[ :]/)[0]] ?? "";
+      lines.push(`- Latest fallback ${lastFallback.at}: ${reason}.${advice}`);
     }
     lines.push("");
   }

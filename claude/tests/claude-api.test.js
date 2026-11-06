@@ -83,8 +83,8 @@ describe("credit check", () => {
     expect((await check(400, { error: { message: "You have reached your specified API usage limits." } })).status).toBe("exhausted");
     expect((await check(402, { error: { message: "billing problem" } })).status).toBe("exhausted");
     expect((await check(400, { error: { message: "This organization has been disabled." } })).status).toBe("refused");
-    // A page from something other than the API is no answer about the key.
-    expect((await check(400, "<html>Bad Request</html>")).status).toBe("unknown");
+    // A page from something other than the API, such as a proxy's, is no answer about the key.
+    for (const status of [400, 401, 402, 403]) expect((await check(status, "<html>Bad Request</html>")).status).toBe("unknown");
     expect((await check(402, { error: { message: "payment required" } })).status).toBe("refused");
     for (const status of [404, 408, 409, 429, 500, 529]) expect((await check(status, { error: { message: "x" } })).status).toBe("unknown");
   });
@@ -204,6 +204,16 @@ describe("decision", () => {
     expect(calls).toHaveLength(6);
   });
 
+  test("a refusal for another reason while one stands is recorded", async () => {
+    const now = Date.now();
+    await decide({ env, now, check: statusOf("ok") });
+    report(refusedRun, { plannedAt: now, at: now + 1 });
+    report({ ...refusedRun, error: "authentication_failed" }, { plannedAt: now, at: now + 2 });
+    expect((await decide({ env, now: now + 3, check: statusOf("ok") })).reason).toStartWith("invalid ");
+    expect(state()).toMatchObject({ status: "invalid", refusals: 2, checkedAt: now + 2 });
+    expect(loggedModes().filter((entry) => entry.mode === "refused")).toHaveLength(2);
+  });
+
   test("runs refused together count once", async () => {
     const now = Date.now();
     await decide({ env, now, check: statusOf("ok") });
@@ -251,12 +261,48 @@ describe("decision", () => {
     const now = Date.now();
     report(refusedRun, { keyHash: "0123456789abcdef", at: now });
     report("{cut off", { at: now });
+    for (const input of ["null", "[1]", '"text"', "7"]) report(input, { at: now });
     const dir = join(root, "state", "reports");
+    const old = (now - 2 * 3600_000) / 1000;
     writeFileSync(join(dir, ".old-partial"), "{");
-    utimesSync(join(dir, ".old-partial"), (now - 2 * 3600_000) / 1000, (now - 2 * 3600_000) / 1000);
+    utimesSync(join(dir, ".old-partial"), old, old);
+    mkdirSync(join(dir, ".old-folder"));
+    writeFileSync(join(dir, ".old-folder", "x"), "");
+    utimesSync(join(dir, ".old-folder"), old, old);
     writeFileSync(join(dir, ".writing-now"), "{");
     expect((await decide({ env, now, check: statusOf("ok") })).mode).toBe("api");
     expect(readdirSync(dir)).toEqual([".writing-now"]);
+  });
+
+  test("a plan waits for another plan's lock on the state, and takes over one left by a plan that died", async () => {
+    const lock = join(root, "state", "state.lock");
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(lock, "1");
+    // Another process holds the lock for 300 ms; decide blocks this one meanwhile.
+    const holder = Bun.spawn(["/bin/sh", "-c", `sleep 0.3; rm -f '${lock}'`]);
+    let started = Date.now();
+    expect((await decide({ env, check: statusOf("ok") })).mode).toBe("api");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    await holder.exited;
+    writeFileSync(lock, "1");
+    const stale = (Date.now() - 3000) / 1000;
+    utimesSync(lock, stale, stale);
+    started = Date.now();
+    expect((await decide({ env, now: Date.now() + TTL_MS.ok, check: statusOf("ok") })).mode).toBe("api");
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  test("plans running together lose no refusal", async () => {
+    const script = join(root, "decide.js");
+    const module = join(import.meta.dir, "..", "bin", "api-first.js");
+    writeFileSync(script, `import { decide } from ${JSON.stringify(module)};\nawait decide({ env: JSON.parse(process.argv[2]), check: async () => ({ status: "ok", detail: "HTTP 200" }) });\n`);
+    const now = Date.now();
+    await decide({ env, now, check: statusOf("ok") });
+    report(refusedRun, { plannedAt: now, at: now + 1 });
+    const runs = Array.from({ length: 6 }, () => Bun.spawn([process.execPath, script, JSON.stringify(env)], { stderr: "pipe" }));
+    expect(await Promise.all(runs.map((run) => run.exited))).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(state()).toMatchObject({ source: "run", refusals: 1 });
   });
 
   test("a damaged state file means a fresh check", async () => {
@@ -298,6 +344,25 @@ describe("plan", () => {
     }
   });
 
+  test("settings it cannot read pass through, for Claude Code to report", async () => {
+    const base = { ...env, PATH: fakeBin() };
+    for (const value of ["{bad", join(root, "missing.json"), root]) {
+      const result = await plan(["-p", "x", "--settings", value], { env: base, check: statusOf("ok") });
+      expect(result.mode).toBe("passthrough");
+      expect(result.reason).toStartWith("unreadable --settings: ");
+    }
+  });
+
+  test("a caller retrying a refused run asks for the subscription, without a check", async () => {
+    const base = { ...env, PATH: fakeBin(), API_FIRST_SUBSCRIPTION: "1" };
+    const calls = [];
+    const check = async (key) => { calls.push(key); return { status: "ok", detail: "HTTP 200" }; };
+    const result = await plan(["-p", "x"], { env: base, check });
+    expect([result.mode, result.settings, calls.length]).toEqual(["subscription", undefined, 0]);
+    // A caller's own auth still passes through.
+    expect((await plan(["-p", "x"], { env: { ...base, ANTHROPIC_API_KEY: "k" }, check })).mode).toBe("passthrough");
+  });
+
   test("API mode carries the merged settings; the subscription carries none", async () => {
     const base = { ...env, PATH: fakeBin() };
     const api = await plan(["-p", "x", "--settings", '{"a":1}'], { env: base, check: statusOf("ok") });
@@ -325,6 +390,10 @@ describe("plan", () => {
     expect(reports[0]).toMatch(new RegExp(`^${now}-${KEY_HASH}-\\d+\\.json$`));
     expect((await plan(["-p", "x"], { env: base, check: statusOf("ok") })).mode).toBe("subscription");
     expect(existsSync(join(root, "it's state", "reports", reports[0]))).toBe(false);
+    // A report that cannot be saved fails quietly with exit 0, which never blocks a Stop.
+    rmSync(join(root, "it's state"), { recursive: true });
+    const failing = Bun.spawn(["/bin/sh", "-c", command], { env: { PATH: "/usr/bin:/bin" }, stdin: new Blob(["{}"]), stdout: "pipe", stderr: "pipe" });
+    expect([await failing.exited, await new Response(failing.stdout).text(), await new Response(failing.stderr).text()]).toEqual([0, "", ""]);
   });
 
   test("past the nesting limit it stops", async () => {

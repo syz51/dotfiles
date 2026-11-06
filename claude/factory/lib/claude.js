@@ -60,11 +60,12 @@ export async function judge({ prompt, system, schema, model, effort = "medium", 
       writeFileSync(file, system);
       argv.push("--system-prompt-file", file);
     }
-    // A call the API refused for credit or the key before it did anything runs once more.
-    const { result, events, refused } = await retryRefused(async (timeout) => {
+    // A call the API refused for credit or the key before it did anything runs once more,
+    // on the subscription.
+    const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
       let result;
       try {
-        result = await runProcess(argv, { cwd, env: quietEnv(), timeout, input: prompt });
+        result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {}), timeout, input: prompt });
       } catch (error) {
         // A deadline, the output bound or a spawn failure: one failed call, not a crash of
         // the caller's loop. The partial stream may still say what it cost.
@@ -106,8 +107,8 @@ export async function runTask({
   if (tools) argv.push("--tools", tools.join(","));
   // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
   for (const dir of addDirs) argv.push("--add-dir", dir);
-  const { result, events, refused } = await retryRefused(async (timeout) => {
-    const result = await runProcess(argv, { cwd, env: quietEnv(env), timeout, input: prompt });
+  const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
+    const result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env), timeout, input: prompt });
     return { result, events: eventsOf(result, "Task run") };
   }, timeoutMs);
   const final = resultEvent(events);

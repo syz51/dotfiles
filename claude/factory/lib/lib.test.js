@@ -326,16 +326,19 @@ describe("claude runner", () => {
 
   test("a call the API refused before it did anything runs once more, and only once", async () => {
     fake("refused", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
-    expect(await judge({ prompt: "x", schema, model: "m" })).toMatchObject({ output: { verdict: "pass" }, costUSD: 0.02 });
-    expect(calls()).toHaveLength(2);
+    // The cost includes the refused try's; the second try asks claude-api for the subscription.
+    expect(await judge({ prompt: "x", schema, model: "m" })).toMatchObject({ output: { verdict: "pass" }, costUSD: 0.04 });
+    expect(calls().map((call) => call.subscription)).toEqual([undefined, "1"]);
     rmSync(join(scratch, "log.jsonl"));
     fake("refused", { FAKE_CLAUDE_REFUSALS: "2" });
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 400");
     expect(calls()).toHaveLength(2);
     rmSync(join(scratch, "log.jsonl"));
-    fake("refused", { FAKE_CLAUDE_REFUSALS: "1", FAKE_CLAUDE_THEN: "task", FAKE_CLAUDE_TEXT: "done" });
-    const run = await runTask({ prompt: "x", cwd: scratch });
-    expect([run.ok, run.finalText, calls().length]).toEqual([true, "done", 2]);
+    fake("refused", { FAKE_CLAUDE_REFUSALS: "1", FAKE_CLAUDE_THEN: "task", FAKE_CLAUDE_TEXT: "done", FAKE_CLAUDE_REFUSAL_MS: "300" });
+    const run = await runTask({ prompt: "x", cwd: scratch, env: { KEEP: "1" } });
+    expect([run.ok, run.finalText, run.costUSD, calls().map((call) => call.subscription)]).toEqual([true, "done", 0.04, [undefined, "1"]]);
+    // The duration includes the refused try's.
+    expect(run.durationMs).toBeGreaterThanOrEqual(300);
     rmSync(join(scratch, "log.jsonl"));
     // Any other failure is not retried.
     fake("error");

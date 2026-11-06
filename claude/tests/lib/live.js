@@ -133,29 +133,32 @@ export function liveSuite(name) {
     const noteOutside = (init) => {
       if (init && !init.cwd.startsWith(`${root}/`)) outside.push({ cwd: init.cwd, id: init.session_id });
     };
+    const noteRefused = (refused) => {
+      if (!refused) return;
+      noteOutside(initEvent(refused.events));
+      refusedCost = cost(refused.events);
+    };
     try {
       let run;
       try {
         // A run the API refused for credit or the key before it did anything runs once more,
-        // recording only the run that counts.
-        let tries = 0;
-        const attempt = async (limit) => {
-          if (tries++) {
+        // on the subscription, recording only the run that counts.
+        const attempt = async (limit, { subscription }) => {
+          if (subscription) {
             rmSync(recordDir, { recursive: true });
             mkdirSync(recordDir);
           }
           const run = await runProcess([BIN, ...args], {
-            cwd, env, timeout: limit, interact: followUp === undefined ? undefined : conversation(prompt, followUp),
+            cwd, env: subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env, timeout: limit,
+            interact: followUp === undefined ? undefined : conversation(prompt, followUp),
           });
           return { run, events: partialEvents(run.stdout) };
         };
         const outcome = await retryRefused(attempt, TIMEOUT || timeout);
         run = outcome.run;
-        if (outcome.refused) {
-          noteOutside(initEvent(outcome.refused.events));
-          refusedCost = cost(outcome.refused.events);
-        }
+        noteRefused(outcome.refused);
       } catch (error) {
+        noteRefused(error.refused);
         stdout = error.stdout ?? "";
         entry.status = /timeout/i.test(error.message) ? "timeout" : "error";
         throw error;

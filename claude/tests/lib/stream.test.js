@@ -47,9 +47,11 @@ describe("retrying a refused run", () => {
 
   test("runs once more after a refusal, with the time left, and keeps the refused try", async () => {
     const limits = [];
+    const asked = [];
     const outcomes = [{ events: refused, n: 1 }, { events: [init(), result()], n: 2 }, { events: refused, n: 3 }];
-    const attempt = async (limit) => {
+    const attempt = async (limit, { subscription }) => {
       limits.push(limit);
+      asked.push(subscription);
       if (limits.length === 1) await Bun.sleep(30);
       return outcomes[limits.length - 1];
     };
@@ -57,6 +59,17 @@ describe("retrying a refused run", () => {
     expect([outcome.n, outcome.refused.n]).toEqual([2, 1]);
     expect(limits[0]).toBe(1000);
     expect(limits[1]).toBeLessThanOrEqual(975);
+    // The second try asks for the subscription, whether or not the first one's hook reported.
+    expect(asked).toEqual([false, true]);
+  });
+
+  test("a second try that throws keeps the refused try", async () => {
+    let calls = 0;
+    const error = await retryRefused(async () => {
+      if (calls++) throw new Error("timeout");
+      return { events: refused, n: 1 };
+    }, 1000).catch((e) => e);
+    expect([error.message, error.refused.n]).toEqual(["timeout", 1]);
   });
 
   test("anything else, a second refusal included, is returned as it is", async () => {

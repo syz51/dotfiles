@@ -101,7 +101,7 @@ describe("runWeekly", () => {
     let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("## Billing (last 7 days)");
     expect(summary).toContain("1 started on the API, 1 on the subscription");
-    expect(summary).toContain(`- Of the API runs, the API refused 1; the latest ${now}: exhausted: a Claude Code run was refused (billing_error): low.`);
+    expect(summary).toContain(`- Refusals of API runs recorded: 1; the latest ${now}: exhausted: a Claude Code run was refused (billing_error): low.`);
     expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit that Claude Code can spend to move back.");
     // Credit would not help a refusal for another reason.
     writeFileSync(decisions, `${JSON.stringify({ at: now, mode: "subscription", reason: "refused: HTTP 400: This organization has been disabled." })}\n`);
@@ -109,6 +109,19 @@ describe("runWeekly", () => {
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("refused: HTTP 400: This organization has been disabled.\n");
     expect(summary).not.toContain("Top up");
+    // A refused key needs replacing; an entry without a reason still renders.
+    writeFileSync(decisions, [
+      { at: now, mode: "refused" },
+      { at: now, mode: "subscription", reason: "invalid: HTTP 401: invalid x-api-key." },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    await runWeekly({ pr: false });
+    summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain(`the latest ${now}: no reason.`);
+    expect(summary).toContain("invalid: HTTP 401: invalid x-api-key. Replace the API key to move back.");
+    writeFileSync(decisions, `${JSON.stringify({ at: now, mode: "subscription" })}\n`);
+    await runWeekly({ pr: false });
+    summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain(`- Latest fallback ${now}: no reason.\n`);
     writeFileSync(decisions, '{"at":"x","mode":"api"}\n{damaged\n');
     expect(await runWeekly({ pr: false })).toBe(0);
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");

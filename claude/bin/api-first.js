@@ -29,8 +29,11 @@
 //   API_FIRST_REAL_BIN   the real claude, default the first on PATH other than this wrapper
 //   API_FIRST_BASE_URL   API base URL for the credit check (tests)
 //   API_FIRST_DEPTH      nesting depth, set by claude-api; past MAX_DEPTH it stops a loop
+//   API_FIRST_SUBSCRIPTION  1 runs on the subscription without a check: for a caller
+//                        retrying a run the API refused, whose hook may have been cut off
+//                        before it reported the refusal
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { appendJsonl, readJson, writeJsonAtomic } from "../factory/lib/state.js";
@@ -39,6 +42,8 @@ export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 
 export const MAX_BACKOFF_MS = 8 * 60 * 60 * 1000;
 // Claude Code's StopFailure error types that mean this key cannot run Claude Code.
 export const RUN_REFUSALS = { billing_error: "exhausted", authentication_failed: "invalid" };
+// Wording of the API's refusals for credit or a spend limit.
+export const CREDIT_REFUSAL = /credit|billing|insufficient|usage limit|spend limit/i;
 // A cached result counts only for the check that made it. An earlier check sent Claude
 // Code's beta ("messages+claude-code-20250219"), which the API refused even for keys that
 // Claude Code could use.
@@ -136,10 +141,11 @@ export async function checkCredit(key, { baseUrl = "https://api.anthropic.com", 
     if (!(error instanceof SyntaxError)) throw error;
   }
   const detail = `HTTP ${status}: ${String(message).slice(0, 200)}`;
-  if (status === 401 || status === 403) return { status: "invalid", detail };
-  if ([400, 402].includes(status) && /credit|billing|insufficient|usage limit|spend limit/i.test(message)) return { status: "exhausted", detail };
   // Only the API's own error answer is a definite refusal; a proxy's page is not.
-  if (message !== body && status >= 400 && status < 500 && ![404, 408, 409, 429].includes(status)) return { status: "refused", detail };
+  if (message === body) return { status: "unknown", detail };
+  if (status === 401 || status === 403) return { status: "invalid", detail };
+  if ([400, 402].includes(status) && CREDIT_REFUSAL.test(message)) return { status: "exhausted", detail };
+  if (status >= 400 && status < 500 && ![404, 408, 409, 429].includes(status)) return { status: "refused", detail };
   return { status: "unknown", detail };
 }
 
@@ -155,6 +161,32 @@ function readState(dir) {
 const onApi = (status) => ["ok", "unknown"].includes(status);
 const reportsDir = (env) => join(stateDir(env), "reports");
 const STALE_MS = 60 * 60 * 1000;
+const LOCK_STALE_MS = 2000;
+
+// Runs fn holding state.lock, so plans running together do not overwrite each other's
+// state. fn only reads and writes local files, so the lock is held for milliseconds; one
+// older than LOCK_STALE_MS was left by a plan that died, and is taken over.
+function locked(dir, fn) {
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, "state.lock");
+  for (const deadline = Date.now() + 5 * LOCK_STALE_MS; ;) {
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx" });
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const since = statSync(lock, { throwIfNoEntry: false })?.mtimeMs;
+      if (since !== undefined && Date.now() - since > LOCK_STALE_MS) rmSync(lock, { force: true });
+      else if (Date.now() > deadline) throw new Error(`${lock} stays locked`);
+      else Bun.sleepSync(5);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+}
 
 // How long a state entry stands: its status's interval, doubled for each refusal a run
 // reported in a row (state.refusals), up to MAX_BACKOFF_MS.
@@ -167,21 +199,23 @@ export function lifetime(state) {
 // reports/<plannedAt>-<keyHash>-<pid>.json. Plain sh and cat, because Claude Code does not
 // wait for StopFailure hooks and kills them when it exits (2.1.318): a 2-second hook was
 // cut off, so the hook has to finish in milliseconds. The file appears whole or not at all.
+// The hook prints nothing and always exits 0: a report that fails must not block a Stop
+// (exit 2) or add an error to the run.
 export function reportHook(dir, keyHash, plannedAt) {
   const name = `${plannedAt}-${keyHash}-$$`;
-  return `cd ${quote(dir)} && cat > .${name} && mv .${name} ${name}.json`;
+  return `{ cd ${quote(dir)} && cat > .${name} && mv .${name} ${name}.json; } >/dev/null 2>&1; exit 0`;
 }
 
 // The state after one run report ({ input, plannedAt, at }) for the state's key. A refusal
-// for credit or the key (StopFailure) moves later runs to the subscription, unless one
-// already stands: runs refused together count once. A run that went through (Stop) clears
+// for credit or the key (StopFailure) moves later runs to the subscription, unless one for
+// the same reason already stands: runs refused together count once. A run that went through (Stop) clears
 // the count, unless a check made after its plan has replaced the entry it ran under.
 export function applyReport(state, { input, keyHash, plannedAt, at }) {
   if (input.hook_event_name === "Stop")
     return state?.refusals && state.source !== "run" && plannedAt >= state.checkedAt ? { ...state, refusals: 0 } : state;
   const status = RUN_REFUSALS[input.error];
   if (input.hook_event_name !== "StopFailure" || !status) return state;
-  if (state?.source === "run" && at - state.checkedAt < lifetime(state)) return state;
+  if (state?.source === "run" && state.status === status && at - state.checkedAt < lifetime(state)) return state;
   const message = String(input.last_assistant_message ?? "").slice(0, 200);
   return { keyHash, check: CHECK, status, checkedAt: at, source: "run", refusals: (state?.refusals ?? 0) + 1,
     detail: `a Claude Code run was refused (${input.error}): ${message}` };
@@ -198,7 +232,7 @@ function foldReports(env, keyHash, state, now) {
     const path = join(dir, name);
     const match = /^(\d+)-([0-9a-f]+)-\d+\.json$/.exec(name);
     if (!match) {
-      if (name.startsWith(".") && now - statSync(path, { throwIfNoEntry: false })?.mtimeMs > STALE_MS) rmSync(path, { force: true });
+      if (name.startsWith(".") && now - statSync(path, { throwIfNoEntry: false })?.mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
       continue;
     }
     const claimed = join(dir, `.${name}.${process.pid}`);
@@ -219,6 +253,7 @@ function foldReports(env, keyHash, state, now) {
       if (!(error instanceof SyntaxError)) throw error;
       continue;
     }
+    if (input === null || typeof input !== "object" || Array.isArray(input)) continue;
     if (match[2] === keyHash) reports.push({ input, keyHash, plannedAt: Number(match[1]), at });
   }
   for (const report of reports.sort((a, b) => a.at - b.at)) {
@@ -240,29 +275,29 @@ export async function decide({ env = process.env, now = Date.now(), check = chec
   if (!existsSync(file)) return { mode: "subscription", reason: `no key file at ${file}` };
   const key = readFileSync(file, "utf8").trim();
   const keyHash = createHash("sha256").update(key).digest("hex").slice(0, 16);
-  const stateFile = join(stateDir(env), "state.json");
-  const current = () => {
-    const state = readState(stateDir(env));
-    return state?.keyHash === keyHash && state.check === CHECK ? state : null;
-  };
-  const folded = (now) => {
-    const before = current();
+  const dir = stateDir(env);
+  const stateFile = join(dir, "state.json");
+  // This key's entry with the waiting reports folded in; called holding the lock.
+  const folded = () => {
+    const state = readState(dir);
+    const before = state?.keyHash === keyHash && state.check === CHECK ? state : null;
     const after = foldReports(env, keyHash, before, now);
     if (after !== before) writeJsonAtomic(stateFile, after);
     return after;
   };
-  const standing = (state, now) => state && now - state.checkedAt < lifetime(state);
-  let result = folded(now);
-  if (standing(result, now)) result = { ...result, cached: true };
+  const standing = (state) => state && now - state.checkedAt < lifetime(state);
+  let result = locked(dir, folded);
+  if (standing(result)) result = { ...result, cached: true };
   else {
     const previous = result;
-    result = await check(key, env.API_FIRST_BASE_URL ? { baseUrl: env.API_FIRST_BASE_URL } : {});
-    const latest = folded(now);
-    if (latest?.source === "run" && latest.checkedAt !== previous?.checkedAt && standing(latest, now)) result = { ...latest, cached: true };
-    else {
-      const refusals = onApi(result.status) ? latest?.refusals ?? 0 : 0;
-      writeJsonAtomic(stateFile, { keyHash, check: CHECK, status: result.status, checkedAt: now, detail: result.detail, refusals });
-    }
+    const checked = await check(key, env.API_FIRST_BASE_URL ? { baseUrl: env.API_FIRST_BASE_URL } : {});
+    result = locked(dir, () => {
+      const latest = folded();
+      if (latest?.source === "run" && latest.checkedAt !== previous?.checkedAt && standing(latest)) return { ...latest, cached: true };
+      const refusals = onApi(checked.status) ? latest?.refusals ?? 0 : 0;
+      writeJsonAtomic(stateFile, { keyHash, check: CHECK, status: checked.status, checkedAt: now, detail: checked.detail, refusals });
+      return checked;
+    });
   }
   const since = result.source === "run" ? "reported" : "checked";
   const reason = `${result.status}${result.cached ? ` (${since} ${new Date(result.checkedAt).toISOString()})` : ""}: ${result.detail}`;
@@ -277,9 +312,17 @@ export async function plan(argv, { env = process.env, check, now = Date.now() } 
   const bin = realClaude(env);
   const { print, settings: value } = readArgs(argv);
   if (!print) return { bin, mode: "passthrough", reason: "not print mode" };
-  const settings = readSettings(value);
+  let settings;
+  try {
+    settings = readSettings(value);
+  } catch (error) {
+    // Claude Code reports a --settings value it cannot read itself.
+    if (!(error instanceof SyntaxError) && !["ENOENT", "EACCES", "EISDIR", "ENOTDIR"].includes(error.code)) throw error;
+    return { bin, mode: "passthrough", reason: `unreadable --settings: ${error.message}` };
+  }
   const own = OWN_AUTH.filter((name) => env[name] || settings.env?.[name]);
   if (own.length) return { bin, mode: "passthrough", reason: `caller set ${own.join(", ")}` };
+  if (env.API_FIRST_SUBSCRIPTION === "1") return { bin, mode: "subscription", reason: "asked for by API_FIRST_SUBSCRIPTION" };
   const { keyHash, ...decision } = await decide({ env, check, now });
   if (decision.mode === "subscription") return { bin, ...decision };
   mkdirSync(reportsDir(env), { recursive: true });

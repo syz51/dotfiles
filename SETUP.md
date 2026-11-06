@@ -236,9 +236,11 @@ and falls back to the claude.ai subscription otherwise. The planner,
   `StopFailure` hooks when it exits), and the next run's plan folds them in. A run the API
   refuses for credit or the key moves later runs to the subscription for 30 minutes,
   doubling with each further refusal while the check keeps passing, up to 8 hours; runs
-  refused together count once, and a run that goes through clears the count. The factory
-  and the live suites run a call the API refused for credit or the key before it did
-  anything once more, which then goes to the subscription.
+  refused together count once, a run that goes through clears the count, and plans
+  running together take turns with the state. The factory and the live suites run a call
+  the API refused for credit or the key before it did anything once more, with
+  `API_FIRST_SUBSCRIPTION=1` so it goes to the subscription even when the refused run's
+  hook was cut off before it reported.
 - Runs that are not print mode, or that set `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
   `ANTHROPIC_BASE_URL` themselves, pass through untouched. The script replaces itself with
   the real claude, so killing the process a caller started kills claude.

@@ -1,5 +1,6 @@
 // Evidence from `claude -p --output-format stream-json --verbose` output. Only tool
 // calls and their results count as evidence of actions; the model's text claims do not.
+import { CREDIT_REFUSAL } from "../../bin/api-first.js";
 
 export function parseStream(text) {
   if (typeof text !== "string" || !text.trim()) throw new Error("Empty stream");
@@ -37,20 +38,26 @@ export function refusedBeforeWork(events) {
   const final = resultEvent(events);
   if (final?.is_error !== true) return false;
   const status = final.api_error_status;
-  const forAccount = [401, 403].includes(status) || ([400, 402].includes(status) && /credit|billing|spend limit|usage limit/i.test(String(final.result)));
+  const forAccount = [401, 403].includes(status) || ([400, 402].includes(status) && CREDIT_REFUSAL.test(String(final.result)));
   return forAccount && !events.some((event) => event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use"));
 }
 
-// Runs attempt(timeoutMs) once more when the API refused its run for credit or the key
-// before it did anything: through claude-api, the second plan folds in the refusal that
-// the first run's hook reported and runs on the subscription. attempt returns
-// { events, ... }; the second try gets what is left of timeoutMs, and the result keeps the
-// refused try as `refused`.
+// Runs attempt(timeoutMs, { subscription }) once more when the API refused its run for
+// credit or the key before it did anything. The second try gets subscription: true, for
+// the caller to set API_FIRST_SUBSCRIPTION=1 so claude-api runs it on the subscription:
+// the first run's hook may have been cut off before it reported the refusal. attempt
+// returns { events, ... }; the second try gets what is left of timeoutMs, and its result,
+// or the error it throws, keeps the refused try as `refused`.
 export async function retryRefused(attempt, timeoutMs) {
   const started = Date.now();
-  const first = await attempt(timeoutMs);
+  const first = await attempt(timeoutMs, { subscription: false });
   if (!refusedBeforeWork(first.events)) return first;
-  return { ...(await attempt(Math.max(1, timeoutMs - (Date.now() - started)))), refused: first };
+  try {
+    return { ...(await attempt(Math.max(1, timeoutMs - (Date.now() - started)), { subscription: true })), refused: first };
+  } catch (error) {
+    error.refused = first;
+    throw error;
+  }
 }
 
 // Whether the session ended normally: every turn's result, one per turn in a
