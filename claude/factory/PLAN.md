@@ -1,10 +1,9 @@
-# Factory plan and task list
+# Factory plan and record
 
-Living work file for building measurement and improvement tooling around this Claude Code
-setup, modeled on the "software factory" talk (Zach Lloyd, Warp, X video
-2111165023238160603). Read this first after a restart or compaction, then continue from
-**Next actions**. Update task status, findings and the log as work proceeds; add newly found
-tasks under the right area instead of keeping them in conversation only.
+Record of building measurement and improvement tooling around this Claude Code setup,
+modeled on the "software factory" talk (Zach Lloyd, Warp, X video 2111165023238160603):
+goal, evidence, decisions and log. Open tasks live on the `dotfiles` work board
+(**Next actions**); add newly found tasks there, and findings and decisions here.
 
 Started 2026-11-05 on `sunmacbook-air` (this Mac is also the codex-skills maintainer).
 
@@ -143,21 +142,6 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `origin` marks agent-launched threads (54 of 73 sessions this week, $309), subagent
   message counts.
 - [x] Tests (synthetic transcripts, fake gh); real 7- and 30-day runs.
-- [ ] Scan `git push` output too (today only `/pull/new/<branch>` links, rightly ignored).
-- [ ] Spot-check the correction heuristic against the scoring judge; tighten the
-  "still running/using" patterns (false positive: "for everything still running codex").
-- [ ] Codex sessions: T3 Code's scanner covers `~/.codex/sessions` (2,126 rollout files)
-  as well as Claude; the factory sees only Claude, so most subagent work run on GPT
-  models is invisible. Add a Codex rollout parser to `lib/` (tokens, model, prompts, tool
-  calls) and include it in metrics. Note any T3 thread-to-PR mapping found on the way.
-- [ ] Pricing source: T3 Code prices with LiteLLM's public table (cached in
-  `~/.t3/userdata/usage-model-rates.json`, 4,526 models including GPT). Use the public
-  LiteLLM JSON (cached in the state folder) for models missing from `lib/pricing.js`.
-  Discrepancy to resolve: LiteLLM has Sonnet 5.5 cache reads at $0.10/MTok, while the
-  claude-api skill's table says $0.20. Check the Anthropic pricing page.
-- [ ] Do not build on T3 Code's private files (`usage-scan-cache-v*.json` went from v7 to
-  v11 in two weeks; `statev2.sqlite`). An optional read-only reconciliation against
-  T3's totals may skip unknown versions.
 
 ### 2. Scoring and proposals (`scoring/`)
 
@@ -187,12 +171,6 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `claude/CLAUDE.md` and updated `claude/tests/config.test.js`; tests passed in the clone.
   Patch in the state folder (`proposals/package-runner-*.patch`). A reviewer may prefer a
   rule steering file edits to the Edit tool, since that is the main source.
-- [ ] Judge reliability: calibrate with a bench case; require high effort or two agreeing
-  runs before a failure counts toward a proposal.
-- [ ] Record the `claude/CLAUDE.md` revision at scoring time (sessions are judged against
-  today's rules).
-- [ ] New detector: file edits through shell scripts ("Prefer dedicated tools").
-- [ ] `runTask` option for `--strict-mcp-config`, for the proposer.
 - [x] Rubric v3 (2026-11-05): detector changes since v2 are scored afresh; v2 records no
   longer count toward proposals.
 - [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
@@ -210,16 +188,6 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `.claude/agents/<name>.md` beats the user's; an agent file's `effort` is ignored when
   the agent runs as the main session (effort comes from `--effort`, else `modelSettings`,
   else medium); effort is not in stream-json, only in saved transcripts.
-- [ ] Real recommendations: 3+ trials per configuration on all cases (budget about $10).
-- [ ] Harder explorer cases (this one does not separate models), plus `solver` and `main`
-  cases, and the judge-calibration case for area 2.
-- [ ] Verify effort: let `runTask` opt into keeping the transcript to read `effort`, then
-  delete it.
-- [ ] Decide whether subagent roles should be benchmarked as spawned subagents of a main
-  session (where frontmatter effort applies) instead of through `--agent`.
-- [ ] Small lib cleanups: `runTask` returns partial events on timeout instead of throwing;
-  export Claude Code's temp folder path from `claude/tests/lib/cleanup.js` (used by
-  `live.js` and `bench/runner.js`).
 - Note: bench sessions load user settings, so the atuin hooks record their commands in
   shell history, as with the live suites.
 
@@ -258,10 +226,6 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   workflow over all branches with a narrow `.gitleaks.toml`; locally clean over 333 commits
   and still catches a planted key. CI passes on ebe2453 (first run failed on an
   unauthenticated extra fetch, removed). Merge is the user's call.
-- [ ] Public `syz51/skills`: it is generated by the exporter, so add scanning through the
-  exporter (the restored `scan()` from the other thread) or a workflow the exporter keeps;
-  its `.public-export.json` hashes need the same allowlist. Decide after the other thread
-  lands.
 - [-] (Deferred by the user, 2026-11-05.) Run the codex-skills daily review under
   `audit/maintainer-sandbox.json`. The draft's scope, probes and open questions are in the
   state folder's `notes/codex-skills-private.md`.
@@ -324,22 +288,17 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] codex-skills#2 merged (squash, e2222419).
 - [x] Merged #17 (7ada7e7) and #16 (d267080) on 2026-11-05; `~/.config` is on main, so the
   weekly LaunchAgent runs the merged code.
-- [ ] Live-test flakes worth hardening later: the guard-hook scenario depends on Haiku
-  agreeing to run a force push; the sandbox check's rare failure needs its output.
-- [ ] Inherited host prompts of a forked session are not shown to the judge (the lib
-  filters them); add if forks of slash-command sessions turn out to matter.
 
 ### 6. Agent work board (`board/`)
 
 A shared, durable task board that every agent thread on every device reads and writes, so
 threads keep their working state across compaction and restarts and see each other's
-progress without reading transcripts. Its own living plan is `board/PLAN.md`; a dedicated
-thread owns it.
+progress without reading transcripts. Its record is `board/PLAN.md`; its tasks are on the
+`agent-board` and `dotfiles` boards.
 
-- [~] Design every component (data model, storage, network, agent interface, runtime
-  integration, alerts, human view, agent rules, migration, operations): drafted in
-  `board/DESIGN.md`, awaiting the user's review.
-- [ ] Build after the design is accepted; then move this plan's open items onto the board.
+- [x] Design every component: `board/DESIGN.md`, accepted by the user on 2026-11-06.
+- [x] Built (github.com/syz51/agent-board) and deployed; this plan's open items moved onto
+  the `dotfiles` work board on 2026-11-07.
 
 ## Deferred: daily review on sai
 
@@ -361,12 +320,10 @@ Dokploy VPS). Feasible, with this split:
 
 ## Next actions
 
-The build is complete and merged. Remaining work is the open `[ ]` items above, none
-blocking: Codex session coverage and LiteLLM pricing (area 1), judge calibration and a
-shell-edit detector (area 2), more benchmark cases and trials (area 3), public-export
-scanning (area 4), and hardening two flaky live scenarios. The weekly run (Mondays 13:30)
-reports in the state folder's `reports/weekly-*.md`. Area 6 (agent work board) is in design
-in its own thread; follow `board/PLAN.md`.
+Open work is tracked on the `dotfiles` work board (`board ls --board dotfiles`), not in this
+file: each former `[ ]` item is a task there, with its acceptance checks. Tasks marked `auto`
+are worked by the board's coordinator; the rest wait for a decision (budget or
+coordination). This file keeps the goal, evidence, decisions and log.
 
 ## Log
 

@@ -1,9 +1,8 @@
 # Agent work board: plan and task list
 
-Living work file for designing, then building, a shared work board for coding agents. Read
-this first after a restart or compaction, then continue from **Next actions**. Update task
-status, findings and the log as work proceeds; add newly found tasks here instead of keeping
-them in conversation only.
+Record of designing, then building, a shared work board for coding agents: problem,
+requirements, decisions and log. Open tasks live on the `agent-board` and `dotfiles` boards
+(**Next actions**); add newly found tasks there, and findings and decisions here.
 
 Started 2026-11-06 from a T3 Code thread that is dedicated to this task. Part of the factory
 effort (`../PLAN.md`, area 6).
@@ -86,53 +85,28 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   tool results), writing conventions and the compact formats considered (TOON, BAML, MCP
   structured content and others).
 
-### Build (in syz51/agent-board)
+### Build, deploy and adopt
+
+Open work moved onto the boards on 2026-11-07: `board ls --board agent-board` for the
+server, client and deployment; `board ls --board dotfiles` for the hooks, live suites and
+factory items. Claim a task there before working on it. Done so far:
 
 - [x] Repository, MIT licence, CI, the protocol crate, `docs/API.md` and `docs/DESIGN.md`.
-- [~] Three parallel tracks on the branch `build/v0`: the server crate (storage, rules,
-  API, snapshots, Telegram), the `board` binary (CLI, MCP, hooks, `board watch`,
-  installers, coordinator prompt) and the web view. The first run stopped on the usage
-  limit; resumed.
-- [ ] Integrate: wire `board serve` and `board admin` to the server crate; container
-  image; workspace checks; PR; `/code-review xhigh`.
-- [ ] Verify against the running server: Claude Code passes `CLAUDE_CODE_SESSION_ID` to
-  stdio MCP children; T3 child thread ids in hooks; the hook budget on a cold start.
-
-### Deploy (private; values stay out of this repository)
-
-- [x] Tailscale on the Dokploy VPS, with Serve (HTTPS) enabled for the tailnet.
-- [x] The server container on the host network, bound to loopback, reachable only through
-  `tailscale serve`; built from the reviewed `build/v0`.
-- [~] Device tokens and `board watch` under launchd: done on this Mac; the other Mac
-  needs the user (its SSH host key is not known here).
-- [ ] A `--user` token, for answering asks from the CLI.
-- [!] Telegram bot: needs the user to create it with BotFather.
-- [!] Backups: needs a new Tencent COS bucket with its own scoped key from the user. Then
-  restic every 15 minutes from the host, encrypted; a restore drill.
-
-### Adopt (this repository)
-
+- [x] Server, `board` binary (CLI, MCP, hooks, `board watch`, coordinator) and web view,
+  integrated and reviewed on `build/v0`, merged to `main` (agent-board #1); `main`
+  requires the `rust`, `web` and `docker` checks.
+- [x] The server container behind `tailscale serve` on the Dokploy VPS, bound to loopback.
+- [x] Device tokens, `board watch` under launchd, the MCP server for Claude Code and
+  Codex, and approved Codex hooks (`codex/trust-hooks.js`) on both Macs.
 - [x] Hooks in `claude/settings.json` and `codex/hooks.json`, through
   `claude/hooks/board-hook.sh`, which does nothing without `~/.cargo/bin/board` or with
-  `AGENT_BOARD_HOOKS=off` (set for test and benchmark sessions by `childEnv`).
-- [~] MCP server: registered for Claude Code on this Mac; Codex's block goes into
-  `~/.codex/config.toml` per Mac (`SETUP.md`, Work board).
+  `AGENT_BOARD_HOOKS=off` (set for test, benchmark and factory sessions by `childEnv`).
 - [x] Work board rule in `claude/CLAUDE.md` and `codex/AGENTS.md`.
-- [~] Tests: offline checks in `config.test.js`, including runs of the hook script. The
-  live suites run against the installed `~/.claude`, so they run after this branch is
-  merged and installed.
-- [ ] Session identity: a nested `claude -p` or `codex exec` inherits `T3CODE_THREAD_ID` and
-  reports as its parent thread unless it sets `AGENT_BOARD_HOOKS=off`. The board should
-  tell such sessions apart on its own (agent-board design work).
-- [ ] Living plans such as this one move onto boards (with the factory migration below).
-- [x] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
-  skill feedback does; the defaults below change only through it. The factory's weekly
-  run has a board step (`claude/factory/board/cli.js`) whose snapshot the proposal step
-  reads (`claude/factory/board/proposal.js`); see `SETUP.md`, Factory. It needs
-  `board stats` in the installed CLI, and fails the step in the report until then.
-- [ ] Migrate the factory's open items (`../PLAN.md`) onto a board as the first real use.
-- [ ] Format benchmark (`DESIGN.md` section 11): three formats × three framings, Claude
-  Code only, run on the subscription (not the API), at least 20 runs per cell.
+- [x] Feedback loop: `board feedback` and `GET /v1/stats` feed the factory's weekly run
+  through its board step (`claude/factory/board/cli.js`) and the proposal step; see
+  `SETUP.md`, Factory. The defaults change only through it.
+- [x] The factory's open items (`../PLAN.md`) moved onto the `dotfiles` board as its
+  first real use.
 
 ### Upstream
 
@@ -163,12 +137,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 
 ## Open questions
 
-- None blocking. The user provides the Telegram bot and the COS bucket key when ready.
+- None blocking. Steps that need the user are asks on the `agent-board` board: the
+  Telegram bot token, and a new API key for the cloud operator account so the backup
+  principal can be created (backups run as local snapshots until then).
 
 ## Next actions
 
-Integrate the three build tracks when they report, then deploy behind Tailscale once the
-user approves the device login.
+`board snapshot`, then the boards: `board ls --board agent-board` and
+`board ls --board dotfiles`.
 
 ## Log
 
@@ -185,3 +161,6 @@ user approves the device login.
 - 2026-11-06: The user accepted the design with the decisions above. Built the repository,
   protocol crate and API contract, then started three build tracks. Tailscale was already
   on this Mac as the app (the CLI is not on `PATH`); installed it on the VPS.
+- 2026-11-07: Merged to `main` in agent-board and deployed; both Macs log in, watch and
+  run the hooks and MCP server. Open tasks for this effort and the factory now live on the
+  `agent-board` and `dotfiles` boards; this file keeps the problem, design and log.

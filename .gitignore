@@ -24,6 +24,7 @@ mpv/watch_later
 uv
 /codex/*
 !/codex/AGENTS.md
+!/codex/trust-hooks.js
 !/codex/config.example.toml
 !/codex/hooks.json
 !/codex/keybindings.json

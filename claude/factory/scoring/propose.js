@@ -37,8 +37,7 @@ scored sessions, as a draft PR.
                     also propose changes to the work board's defaults, coordinator
                     prompt and rule from this snapshot (written by the board command)
   --board-repo URL  agent-board repository to clone (default ${BOARD_REPO})
-  --board-base NAME agent-board base branch (default: main once it holds the server,
-                    else build/v0)
+  --board-base NAME agent-board base branch (default main)
   --list            print the qualifying dimensions and their evidence; run nothing
   --dry-run         run the proposer and the tests, but commit, push and open nothing
   --help`;

@@ -250,15 +250,16 @@ feedback. It may change only the "Work board" section of
 and docs, and the values of the server defaults in `impl Default for Settings`. The tool
 tests each changed repository (`cargo test --workspace --locked` for agent-board, its
 build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
-against agent-board's `main` once it holds the server and `build/v0` until then. A change
+against `main`. A change
 that breaks a test pinning a default stays a local patch for a person to finish, as with
 rule text. If the second PR fails after the first opened, the record says
 `partly-proposed` and is not retried. Feedback
 is agent-written and private: the proposer gets it as quoted data, and PR bodies list
 feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
 so its folder is on the job's `PATH`. `weekly status` shows the
-last run; `weekly uninstall` removes the job. The living task list is
-[`claude/factory/PLAN.md`](claude/factory/PLAN.md).
+last run; `weekly uninstall` removes the job. Open factory tasks are on the `dotfiles`
+work board (`board ls --board dotfiles`);
+[`claude/factory/PLAN.md`](claude/factory/PLAN.md) keeps the goal, evidence and log.
 
 ### Billing: API first, subscription as fallback
 
@@ -303,15 +304,14 @@ and falls back to the claude.ai subscription otherwise. The planner,
 [agent-board](https://github.com/syz51/agent-board) is the shared work board that the
 "Work board" rule in `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
 a host in the tailnet
-([deployment](https://github.com/syz51/agent-board/blob/build/v0/docs/DEPLOY.md)); each Mac
+([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
 `claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
 provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
 with a device token created on the server host:
 
 ```sh
-# build/v0 holds the board crate until it merges to main.
-cargo install --git https://github.com/syz51/agent-board --branch build/v0 --locked board
+cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
 # Reads the token until end of input: pipe it from a file or paste it and press Ctrl-D.
 board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>
 claude mcp add --scope user board -- "$HOME/.cargo/bin/board" mcp
@@ -321,11 +321,29 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agent-board.watch.
 
 For Codex, add the `[mcp_servers.board]` block that `board install codex` prints to
 `~/.codex/config.toml`, and link `codex/AGENTS.md` to `~/.codex/AGENTS.md` so Codex gets the
-rule. Codex asks you to review new or changed hooks before it runs them: approve the
-board hooks after checking that they run `board-hook.sh`.
+rule. Codex runs a new or changed hook only after it is approved: run
+`bun ~/.config/codex/trust-hooks.js --trust` to approve the hooks this repository tracks
+(it lists them first without `--trust`). It approves hooks from `$CODEX_HOME/hooks.json`
+only while that file matches `codex/hooks.json` on `origin/main`, so pull first, and exits
+1 when hooks stay unapproved or Codex reports problems loading them. Run it again after
+`codex/hooks.json` changes.
+
+Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
+token in `~/.local/share/agent-board/token` (mode 0600) instead.
+
+To host autopilot coordinators on a Mac, map each board repository to its local T3 Code
+project folder in `~/.local/share/agent-board/config.toml` and list the Mac among the
+board's home devices (`board board update <slug> --home-device <first> --home-device <second>`
+replaces the list, in order of preference):
+
+```toml
+[projects]
+"github.com/<owner>/<repo>" = "/path/to/the/t3/project"
+```
 
 The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
-token in the macOS Keychain, outside this repository. When a hook finds the server
+token in the macOS Keychain or, where `board login` fell back to it, the token file beside
+it, outside this repository. When a hook finds the server
 unreachable it waits at most about 1.5 seconds, and the Mac's hooks then use their cache
 without trying the server for a minute.
 
