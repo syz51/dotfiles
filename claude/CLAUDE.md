@@ -11,7 +11,6 @@
 ## Skills
 
 - Load skills with the Skill tool before matching work: `frontend-ui` for frontend/UI work or its tooling, including TSX and Vue; `typescript` for TypeScript implementation, review, debugging, migration, or tooling; `rust` for Rust or Cargo/toolchain work; and `tauri` for Tauri work. When several apply, load `frontend-ui` first. Follow each skill's routing to the references the task needs; unrelated work in a TypeScript or Rust repository needs neither language skill.
-- Before choosing a visual direction, read `~/.claude/frontend-avoid.md`. Record only patterns I explicitly reject as defaults; keep project-specific exclusions in that project's instructions.
 - For charts, load a data-visualization skill such as `dataviz` and apply it within `frontend-ui`'s constraints.
 
 ## Workflow
