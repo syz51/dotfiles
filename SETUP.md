@@ -271,19 +271,36 @@ the parent a subagent thread belongs to, has been settled for 7 days. It keeps
 worktrees with uncommitted or untracked changes, an open terminal or a running
 thread, and keeps the branch. Ignored files, such as build output, go with the
 worktree. A resumed thread gets its worktree back from its local branch, or, once
-that is pruned, from `origin/<branch>` or a fresh branch off the default branch,
-which already holds the merged work.
-`t3code/prune_branches.py` deletes those branches once merged: local branches of T3
-worktree threads that no worktree has checked out, rebases or bisects, whose threads
-are idle, and whose worktree folders are gone or now hold another branch. A branch
-counts as merged when `origin/HEAD` contains its tip as of the last fetch, which
-T3's sweep refreshes, or, for a github.com origin, when `gh` finds a merged pull
-request from it into the default branch whose head is its tip or a commit known to
-descend from it, which covers squash and rebase merges. The conditions are checked
-again just before deleting. It never deletes the default branch or a branch no T3
-thread uses, and skips repositories without `origin/HEAD`. It exits 1 when a
-repository or a pull request lookup fails, still pruning the rest; after a failed
-lookup, which times out after 60 seconds, it skips the remaining lookups.
+that is pruned, from `origin/<branch>` or a fresh branch off the default branch.
+`t3code/prune_branches.py` deletes those branches once their commits are kept
+elsewhere: local branches of T3 worktree threads that no worktree has checked out,
+rebases or bisects, whose threads are idle, and whose worktree folders are gone or
+now hold another branch. It deletes such a branch when:
+
+- it is merged: `origin/HEAD` contains its tip as of the last fetch, which T3's sweep
+  refreshes, or, for a github.com origin, `gh` finds a merged pull request from it
+  into the default branch whose head is its tip or a commit known to descend from
+  it, which covers squash and rebase merges;
+- it is pushed: `origin/<branch>`, both as last fetched and as `gh` or
+  `git ls-remote` reads it live, is its tip or a known descendant, so a resumed
+  thread gets the work back;
+- it is abandoned: every thread on it, with a worktree or not, is archived or
+  deleted.
+
+Before deleting a pushed or abandoned branch it saves the tip as
+`refs/t3-archive/<branch>@<12 hex digits>`, which `git branch` does not list and which
+keeps the work after origin's branch is gone. List those refs with
+`git for-each-ref refs/t3-archive/`, restore one with
+`git branch <branch> refs/t3-archive/<branch>@<digits>`, and drop one with
+`git update-ref -d <ref>`. Other branches stay, such as an unpushed branch of a
+thread that can still be resumed. An origin counts as github.com after `insteadOf`
+rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses resolves
+a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
+conditions are checked again just before deleting. It never deletes the default
+branch or a branch no T3 worktree thread uses, and skips repositories without
+`origin/HEAD`. It exits 1 when a repository or a remote lookup fails, still pruning
+the rest. Lookups never prompt and time out after 60 seconds; after a failed one it
+skips the remaining remote lookups in that repository.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and
