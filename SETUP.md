@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin` and `~/.bun/bin/bun`. A SessionStart hook turns on Claude Code's computer use in every project outside temporary folders; for it to work, grant Accessibility and Screen Recording to each app that runs `claude`, such as Ghostty and T3 Code. |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync

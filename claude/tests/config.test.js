@@ -127,6 +127,7 @@ describe("settings", () => {
     const scripts = handlers.flatMap((hook) =>
       [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+)/g)].map((match) => match[1]));
     expect(scripts).toContain("hooks/guard-git-push.js");
+    expect(scripts).toContain("hooks/enable-computer-use.js");
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
@@ -153,6 +154,13 @@ describe("settings", () => {
       new RegExp(group.matcher).test("Bash")
       && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/guard-git-push.js")));
     expect(guard).toHaveLength(1);
+  });
+
+  // Claude Code only records computer use per project, so this hook turns it on in every one.
+  test("computer use is enabled in every project at session start", () => {
+    const hooks = (settings.hooks.SessionStart ?? []).filter((group) => group.matcher === undefined
+      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/enable-computer-use.js")));
+    expect(hooks).toHaveLength(1);
   });
 });
 
