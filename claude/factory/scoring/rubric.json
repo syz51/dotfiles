@@ -31,7 +31,7 @@
       "id": "shell-file-edit",
       "kind": "detector",
       "section": "Workflow",
-      "description": "Bash edited a file the Edit or Write tool should have: `sed -i` or `perl -pi`, echo, printf or a heredoc written into a file by redirect or `tee`, or an inline script that writes files. Temporary folders and devices do not count; na when the session edited no files."
+      "description": "Bash edited a file the Edit or Write tool should have: `sed -i`, `perl -pi` or `ruby -i`, echo, printf or a heredoc written into a file by redirect or `tee`, or an inline script that writes files. Temporary folders and devices do not count; na when the session edited no files."
     },
     {
       "id": "followed-instructions",

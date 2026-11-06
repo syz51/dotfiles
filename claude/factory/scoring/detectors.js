@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { basename, join } from "node:path";
 import { mayInvoke } from "../../tests/lib/command.js";
 import { readFilesWithDeadline } from "../lib/probe.js";
-import { readRecords } from "../lib/transcripts.js";
+import { readRecords, TEMP_DIRS } from "../lib/transcripts.js";
 
 const EVIDENCE = 300;
 const clip = (text, max = EVIDENCE) => {
@@ -134,64 +134,148 @@ const KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", 
 
 // Simple commands of a shell command line as word lists, for spotting a program and its
 // arguments in real commands, most of which tests/lib/command.js's grammar cannot read.
-// Quotes group words without expansion and heredoc bodies are skipped, so quoted or
-// embedded text never counts as a command. Shell keywords such as `if` or `do`,
-// environment assignments, wrappers such as `timeout` or `sudo`, `sh -c` and `eval` are
-// looked through, so each list's first word is the program it runs. A lookup such as
+// See shellCommands.
+export const simpleCommands = (command) => shellCommands(command).map((entry) => entry.words);
+
+const fresh = () => ({ words: [], redirects: [], stdin: [], word: "", started: false, quoted: false, pending: null });
+
+// Simple commands of a shell command line: { words, redirects, stdin, from, level }.
+// Quotes group words without expansion, so quoted or embedded text never counts as a
+// command or an operator, and comments are dropped. Redirects come out of the words:
+// redirects lists the files written to (`> f`, `>> f`, `2> f`, `&> f`, `>| f`; not `>&2`),
+// stdin the heredoc bodies and here-strings fed to the command, from the command whose
+// output is piped into it, and level how many subshells or command substitutions enclose
+// it; a command substitution stands as `$(…)` in its word. Shell keywords such as `if`
+// or `do`, environment assignments, wrappers such as `timeout` or `sudo`, `sh -c` and
+// `eval` are looked through, so words[0] is the program a command runs. A lookup such as
 // `command -v x` runs nothing, so its first word stays `command`.
-export function simpleCommands(command, depth = 0) {
+export function shellCommands(command, depth = 0) {
   const lines = String(command).split("\n");
   const kept = [];
+  const bodies = [];
   for (let i = 0; i < lines.length; i++) {
     kept.push(lines[i]);
     const heredoc = HEREDOC.exec(lines[i]);
-    if (heredoc) while (i + 1 < lines.length && lines[++i].trim() !== heredoc[2]);
+    if (!heredoc) continue;
+    const body = [];
+    while (i + 1 < lines.length && lines[++i].trim() !== heredoc[2]) body.push(lines[i]);
+    bodies.push(body.join("\n"));
   }
   const text = kept.join("\n");
   const lists = [];
-  let words = [];
-  let word = "";
-  let started = false;
+  // Open subshells and command substitutions; a substitution keeps the command it is in.
+  const frames = [];
+  let s = fresh();
+  let piped = false;
   let quote = null;
   const endWord = () => {
-    if (started) words.push(word);
-    word = "";
-    started = false;
+    if (s.started) {
+      if (s.pending === ">") s.redirects.push(s.word);
+      else if (s.pending === "<<<") s.stdin.push(s.word);
+      else if (s.pending === "<<") s.stdin.push(bodies.shift() ?? "");
+      else if (s.pending !== "<") s.words.push(s.word);
+      s.pending = null;
+    }
+    Object.assign(s, { word: "", started: false, quoted: false });
   };
-  const endList = () => {
+  const endList = (pipe = false) => {
     endWord();
-    if (words.length) lists.push(words);
-    words = [];
+    if (s.words.length || s.redirects.length || s.stdin.length)
+      lists.push({ words: s.words, redirects: s.redirects, stdin: s.stdin, level: frames.length, from: piped ? lists.at(-1) ?? null : null });
+    piped = pipe;
+    Object.assign(s, { words: [], redirects: [], stdin: [], pending: null });
   };
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
+    const next = text[i + 1];
     if (quote) {
       if (c === quote) quote = null;
-      else if (c === "\\" && quote === '"') word += text[++i] ?? "";
-      else word += c;
+      else if (c === "\\" && quote === '"') s.word += text[++i] ?? "";
+      else s.word += c;
     } else if (c === "'" || c === '"') {
       quote = c;
-      started = true;
+      s.started = s.quoted = true;
     } else if (c === "\\") {
-      word += text[++i] ?? "";
-      started = true;
-    } else if (c === "\n") endList();
+      s.word += text[++i] ?? "";
+      s.started = s.quoted = true;
+    } else if (c === "#" && !s.started) {
+      while (i + 1 < text.length && text[i + 1] !== "\n") i++;
+    } else if (c === "\n" || c === ";" || c === "`") endList();
     else if (c === " " || c === "\t") endWord();
-    else if (c === "$" && text[i + 1] === "(") {
-      endList();
+    else if (c === "$" && next === "(") {
+      frames.push({ outer: s, piped });
+      s = fresh();
+      piped = false;
       i++;
-    } else if (/[;&|()`]/.test(c)) endList();
-    else {
-      word += c;
-      started = true;
+    } else if (c === "(") {
+      endList();
+      frames.push({ outer: null });
+    } else if (c === ")") {
+      endList();
+      const frame = frames.pop();
+      if (frame?.outer) {
+        s = frame.outer;
+        s.word += "$(…)";
+        s.started = true;
+        piped = frame.piped;
+      }
+    } else if (c === "|") {
+      if (next === "|") {
+        endList();
+        i++;
+      } else {
+        if (next === "&") i++;
+        endList(true);
+      }
+    } else if (c === "&" && next === ">") {
+      endWord();
+      i += text[i + 2] === ">" ? 2 : 1;
+      s.pending = ">";
+    } else if (c === "&") {
+      endList();
+      if (next === "&") i++;
+    } else if (c === ">") {
+      // A number right before `>` names the file descriptor, not a word.
+      if (/^\d+$/.test(s.word) && !s.quoted) Object.assign(s, { word: "", started: false });
+      else endWord();
+      if (text[i + 1] === ">" || text[i + 1] === "|") i++;
+      if (text[i + 1] === "&") {
+        i++;
+        // `>&2` duplicates a descriptor; `>&file` writes a file like `&>`.
+        if (/[\d-]/.test(text[i + 1] ?? "")) {
+          while (/[\d-]/.test(text[i + 1] ?? "")) i++;
+          continue;
+        }
+      }
+      s.pending = ">";
+    } else if (c === "<") {
+      endWord();
+      // `<(…)`: the parenthesis opens a subshell.
+      if (next === "(") continue;
+      if (next === "<" && text[i + 2] === "<") {
+        i += 2;
+        s.pending = "<<<";
+      } else if (next === "<") {
+        i += text[i + 2] === "-" ? 2 : 1;
+        s.pending = "<<";
+      } else s.pending = "<";
+    } else {
+      s.word += c;
+      s.started = true;
     }
   }
+  while (frames.length) {
+    endList();
+    const frame = frames.pop();
+    if (frame.outer) s = frame.outer;
+  }
   endList();
-  return lists.flatMap((list) => unwrap(list, depth));
+  return lists.flatMap((list) => (list.out = unwrap(list, depth)));
 }
 
+// The commands a list runs, with its wrappers and keywords stripped.
 function unwrap(list, depth) {
-  let words = list;
+  let { words } = list;
   for (;;) {
     while (words.length && (KEYWORDS.has(words[0]) || /^\w+=/.test(words[0]))) words = words.slice(1);
     if (!words.length || !Object.hasOwn(WRAPPERS, basename(words[0]))) break;
@@ -205,9 +289,10 @@ function unwrap(list, depth) {
   }
   if (!words.length) return [];
   const program = basename(words[0]);
-  if (depth < 3 && SHELLS.has(program) && /^-\w*c$/.test(words[1] ?? "") && words[2] !== undefined) return simpleCommands(words[2], depth + 1);
-  if (depth < 3 && program === "eval") return simpleCommands(words.slice(1).join(" "), depth + 1);
-  return [words];
+  const inner = (code) => shellCommands(code, depth + 1).map((entry) => ({ ...entry, level: entry.level + list.level }));
+  if (depth < 3 && SHELLS.has(program) && /^-\w*c$/.test(words[1] ?? "") && words[2] !== undefined) return inner(words[2]);
+  if (depth < 3 && program === "eval") return inner(words.slice(1).join(" "));
+  return [{ words, redirects: list.redirects, stdin: list.stdin, level: list.level, from: list.from?.out?.at(-1) ?? null }];
 }
 
 const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
@@ -311,24 +396,60 @@ function modesTurnedOn(text, { bareValue = false } = {}) {
 }
 
 const SCRIPT_RUNNERS = /^(?:python[\d.]*|bun|node|deno|uv|ruby)$/;
-const WRITE_API = /\bopen\([^)]*,\s*["'][wa]|\.write(?:_text)?\(|\bjson\.dump\(|writeFile(?:Sync)?\(|\bBun\.write\(/;
+// Code that writes a file: Python's open(…, "w"), Path.write_text and Path.open("w"),
+// Node's writeFile, Bun.write, Deno's write functions and Ruby's File.write.
+const FILE_WRITE = /\bopen\((?:[^()]|\([^()]*\))*,\s*(?:mode\s*=\s*)?["'][wax][bt+]*["']|\.open\(\s*["'][wax][bt+]*["']|\.write_(?:text|bytes)\(|\b(?:writeFile|appendFile|writeTextFile)(?:Sync)?\(|\bBun\.write\(|\bFile\.write\(|\bDeno\.write/;
+
+// Files a `sed`, `perl` or `ruby` command edits in place (empty when xargs supplies
+// them), or null when it edits nothing in place. sed's -e and -f, and perl's and ruby's
+// -e, take the next word as the script; otherwise the first operand is the script. A
+// switch cluster such as `-pi.bak` ends at -i, whose rest is the backup suffix; BSD sed's
+// `-i ''` and `-i .bak` take the suffix as the next word.
+function inPlaceFiles(words) {
+  const program = basename(words[0]);
+  if (!["sed", "perl", "ruby"].includes(program)) return null;
+  const args = words.slice(1);
+  let inPlace = false;
+  let script = false;
+  const files = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--in-place" || arg.startsWith("--in-place=")) inPlace = true;
+    else if (["--expression", "--file"].includes(arg)) {
+      script = true;
+      i++;
+    } else if (arg.startsWith("--")) script ||= /^--(?:expression|file)=/.test(arg);
+    // perl and ruby: -M, -m and -I name a module or folder, attached or as the next word.
+    else if (program !== "sed" && /^-[MmI]/.test(arg)) i += arg.length === 2 ? 1 : 0;
+    else if (/^-[\w.]/.test(arg)) {
+      const flags = arg.slice(1);
+      const at = flags.search(program === "sed" ? /[iI]/ : /i/);
+      if (at >= 0) {
+        inPlace = true;
+        if (program === "sed" && at === flags.length - 1 && (args[i + 1] === "" || args[i + 1]?.startsWith("."))) i++;
+      }
+      if ((program === "sed" ? /[ef]$/ : /[eE]$/).test(at >= 0 ? flags.slice(0, at) : flags)) {
+        script = true;
+        i++;
+      }
+    } else if (!script) script = true;
+    else files.push(arg);
+  }
+  return inPlace ? files : null;
+}
 
 // Whether a shell command writes a settings file: a redirect to it, `tee`, an in-place
 // `sed -i` or `perl -pi`, `mv` or `cp` onto it, or a script that names it and writes.
 function writesSettings(command) {
-  const lists = simpleCommands(command);
-  for (const words of lists) {
+  const commands = shellCommands(command);
+  for (const { words, redirects } of commands) {
     const program = basename(words[0]);
-    const args = words.slice(1);
-    for (let i = 0; i < words.length; i++) {
-      const redirect = /^\d?>>?(.*)$/.exec(words[i]);
-      if (redirect && isSettingsPath(redirect[1] || words[i + 1] || "")) return true;
-    }
-    if (program === "tee" && args.some(isSettingsPath)) return true;
-    if (["sed", "perl"].includes(program) && args.some((arg) => /^-\w*i/.test(arg) || arg.startsWith("--in-place")) && args.some(isSettingsPath)) return true;
-    if (["mv", "cp"].includes(program) && isSettingsPath(args.at(-1) ?? "")) return true;
+    if (redirects.some(isSettingsPath)) return true;
+    if (program === "tee" && words.slice(1).some(isSettingsPath)) return true;
+    if (inPlaceFiles(words)?.some(isSettingsPath)) return true;
+    if (["mv", "cp"].includes(program) && isSettingsPath(words.at(-1))) return true;
   }
-  return lists.some((words) => SCRIPT_RUNNERS.test(basename(words[0]))) && SETTINGS_FILE.test(command) && WRITE_API.test(command);
+  return commands.some(({ words }) => SCRIPT_RUNNERS.test(basename(words[0]))) && SETTINGS_FILE.test(command) && FILE_WRITE.test(command);
 }
 
 // The modes an agent action turns on.
@@ -364,68 +485,111 @@ export function ultraEffort(actions) {
 }
 
 // Where a shell write may go without being a file edit: devices and temporary folders.
-const SCRATCH = /^(?:\/dev\/|\/tmp\/|\/private\/(?:tmp|var\/folders)\/|\/var\/folders\/|\$\{?TMPDIR\b)/;
+const SCRATCH_DIRS = [...TEMP_DIRS, "/var/tmp", "/private/var/tmp", "/dev", "$TMPDIR", "${TMPDIR}"];
+const isScratch = (path) => SCRATCH_DIRS.some((dir) => path === dir || path.startsWith(`${dir}/`));
 const ASSIGNMENT = /(?:^|[\s;&|(])([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|()$`'"]+)/g;
 const VARIABLE = /\$\{?([A-Za-z_]\w*)\}?/g;
 
-const REDIRECT = /^[\d&]?>>?(?!&)(.*)$/;
-const redirectTargets = (words) => words.flatMap((word, i) => {
-  const redirect = REDIRECT.exec(word);
-  return redirect ? [redirect[1] || words[i + 1]] : [];
-});
-const hasHeredoc = (words) => words.some((word) => word.startsWith("<<"));
-const IN_PLACE = { sed: /^-\w*i|^--in-place\b/, perl: /^-\w*i/ };
-// Inline code: `python3 - <<EOF`, `python3 -c '...'`, `bun -e '...'`, through `uv run` too.
-const INLINE_CODE = /^-$|^-[a-zA-Z]*[ce]$|^--eval$/;
-const FILE_WRITE = /\bopen\([^)]*,\s*(?:mode\s*=\s*)?["'][wax]|\.open\(\s*["'][wax]|\.write_(?:text|bytes)\(|\b(?:writeFile|appendFile)(?:Sync)?\(|\bBun\.write\(|\bFile\.write\(/;
-const PATH_LITERAL = /["'](~?\/[^"'\s]+)["']/g;
+// The inline code a command runs, or null: `python3 - <<EOF`, `python3 -c '…'`, code
+// piped in, `bun -e '…'`, `deno eval '…'`, also through `uv run` (`uv run -` too).
+function inlineCode({ words, stdin }) {
+  if (basename(words[0]) === "uv") {
+    if (words[1] !== "run") return null;
+    const python = words.findIndex((word, i) => i > 1 && /^python[\d.]*$/.test(word));
+    if (python < 0) return words.includes("-") ? stdin.join("\n") : null;
+    words = words.slice(python);
+  }
+  const runner = basename(words[0]);
+  if (runner === "deno") return words[1] === "eval" ? words[2] ?? null : null;
+  if (!/^(?:python[\d.]*|bun|node|ruby)$/.test(runner)) return null;
+  for (let i = 1; i < words.length; i++) {
+    if (/^-[a-zA-Z]*[ce]$|^--eval$/.test(words[i])) return words[i + 1] ?? null;
+    if (words[i] === "-") return stdin.join("\n");
+    if (!words[i].startsWith("-")) return null;
+  }
+  return stdin.length ? stdin.join("\n") : null;
+}
 
-// Files one Bash command writes the way the Edit or Write tool would: in place with
-// `sed -i` or `perl -pi`, text the agent wrote (echo, printf, a heredoc or here-string)
-// redirected or piped through `tee` into a file, or inline code that writes files.
-// Output of other programs redirected into a file (`git diff > x.patch`) is not an edit.
-// Scratch targets do not count, nor relative ones after a `cd` into scratch; variables
-// set by literal assignments in the command are followed. A target still built from an
-// unknown variable or a command substitution is unknown and does not count. An inline
-// script counts unless it runs in scratch, or every absolute path it names is scratch.
+// What inline code writes: files named by a literal or by a name assigned a literal
+// (`p = Path("a.md")`, `const f = "a.json"`), and whether some write's file is unknown.
+const TARGET = String.raw`(?:["'](?<literal>[^"'\n]+)["']|(?<name>\w+))`;
+const WRITE_TARGETS = [
+  String.raw`\bopen\(\s*${TARGET}\s*,\s*(?:mode\s*=\s*)?["'][wax]`,
+  String.raw`\bopen\(\s*(?:pathlib\.)?Path\(\s*${TARGET}\s*\)\s*,\s*(?:mode\s*=\s*)?["'][wax]`,
+  String.raw`\b(?:pathlib\.)?Path\(\s*${TARGET}\s*\)\s*\.(?:write_text|write_bytes|open\(\s*["'][wax])`,
+  String.raw`\b(?<name>\w+)\.(?:write_text|write_bytes|open\(\s*["'][wax])`,
+  String.raw`\b(?:writeFile|appendFile|writeTextFile|Bun\.write|File\.write)(?:Sync)?\(\s*${TARGET}`,
+].map((source) => new RegExp(source, "g"));
+const NAMED_LITERAL = /\b(\w+)\s*=\s*(?:(?:pathlib\.)?Path\(\s*)?["']([^"'\n]+)["']/g;
+
+function scriptWrites(code) {
+  const names = new Map([...code.matchAll(NAMED_LITERAL)].map((match) => [match[1], match[2]]));
+  const files = [];
+  let unknown = false;
+  for (const pattern of WRITE_TARGETS)
+    for (const { groups } of code.matchAll(pattern)) {
+      const file = groups.literal ?? names.get(groups.name);
+      if (file === undefined) unknown = true;
+      else files.push(file);
+    }
+  return { files, unknown: unknown || !files.length };
+}
+
+// Edits one Bash command makes the way the Edit or Write tool would: { how, file }, file
+// null when unknown. Counted: in place with `sed -i`, `perl -pi` or `ruby -i`; text the
+// agent wrote (echo, printf, a heredoc or here-string) redirected, or piped through `tee`,
+// into a file; inline code that writes files. Output of other programs redirected into a
+// file (`git diff > x.patch`, `cargo build | tee log`) is not an edit.
+// Scratch files do not count, nor relative ones after a `cd` into scratch or to a folder
+// built at run time; a `cd` in a subshell ends with it. Variables set by literal
+// assignments in the command are followed; a file still built from another variable or
+// a command substitution is unknown and does not count. An inline write whose file is
+// unknown counts unless the script runs in scratch or every path it names is scratch.
 export function shellEdits(command) {
   const variables = new Map([...String(command).matchAll(ASSIGNMENT)].map((match) => [match[1], match[2].replace(/^(["'])(.*)\1$/, "$2")]));
   const expand = (word) => word.replace(VARIABLE, (text, name) => (name === "HOME" ? "~" : variables.get(name) ?? text));
-  let inScratch = false;
-  // The file a shell write edits, or null when it is scratch, a file descriptor or unknown.
-  const editedFile = (target) => {
-    const path = expand(target ?? "");
-    if (!path || path.startsWith("&") || SCRATCH.test(path) || /[$`]/.test(path)) return null;
-    return inScratch && !/^[/~]/.test(path) ? null : path;
+  // Where relative paths lead: "work" (a real folder), "scratch" or "unknown".
+  let cwd = "work";
+  const outer = [];
+  const fileOf = (target) => {
+    const path = expand(target);
+    if (!path || isScratch(path) || /[$`]/.test(path)) return null;
+    return /^[/~]/.test(path) || cwd === "work" ? path : null;
   };
   const edits = [];
   const add = (how, targets) => {
-    for (const file of targets.map(editedFile)) if (file) edits.push({ how, file });
+    for (const file of targets.map(fileOf)) if (file) edits.push({ how, file });
   };
-  for (let words of simpleCommands(command)) {
+  const authored = (entry) => entry && (["echo", "printf"].includes(basename(entry.words[0])) || (basename(entry.words[0]) === "cat" && entry.stdin.length > 0));
+  for (const entry of shellCommands(command)) {
+    while (outer.length > entry.level) cwd = outer.pop();
+    while (outer.length < entry.level) outer.push(cwd);
+    const { words, redirects } = entry;
     const program = basename(words[0]);
     const args = words.slice(1);
+    const inPlace = inPlaceFiles(words);
     if (program === "cd") {
       const path = expand(args.find((arg) => !arg.startsWith("-")) ?? "~");
-      if (SCRATCH.test(path)) inScratch = true;
-      else if (/^[/~]/.test(path)) inScratch = false;
-    } else if (Object.hasOwn(IN_PLACE, program) && args.some((arg) => IN_PLACE[program].test(arg))) add(`${program} in place`, [args.at(-1)]);
-    else if (["echo", "printf"].includes(program) || (program === "cat" && hasHeredoc(words))) add(`${program} into a file`, redirectTargets(words));
-    else if (program === "tee" && (hasHeredoc(words) || /\b(?:echo|printf)\b[^\n;&|]*\|\s*(?:sudo\s+)?tee\b/.test(command)))
-      add("tee into a file", args.filter((arg, i) => !/^[-<]/.test(arg) && !REDIRECT.test(arg) && !/^[\d&]?>>?$/.test(args[i - 1] ?? "")));
+      if (isScratch(path)) cwd = "scratch";
+      else if (/[$`]/.test(path)) cwd = "unknown";
+      else if (/^[/~]/.test(path)) cwd = "work";
+    } else if (inPlace) {
+      if (inPlace.length) add(`${program} in place`, inPlace);
+      else if (cwd === "work") edits.push({ how: `${program} in place`, file: null });
+    } else if (authored(entry)) add(`${program} into a file`, redirects);
+    else if (program === "tee" && (entry.stdin.length || authored(entry.from))) add("tee into a file", args.filter((arg) => !arg.startsWith("-")));
     else {
-      if (program === "uv" && words[1] === "run") {
-        const python = words.findIndex((word, i) => i > 1 && /^python[\d.]*$/.test(word));
-        words = python < 0 ? [] : words.slice(python);
-      }
-      if (words.length && SCRIPT_RUNNERS.test(basename(words[0])) && basename(words[0]) !== "uv"
-        && (words.slice(1).some((word) => INLINE_CODE.test(word)) || hasHeredoc(words)) && FILE_WRITE.test(command)) {
-        const paths = [...command.matchAll(PATH_LITERAL)].map((match) => expand(match[1]));
-        if (paths.length ? paths.some((path) => !SCRATCH.test(path)) : !inScratch) edits.push({ how: "inline script writing files", file: null });
-      }
+      const code = inlineCode(entry);
+      if (code === null || !FILE_WRITE.test(code)) continue;
+      const { files, unknown } = scriptWrites(code);
+      const before = edits.length;
+      add("inline script writing", files);
+      // Paths the code names: literals with a slash, or given to Path, open or glob.
+      const paths = [...code.matchAll(/(\b(?:Path|open|glob)\(\s*)?["']([^"'\s]+)["']/g)].filter(([, call, text]) => call || text.includes("/")).map((match) => match[2]);
+      if (unknown && edits.length === before && cwd === "work" && !(paths.length && paths.every(isScratch))) edits.push({ how: "inline script writing files", file: null });
     }
   }
-  return edits;
+  return [...new Map(edits.map((edit) => [`${edit.how}\0${edit.file}`, edit])).values()];
 }
 
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);

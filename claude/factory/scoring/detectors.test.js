@@ -105,6 +105,37 @@ describe("shell-file-edit", () => {
     ["echo line | sudo tee /etc/hosts", "tee into a file", "/etc/hosts"],
     ["cd /tmp/x && cd ~/repo && sed -i '' 's/a/b/' a.txt", "sed in place", "a.txt"],
     ["P=src/main.rs; sed -i '' 's/a/b/' $P", "sed in place", "src/main.rs"],
+    // Redirects and comments after the files, other option forms, several files.
+    ["sed -i '' 's/a/b/' a.txt > /dev/null", "sed in place", "a.txt"],
+    ["sed -i '' 's/a/b/' a.txt 2>&1 | tail", "sed in place", "a.txt"],
+    ["sed -i '' 's/a/b/' src/app.js  # fix typo", "sed in place", "src/app.js"],
+    ["sed -Ei 's/a/b/' a.txt", "sed in place", "a.txt"],
+    ["sed --in-place -e 's/a/b/' -e 's/c/d/' a.txt", "sed in place", "a.txt"],
+    ["ruby -i -pe 'gsub(/a/, \"b\")' a.txt", "ruby in place", "a.txt"],
+    ["perl -Ilib -pi.bak -e 's/a/b/' a.txt", "perl in place", "a.txt"],
+    // Pipes, redirects without spaces and other redirect operators.
+    ["cat <<'EOF' | tee src/a.txt\nx\nEOF", "tee into a file", "src/a.txt"],
+    ["cat <<EOF | sudo tee /etc/x > /dev/null\nx\nEOF", "tee into a file", "/etc/x"],
+    ["echo hi>a.txt", "echo into a file", "a.txt"],
+    ["echo 'x'>>a.txt", "echo into a file", "a.txt"],
+    ["echo x &> a.txt", "echo into a file", "a.txt"],
+    ["echo x >| a.txt", "echo into a file", "a.txt"],
+    ["cat >file<<EOF\nx\nEOF", "cat into a file", "file"],
+    ["cat <<< 'x' > a.txt", "cat into a file", "a.txt"],
+    // A cd in a subshell ends with it; only tee fed by the agent's text counts.
+    ["(cd /tmp/x && echo > a); echo > y", "echo into a file", "y"],
+    ["echo x | tee a.txt; cargo build | tee build.log", "tee into a file", "a.txt"],
+    // Inline scripts name the files they write when a literal says so.
+    ["uv run --no-project python - <<'EOF'\nfrom pathlib import Path\np = Path('src/x.rs'); p.write_text(p.read_text().replace('a', 'b'))\nEOF", "inline script writing", "src/x.rs"],
+    ["python3 - <<'EOF'\ns = open('README.md').read()\nopen('README.md', 'w').write(s)\nEOF", "inline script writing", "README.md"],
+    ["bun -e 'const fs = require(\"fs\"); fs.writeFileSync(\"package.json\", \"{}\")'", "inline script writing", "package.json"],
+    ["uv run python -I -c \"import json; json.dump({}, open('/Users/me/app/a.json', 'w'))\"", "inline script writing", "/Users/me/app/a.json"],
+    ["cd /tmp/work && python3 - <<'EOF'\nopen('/Users/me/app/a.json', 'w').write('{}')\nEOF", "inline script writing", "/Users/me/app/a.json"],
+    ["python3 - <<'EOF'\nwith open(Path('a.txt'), 'w') as f: f.write('x')\nEOF", "inline script writing", "a.txt"],
+    ["python3 -c 'x' && python3 -c \"open('a', 'w')\"", "inline script writing", "a"],
+    ["uv run - <<'EOF'\nopen('a.txt', 'w').write('x')\nEOF", "inline script writing", "a.txt"],
+    ["deno eval 'Deno.writeTextFileSync(\"a.txt\", \"x\")'", "inline script writing", "a.txt"],
+    ["python3 - <<'EOF'\nrows = open('/Users/me/data.jsonl').read()\nopen('/tmp/out.json', 'w').write(rows)\nopen('notes.md', 'w').write(rows)\nEOF", "inline script writing", "notes.md"],
   ])("flags %p", (command, how, file) => {
     expect(shellEdits(command)).toEqual([{ how, file }]);
     const result = shellFileEdit(actions([bash(command)]));
@@ -114,13 +145,11 @@ describe("shell-file-edit", () => {
   });
 
   test.each([
-    "uv run --no-project python - <<'EOF'\nfrom pathlib import Path\np = Path('src/x.rs'); p.write_text(p.read_text().replace('a', 'b'))\nEOF",
-    "python3 - <<'EOF'\ns = open('README.md').read()\nopen('README.md', 'w').write(s)\nEOF",
-    "bun -e 'const fs = require(\"fs\"); fs.writeFileSync(\"package.json\", \"{}\")'",
-    "uv run python -I -c \"import json; json.dump({}, open('/Users/me/app/a.json', 'w'))\"",
-    "cd /tmp/work && python3 - <<'EOF'\nopen('/Users/me/app/a.json', 'w').write('{}')\nEOF",
-  ])("flags an inline script that writes files: %p", (command) => {
-    expect(shellEdits(command)).toEqual([{ how: "inline script writing files", file: null }]);
+    ["python3 - <<'EOF'\nfrom pathlib import Path\nfor p in Path('src').glob('*.py'): p.write_text(p.read_text().replace('a', 'b'))\nprint('/tmp/done')\nEOF", "inline script writing files"],
+    ["python3 - <<'EOF'\nimport json\njson.dump({}, open(str(p), 'w'))\nEOF", "inline script writing files"],
+    ["find . -name '*.md' | xargs sed -i '' 's/a/b/'", "sed in place"],
+  ])("flags an edit of files it cannot name: %p", (command, how) => {
+    expect(shellEdits(command)).toEqual([{ how, file: null }]);
   });
 
   test.each([
@@ -145,9 +174,26 @@ describe("shell-file-edit", () => {
     "uv run python - <<'EOF'\nprint(open('README.md').read())\nEOF",
     "python3 -c 'import sys; sys.stdout.write(\"x\")'",
     "uv run python tools/gen.py > out.txt",
-    // Text only: quoted, or inside a heredoc body.
+    // Text only: quoted, in a comment, or inside a heredoc body.
     "git commit -m \"use sed -i '' to fix > a.txt\"",
     "cat > /tmp/fix.sh <<'EOF'\nsed -i '' 's/a/b/' src/app.js\necho x > README.md\nEOF\nbash /tmp/fix.sh",
+    "echo '>>> Running tests'; echo \"1>2\"; printf '>%s\\n' x",
+    "git commit -m 'fix' && python3 -c 'import json'  # open('a', 'w')",
+    "python3 script.py; python3 -c 'print(1)'; echo \"open('x', 'w')\"",
+    // Options that are not in-place edits, and reads that look like writes.
+    "perl -MList::Util=sum -ne 'print sum(split)' data.txt",
+    "perl -Mstrict -we 'print 1' a.txt",
+    "python3 -c \"import json, os; print(json.load(open(os.path.join(root, 'agents.json'))))\"",
+    // Scratch folders without a trailing slash, and folders made at run time.
+    "cd /tmp && cat > notes.md <<EOF\nx\nEOF",
+    "cd /private/tmp && echo > a; cd /var/tmp && echo > b",
+    "sed -i '' 's/a/b/' /tmp/x",
+    "tmp=$(mktemp -d) && cd \"$tmp\" && echo x > a.txt",
+    "cd \"$(mktemp -d)\" && echo hi > a",
+    "cd $(mktemp -d) && echo hi > a",
+    // Scripts that read real files but write only scratch.
+    "uv run python - <<'EOF'\nimport json\nrows = json.load(open('/Users/me/.claude/projects/x.jsonl'))\njson.dump(rows, open('/tmp/out.json', 'w'))\nEOF",
+    "python3 - <<'EOF'\nimport os\nout = os.path.join('/private/tmp/claude/x', 'a.json')\nopen(out, 'w').write('{}')\nEOF",
   ])("passes %p", (command) => {
     expect(shellEdits(command)).toEqual([]);
   });
