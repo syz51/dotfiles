@@ -137,8 +137,9 @@ factory items. Claim a task there before working on it. Done so far:
 
 ## Open questions
 
-- None blocking. The Telegram bot token is the one step that needs the user; it is an ask
-  on the `agent-board` board.
+- None blocking. Steps that need the user are asks on the `agent-board` board: the
+  Telegram bot token, and a new API key for the cloud operator account so the backup
+  principal can be created (backups run as local snapshots until then).
 
 ## Next actions
 

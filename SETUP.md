@@ -223,15 +223,16 @@ feedback. It may change only the "Work board" section of
 and docs, and the values of the server defaults in `impl Default for Settings`. The tool
 tests each changed repository (`cargo test --workspace --locked` for agent-board, its
 build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
-against agent-board's `main` once it holds the server and `build/v0` until then. A change
+against `main`. A change
 that breaks a test pinning a default stays a local patch for a person to finish, as with
 rule text. If the second PR fails after the first opened, the record says
 `partly-proposed` and is not retried. Feedback
 is agent-written and private: the proposer gets it as quoted data, and PR bodies list
 feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
 so its folder is on the job's `PATH`. `weekly status` shows the
-last run; `weekly uninstall` removes the job. The living task list is
-[`claude/factory/PLAN.md`](claude/factory/PLAN.md).
+last run; `weekly uninstall` removes the job. Open factory tasks are on the `dotfiles`
+work board (`board ls --board dotfiles`);
+[`claude/factory/PLAN.md`](claude/factory/PLAN.md) keeps the goal, evidence and log.
 
 ### Billing: API first, subscription as fallback
 
@@ -295,8 +296,10 @@ For Codex, add the `[mcp_servers.board]` block that `board install codex` prints
 `~/.codex/config.toml`, and link `codex/AGENTS.md` to `~/.codex/AGENTS.md` so Codex gets the
 rule. Codex runs a new or changed hook only after it is approved: run
 `bun ~/.config/codex/trust-hooks.js --trust` to approve the hooks this repository tracks
-(it lists them first without `--trust`, and approves only hooks from `~/.codex/hooks.json`
-whose command is in `codex/hooks.json`). Run it again after `codex/hooks.json` changes.
+(it lists them first without `--trust`). It approves hooks from `$CODEX_HOME/hooks.json`
+only while that file matches `codex/hooks.json` on `origin/main`, so pull first, and exits
+1 when hooks stay unapproved or Codex reports problems loading them. Run it again after
+`codex/hooks.json` changes.
 
 Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
 token in `~/.local/share/agent-board/token` (mode 0600) instead.
@@ -312,7 +315,8 @@ replaces the list, in order of preference):
 ```
 
 The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
-token in the macOS Keychain, outside this repository. When a hook finds the server
+token in the macOS Keychain or, where `board login` fell back to it, the token file beside
+it, outside this repository. When a hook finds the server
 unreachable it waits at most about 1.5 seconds, and the Mac's hooks then use their cache
 without trying the server for a minute.
 

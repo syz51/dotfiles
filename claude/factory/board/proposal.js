@@ -21,8 +21,6 @@ import { statsLines } from "./cli.js";
 
 export const BOARD_ID = "work-board";
 export const BOARD_REPO = "git@github.com:syz51/agent-board.git";
-// The server lives on build/v0 until that branch merges; main wins once it holds it.
-const BASES = ["main", "build/v0"];
 const PROMPT = "prompts/coordinator.md";
 const CONFIG = "crates/board-server/src/config.rs";
 // Server settings the loop may tune, by their field in `impl Default for Settings`.
@@ -142,19 +140,15 @@ export function newBoardRecord(group, options, now) {
   };
 }
 
-// The clone of agent-board on a new branch from the first base that holds the server.
-async function cloneBoard(source, clone, branch, base) {
+// The clone of agent-board on a new branch from base, which must hold the server.
+async function cloneBoard(source, clone, branch, base = "main") {
   // A local path is relative to where the command ran, not to the folder git runs in.
   await git(tmpdir(), ["clone", "--quiet", existsSync(source) ? resolve(source) : source, clone]);
-  const candidates = base ? [base] : BASES;
-  for (const name of candidates) {
-    if ((await git(clone, ["fetch", "--quiet", "origin", name], { allowFailure: true })).code !== 0) continue;
-    const held = await Promise.all([PROMPT, CONFIG].map((path) => git(clone, ["cat-file", "-e", `origin/${name}:${path}`], { allowFailure: true })));
-    if (held.some((result) => result.code !== 0)) continue;
-    await git(clone, ["checkout", "--quiet", "-B", branch, `origin/${name}`]);
-    return name;
-  }
-  throw new Error(`No branch of ${source} among ${candidates.join(", ")} holds ${PROMPT} and ${CONFIG}`);
+  await git(clone, ["fetch", "--quiet", "origin", base]);
+  const held = await Promise.all([PROMPT, CONFIG].map((path) => git(clone, ["cat-file", "-e", `origin/${base}:${path}`], { allowFailure: true })));
+  if (held.some((result) => result.code !== 0)) throw new Error(`${base} of ${source} does not hold ${PROMPT} and ${CONFIG}`);
+  await git(clone, ["checkout", "--quiet", "-B", branch, `origin/${base}`]);
+  return base;
 }
 
 // A file with its rule section's body left out, or null without the section.

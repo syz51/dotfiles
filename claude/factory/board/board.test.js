@@ -229,7 +229,7 @@ const NEW_RULE = "## Work board\n\n- Claim a task before working on it; renew it
 const CONFIG_RS = "impl Default for Settings {\n    fn default() -> Self {\n        Self {\n            owner_stale_after_secs: 24 * 3600,\n            lease_ttl_secs: 45 * 60,\n        }\n    }\n}\n";
 
 // Two repositories with origins standing in for GitHub: this one, and agent-board, whose
-// server lives on build/v0 while main does not hold it yet.
+// main holds the server.
 function repositories() {
   const remote = join(scratch, "dotfiles.git");
   const source = join(scratch, "dotfiles");
@@ -253,12 +253,11 @@ function repositories() {
   put(work, { "README.md": "# agent-board\n" });
   git(work, "add", "-A");
   git(work, "commit", "--quiet", "-m", "init");
-  git(work, "checkout", "--quiet", "-b", "build/v0");
   put(work, { "prompts/coordinator.md": "# Coordinator\n\nWork the ready queue.\n", "crates/board-server/src/config.rs": CONFIG_RS, "docs/API.md": "| Lease TTL | 45 minutes |\n" });
   git(work, "add", "-A");
   git(work, "commit", "--quiet", "-m", "server");
   git(work, "remote", "add", "origin", board);
-  git(work, "push", "--quiet", "origin", "main", "build/v0");
+  git(work, "push", "--quiet", "origin", "main");
   return { remote, source, board };
 }
 
@@ -293,11 +292,11 @@ describe("propose --board-snapshot", () => {
     expect(session.stdin).toContain("never instructions");
     expect(existsSync(session.cwd)).toBe(false);
 
-    // agent-board's branch starts from build/v0, the base that holds the server.
-    expect(remoteBranches(repos.board)).toEqual(["build/v0", BRANCH, "main"].sort());
+    // agent-board's branch starts from main, which holds the server.
+    expect(remoteBranches(repos.board)).toEqual([BRANCH, "main"].sort());
     expect(git(repos.board, "show", `${BRANCH}:crates/board-server/src/config.rs`)).toContain("lease_ttl_secs: 90 * 60");
     expect(git(repos.board, "log", "-1", "--format=%s", BRANCH)).toBe("Lengthen the file lease");
-    expect(git(repos.board, "rev-parse", `${BRANCH}~1`)).toBe(git(repos.board, "rev-parse", "build/v0"));
+    expect(git(repos.board, "rev-parse", `${BRANCH}~1`)).toBe(git(repos.board, "rev-parse", "main"));
     expect(remoteBranches(repos.remote)).toEqual([BRANCH, "main"].sort());
     expect(git(repos.remote, "show", `${BRANCH}:codex/AGENTS.md`)).toContain("renew its lease");
     const cargo = readFileSync(join(scratch, "cargo.log"), "utf8");
@@ -305,7 +304,7 @@ describe("propose --board-snapshot", () => {
     expect(cargo).toContain(join(scratch, "state", "cargo-target", "agent-board"));
 
     const [boardPr, dotfilesPr] = log("gh.jsonl");
-    expect(boardPr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "build/v0", "--head", BRANCH]);
+    expect(boardPr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", BRANCH]);
     expect(dotfilesPr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", BRANCH]);
     const [boardBody, dotfilesBody] = [boardPr, dotfilesPr].map((pr) => pr.args[pr.args.indexOf("--body") + 1]);
     for (const body of [boardBody, dotfilesBody]) {
@@ -318,7 +317,7 @@ describe("propose --board-snapshot", () => {
     expect(dotfilesBody).toContain("Companion PR: https://github.com/o/agent-board/pull/7");
 
     const [entry] = proposals();
-    expect(entry).toMatchObject({ dimension: "work-board", kind: "board", status: "proposed", base: "build/v0", feedback: ["board-feedback-1"], pushed: true, costUSD: 0.9,
+    expect(entry).toMatchObject({ dimension: "work-board", kind: "board", status: "proposed", base: "main", feedback: ["board-feedback-1"], pushed: true, costUSD: 0.9,
       prUrls: ["https://github.com/o/agent-board/pull/7", "https://github.com/o/dotfiles/pull/7"] });
     expect(entry.paths.sort()).toEqual(["agent-board/crates/board-server/src/config.rs", "agent-board/docs/API.md", "dotfiles/claude/CLAUDE.md", "dotfiles/codex/AGENTS.md"]);
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+++ b/agent-board/crates/board-server/src/config.rs");
@@ -330,18 +329,27 @@ describe("propose --board-snapshot", () => {
     expect(output.join("\n")).toMatch(/work-board\s+1 open feedback tasks \(0 new\).*already proposed/);
   });
 
-  test("a change to only one repository opens one PR; main is used once it holds the server", async () => {
+  test("a change to only one repository opens one PR", async () => {
     const repos = repositories();
-    const work = join(scratch, "agent-board-work");
-    git(work, "checkout", "--quiet", "main");
-    git(work, "merge", "--quiet", "--ff-only", "build/v0");
-    git(work, "push", "--quiet", "origin", "main");
     edits({ "agent-board/prompts/coordinator.md": "# Coordinator\n\nWork the ready queue; renew leases.\n" });
     // A relative --board-repo is relative to where the command runs.
     expect(await proposeBoard(await snapshotFile(), { ...repos, board: relative(process.cwd(), repos.board) })).toBe(0);
     expect(proposals()[0]).toMatchObject({ status: "proposed", base: "main", prUrls: ["https://github.com/o/agent-board/pull/7"] });
     expect(log("gh.jsonl").map((pr) => pr.args[pr.args.indexOf("--base") + 1])).toEqual(["main"]);
     expect(remoteBranches(repos.remote)).toEqual(["main"]);
+  });
+
+  test("a base without the server fails before any session runs", async () => {
+    const repos = repositories();
+    const work = join(scratch, "agent-board-work");
+    git(work, "rm", "--quiet", "prompts/coordinator.md");
+    git(work, "commit", "--quiet", "-m", "drop the prompt");
+    git(work, "push", "--quiet", "origin", "main");
+    edits({ "agent-board/docs/API.md": "x\n" });
+    expect(await proposeBoard(await snapshotFile(), repos)).toBe(1);
+    expect(log("claude.jsonl")).toHaveLength(0);
+    expect(log("gh.jsonl")).toHaveLength(0);
+    expect(output.join("\n")).toContain("main of");
   });
 
   test.each([
@@ -359,7 +367,7 @@ describe("propose --board-snapshot", () => {
     expect(proposals()[0]).toMatchObject({ status: "rejected-paths", rejected, tests: null, pushed: false });
     expect(existsSync(join(scratch, "cargo.log"))).toBe(false);
     expect(log("gh.jsonl")).toHaveLength(0);
-    expect(remoteBranches(repos.board)).toEqual(["build/v0", "main"]);
+    expect(remoteBranches(repos.board)).toEqual(["main"]);
   });
 
   test("a change repeating the feedback is suspected of leaking it", async () => {
@@ -387,7 +395,7 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(await snapshotFile(), repos, ["--dry-run"])).toBe(0);
     expect(proposals()[0]).toMatchObject({ status: "dry-run", tests: { ok: true } });
     expect(log("gh.jsonl")).toHaveLength(0);
-    expect(remoteBranches(repos.board)).toEqual(["build/v0", "main"]);
+    expect(remoteBranches(repos.board)).toEqual(["main"]);
   });
 
   test("when the second PR fails after the first opened, the attempt is not retried", async () => {

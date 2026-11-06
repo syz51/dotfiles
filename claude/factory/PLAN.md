@@ -1,10 +1,9 @@
-# Factory plan and task list
+# Factory plan and record
 
-Living work file for building measurement and improvement tooling around this Claude Code
-setup, modeled on the "software factory" talk (Zach Lloyd, Warp, X video
-2111165023238160603). Read this first after a restart or compaction, then continue from
-**Next actions**. Update task status, findings and the log as work proceeds; add newly found
-tasks under the right area instead of keeping them in conversation only.
+Record of building measurement and improvement tooling around this Claude Code setup,
+modeled on the "software factory" talk (Zach Lloyd, Warp, X video 2111165023238160603):
+goal, evidence, decisions and log. Open tasks live on the `dotfiles` work board
+(**Next actions**); add newly found tasks there, and findings and decisions here.
 
 Started 2026-11-05 on `sunmacbook-air` (this Mac is also the codex-skills maintainer).
 
@@ -294,8 +293,8 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 
 A shared, durable task board that every agent thread on every device reads and writes, so
 threads keep their working state across compaction and restarts and see each other's
-progress without reading transcripts. Its own living plan is `board/PLAN.md`; a dedicated
-thread owns it.
+progress without reading transcripts. Its record is `board/PLAN.md`; its tasks are on the
+`agent-board` and `dotfiles` boards.
 
 - [x] Design every component: `board/DESIGN.md`, accepted by the user on 2026-11-06.
 - [x] Built (github.com/syz51/agent-board) and deployed; this plan's open items moved onto
