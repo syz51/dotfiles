@@ -286,17 +286,19 @@ describe("claude runner", () => {
     expect(call.args[call.args.indexOf("--tools") + 1]).toBe("");
     expect(call.args[call.args.indexOf("--max-budget-usd") + 1]).toBe("0.3");
     expect(JSON.parse(call.args[call.args.indexOf("--json-schema") + 1])).toEqual(schema);
+    expect(call.args).not.toContain("--system-prompt-file");
     expect(call.args).not.toContain("--append-system-prompt-file");
     expect(existsSync(call.cwd)).toBe(false);
   });
 
-  test("judge appends the shared instructions to the system prompt, where Claude Code caches them", async () => {
+  test("judge's shared instructions replace the default system prompt, where Claude Code caches them", async () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
     await judge({ prompt: "one session", system: "the rubric", schema, model: "m" });
     const [call] = calls();
     expect(call.system).toBe("the rubric");
     // The file lives in the judge's own folder, removed with it.
-    expect(call.args[call.args.indexOf("--append-system-prompt-file") + 1].endsWith("/judge-system.md")).toBe(true);
+    expect(call.args[call.args.indexOf("--system-prompt-file") + 1].endsWith("/judge-system.md")).toBe(true);
+    expect(call.args).not.toContain("--append-system-prompt-file");
     expect(call.stdin).toBe("one session");
     expect(existsSync(call.cwd)).toBe(false);
   });
@@ -320,6 +322,28 @@ describe("claude runner", () => {
   test("judge reports the HTTP status of a failed call", async () => {
     fake("error");
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 429");
+  });
+
+  test("a call the API refused before it did anything runs once more, and only once", async () => {
+    fake("refused", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
+    // The cost includes the refused try's; the second try asks claude-api for the subscription.
+    expect(await judge({ prompt: "x", schema, model: "m" })).toMatchObject({ output: { verdict: "pass" }, costUSD: 0.04 });
+    expect(calls().map((call) => call.subscription)).toEqual([undefined, "1"]);
+    rmSync(join(scratch, "log.jsonl"));
+    fake("refused", { FAKE_CLAUDE_REFUSALS: "2" });
+    await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 400");
+    expect(calls()).toHaveLength(2);
+    rmSync(join(scratch, "log.jsonl"));
+    fake("refused", { FAKE_CLAUDE_REFUSALS: "1", FAKE_CLAUDE_THEN: "task", FAKE_CLAUDE_TEXT: "done", FAKE_CLAUDE_REFUSAL_MS: "300" });
+    const run = await runTask({ prompt: "x", cwd: scratch, env: { KEEP: "1" } });
+    expect([run.ok, run.finalText, run.costUSD, calls().map((call) => call.subscription)]).toEqual([true, "done", 0.04, [undefined, "1"]]);
+    // The duration includes the refused try's.
+    expect(run.durationMs).toBeGreaterThanOrEqual(300);
+    rmSync(join(scratch, "log.jsonl"));
+    // Any other failure is not retried.
+    fake("error");
+    await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 429");
+    expect(calls()).toHaveLength(1);
   });
 
   test("runTask passes the session options and returns the outcome", async () => {

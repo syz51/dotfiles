@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +67,14 @@ describe("rubric", () => {
     }
     expect(RUBRIC.dimensions.filter((dimension) => dimension.kind === "detector").map((dimension) => dimension.id).sort()).toEqual(Object.keys(DETECTORS).sort());
     expect(judgeSchema().properties.dimensions.required).toEqual(judgeDimensions().map((dimension) => dimension.id));
+  });
+
+  test("the judge's prompt is pinned to the rubric version", () => {
+    // A changed prompt judges differently, so it needs a new rubric version (see rubric.js):
+    // bump rubric.json's version and record the new hash under it here.
+    const PROMPTS = { 4: "c818fa55373efbea" };
+    const parts = score.judgeParts({ digest: "DIGEST", globalInstructions: "GLOBAL", projectFiles: [{ file: "CLAUDE.md", text: "PROJECT" }] });
+    expect(createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16)).toBe(PROMPTS[RUBRIC.version]);
   });
 });
 
