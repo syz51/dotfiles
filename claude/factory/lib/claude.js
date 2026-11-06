@@ -54,14 +54,18 @@ function eventsOf(result, what) {
 
 // A tool-less call that must answer with JSON matching schema. No settings, CLAUDE.md,
 // MCP servers, skills or slash commands load; a session that exposes or uses any tool
-// other than the structured-output one fails closed.
-export async function judge({ prompt, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
+// other than the structured-output one fails closed. system holds instructions that stay
+// the same from call to call: appended to Claude Code's system prompt, they fall inside
+// the prefix it caches, so a run of judge calls reads them from the cache. prompt, the
+// part that changes per call, goes on stdin.
+export async function judge({ prompt, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
     const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
+    if (system) argv.push("--append-system-prompt", system);
     let result;
     try {
       result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });

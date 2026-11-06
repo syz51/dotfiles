@@ -386,3 +386,11 @@ reports in the state folder's `reports/weekly-*.md`.
   handles `--`, treats spend limits as exhausted and leaves a caller's own auth alone. The codex-skills pipeline is handled in the "Review Agent
   Instructions" thread (its own API path since a98a27c; fallback proposal awaiting the
   user). The masters project's AGENTS.md now routes experiment billing through the wrapper.
+- 2026-11-06: Every API-mode run failed with "Credit balance is too low" while the credit
+  check passed. Cause: the API refuses requests carrying Claude Code's
+  `claude-code-20250219` beta for this account's credit, while the same key and body
+  without it succeed; the check never sent it. The check now sends the beta, so such runs
+  fall back to the subscription, and results cached by the old check are ignored. The
+  judge now puts its shared instructions and rubric in `--append-system-prompt`, inside
+  Claude Code's cached prefix (second call of a run: 8.2k cached tokens read instead of
+  3.7k).
