@@ -100,7 +100,7 @@ function renderSummary(run) {
   else if (run.billing) {
     const { api, subscription, lastFallback } = run.billing;
     lines.push("## Billing (last 7 days)", "", `- Print-mode calls through claude-api: ${api} on the API, ${subscription} on the subscription.`);
-    if (lastFallback) lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason}. Top up API credit to move back.`);
+    if (lastFallback) lines.push(`- Latest fallback ${lastFallback.at}: ${lastFallback.reason}. Top up API credit that Claude Code can spend to move back.`);
     lines.push("");
   }
   for (const step of run.steps) {

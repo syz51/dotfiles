@@ -2,7 +2,7 @@
 // and task sessions for benchmarks and proposals. CLAUDE_FACTORY_BIN replaces `claude`
 // (tests point it at a fake). Every call is bounded by a budget and a deadline and is
 // not saved as a session, so the factory's own calls never get scored or captured.
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
@@ -54,14 +54,23 @@ function eventsOf(result, what) {
 
 // A tool-less call that must answer with JSON matching schema. No settings, CLAUDE.md,
 // MCP servers, skills or slash commands load; a session that exposes or uses any tool
-// other than the structured-output one fails closed.
-export async function judge({ prompt, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
+// other than the structured-output one fails closed. system holds instructions that stay
+// the same from call to call: appended to Claude Code's system prompt (from a file, so its
+// size is not bound by argv limits), they fall inside the prefix it caches, and a run of
+// judge calls reads them from the cache. prompt, the part that changes per call, goes on
+// stdin.
+export async function judge({ prompt, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
     const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
+    if (system) {
+      const file = join(cwd, "judge-system.md");
+      writeFileSync(file, system);
+      argv.push("--append-system-prompt-file", file);
+    }
     let result;
     try {
       result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs, input: prompt });

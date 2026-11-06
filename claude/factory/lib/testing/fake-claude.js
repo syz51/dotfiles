@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // A stand-in for `claude -p --output-format stream-json` in the factory's tests. It
-// appends its argv, cwd and stdin as one JSON line to FAKE_CLAUDE_LOG and answers by
+// appends its argv, cwd, stdin and the text of an --append-system-prompt-file as one JSON
+// line to FAKE_CLAUDE_LOG and answers by
 // FAKE_CLAUDE_MODE:
 //   structured    init with only StructuredOutput, then a success result whose
 //                 structured_output is FAKE_CLAUDE_OUTPUT (JSON)
@@ -13,14 +14,16 @@
 //                 set to "path=content", writes that file in the working folder first
 //   script        runs the module at FAKE_CLAUDE_SCRIPT with { args, cwd, stdin, emit }
 // FAKE_CLAUDE_COST sets total_cost_usd (default 0.01).
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const stdin = await Bun.stdin.text();
 const env = process.env;
-if (env.FAKE_CLAUDE_LOG) appendFileSync(env.FAKE_CLAUDE_LOG, `${JSON.stringify({ args, cwd: process.cwd(), stdin })}\n`);
+const systemFile = option("--append-system-prompt-file");
+const system = systemFile === undefined ? undefined : readFileSync(systemFile, "utf8");
+if (env.FAKE_CLAUDE_LOG) appendFileSync(env.FAKE_CLAUDE_LOG, `${JSON.stringify({ args, cwd: process.cwd(), stdin, system })}\n`);
 
 const mode = env.FAKE_CLAUDE_MODE ?? "structured";
 const cost = Number(env.FAKE_CLAUDE_COST ?? 0.01);

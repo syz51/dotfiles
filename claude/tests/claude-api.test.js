@@ -4,7 +4,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkCredit, decide, MAX_DEPTH, mergedSettings, plan, readArgs, realClaude, TTL_MS } from "../bin/api-first.js";
+import { checkCredit, CLAUDE_CODE_BETA, decide, MAX_DEPTH, mergedSettings, plan, readArgs, realClaude, TTL_MS } from "../bin/api-first.js";
 
 const WRAPPER = join(import.meta.dir, "..", "bin", "claude-api");
 const SHIM = join(import.meta.dir, "..", "bin", "api-first");
@@ -22,6 +22,10 @@ beforeEach(() => {
 
 const response = (status, body) => new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
 const statusOf = (status) => async () => ({ status, detail: status });
+// The API as observed on 2026-11-06: plain Messages calls succeed, but the same request with
+// Claude Code's beta is refused for credit, as Claude Code's own requests were.
+const LOW_CREDIT = { type: "error", error: { type: "invalid_request_error", message: "Your credit balance is too low to access the Anthropic API." } };
+const claudeCodeGated = (headers) => String(headers["anthropic-beta"] ?? "").split(",").includes("claude-code-20250219") ? response(400, LOW_CREDIT) : response(200, {});
 
 describe("arguments and settings", () => {
   test("print mode and the last --settings are read before a -- marker only", () => {
@@ -60,12 +64,18 @@ describe("credit check", () => {
     expect(await checkCredit("k", { fetchImpl: async () => stalled })).toEqual({ status: "unknown", detail: "request failed: The operation timed out." });
   });
 
-  test("sends the key in a header and asks for one token of Haiku", async () => {
+  test("sends the key in a header and asks for one token of Haiku, as Claude Code would", async () => {
     let seen;
     await checkCredit("sk-x", { baseUrl: "http://fake", fetchImpl: async (url, init) => { seen = { url, init }; return response(200, {}); } });
     expect(seen.url).toBe("http://fake/v1/messages");
     expect(seen.init.headers["x-api-key"]).toBe("sk-x");
+    expect(seen.init.headers["anthropic-beta"]).toBe(CLAUDE_CODE_BETA);
     expect(JSON.parse(seen.init.body)).toMatchObject({ model: "claude-haiku-5-5", max_tokens: 1 });
+  });
+
+  test("a key whose plain calls work but whose Claude Code calls are refused for credit is exhausted", async () => {
+    const result = await checkCredit("k", { fetchImpl: async (url, init) => claudeCodeGated(init.headers) });
+    expect(result).toEqual({ status: "exhausted", detail: "HTTP 400: Your credit balance is too low to access the Anthropic API." });
   });
 });
 
@@ -101,6 +111,19 @@ describe("decision", () => {
     writeFileSync(join(root, "key"), "sk-new-key\n");
     await decide({ env, check });
     expect(calls).toEqual(["sk-test-key", "sk-new-key"]);
+  });
+
+  test("a result cached by an earlier kind of check is checked again", async () => {
+    // The check before CLAUDE_CODE_BETA wrote no `check` field and passed keys that Claude
+    // Code's own requests were refused with. Same key, fresh entry: only `check` differs.
+    const now = Date.now();
+    expect((await decide({ env, now, check: statusOf("ok") })).mode).toBe("api");
+    const file = join(root, "state", "state.json");
+    const { check: _, ...old } = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify(old));
+    const { calls, check } = counting("exhausted");
+    expect((await decide({ env, now: now + 1, check })).mode).toBe("subscription");
+    expect(calls).toHaveLength(1);
   });
 
   test("a damaged state file means a fresh check", async () => {
@@ -166,8 +189,9 @@ describe("end to end", () => {
     return dir;
   }
 
-  async function runWrapper(args, { apiStatus = 200, exit = 0, viaShim = false, extraEnv = {} } = {}) {
-    const server = Bun.serve({ port: 0, fetch: () => apiStatus === 200 ? response(200, {}) : response(apiStatus, { error: { message: "Your credit balance is too low" } }) });
+  async function runWrapper(args, { apiStatus = 200, api, exit = 0, viaShim = false, extraEnv = {} } = {}) {
+    const fetch = api ?? (() => apiStatus === 200 ? response(200, {}) : response(apiStatus, { error: { message: "Your credit balance is too low" } }));
+    const server = Bun.serve({ port: 0, fetch });
     try {
       const real = fakeClaude();
       const proc = Bun.spawn([viaShim ? join(SHIM, "claude") : WRAPPER, ...args], {
@@ -205,6 +229,13 @@ describe("end to end", () => {
     const run = await runWrapper(["-p", "hello"], { apiStatus: 400, viaShim: true });
     expect([run.code, run.argv]).toEqual([0, ["-p", "hello"]]);
     expect(run.stderr).toContain("running on the subscription (exhausted");
+    expect(decisions().map((entry) => entry.mode)).toEqual(["subscription"]);
+  });
+
+  test("credit that Claude Code cannot spend means the subscription, not a failed API run", async () => {
+    const run = await runWrapper(["-p", "hello"], { api: (request) => claudeCodeGated(Object.fromEntries(request.headers)) });
+    expect(run.argv).toEqual(["-p", "hello"]);
+    expect(run.stderr).toContain("running on the subscription (exhausted: HTTP 400: Your credit balance is too low");
     expect(decisions().map((entry) => entry.mode)).toEqual(["subscription"]);
   });
 

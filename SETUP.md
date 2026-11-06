@@ -222,7 +222,9 @@ and falls back to the claude.ai subscription otherwise. The planner,
   pipeline). Claude Code gets it through an `apiKeyHelper` merged into the run's last
   `--settings`, so it is not in the environment, where an `env` dump would expose it by
   accident. It is not hidden from the agent: a session running as you can read the file.
-- A one-token Haiku request checks for credit; the answer is cached per key in
+- A one-token Haiku request checks for credit that Claude Code can spend: it carries
+  Claude Code's beta, because credit that plain API calls can use may still be refused to
+  Claude Code. The answer is cached per key and kind of check in
   `~/.local/state/claude-api/` (10 minutes while the API works, 30 once credit is out or
   the key is refused, 1 when the check is inconclusive). Without a key file or credit, runs
   use the subscription and say so on stderr. Every decision goes to `decisions.jsonl` there,

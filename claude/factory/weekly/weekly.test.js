@@ -100,7 +100,7 @@ describe("runWeekly", () => {
     let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("## Billing (last 7 days)");
     expect(summary).toContain("1 on the API, 1 on the subscription");
-    expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit to move back.");
+    expect(summary).toContain("exhausted: HTTP 400: credit. Top up API credit that Claude Code can spend to move back.");
     writeFileSync(decisions, '{"at":"x","mode":"api"}\n{damaged\n');
     expect(await runWeekly({ pr: false })).toBe(0);
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
