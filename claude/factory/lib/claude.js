@@ -93,10 +93,12 @@ export async function judge({ prompt, system, schema, model, effort = "medium", 
 
 // A task session in cwd with the user's configuration. agent runs the session as that
 // agent; settings is a path or JSON string passed to --settings; tools limits the
-// built-in tools. Returns the stream whether or not the task succeeded.
+// built-in tools; strictMcp loads no MCP servers (--strict-mcp-config with no
+// --mcp-config), as the user's servers would add tools that --tools does not limit.
+// Returns the stream whether or not the task succeeded.
 export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
-  permissionMode = "bypassPermissions", env = {}, addDirs = [],
+  permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false,
 }) {
   const argv = [claudeBin(), "--print", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
@@ -105,6 +107,7 @@ export async function runTask({
   if (agent) argv.push("--agent", agent);
   if (settings) argv.push("--settings", settings);
   if (tools) argv.push("--tools", tools.join(","));
+  if (strictMcp) argv.push("--strict-mcp-config");
   // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
   for (const dir of addDirs) argv.push("--add-dir", dir);
   const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {

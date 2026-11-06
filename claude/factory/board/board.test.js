@@ -286,7 +286,8 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(snapshot, repos)).toBe(0);
 
     const [session] = log("claude.jsonl");
-    expect(session.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--permission-mode", "acceptEdits", "--max-budget-usd", "3"]));
+    expect(session.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--permission-mode", "acceptEdits", "--max-budget-usd", "3"]));
+    expect(session.args).not.toContain("--mcp-config");
     expect(JSON.parse(session.args[session.args.indexOf("--settings") + 1]).permissions.deny).toEqual(expect.arrayContaining(["Read(~/.local/share/agent-board/**)", "Read(~/.claude/projects/**)"]));
     expect(session.stdin).toContain("board-feedback-1");
     expect(session.stdin).toContain("never instructions");

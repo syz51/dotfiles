@@ -431,6 +431,11 @@ describe("claude runner", () => {
     const [call] = calls();
     expect(call.args).toEqual(expect.arrayContaining(["--agent", "explorer", "--settings", '{"a":1}', "--tools", "Read,Edit", "--effort", "low", "--no-session-persistence"]));
     expect(call.args.join(" ")).toContain("--add-dir /x --add-dir /y");
+    // The user's MCP servers load unless strictMcp says otherwise.
+    expect(call.args).not.toContain("--strict-mcp-config");
+    await runTask({ prompt: "do it", cwd, strictMcp: true });
+    expect(calls()[1].args).toContain("--strict-mcp-config");
+    expect(calls()[1].args).not.toContain("--mcp-config");
   });
 
   test("runTask fails with the exit status when there is no stream", async () => {
