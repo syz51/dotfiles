@@ -112,11 +112,18 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 
 ### Adopt (this repository)
 
-- [x] Hooks in `claude/settings.json` and `codex/hooks.json`, guarded so they do nothing
-  without `~/.cargo/bin/board`; the MCP server registered per Mac (`SETUP.md`, Work board).
-- [x] Work board rule in `claude/CLAUDE.md`. Codex has no tracked instructions file yet.
-- [~] Tests: offline checks in `config.test.js`. The live suites run against the installed
-  `~/.claude`, so they run after this branch is merged and installed.
+- [x] Hooks in `claude/settings.json` and `codex/hooks.json`, through
+  `claude/hooks/board-hook.sh`, which does nothing without `~/.cargo/bin/board` or with
+  `AGENT_BOARD_HOOKS=off` (set for test and benchmark sessions by `childEnv`).
+- [~] MCP server: registered for Claude Code on this Mac; Codex's block goes into
+  `~/.codex/config.toml` per Mac (`SETUP.md`, Work board).
+- [x] Work board rule in `claude/CLAUDE.md` and `codex/AGENTS.md`.
+- [~] Tests: offline checks in `config.test.js`, including runs of the hook script. The
+  live suites run against the installed `~/.claude`, so they run after this branch is
+  merged and installed.
+- [ ] Session identity: a nested `claude -p` or `codex exec` inherits `T3CODE_THREAD_ID` and
+  reports as its parent thread unless it sets `AGENT_BOARD_HOOKS=off`. The board should
+  tell such sessions apart on its own (agent-board design work).
 - [ ] Living plans such as this one move onto boards (with the factory migration below).
 - [ ] Feedback loop: `board feedback` and `GET /v1/stats` feed the weekly review the way
   skill feedback does; the defaults below change only through it.

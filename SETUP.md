@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -251,33 +251,40 @@ and falls back to the claude.ai subscription otherwise. The planner,
 
 ## Work board
 
-[agent-board](https://github.com/syz51/agent-board) is the shared work board that
-`claude/CLAUDE.md`'s "Work board" rule refers to. One server runs on a host in the
-tailnet ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md));
-each Mac runs the `board` binary. The hooks in `claude/settings.json` and
-`codex/hooks.json` call `~/.cargo/bin/board` and do nothing until it is installed. On each
-Mac, with a device token created on the server host:
+[agent-board](https://github.com/syz51/agent-board) is the shared work board that the
+"Work board" rule in `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
+a host in the tailnet
+([deployment](https://github.com/syz51/agent-board/blob/build/v0/docs/DEPLOY.md)); each Mac
+runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
+`claude/hooks/board-hook.sh` from `~/.claude/hooks`, so link it there like the other hook
+scripts. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
+with a device token created on the server host:
 
 ```sh
-cargo install --git https://github.com/syz51/agent-board board
-board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>  # paste the token
+# build/v0 holds the board crate until it merges to main.
+cargo install --git https://github.com/syz51/agent-board --branch build/v0 --locked board
+# Reads the token until end of input: pipe it from a file or paste it and press Ctrl-D.
+board login --server https://<board-host>.<tailnet>.ts.net --device <this-mac>
 claude mcp add --scope user board -- "$HOME/.cargo/bin/board" mcp
 board install launchd --write
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/dev.agent-board.watch.plist
 ```
 
-For Codex, add the MCP server to the local `codex/config.toml`:
-
-```toml
-[mcp_servers.board]
-command = "board"
-args = ["mcp"]
-env_vars = ["T3CODE_THREAD_ID"]
-```
+For Codex, add the `[mcp_servers.board]` block that `board install codex` prints to
+`~/.codex/config.toml`, and link `codex/AGENTS.md` to `~/.codex/AGENTS.md` so Codex gets the
+rule. Codex asks you to review new or changed hooks before it runs them: approve the
+board hooks after checking that they run `board-hook.sh`.
 
 The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
-token in the macOS Keychain, outside this repository. With the server unreachable, a
-hook waits at most about 1.5 seconds once and then skips the server for a while.
+token in the macOS Keychain, outside this repository. When a hook finds the server
+unreachable it waits at most about 1.5 seconds, and the Mac's hooks then use their cache
+without trying the server for a minute.
+
+Sessions started with `AGENT_BOARD_HOOKS=off` stay off the board. The test and
+benchmark runners set it through `childEnv` in `claude/tests/lib/process.js`. Set it
+for any other script that starts `claude -p` or `codex exec` from inside a thread:
+such a session inherits the thread's identity and would otherwise report as that
+thread.
 
 ## T3 Code thread cleanup
 

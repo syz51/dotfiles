@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook post-tool-use --runtime codex",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" post-tool-use codex",
             "timeout": 5
           }
         ]
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-start --runtime codex",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-start codex",
             "timeout": 5
           }
         ]
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook user-prompt-submit --runtime codex",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" user-prompt-submit codex",
             "timeout": 5
           }
         ]
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook stop --runtime codex",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" stop codex",
             "timeout": 5
           }
         ]
@@ -70,7 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-end --runtime codex",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-end codex",
             "timeout": 3
           }
         ]

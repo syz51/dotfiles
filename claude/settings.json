@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook post-tool-use --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" post-tool-use claude",
             "timeout": 5
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-start --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-start claude",
             "timeout": 5
           }
         ]
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook user-prompt-submit --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" user-prompt-submit claude",
             "timeout": 5
           }
         ]
@@ -89,7 +89,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook pre-compact --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" pre-compact claude",
             "timeout": 5
           }
         ]
@@ -100,7 +100,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook stop --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" stop claude",
             "timeout": 5
           }
         ]
@@ -112,7 +112,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook stop-failure --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" stop-failure claude",
             "timeout": 5
           }
         ]
@@ -123,7 +123,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "b=\"$HOME/.cargo/bin/board\"; [ -x \"$b\" ] || exit 0; exec \"$b\" hook session-end --runtime claude",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-end claude",
             "timeout": 5
           }
         ]

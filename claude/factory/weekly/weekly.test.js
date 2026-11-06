@@ -143,9 +143,9 @@ describe("runWeekly", () => {
     expect(readFileSync(last.summary, "utf8")).toContain("## score: FAILED (exit 4");
   });
 
-  test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables", () => {
+  test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables, and stay off the work board", () => {
     const env = stepEnv({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude" });
+    expect(env).toEqual({ PATH: "/bin", AGENT_BOARD_HOOKS: "off", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude" });
   });
 
   test("the lock is taken atomically: a second taker fails while the first holds it", () => {
