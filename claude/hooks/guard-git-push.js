@@ -3,39 +3,15 @@
 // other branches only with an explicit expected-SHA --force-with-lease.
 // Exit 2 blocks the command and shows stderr to Claude. A crash is a non-blocking
 // hook error, so the guard fails open; a git query that fails unexpectedly blocks
-// only pushes that rewrite or delete history. It follows shell syntax (quotes,
-// substitutions, heredocs, redirections, `cd`, `sh -c`, wrappers) but cannot see
-// through git aliases, script files, or expanded variables.
+// only pushes that rewrite or delete history. shell.js follows the shell syntax around
+// the push: quotes, substitutions, heredocs, `cd`, `sh -c`, wrappers and `ssh`.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
+import { changeDirectory, visitCommands } from "./shell.js";
 
 const DEFAULT_BRANCHES = ["main", "master"];
-const MAX_DEPTH = 8;
 const TOO_DEEP = "it nests shell commands too deeply to check.";
-const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh"]);
-const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
-const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
-// Commands that run another command, with their options that take a separate value.
-const WRAPPERS = {
-  arch: ["-e", "-arch"],
-  builtin: [],
-  caffeinate: ["-t", "-w"],
-  command: [],
-  doas: ["-u", "-C"],
-  env: ["-u", "-P", "--unset"],
-  exec: ["-a"],
-  nice: ["-n"],
-  nohup: [],
-  stdbuf: ["-i", "-o", "-e"],
-  sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"],
-  time: ["-f", "-o"],
-  timeout: ["-s", "-k", "--signal", "--kill-after"],
-  xargs: ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
-    "--max-lines", "--max-args", "--max-procs", "--max-chars"],
-  xcrun: ["--sdk", "--toolchain"],
-};
 const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"]);
 // `git push -h`; git accepts any unambiguous prefix of these.
 const PUSH_OPTIONS = ["--all", "--atomic", "--branches", "--delete", "--dry-run", "--exec", "--follow-tags", "--force",
@@ -47,230 +23,6 @@ const PUSH_OPTIONS = ["--all", "--atomic", "--branches", "--delete", "--dry-run"
   "--no-recurse-submodules", "--no-repo", "--no-set-upstream", "--no-signed", "--no-tags", "--no-thin", "--no-verbose"];
 const PUSH_VALUE_OPTIONS = new Set(["--repo", "--receive-pack", "--exec", "--push-option"]);
 const REWRITING_OPTIONS = ["--force", "--force-with-lease", "--mirror", "--delete"];
-
-/** Index just past the `)` closing a `$(` whose body starts at `start`. */
-function closeSubstitution(source, start) {
-  let depth = 1;
-  let i = start;
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "\\") i += 2;
-    else if (c === "'") i = source.indexOf("'", i + 1) === -1 ? source.length : source.indexOf("'", i + 1) + 1;
-    else {
-      if (c === "(") depth += 1;
-      else if (c === ")" && (depth -= 1) === 0) return i + 1;
-      i += 1;
-    }
-  }
-  return source.length;
-}
-
-/**
- * Splits shell source into simple commands. Each command has its argv, the heredoc bodies and
- * here-strings it reads (`inputs`), and the operator that ended it (`next`, "|" within a pipeline).
- * `substitutions` holds command substitutions found inside double quotes, which run as well.
- */
-export function parseScript(source) {
-  const commands = [];
-  const substitutions = [];
-  let current = { argv: [], inputs: [] };
-  let word;
-  let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
-  let heredocs = [];
-
-  const endWord = () => {
-    if (word === undefined) return;
-    if (destination === "argv") current.argv.push(word);
-    else if (destination === "input") current.inputs.push(word);
-    destination = "argv";
-    word = undefined;
-  };
-  const endCommand = (next) => {
-    endWord();
-    destination = "argv";
-    if (current.argv.length > 0 || current.inputs.length > 0) commands.push({ ...current, next });
-    current = { argv: [], inputs: [] };
-  };
-
-  let i = 0;
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "\n") {
-      endCommand("\n");
-      i += 1;
-      for (const { delimiter, stripTabs, inputs } of heredocs) {
-        const lines = [];
-        while (i < source.length) {
-          const newline = source.indexOf("\n", i);
-          const stop = newline === -1 ? source.length : newline;
-          const line = source.slice(i, stop);
-          i = stop + 1;
-          if ((stripTabs ? line.replace(/^\t+/, "") : line) === delimiter) break;
-          lines.push(line);
-        }
-        inputs.push(lines.join("\n"));
-      }
-      heredocs = [];
-    } else if (c === " " || c === "\t") {
-      endWord();
-      i += 1;
-    } else if (c === "#" && word === undefined) {
-      while (i < source.length && source[i] !== "\n") i += 1;
-    } else if (c === "'") {
-      const close = source.indexOf("'", i + 1);
-      const stop = close === -1 ? source.length : close;
-      word = (word ?? "") + source.slice(i + 1, stop);
-      i = stop + 1;
-    } else if (c === '"') {
-      let j = i + 1;
-      let text = "";
-      while (j < source.length && source[j] !== '"') {
-        if (source[j] === "\\" && j + 1 < source.length && '"\\$`\n'.includes(source[j + 1])) {
-          if (source[j + 1] !== "\n") text += source[j + 1];
-          j += 2;
-        } else if (source[j] === "$" && source[j + 1] === "(") {
-          const end = closeSubstitution(source, j + 2);
-          substitutions.push(source.slice(j + 2, end - 1));
-          text += source.slice(j, end);
-          j = end;
-        } else if (source[j] === "`") {
-          const close = source.indexOf("`", j + 1);
-          const end = close === -1 ? source.length : close;
-          substitutions.push(source.slice(j + 1, end));
-          text += source.slice(j, end + 1);
-          j = end + 1;
-        } else {
-          text += source[j];
-          j += 1;
-        }
-      }
-      word = (word ?? "") + text;
-      i = j + 1;
-    } else if (c === "\\") {
-      if (source[i + 1] !== "\n") word = (word ?? "") + (source[i + 1] ?? "");
-      i += 2;
-    } else if (c === "$" && source[i + 1] === "(") {
-      endCommand("$(");
-      i += 2;
-    } else if (c === "|") {
-      const operator = source[i + 1] === "|" || source[i + 1] === "&" ? c + source[i + 1] : c;
-      endCommand(operator);
-      i += operator.length;
-    } else if (c === "&" && source[i + 1] === ">") {
-      endWord(); // &> redirects both streams; the > is handled next
-      i += 1;
-    } else if (c === "&") {
-      const operator = source[i + 1] === "&" ? "&&" : "&";
-      endCommand(operator);
-      i += operator.length;
-    } else if ("`;()".includes(c)) {
-      endCommand(c);
-      i += 1;
-    } else if (c === "<" || c === ">") {
-      if (word !== undefined && /^\d+$/.test(word)) word = undefined; // descriptor number, as in 2>
-      else endWord();
-      let operator = c;
-      i += 1;
-      while (i < source.length && "<>|".includes(source[i])) operator += source[i++];
-      if (source[i] === "&") {
-        // >&2 and <&0 duplicate a descriptor and take no file word.
-        i += 1;
-        while (i < source.length && /[\d-]/.test(source[i])) i += 1;
-      } else if (operator === "<<") {
-        const stripTabs = source[i] === "-";
-        if (stripTabs) i += 1;
-        while (source[i] === " " || source[i] === "\t") i += 1;
-        let delimiter = "";
-        while (i < source.length && !/[\s;&|()<>]/.test(source[i])) {
-          if (!"'\"\\".includes(source[i])) delimiter += source[i];
-          i += 1;
-        }
-        heredocs.push({ delimiter, stripTabs, inputs: current.inputs });
-      } else {
-        destination = operator === "<<<" ? "input" : "drop";
-      }
-    } else {
-      word = (word ?? "") + c;
-      i += 1;
-    }
-  }
-  endCommand(undefined);
-  return { commands, substitutions };
-}
-
-function changeDirectory(dir, path) {
-  if (path === undefined || path === "~") return homedir();
-  if (path === "-" || /[$`*?[]/.test(path)) return undefined; // the previous directory, variables, and globs are unknown here
-  if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
-  if (path.startsWith("/")) return resolve(path);
-  return dir === undefined ? undefined : resolve(dir, path);
-}
-
-/** Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run. */
-function program(argv, dir) {
-  const nested = [];
-  let i = 0;
-  while (i < argv.length) {
-    const name = basename(argv[i]);
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]) || SHELL_KEYWORDS.has(argv[i])) {
-      i += 1;
-      continue;
-    }
-    if (name === "watch") {
-      // watch runs its remaining words through `sh -c`.
-      i += 1;
-      while (i < argv.length && argv[i].startsWith("-")) i += ["-n", "--interval", "-q", "--equexit"].includes(argv[i]) ? 2 : 1;
-      nested.push(argv.slice(i).join(" "));
-      return { words: [], nested, dir };
-    }
-    if (name === "command") {
-      // `command -v NAME` and `command -V NAME` look a command up without running it.
-      let j = i + 1;
-      while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested, dir };
-    }
-    if (!Object.hasOwn(WRAPPERS, name)) break;
-    i += 1;
-    while (i < argv.length && argv[i].startsWith("-")) {
-      const option = argv[i];
-      if (name === "env" && (option === "-S" || option === "--split-string")) {
-        nested.push(argv[i + 1] ?? "");
-        i += 2;
-      } else if (name === "env" && (option.startsWith("--split-string=") || /^-S./.test(option))) {
-        nested.push(option.startsWith("-S") ? option.slice(2) : option.slice("--split-string=".length));
-        i += 1;
-      } else if (name === "env" && (option === "-C" || option === "--chdir")) {
-        dir = changeDirectory(dir, argv[i + 1]);
-        i += 2;
-      } else {
-        i += WRAPPERS[name].includes(option) ? 2 : 1;
-      }
-    }
-    if (name === "timeout") i += 1; // the duration
-  }
-  return { words: argv.slice(i), nested, dir };
-}
-
-/** The script of `sh -c <script>`, skipping shell options that take a value. */
-function shellScript(words) {
-  for (let i = 1; i < words.length; i += 1) {
-    if (SHELL_VALUE_OPTIONS.has(words[i])) i += 1;
-    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i])) return words[i + 1];
-    else if (!/^[-+]/.test(words[i])) return undefined;
-  }
-  return undefined;
-}
-
-/** Whether a shell invocation reads its commands from standard input (no -c and no script file). */
-function readsStdin(words) {
-  if (words.length === 0 || !SHELLS.has(basename(words[0]))) return false;
-  for (let i = 1; i < words.length; i += 1) {
-    if (words[i] === "-" || /^-[A-Za-z]*s[A-Za-z]*$/.test(words[i])) return true;
-    if (SHELL_VALUE_OPTIONS.has(words[i])) i += 1;
-    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i]) || !/^[-+]/.test(words[i])) return false;
-  }
-  return true;
-}
 
 function longOption(name) {
   if (PUSH_OPTIONS.includes(name)) return name;
@@ -402,57 +154,13 @@ function gitPush(words, dir, git) {
   return reason && `\`${words.join(" ")}\`: ${reason}`;
 }
 
-function inspect(source, state, visit, depth, tooDeep) {
-  if (depth > MAX_DEPTH) return tooDeep;
-  const { commands, substitutions } = parseScript(source);
-  for (const inner of substitutions) {
-    const violation = inspect(inner, { dir: state.dir }, visit, depth + 1, tooDeep);
-    if (violation) return violation;
-  }
-  let pipeline = [];
-  for (const command of commands) {
-    pipeline.push(command);
-    if (command.next === "|" || command.next === "|&") continue;
-    const programs = pipeline.map((each) => program(each.argv, state.dir));
-    const feedsShell = programs.some(({ words }) => readsStdin(words));
-    for (const [index, { words, nested, dir }] of programs.entries()) {
-      const name = words.length > 0 ? basename(words[0]) : "";
-      const scripts = [...nested, ...(feedsShell ? pipeline[index].inputs : [])];
-      if (SHELLS.has(name)) scripts.push(shellScript(words));
-      if (name === "eval") scripts.push(words.slice(1).join(" "));
-      for (const script of scripts) {
-        const violation = script === undefined ? undefined : inspect(script, { dir }, visit, depth + 1, tooDeep);
-        if (violation) return violation;
-      }
-      if (name === "cd" || name === "pushd") state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
-      else if (name === "popd") state.dir = undefined;
-      else if (words.length > 0) {
-        const violation = visit(words, dir);
-        if (violation) return violation;
-      }
-    }
-    pipeline = [];
-  }
-  return undefined;
-}
-
 /**
  * Returns why `command` must not run, or undefined when it may. `git(dir, args)` returns trimmed
  * stdout, undefined when git reports that the ref, upstream, or branch does not exist, and throws
- * when git could not answer.
+ * when git could not answer. A script nested too deeply to check is blocked.
  */
 export function findViolation(command, cwd, git) {
-  return inspect(command, { dir: cwd }, (words, dir) => (basename(words[0]) === "git" ? gitPush(words, dir, git) : undefined), 0, TOO_DEEP);
-}
-
-/**
- * Calls `visit(words, dir)` for every command `source` would run, after wrappers, through
- * shells, substitutions and `eval`; `dir` is its directory when known. Returns the first
- * reason `visit` gives for blocking one, or undefined. Scripts nested too deeply to follow
- * are skipped, not blocked.
- */
-export function visitCommands(source, cwd, visit) {
-  return inspect(source, { dir: cwd }, visit, 0, undefined);
+  return visitCommands(command, cwd, (words, dir) => (basename(words[0]) === "git" ? gitPush(words, dir, git) : undefined), TOO_DEEP);
 }
 
 function runGit(dir, args) {
