@@ -69,32 +69,47 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 ### Design (this thread)
 
 - [x] Write down the problem, requirements and components (this file).
-- [~] Research, in three parallel tracks: existing agent task tools; storage, sync and
+- [x] Research, in three parallel tracks: existing agent task tools; storage, sync and
   networking across devices; integration points in Claude Code, Codex and T3 Code.
-- [ ] Design each component above in `DESIGN.md`, with technology choices and sources.
-- [ ] User review of the design; record decisions below.
+- [x] Design each component above in `DESIGN.md`, with technology choices and sources.
+- [ ] User review of the design; record decisions below (`DESIGN.md`, "Decisions for the
+  user").
 
-### Build (after the design is accepted)
+### Build (after the design is accepted; phases from `DESIGN.md`)
 
-- [ ] Break the accepted design into build tasks here.
+- [ ] Spike: server with tasks, claims and events; CLI; concurrency test; deployed on the
+  chosen host behind Tailscale; used from both Macs.
+- [ ] Verify in the spike: Claude Code passes `CLAUDE_CODE_SESSION_ID` to stdio MCP
+  children; Codex's file-edit tool name in `PostToolUse` and what Codex `PreCompact` output
+  does; T3 state database field names; Litestream 0.5 encryption.
+- [ ] First version: MCP proxy, hooks for Claude Code and Codex, handoffs, agent rules,
+  backups, factory migration.
+- [ ] Phase 2: path leases and overlap alerts, web view, `board watch`, restore drills.
 
 ## Decisions
 
 - 2026-11-06: Design work lives in `claude/factory/board/`. Board data lives outside the
   repository.
+- 2026-11-06 (proposed, awaiting the user): build our own thin board; SQLite owned by one
+  Bun/TypeScript server; Tailscale plus per-device tokens; a local `board` binary as CLI,
+  stdio MCP server and hook handler; fail-fast writes offline.
 
 ## Open questions
 
-- Is the VPS acceptable as the host, given it runs production apps, or should the board use
-  a managed service or a separate small host?
-- Do Macs need to write while offline, or is failing fast acceptable?
+- Host: a small dedicated VM (recommended) or a container on the Dokploy VPS?
+- Backup bucket: which S3-compatible service?
+- Is the Tailscale Personal plan's non-commercial term acceptable?
 
 ## Next actions
 
-Wait for the three research tracks, then write `DESIGN.md` component by component.
+Wait for the user's review of `DESIGN.md` and the open questions, then start the spike.
 
 ## Log
 
 - 2026-11-06: Plan written. Facts checked on this Mac: Claude Code 2.1.318 ships a task
   list shareable through `CLAUDE_CODE_TASK_LIST_ID` (not exposed to T3 sessions); Codex CLI
   0.166.0 installed; Tailscale not installed.
+- 2026-11-06: Research done (three tracks) and `DESIGN.md` drafted. Checked here: T3 exports
+  `T3CODE_THREAD_ID` to the agent and ships `t3 thread list/start/send/show`; Codex forwards
+  only listed `env_vars` to MCP servers. No existing tool fits whole (beads is closest; no
+  expiring claims or alerts).

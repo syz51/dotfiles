@@ -335,7 +335,8 @@ progress without reading transcripts. Its own living plan is `board/PLAN.md`; a 
 thread owns it.
 
 - [~] Design every component (data model, storage, network, agent interface, runtime
-  integration, alerts, human view, agent rules, migration, operations): `board/PLAN.md`.
+  integration, alerts, human view, agent rules, migration, operations): drafted in
+  `board/DESIGN.md`, awaiting the user's review.
 - [ ] Build after the design is accepted; then move this plan's open items onto the board.
 
 ## Deferred: daily review on sai
