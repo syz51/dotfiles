@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, runDetectors, simpleCommands, ultraEffort } from "./detectors.js";
+import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, runDetectors, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
 
 const cleanup = [];
 afterEach(() => {
@@ -88,6 +88,123 @@ describe("package-runner", () => {
 
   test("is na without any Bash call", () => {
     expect(packageRunner(actions([call("Read", { file_path: "/a" })])).verdict).toBe("na");
+  });
+});
+
+describe("shell-file-edit", () => {
+  test.each([
+    ["sed -i '' 's/a/b/' src/app.js", "sed in place", "src/app.js"],
+    ["sed -i.bak -e 's/a/b/' README.md", "sed in place", "README.md"],
+    ["perl -0pi -e 's|a|b|' claude/PLAN.md && git diff", "perl in place", "claude/PLAN.md"],
+    ["cat > notes.md <<'EOF'\n# Notes\nEOF", "cat into a file", "notes.md"],
+    ["cd ~/app && cat <<EOF >> src/config.toml\nkey = 1\nEOF", "cat into a file", "src/config.toml"],
+    ["echo 'export X=1' >> ~/.zshrc", "echo into a file", "~/.zshrc"],
+    ["printf '%s\\n' '/target/' > tools/.gitignore", "printf into a file", "tools/.gitignore"],
+    ["echo '' >\"$HOME/.config/x.conf\"", "echo into a file", "~/.config/x.conf"],
+    ["tee -a docs/log.md <<'EOF' >/dev/null\nline\nEOF", "tee into a file", "docs/log.md"],
+    ["echo line | sudo tee /etc/hosts", "tee into a file", "/etc/hosts"],
+    ["cd /tmp/x && cd ~/repo && sed -i '' 's/a/b/' a.txt", "sed in place", "a.txt"],
+    ["P=src/main.rs; sed -i '' 's/a/b/' $P", "sed in place", "src/main.rs"],
+    // Redirects and comments after the files, other option forms, several files.
+    ["sed -i '' 's/a/b/' a.txt > /dev/null", "sed in place", "a.txt"],
+    ["sed -i '' 's/a/b/' a.txt 2>&1 | tail", "sed in place", "a.txt"],
+    ["sed -i '' 's/a/b/' src/app.js  # fix typo", "sed in place", "src/app.js"],
+    ["sed -Ei 's/a/b/' a.txt", "sed in place", "a.txt"],
+    ["sed --in-place -e 's/a/b/' -e 's/c/d/' a.txt", "sed in place", "a.txt"],
+    ["ruby -i -pe 'gsub(/a/, \"b\")' a.txt", "ruby in place", "a.txt"],
+    ["perl -Ilib -pi.bak -e 's/a/b/' a.txt", "perl in place", "a.txt"],
+    // Pipes, redirects without spaces and other redirect operators.
+    ["cat <<'EOF' | tee src/a.txt\nx\nEOF", "tee into a file", "src/a.txt"],
+    ["cat <<EOF | sudo tee /etc/x > /dev/null\nx\nEOF", "tee into a file", "/etc/x"],
+    ["echo hi>a.txt", "echo into a file", "a.txt"],
+    ["echo 'x'>>a.txt", "echo into a file", "a.txt"],
+    ["echo x &> a.txt", "echo into a file", "a.txt"],
+    ["echo x >| a.txt", "echo into a file", "a.txt"],
+    ["cat >file<<EOF\nx\nEOF", "cat into a file", "file"],
+    ["cat <<< 'x' > a.txt", "cat into a file", "a.txt"],
+    // A cd in a subshell ends with it; only tee fed by the agent's text counts.
+    ["(cd /tmp/x && echo > a); echo > y", "echo into a file", "y"],
+    ["echo x | tee a.txt; cargo build | tee build.log", "tee into a file", "a.txt"],
+    // Inline scripts name the files they write when a literal says so.
+    ["uv run --no-project python - <<'EOF'\nfrom pathlib import Path\np = Path('src/x.rs'); p.write_text(p.read_text().replace('a', 'b'))\nEOF", "inline script writing", "src/x.rs"],
+    ["python3 - <<'EOF'\ns = open('README.md').read()\nopen('README.md', 'w').write(s)\nEOF", "inline script writing", "README.md"],
+    ["bun -e 'const fs = require(\"fs\"); fs.writeFileSync(\"package.json\", \"{}\")'", "inline script writing", "package.json"],
+    ["uv run python -I -c \"import json; json.dump({}, open('/Users/me/app/a.json', 'w'))\"", "inline script writing", "/Users/me/app/a.json"],
+    ["cd /tmp/work && python3 - <<'EOF'\nopen('/Users/me/app/a.json', 'w').write('{}')\nEOF", "inline script writing", "/Users/me/app/a.json"],
+    ["python3 - <<'EOF'\nwith open(Path('a.txt'), 'w') as f: f.write('x')\nEOF", "inline script writing", "a.txt"],
+    ["python3 -c 'x' && python3 -c \"open('a', 'w')\"", "inline script writing", "a"],
+    ["uv run - <<'EOF'\nopen('a.txt', 'w').write('x')\nEOF", "inline script writing", "a.txt"],
+    ["deno eval 'Deno.writeTextFileSync(\"a.txt\", \"x\")'", "inline script writing", "a.txt"],
+    ["python3 - <<'EOF'\nrows = open('/Users/me/data.jsonl').read()\nopen('/tmp/out.json', 'w').write(rows)\nopen('notes.md', 'w').write(rows)\nEOF", "inline script writing", "notes.md"],
+  ])("flags %p", (command, how, file) => {
+    expect(shellEdits(command)).toEqual([{ how, file }]);
+    const result = shellFileEdit(actions([bash(command)]));
+    expect(result.verdict).toBe("fail");
+    expect(result.hits[0]).toMatchObject({ files: [file] });
+    expect(result.hits[0].evidence).toStartWith(`${how} ${file}: `);
+  });
+
+  test.each([
+    ["python3 - <<'EOF'\nfrom pathlib import Path\nfor p in Path('src').glob('*.py'): p.write_text(p.read_text().replace('a', 'b'))\nprint('/tmp/done')\nEOF", "inline script writing files"],
+    ["python3 - <<'EOF'\nimport json\njson.dump({}, open(str(p), 'w'))\nEOF", "inline script writing files"],
+    ["find . -name '*.md' | xargs sed -i '' 's/a/b/'", "sed in place"],
+  ])("flags an edit of files it cannot name: %p", (command, how) => {
+    expect(shellEdits(command)).toEqual([{ how, file: null }]);
+  });
+
+  test.each([
+    // Scratch, devices and file descriptors.
+    "cat > /tmp/msg.txt <<'EOF'\nhello\nEOF",
+    "echo x > \"$TMPDIR/x\"",
+    "printf 'a' > /private/tmp/claude-501/scratchpad/a.txt",
+    "echo done >/dev/null 2>&1; echo err >&2",
+    "cd /private/tmp/claude-501/s/scratchpad && cat > worker.md <<'EOF'\nx\nEOF",
+    "S=/private/tmp/claude-501/s/scratchpad; mkdir -p $S/a && cd $S/a && printf 'x' > b.txt && sed -i '' 's/x/y/' b.txt",
+    "cd \"$TMPDIR/fallback\" && sed -i '' 's/a/b/' scripts/harness.sh",
+    "uv run python - <<'EOF'\nopen('/tmp/out.json', 'w').write('{}')\nEOF",
+    "cd /private/var/folders/x/T/review && python3 - <<'EOF'\nopen('a.py', 'w').write('')\nEOF",
+    // Targets built at run time are unknown.
+    "echo x > \"$out\"",
+    "printf x > $(mktemp)",
+    // Other programs' output, reads and scripts from files.
+    "git diff > fix.patch",
+    "cargo build 2>&1 | tee build.log",
+    "sed -n 1,20p src/app.js",
+    "perl -ne 'print if /x/' a.txt",
+    "uv run python - <<'EOF'\nprint(open('README.md').read())\nEOF",
+    "python3 -c 'import sys; sys.stdout.write(\"x\")'",
+    "uv run python tools/gen.py > out.txt",
+    // Text only: quoted, in a comment, or inside a heredoc body.
+    "git commit -m \"use sed -i '' to fix > a.txt\"",
+    "cat > /tmp/fix.sh <<'EOF'\nsed -i '' 's/a/b/' src/app.js\necho x > README.md\nEOF\nbash /tmp/fix.sh",
+    "echo '>>> Running tests'; echo \"1>2\"; printf '>%s\\n' x",
+    "git commit -m 'fix' && python3 -c 'import json'  # open('a', 'w')",
+    "python3 script.py; python3 -c 'print(1)'; echo \"open('x', 'w')\"",
+    // Options that are not in-place edits, and reads that look like writes.
+    "perl -MList::Util=sum -ne 'print sum(split)' data.txt",
+    "perl -Mstrict -we 'print 1' a.txt",
+    "python3 -c \"import json, os; print(json.load(open(os.path.join(root, 'agents.json'))))\"",
+    // Scratch folders without a trailing slash, and folders made at run time.
+    "cd /tmp && cat > notes.md <<EOF\nx\nEOF",
+    "cd /private/tmp && echo > a; cd /var/tmp && echo > b",
+    "sed -i '' 's/a/b/' /tmp/x",
+    "tmp=$(mktemp -d) && cd \"$tmp\" && echo x > a.txt",
+    "cd \"$(mktemp -d)\" && echo hi > a",
+    "cd $(mktemp -d) && echo hi > a",
+    // Scripts that read real files but write only scratch.
+    "uv run python - <<'EOF'\nimport json\nrows = json.load(open('/Users/me/.claude/projects/x.jsonl'))\njson.dump(rows, open('/tmp/out.json', 'w'))\nEOF",
+    "python3 - <<'EOF'\nimport os\nout = os.path.join('/private/tmp/claude/x', 'a.json')\nopen(out, 'w').write('{}')\nEOF",
+  ])("passes %p", (command) => {
+    expect(shellEdits(command)).toEqual([]);
+  });
+
+  test("applies to sessions that edited files: na without edits, pass with the edit tools only", () => {
+    expect(shellFileEdit(actions([bash("git status"), call("Read", { file_path: "/a" })])).verdict).toBe("na");
+    expect(shellFileEdit(actions([bash("git status"), call("Edit", { file_path: "/a", old_string: "a", new_string: "b" })])).verdict).toBe("pass");
+    const result = shellFileEdit(actions([call("Write", { file_path: "/a", content: "" }), bash("sed -i '' 's/a/b/' a.txt && echo x >> b.txt", { agent: "agent-1" })]));
+    expect(result.verdict).toBe("fail");
+    expect(result.hits).toEqual([expect.objectContaining({ agent: "agent-1", files: ["a.txt", "b.txt"] })]);
+    expect(result.hits[0].evidence).toStartWith("sed in place a.txt, echo into a file b.txt: ");
   });
 });
 
@@ -249,7 +366,8 @@ test("runDetectors reads the main session and its subagents from the transcript 
     .tool("Bash", { command: "git commit -m 'Ship\n\nCo-Authored-By: Claude <x>'" }, "ok")
     .tool("Agent", { subagent_type: "worker", description: "push" }, "done")
     .compact();
-  const agent = new Transcript({ sessionId: main.sessionId }).tool("Bash", { command: "git push --force origin feature" }, "ok").tool("Bash", { command: "npm test" }, "ok");
+  const agent = new Transcript({ sessionId: main.sessionId }).tool("Bash", { command: "git push --force origin feature" }, "ok").tool("Bash", { command: "npm test" }, "ok")
+    .tool("Bash", { command: "sed -i '' 's/a/b/' README.md" }, "ok");
   const root = writeProjects([{ transcript: main, subagents: [{ id: "agent-a1", meta: { agentType: "worker" }, transcript: agent }] }]);
   cleanup.push(root);
   const [session] = loadSessions({ root });
@@ -259,8 +377,10 @@ test("runDetectors reads the main session and its subagents from the transcript 
     "ai-attribution": "fail",
     "force-push": "fail",
     "ultra-effort": "pass",
+    "shell-file-edit": "fail",
   });
   expect(results["force-push"].hits[0].agent).toBe("agent-a1");
+  expect(results["shell-file-edit"].hits[0]).toMatchObject({ agent: "agent-a1", files: ["README.md"] });
   expect(results["ai-attribution"].hits[0].agent).toBeNull();
 });
 
