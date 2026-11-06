@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../cli.js";
+import { LITELLM_FILE, LITELLM_URL } from "../lib/litellm.js";
 import { readJson, readJsonl, writeJsonAtomic } from "../lib/state.js";
 import { codexUsage, Rollout, writeRollouts } from "../lib/testing/codex.js";
 import { Transcript, usage, writeProjects } from "../lib/testing/transcripts.js";
@@ -41,6 +42,10 @@ beforeEach(() => {
     FAKE_GH_LOG: join(scratch, "gh.log"),
   });
   gh({});
+  // A fresh price list, so runs with GitHub lookups never fetch LiteLLM's.
+  writeJsonAtomic(join(scratch, "state", LITELLM_FILE), { fetchedAt: new Date().toISOString(), source: LITELLM_URL, prices: {
+    "gpt-listed": { input_cost_per_token: 2e-6, output_cost_per_token: 10e-6, cache_read_input_token_cost: 0.1e-6 },
+  } });
   output = [];
   logSpy = spyOn(console, "log").mockImplementation((...args) => output.push(args.join(" ")));
 });
@@ -239,6 +244,24 @@ describe("session metrics", () => {
     expect(rows[0]).toContain("| Sessions | Codex sessions |");
     expect(rows[2]).toContain("| 2 | not read |");
     expect(rows[3]).toContain("| 2 | 1 |");
+  });
+
+  test("prices models missing from the table from the cached LiteLLM list and notes them", async () => {
+    const none = { cached: 0, reasoning: 0 };
+    const priced = new Rollout({ start: at("2026-11-04T10:00:00Z"), cwd: "/Users/test/app", model: "gpt-listed" })
+      .prompt("Ship the change")
+      .response(codexUsage(1_000_000, 100_000, { cached: 500_000, reasoning: 0 }));
+    const unknown = new Rollout({ start: at("2026-11-05T10:00:00Z"), cwd: "/Users/test/app", model: "gpt-unlisted" }).prompt("Other").response(codexUsage(10, 10, none));
+    writeRollouts([priced, unknown], join(scratch, "codex", "sessions"));
+    // Without --no-gh: the fresh fixture list is not fetched again.
+    const fetchSpy = spyOn(globalThis, "fetch");
+    const { current, notes } = await report();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    // 500K uncached input at $2, 500K cached at $0.10 and 100K output at $10 per MTok.
+    expect(current.harness.codex).toMatchObject({ sessions: 2, unpricedSessions: 1 });
+    expect(current.harness.codex.costUSD).toBeCloseTo(1 + 0.05 + 1);
+    expect(notes).toContainEqual(expect.stringMatching(/^Priced from LiteLLM's list \(fetched \d{4}-\d\d-\d\d\), as the price table lacks them: gpt-listed\.$/));
   });
 });
 

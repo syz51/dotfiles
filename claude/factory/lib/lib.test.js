@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../cli.js";
 import { API_FIRST, ClaudeCallError, judge, runTask } from "./claude.js";
-import { normalizeUsage, requestCost } from "./pricing.js";
+import { fromLitellm, litellmFetchedAt, LITELLM_FILE, LITELLM_URL, MAX_AGE_MS, refreshLitellm } from "./litellm.js";
+import { normalizeUsage, priceSource, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
 import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, parseSession, readRecords, sessionFiles } from "./transcripts.js";
@@ -45,6 +46,81 @@ describe("pricing", () => {
     expect(requestCost("claude-haiku-5-5", { ...tokens, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo(0.5 + 2.5);
     expect(requestCost("claude-haiku-5-5", { input: 1000, output: 1000, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo((100 + 500) / 1e6);
     expect(requestCost("unknown-model", tokens)).toBeNull();
+  });
+
+  test("Sonnet 5.5 cache reads cost 0.05x input, per Anthropic's pricing page", () => {
+    expect(requestCost("claude-sonnet-5-5", { input: 0, output: 0, cacheRead: 1e6, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo(0.1);
+  });
+});
+
+describe("LiteLLM fallback prices", () => {
+  const perToken = (perMillion) => perMillion / 1e6;
+  const entries = {
+    "gpt-test": {
+      input_cost_per_token: perToken(2), output_cost_per_token: perToken(10), cache_read_input_token_cost: perToken(0.1), cache_creation_input_token_cost: perToken(2.5),
+      input_cost_per_token_above_272k_tokens: perToken(4), output_cost_per_token_above_272k_tokens: perToken(15), cache_read_input_token_cost_above_272k_tokens: perToken(0.2),
+      input_cost_per_token_above_1000k_tokens: perToken(8),
+    },
+    "bare-test": { input_cost_per_token: perToken(1), output_cost_per_token: perToken(3) },
+    "claude-sonnet-5-5": { input_cost_per_token: perToken(99), output_cost_per_token: perToken(99) },
+    "embedding-test": { input_cost_per_token: perToken(1), mode: "embedding" },
+  };
+  const tokens = (fields) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, ...fields });
+  const writeCache = (dir, fetchedAt) => writeJsonAtomic(join(dir, LITELLM_FILE), { fetchedAt, source: LITELLM_URL, prices: entries });
+
+  test("converts entries to prices per million tokens, with cache and long-prompt defaults", () => {
+    expect(fromLitellm(entries["bare-test"])).toEqual({ input: 1, output: 3, cacheRead: 1, cacheWrite5m: 1, cacheWrite1h: 1 });
+    const price = fromLitellm(entries["gpt-test"]);
+    expect(price).toMatchObject({ input: 2, output: 10, cacheWrite5m: 2.5, cacheWrite1h: 2.5 });
+    expect(price.cacheRead).toBeCloseTo(0.1);
+    // The lowest tier is the long-prompt price; fields it lacks keep the base price.
+    expect(price.long).toMatchObject({ above: 272_000, input: 4, output: 15, cacheWrite5m: 2.5, cacheWrite1h: 2.5 });
+    expect(fromLitellm(entries["embedding-test"])).toBeNull();
+    expect(fromLitellm({ input_cost_per_token: -1, output_cost_per_token: 1 })).toBeNull();
+  });
+
+  test("models missing from the table take the cached price; the table wins; others stay unpriced", () => {
+    setEnv({ CLAUDE_FACTORY_STATE: scratch });
+    expect(requestCost("gpt-test", tokens({ input: 1e6 }))).toBeNull();
+    // The list is read once per state folder.
+    writeCache(join(scratch, "cached"), "2026-11-07T00:00:00.000Z");
+    setEnv({ CLAUDE_FACTORY_STATE: join(scratch, "cached") });
+    expect(requestCost("gpt-test", tokens({ input: 50_000, output: 50_000, cacheRead: 50_000, cacheWrite5m: 50_000 }))).toBeCloseTo(0.05 * (2 + 10 + 0.1 + 2.5));
+    // A prompt over 272K tokens, cache reads included, takes the long-prompt price.
+    expect(requestCost("gpt-test", tokens({ input: 100_000, cacheRead: 200_000, output: 100_000 }))).toBeCloseTo(0.1 * 4 + 0.2 * 0.2 + 0.1 * 15);
+    expect(requestCost("claude-sonnet-5-5", tokens({ input: 1e6 }))).toBeCloseTo(2);
+    expect([priceSource("gpt-test"), priceSource("claude-sonnet-5-5"), priceSource("embedding-test"), priceSource("toString")]).toEqual(["litellm", "table", null, null]);
+    expect(litellmFetchedAt()).toBe("2026-11-07T00:00:00.000Z");
+  });
+
+  test("refreshes a missing or week-old list, keeps a fresh one, and notes a failed fetch", async () => {
+    setEnv({ CLAUDE_FACTORY_STATE: scratch });
+    const now = Date.parse("2026-11-07T00:00:00Z");
+    const calls = [];
+    const ok = async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ "bare-test": entries["bare-test"] }));
+    };
+    expect(await refreshLitellm({ fetch: ok, now })).toBe(true);
+    expect(calls).toEqual([LITELLM_URL]);
+    expect(readJson(join(scratch, LITELLM_FILE))).toEqual({ fetchedAt: "2026-11-07T00:00:00.000Z", source: LITELLM_URL, prices: { "bare-test": entries["bare-test"] } });
+    expect(priceSource("bare-test")).toBe("litellm");
+    expect(await refreshLitellm({ fetch: ok, now: now + MAX_AGE_MS - 1 })).toBe(false);
+    expect(calls).toHaveLength(1);
+
+    const notes = [];
+    expect(await refreshLitellm({ fetch: async () => new Response("down", { status: 503 }), now: now + MAX_AGE_MS, notes })).toBe(false);
+    expect(await refreshLitellm({ fetch: async () => new Response("[]"), now: now + MAX_AGE_MS, notes })).toBe(false);
+    expect(notes).toEqual([
+      "LiteLLM's price list could not be refreshed (HTTP 503); using the copy fetched 2026-11-07.",
+      "LiteLLM's price list could not be refreshed (not a JSON object); using the copy fetched 2026-11-07.",
+    ]);
+    expect(priceSource("bare-test")).toBe("litellm");
+
+    setEnv({ CLAUDE_FACTORY_STATE: join(scratch, "empty") });
+    const none = [];
+    await refreshLitellm({ fetch: async () => { throw new Error("offline"); }, notes: none });
+    expect(none).toEqual(["LiteLLM's price list could not be refreshed (offline); models missing from the price table stay unpriced."]);
   });
 });
 

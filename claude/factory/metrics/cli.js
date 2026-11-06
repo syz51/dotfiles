@@ -4,6 +4,8 @@ import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadCodexSessions } from "../lib/codex.js";
+import { litellmFetchedAt, refreshLitellm } from "../lib/litellm.js";
+import { priceSource } from "../lib/pricing.js";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { loadSessions, mostCommon } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
@@ -27,7 +29,8 @@ window. Codex sessions come from \$CODEX_HOME/sessions (default ~/.codex/session
   --until ISO           Window end (default now)
   --project TEXT        Only projects whose folder or working directory contains TEXT
   --include-automation  Include automation sessions (excluded by default)
-  --no-gh               Skip GitHub lookups (PR state, reverts)
+  --no-gh               Skip GitHub lookups (PR state, reverts, and refreshing LiteLLM's
+                        price list for models missing from the price table)
   --json                Print the JSON report instead of the Markdown path
   --out DIR             Report folder (default: the state folder's reports/)
   --history             Print the trend of earlier runs and exit
@@ -115,6 +118,8 @@ export async function buildReport(options) {
   const length = until - since;
   const previousSince = since - length;
   const notes = [];
+  // Before sessions load, as their estimates price models missing from the table with it.
+  if (options.gh) await refreshLitellm({ notes });
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
   const entries = { current: [], previous: [] };
@@ -182,6 +187,10 @@ export async function buildReport(options) {
     notes.push("Codex sessions: subagent threads count with their root thread's session, tool errors are calls whose script failed or never ran (not non-zero exits inside a script), and API errors are turns that ended with an error such as a usage limit.");
   const malformed = all.reduce((total, { session }) => total + session.malformedLines, 0);
   if (malformed) notes.push(`${malformed} transcript lines did not parse (usually a session still being written).`);
+  const current = windowStats(entries.current, prInfo);
+  const previous = windowStats(entries.previous, prInfo);
+  const fallback = [...new Set([...current.modelMix, ...previous.modelMix].map((row) => row.model))].filter((model) => priceSource(model) === "litellm").sort();
+  if (fallback.length) notes.push(`Priced from LiteLLM's list (fetched ${litellmFetchedAt().slice(0, 10)}), as the price table lacks them: ${fallback.join(", ")}.`);
 
   return {
     generatedAt: new Date().toISOString(),
@@ -189,8 +198,8 @@ export async function buildReport(options) {
     previousWindow: { since: new Date(previousSince).toISOString(), until: new Date(since).toISOString() },
     filters: { project: options.project ?? null, includeAutomation: options.includeAutomation, gh: options.gh },
     excluded,
-    current: windowStats(entries.current, prInfo),
-    previous: windowStats(entries.previous, prInfo),
+    current,
+    previous,
     projects,
     topSessions,
     prs,
