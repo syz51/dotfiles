@@ -378,4 +378,13 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/Do not duplicate Chinese-only replies/);
     expect(workflow).toMatch(/`headless-browser` skill/);
   });
+
+  // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
+  // refusals; plain one-command calls pass its checks the first time.
+  test("Workflow says how to run git in a worktree-isolated session", () => {
+    const workflow = section("Workflow");
+    expect(workflow).toMatch(/worktree-isolated session/);
+    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
+  });
 });
