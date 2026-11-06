@@ -4,6 +4,11 @@
 // or is null when GitHub was not asked.
 
 const sum = (values) => values.reduce((total, value) => total + value, 0);
+// Tokens of normalized usage, input, cache and output together, and of a usage map
+// ({ [model]: normalized usage }).
+const usageTokens = (entry) => entry.input + entry.output + entry.cacheRead + entry.cacheWrite5m + entry.cacheWrite1h;
+const tokens = (usage) => sum(Object.values(usage).map(usageTokens));
+export const HARNESSES = ["claude", "codex"];
 const ratio = (part, whole) => (whole ? part / whole : null);
 
 // Linear-interpolation quantile of values (q in [0, 1]); null for no values.
@@ -58,7 +63,7 @@ function modelMix(sessions) {
   const rows = new Map();
   const row = (role, model) => {
     const key = `${role}\u0000${model}`;
-    if (!rows.has(key)) rows.set(key, { role, model, runs: 0, messages: 0, costUSD: 0 });
+    if (!rows.has(key)) rows.set(key, { role, model, runs: 0, messages: 0, tokens: 0, costUSD: 0 });
     return rows.get(key);
   };
   for (const session of sessions) {
@@ -71,12 +76,14 @@ function modelMix(sessions) {
       const entry = row("main", model);
       entry.runs++;
       entry.messages += session.models[model];
+      entry.tokens += session.usage[model] ? usageTokens(session.usage[model]) : 0;
       entry.costUSD += totalWeight ? (mainCost * weight) / totalWeight : 0;
     }
     for (const agent of session.subagents) {
       const entry = row(agent.agentType ?? "unknown", agent.model ?? "unknown");
       entry.runs++;
       entry.messages += agent.assistantMessages;
+      entry.tokens += tokens(agent.usage);
       entry.costUSD += agent.costUSD;
     }
   }
@@ -90,6 +97,7 @@ export function windowStats(entries, prInfo) {
   const sessions = entries.map((entry) => entry.session);
   const promptCounts = entries.map((entry) => entry.prompts.length);
   const costs = sessions.map((session) => session.costUSD);
+  const pricedCosts = sessions.filter((session) => !(session.unpriced && session.costSource === "estimated")).map((session) => session.costUSD);
   const totalCost = sum(costs);
   const totalPrompts = sum(promptCounts);
   // Follow-ups in an agent-launched thread come from the orchestrating agent, so only
@@ -114,8 +122,10 @@ export function windowStats(entries, prInfo) {
     prompts: { total: totalPrompts, meanPerSession: ratio(totalPrompts, sessions.length), medianPerSession: quantile(promptCounts, 0.5) },
     cost: {
       totalUSD: totalCost,
-      medianUSD: quantile(costs, 0.5),
-      p90USD: quantile(costs, 0.9),
+      // Over sessions with a known cost: an estimate with an unpriced model, such as every
+      // Codex session, is a partial $0 that would drag these down.
+      medianUSD: quantile(pricedCosts, 0.5),
+      p90USD: quantile(pricedCosts, 0.9),
       sources: { "cost-state": sessions.filter((session) => session.costSource === "cost-state").length, estimated: sessions.filter((session) => session.costSource === "estimated").length },
       unpricedSessions: sessions.filter((session) => session.unpriced).length,
     },
@@ -129,6 +139,17 @@ export function windowStats(entries, prInfo) {
     apiErrors,
     compactions: { total: compactions, perSession: ratio(compactions, sessions.length) },
     subagents: { runs: agents.length, costUSD: subagentCost, share: ratio(subagentCost, estimatedTotal) },
+    // Sessions, cost and tokens (subagents included) per harness: Claude Code or Codex.
+    harness: Object.fromEntries(HARNESSES.map((harness) => {
+      const of = sessions.filter((session) => session.harness === harness);
+      return [harness, {
+        sessions: of.length,
+        costUSD: sum(of.map((session) => session.costUSD)),
+        unpricedSessions: of.filter((session) => session.unpriced).length,
+        tokens: sum(of.map((session) => tokens(session.usage) + sum(session.subagents.map((agent) => tokens(agent.usage))))),
+        subagentRuns: sum(of.map((session) => session.subagents.length)),
+      }];
+    })),
     // Sessions a person ran vs threads an orchestrating agent launched with a brief.
     origin: Object.fromEntries(["person", "agent"].map((origin) => {
       const of = sessions.filter((session) => (session.origin ?? "person") === origin);

@@ -91,10 +91,12 @@ review on sai** for the feasibility notes the user asked about.
 
 ## Shared interfaces
 
-`Session` (from `lib/transcripts.js`):
+`Session` (from `lib/transcripts.js`, and from `lib/codex.js` for Codex rollouts, whose subagent
+threads become `subagents` of their root thread and whose cost is the usage estimate):
 
 ```
-{ id, project, cwd, file, entrypoint, title, startedAt, endedAt, models: {model: count},
+{ id, harness: "claude" | "codex", project, cwd, file, entrypoint, title, startedAt, endedAt,
+  models: {model: count},
   prompts: [{ at, text, source }],      // human-sent prompts only
   assistantMessages, efforts: {effort: count},
   toolCalls: [{ id, name, input, ok, output, at }],  // output: 2,000-char start+end excerpt
@@ -142,6 +144,12 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `origin` marks agent-launched threads (54 of 73 sessions this week, $309), subagent
   message counts.
 - [x] Tests (synthetic transcripts, fake gh); real 7- and 30-day runs.
+- [x] Codex sessions (`lib/codex.js`, board task dotfiles-5): rollouts under
+  `$CODEX_HOME/sessions` with tokens, models, efforts, prompts, tool calls, interrupts,
+  compactions and turn errors; subagent threads skip the parent history they copy and count
+  with their root session. Report: per-harness sessions, cost and tokens, a Tokens column in
+  the model mix, cost quantiles over sessions with a known cost. GPT models are unpriced
+  until the pricing fallback (dotfiles-6).
 
 ### 2. Scoring and proposals (`scoring/`)
 
@@ -389,3 +397,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: The weekly run gained a board step: the work board's stats and open feedback go
   into the report and into proposals, which may change the board's defaults, coordinator
   prompt and rule (`board/PLAN.md`, feedback loop).
+- 2026-11-07: Metrics include Codex sessions. 7-day real run: 340 sessions, 160 of them Codex
+  with 771 subagent runs and 6.4B tokens (Claude Code: 180 sessions, 5.1B tokens); parsing
+  the 4.5 GB of rollouts in the two windows takes about 5 seconds.

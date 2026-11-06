@@ -1,8 +1,9 @@
-// metrics: cost, effort and quality of Claude Code sessions in a window, compared with
-// the window before it, overall, per project and per pull request.
+// metrics: cost, effort and quality of Claude Code and Codex sessions in a window,
+// compared with the window before it, overall, per project and per pull request.
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadCodexSessions } from "../lib/codex.js";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { loadSessions, mostCommon } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
@@ -18,7 +19,8 @@ const HISTORY = "metrics-history.jsonl";
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js metrics [options]
 
-Cost, effort and quality of Claude Code sessions, compared with the previous window.
+Cost, effort and quality of Claude Code and Codex sessions, compared with the previous
+window. Codex sessions come from \$CODEX_HOME/sessions (default ~/.codex/sessions).
 
   --days N              Window length in days, ending now (default 7)
   --since ISO           Window start (instead of --days)
@@ -116,7 +118,7 @@ export async function buildReport(options) {
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
   const entries = { current: [], previous: [] };
-  for (const session of loadSessions({ since: previousSince, until })) {
+  for (const session of [...loadSessions({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until })]) {
     const ended = Date.parse(session.endedAt);
     if (!Number.isFinite(ended) || ended <= previousSince || ended > until) continue;
     if (session.automation && !options.includeAutomation) {
@@ -176,6 +178,8 @@ export async function buildReport(options) {
   }
   if (previousSince < Date.now() - RETENTION_DAYS * DAY_MS)
     notes.push(`The previous window starts more than ${RETENTION_DAYS} days ago; Claude Code deletes older transcripts, so it is likely incomplete.`);
+  if (entries.current.some(({ session }) => session.harness === "codex"))
+    notes.push("Codex sessions: subagent threads count with their root thread's session, tool errors are calls whose script failed or never ran (not non-zero exits inside a script), and API errors are turns that ended with an error such as a usage limit.");
   const malformed = all.reduce((total, { session }) => total + session.malformedLines, 0);
   if (malformed) notes.push(`${malformed} transcript lines did not parse (usually a session still being written).`);
 
@@ -204,6 +208,8 @@ function historyEntry(report, path) {
     project: report.filters.project,
     includeAutomation: report.filters.includeAutomation,
     sessions: current.sessions,
+    codexSessions: current.harness.codex.sessions,
+    codexTokens: current.harness.codex.tokens,
     costUSD: current.cost.totalUSD,
     prompts: current.prompts.total,
     promptsPerSession: current.prompts.meanPerSession,

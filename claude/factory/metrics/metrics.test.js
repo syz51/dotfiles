@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../cli.js";
 import { readJson, readJsonl, writeJsonAtomic } from "../lib/state.js";
+import { codexUsage, Rollout, writeRollouts } from "../lib/testing/codex.js";
 import { Transcript, usage, writeProjects } from "../lib/testing/transcripts.js";
 import { run } from "./cli.js";
 import { CACHE_FILE, OPEN_TTL_MS } from "./github.js";
@@ -33,6 +34,7 @@ beforeEach(() => {
   projects = join(scratch, "config", "projects");
   setEnv({
     CLAUDE_CONFIG_DIR: join(scratch, "config"),
+    CODEX_HOME: join(scratch, "codex"),
     CLAUDE_FACTORY_STATE: join(scratch, "state"),
     CLAUDE_FACTORY_GH: FAKE_GH,
     FAKE_GH_DATA: join(scratch, "gh.json"),
@@ -193,6 +195,41 @@ describe("session metrics", () => {
     const { current } = await report("--no-gh");
     expect(current.origin).toEqual({ person: { sessions: 1, costUSD: 2 }, agent: { sessions: 1, costUSD: 5 } });
   });
+
+  test("includes Codex sessions: subagents, tokens, prompts, PRs and the shared project", async () => {
+    write([{ transcript: session("2026-11-03T10:00:00Z", { cost: 2, cwd: "/Users/test/app" }), project: "-Users-test-app" }]);
+    const none = { cached: 0, reasoning: 0 };
+    const parent = new Rollout({ start: at("2026-11-04T10:00:00Z"), cwd: "/Users/test/app", model: "gpt-main" })
+      .prompt("Ship the change")
+      .response(codexUsage(1_000_000, 0, none));
+    const worker = new Rollout({ parent, role: "worker", model: "gpt-small" })
+      .exec("bad()", "Script failed\nOutput:\n", { use: codexUsage(500_000, 0, none) });
+    parent.exec('text(await tools.exec_command({cmd:"gh pr create --fill"}))', "Script completed\nOutput:\nhttps://github.com/o/r/pull/9\n", { use: codexUsage(0, 0, none) })
+      .prompt("no, use a draft PR")
+      .interrupt();
+    const old = new Rollout({ start: at("2026-10-28T10:00:00Z"), cwd: "/Users/test/app" }).prompt("Earlier").response();
+    writeRollouts([parent, worker, old], join(scratch, "codex", "sessions"));
+    const { current, previous, projects, prs, notes } = await report("--no-gh");
+    expect([current.sessions, previous.sessions]).toEqual([2, 1]);
+    expect(current.harness.claude).toMatchObject({ sessions: 1, costUSD: 2, unpricedSessions: 0 });
+    // The unpriced Codex session does not count toward the cost quantiles.
+    expect([current.cost.medianUSD, current.cost.p90USD]).toEqual([2, 2]);
+    expect(current.harness.codex).toEqual({ sessions: 1, costUSD: 0, unpricedSessions: 1, tokens: 1_500_000, subagentRuns: 1 });
+    expect(previous.harness.codex.sessions).toBe(1);
+    expect(current.prompts.total).toBe(3);
+    expect(current.corrections).toMatchObject({ followUps: 1, corrections: 1 });
+    expect(current.interrupts.total).toBe(1);
+    expect(current.toolErrors.subagents).toEqual({ calls: 1, errors: 1, rate: 1 });
+    expect(current.modelMix.filter((row) => row.model.startsWith("gpt")).map(({ role, model, runs, messages, tokens }) => [role, model, runs, messages, tokens]))
+      .toEqual([["main", "gpt-main", 1, 2, 1_000_000], ["worker", "gpt-small", 1, 1, 500_000]]);
+    expect(projects.map((project) => [project.project, project.current.sessions])).toEqual([["-Users-test-app", 2]]);
+    expect(prs.map((pr) => [pr.number, pr.sessions.length])).toEqual([[9, 1]]);
+    expect(notes).toContainEqual(expect.stringContaining("Codex sessions: subagent threads count with their root"));
+    const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(markdown).toContain("| Codex sessions | 1 | 1 | 0 |");
+    expect(markdown).toContain("Codex 1 sessions, $0.00, 1.5M tokens, 1 subagent runs (1 sessions unpriced)");
+    expect(readJsonl(join(scratch, "state", "metrics-history.jsonl"))[0]).toMatchObject({ codexSessions: 1, codexTokens: 1_500_000 });
+  });
 });
 
 describe("pull requests", () => {
@@ -276,7 +313,7 @@ describe("outputs", () => {
     write([{ transcript: session("2026-11-03T10:00:00Z") }, { transcript: session("2026-10-30T10:00:00Z") }]);
     const json = await report("--no-gh");
     expect(Object.keys(json).sort()).toEqual(["current", "excluded", "filters", "generatedAt", "notes", "previous", "previousWindow", "projects", "prs", "topSessions", "window"]);
-    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "interrupts", "modelMix", "origin", "prompts", "prs", "sessions", "subagents", "toolErrors"]);
+    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "harness", "interrupts", "modelMix", "origin", "prompts", "prs", "sessions", "subagents", "toolErrors"]);
     expect(json.filters).toEqual({ project: null, includeAutomation: false, gh: false });
     expect(json.projects[0]).toMatchObject({ project: "-Users-test-project", current: { sessions: 1 }, previous: { sessions: 1 } });
     const reports = join(scratch, "state", "reports");

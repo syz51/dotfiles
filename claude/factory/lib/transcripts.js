@@ -231,6 +231,7 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
   const hasCostState = typeof costState?.totalCostUSD === "number" && estimated <= costState.totalCostUSD * 1.1 + 0.05;
   return {
     id,
+    harness: "claude",
     project,
     cwd,
     file,
