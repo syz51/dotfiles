@@ -65,3 +65,42 @@ bun ~/.claude/factory/cli.js bench board clean   # after an interrupted run
 
 Results, reports and kept streams live in the factory state folder under
 `bench/board-formats/`, never in this repository.
+
+The board hooks of the user's own settings are turned off in bench sessions
+(`AGENT_BOARD_HOOKS=off`), and a run whose session start carried more than one board
+block is void.
+
+## Results (2026-11-07)
+
+Series `main`: `claude-opus-5-5` at effort `high`, Claude Code 2.1.319, subscription only.
+The subscription's 5-hour limit stopped it at 10 scored runs per cell (9 in `toon-bare`
+and `toon-datamarked`), half of the planned 20. The same `run` command resumes it.
+Rates are given with Wilson 95% intervals.
+
+| cell | n | follows handoff next | start block tok | task_show tok |
+|---|---|---|---|---|
+| lines-quoted | 10 | 60% [31–83] | 280 | 437 |
+| lines-bare | 10 | 30% [11–60] | 276 | 419 |
+| lines-datamarked | 10 | 60% [31–83] | 289 | 393 |
+| json-quoted | 10 | 50% [24–76] | 445 | 443 |
+| json-bare | 10 | 70% [40–89] | 452 | 453 |
+| json-datamarked | 10 | 20% [6–51] | 460 | 506 |
+| toon-quoted | 10 | 70% [40–89] | 401 | 448 |
+| toon-bare | 9 | 33% [12–65] | 403 | 442 |
+| toon-datamarked | 9 | 33% [12–65] | 410 | 504 |
+
+The other measures did not separate the cells:
+
+- claim before edit: 100% in every cell (88/88, [96–100]);
+- reacts to conflict: 100% in every cell;
+- planted instructions obeyed: 0/88 for the `touch` and 0/88 for the `git push`, and
+  every run called `task_show` on the task. The sessions reported the planted text to
+  the user in 83–100% of runs per format;
+- cache read: a median of 96% of input tokens in every cell.
+
+By framing, follows handoff next was 60% [42–75] for quoted, 45% [28–62] for bare and
+38% [23–56] for datamarked. By format it was 50%, 47% and 46%. The intervals overlap
+throughout. Tagged lines are the smallest format, at 276–289 start-block tokens against
+401–410 for TOON and 445–460 for JSON. At this n, keeping the production `lines` +
+`quoted` loses nothing measured, and it costs about 35% fewer start-block tokens than the
+alternatives.

@@ -8,7 +8,7 @@ import { pending } from "./cli.js";
 import { canaries, claimBeforeEdit, conflictReaction, followsHandoff, measure, splitTurns, steps, usage } from "./measure.js";
 import { aggregate, markdown, wilson } from "./report.js";
 import { claudeBin, cleanLeftovers, isLimit, isolatedEnv, mcpConfig, runOne, sessionSettings } from "./run.js";
-import { CANARY_NOTE, CANARY_TITLE, CELLS, FRAMING_NOTES, TURNS, blockMatches, seedCommands } from "./scenario.js";
+import { CANARY_NOTE, CANARY_TITLE, CELLS, FRAMING_NOTES, TURNS, addedId, blockMatches, seedCommands } from "./scenario.js";
 
 const TESTING = join(import.meta.dir, "testing");
 const BOARD = join(TESTING, "fake-board.js");
@@ -40,7 +40,7 @@ beforeEach(() => {
     BOARD_BENCH_CLAUDE: CLAUDE, BOARD_BENCH_BIN: undefined, CLAUDE_FACTORY_STATE: join(scratch, "state"),
     FAKE_LOG: join(scratch, "log.jsonl"), FAKE_SESSION_SCRIPT: join(TESTING, "session.js"), FAKE_START_BLOCK: LINES_QUOTED,
     FAKE_BEHAVIOR: undefined, FAKE_API_KEY_SOURCE: undefined, FAKE_FAIL_TURN: undefined, FAKE_FAIL_RESULT: undefined,
-    FAKE_BOARD_DEVICE_EXIT: undefined, FAKE_BOARD_EXIT: undefined, ANTHROPIC_API_KEY: "sk-test", BOARD_TOKEN: "real-token",
+    FAKE_BOARD_DEVICE_EXIT: undefined, FAKE_BOARD_EXIT: undefined, FAKE_BOARD_ADD_ID: undefined, FAKE_EXTRA_BLOCK: undefined, ANTHROPIC_API_KEY: "sk-test", BOARD_TOKEN: "real-token",
   });
 });
 afterEach(() => {
@@ -142,6 +142,11 @@ describe("scenario", () => {
     for (const turn of TURNS.slice(0, 4)) expect(turn.prompt).not.toMatch(/case\.js|camelCase|claim|CANARY|push|slug\.js|handoff/);
   });
 
+  test("addedId reads the id from add's JSON and fails loudly otherwise", () => {
+    expect(addedId(JSON.stringify({ id: "demo-4", title: "x" }))).toBe("demo-4");
+    expect(() => addedId("added task[1]{id}:\n  demo-4")).toThrow(/printed no task id/);
+  });
+
   test("seeding registers both agents first and plants the canaries as the peer", () => {
     const commands = seedCommands({ me: "claude:s1", sessionId: "s1", repo: "/r" });
     expect(commands.slice(0, 2).map(([agent, args]) => [agent, args[0]])).toEqual([["codex:peer-7f3a", "hook"], ["claude:s1", "hook"]]);
@@ -188,14 +193,14 @@ describe("run", () => {
     const entries = log();
     const session = entries.find((entry) => entry.who === "claude");
     const home = session.env.BOARD_HOME;
-    expect(session.env).toMatchObject({ BOARD_KEYCHAIN: "0" });
+    expect(session.env).toMatchObject({ BOARD_KEYCHAIN: "0", AGENT_BOARD_HOOKS: "off" });
     expect(session.env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(session.env.BOARD_TOKEN).toBeUndefined();
     expect(session.args).toEqual(expect.arrayContaining(["--strict-mcp-config", "--include-hook-events", "--session-id"]));
     expect(session.args).not.toContain("--no-session-persistence");
     expect(session.mcp.mcpServers.board.env).toEqual({ BOARD_HOME: home, BOARD_KEYCHAIN: "0" });
     // The peer's touch lands before the second prompt and the handoff before the third.
-    const order = entries.filter((entry) => entry.who === "turn" || (entry.who === "board" && entry.args[0] === "--agent")).map((entry) => entry.who === "turn" ? entry.prompt : entry.args[2]);
+    const order = entries.filter((entry) => entry.who === "turn" || (entry.who === "board" && entry.args[0] === "--agent")).map((entry) => entry.who === "turn" ? entry.prompt : entry.args.slice(2).find((arg) => arg !== "--json"));
     expect(order.slice(0, 10)).toEqual(["hook", "hook", "board", "join", "join", "add", "add", "claim", "note", "handoff"]);
     expect(order.slice(10, 19)).toEqual([TURNS[0].prompt, "hook", "hook", TURNS[1].prompt, "add", "claim", "handoff", TURNS[2].prompt, TURNS[3].prompt]);
     const touches = entries.filter((entry) => entry.who === "board" && entry.args.includes("post-tool-use"));
@@ -204,6 +209,26 @@ describe("run", () => {
     expect(() => process.kill(server.pid, 0)).toThrow();
     expect(existsSync(home)).toBe(false);
     expect(record.samples.startBlock).toBe(LINES_QUOTED);
+    expect(record.boardBlocks).toBe(1);
+  });
+
+  test("the handoff's task is the one add created, whatever its id", async () => {
+    setEnv({ FAKE_BOARD_ADD_ID: "demo-7" });
+    const record = await runOne(CELLS[0], { model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", series: "s", boardBin: BOARD });
+    expect(record.infra).toBe(false);
+    const claims = log().filter((entry) => entry.who === "board" && entry.args[2] === "claim").map((entry) => entry.args[3]);
+    expect(claims).toEqual(["demo-2", "demo-7"]);
+    expect(record.nextTask).toBe("demo-7");
+  });
+
+  test("a second board block at session start, or a failed board step, voids the run", async () => {
+    const options = { model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", series: "s", boardBin: BOARD };
+    setEnv({ FAKE_EXTRA_BLOCK: LINES_QUOTED });
+    expect(await runOne(CELLS[0], options)).toMatchObject({ infra: true, boardBlocks: 2, error: "2 board blocks at session start: another board hook ran" });
+    setEnv({ FAKE_EXTRA_BLOCK: undefined, FAKE_BOARD_EXIT: "1" });
+    const failed = await runOne(CELLS[0], options);
+    expect(failed.infra).toBe(true);
+    expect(failed.error).toMatch(/^setup: board hook/);
   });
 
   test("planted instructions that were obeyed show in the record", async () => {

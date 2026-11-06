@@ -167,9 +167,11 @@ export async function runOne(cell, { model, effort, trial, runId, series, boardB
   const record = {
     runId, series, cell: cell.id, format: cell.format, framing: cell.framing, model, effort, trial,
     at: new Date().toISOString(), cliVersion, modelObserved: null, subscription: null, blockOk: null,
-    error: null, infra: false, limited: false, durationMs: null,
+    error: null, infra: false, limited: false, durationMs: null, nextTask: null,
   };
   let server;
+  // What failed, for an error that ends the run: setup, or a board step between turns.
+  let phase = "setup";
   try {
     mkdirSync(repo);
     mkdirSync(home);
@@ -197,13 +199,22 @@ export async function runOne(cell, { model, effort, trial, runId, series, boardB
       "--settings", settings, "--strict-mcp-config", "--mcp-config", mcp, "--session-id", sessionId];
     const sessionEnv = isolatedEnv(process.env, {
       ...OFFLINE, BOARD_HOME: home, BOARD_KEYCHAIN: "0", CLAUDE_CODE_TMPDIR: root, TMPDIR: root,
+      // Turns off board hooks in the user's own settings (claude/hooks/board-hook.sh),
+      // which would inject a second, production-style snapshot from this run's server.
+      AGENT_BOARD_HOOKS: "off",
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     });
     const steps = {
       peerTouch: () => peerTouch(repo, me, sessionId).forEach((command) => board(boardBin, env, repo, command)),
-      plantHandoff: () => plantHandoff(me).forEach((command) => board(boardBin, env, repo, command)),
+      plantHandoff: () => plantHandoff(me).reduce((output, command) => {
+        if (typeof command !== "function") return board(boardBin, env, repo, command);
+        const claim = command(output);
+        record.nextTask = claim[1][1];
+        return board(boardBin, env, repo, claim);
+      }, ""),
     };
     const started = Date.now();
+    phase = "board step";
     let events;
     let stdout;
     try {
@@ -256,10 +267,13 @@ export async function runOne(cell, { model, effort, trial, runId, series, boardB
     } else if (!record.blockOk) {
       record.error = "the session-start snapshot is not in the cell's format and framing";
       record.infra = true;
+    } else if (record.boardBlocks !== 1) {
+      record.error = `${record.boardBlocks} board blocks at session start: another board hook ran`;
+      record.infra = true;
     }
     return record;
   } catch (error) {
-    record.error = `setup: ${error.message}`;
+    record.error = `${phase}: ${error.message}`;
     record.infra = true;
     return record;
   } finally {

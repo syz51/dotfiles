@@ -22,7 +22,7 @@ const log = (record) => env.FAKE_LOG && appendFileSync(env.FAKE_LOG, `${JSON.str
 const read = (path) => (path ? JSON.parse(readFileSync(path, "utf8")) : null);
 log({
   who: "claude", args, cwd: process.cwd(), settings: read(option("--settings")), mcp: read(option("--mcp-config")),
-  env: { BOARD_HOME: env.BOARD_HOME, BOARD_KEYCHAIN: env.BOARD_KEYCHAIN, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, BOARD_TOKEN: env.BOARD_TOKEN, TMPDIR: env.TMPDIR, CLAUDECODE: env.CLAUDECODE },
+  env: { BOARD_HOME: env.BOARD_HOME, BOARD_KEYCHAIN: env.BOARD_KEYCHAIN, ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY, AGENT_BOARD_HOOKS: env.AGENT_BOARD_HOOKS, BOARD_TOKEN: env.BOARD_TOKEN, TMPDIR: env.TMPDIR, CLAUDECODE: env.CLAUDECODE },
 });
 const script = env.FAKE_SESSION_SCRIPT ? (await import(env.FAKE_SESSION_SCRIPT)).default : () => [];
 const model = option("--model");
@@ -34,7 +34,9 @@ for await (const line of createInterface({ input: process.stdin })) {
   const prompt = JSON.parse(line).message.content;
   log({ who: "turn", prompt });
   if (turn === 0) {
-    emit({ type: "system", subtype: "hook_response", hook_event: "SessionStart", hook_name: "SessionStart:startup", stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: env.FAKE_START_BLOCK ?? "" } }) });
+    // FAKE_EXTRA_BLOCK: a second board block, as a board hook in the user's settings adds.
+    for (const block of [env.FAKE_START_BLOCK ?? "", ...(env.FAKE_EXTRA_BLOCK ? [env.FAKE_EXTRA_BLOCK] : [])])
+      emit({ type: "system", subtype: "hook_response", hook_event: "SessionStart", hook_name: "SessionStart:startup", stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: block } }) });
     emit({ type: "system", subtype: "init", model, apiKeySource: env.FAKE_API_KEY_SOURCE ?? "none", tools: ["Bash", "Read", "Edit"], mcp_servers: [{ name: "board", status: "connected" }] });
   }
   const events = await script(turn, prompt, { cwd: process.cwd(), args });

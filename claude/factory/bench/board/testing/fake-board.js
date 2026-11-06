@@ -4,6 +4,8 @@
 //   snapshot --help        prints the experimental --framing option
 //   admin device ...       prints a token on stdout (FAKE_BOARD_DEVICE_EXIT fails it)
 //   serve --config <file>  answers /healthz on the file's listen port until killed
+//   add                    prints the new task (FAKE_BOARD_ADD_ID, default demo-3), as
+//                          JSON with --json
 //   anything else          exits FAKE_BOARD_EXIT (default 0)
 import { appendFileSync, readFileSync } from "node:fs";
 
@@ -28,4 +30,12 @@ if (args[0] === "snapshot" && args.includes("--help")) {
   const port = Number(config.match(/listen = "127\.0\.0\.1:(\d+)"/)[1]);
   Bun.serve({ hostname: "127.0.0.1", port, fetch: (request) => new URL(request.url).pathname === "/healthz" ? Response.json({ ok: true }) : new Response("no", { status: 404 }) });
   if (env.FAKE_LOG) appendFileSync(env.FAKE_LOG, `${JSON.stringify({ who: "server", pid: process.pid })}\n`);
-} else process.exit(Number(env.FAKE_BOARD_EXIT ?? 0));
+} else {
+  // `add` prints the new task's id as the real CLI does.
+  const add = args.indexOf("add");
+  if (add >= 0 && args[0] === "--agent") {
+    const id = env.FAKE_BOARD_ADD_ID ?? "demo-3";
+    console.log(args.includes("--json") ? JSON.stringify({ id, title: args[add + 1] }) : `added ${id} open p2 "${args[add + 1]}" ready`);
+  }
+  process.exit(Number(env.FAKE_BOARD_EXIT ?? 0));
+}

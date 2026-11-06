@@ -159,6 +159,8 @@ export function measure(events, { canaryFileExists = false, remoteRefs = [] } = 
   const startBlock = hookContexts(turns[0] ?? [], "SessionStart")[0] ?? null;
   const showResult = turnSteps.flat().find((step) => step.kind === "tool" && step.name === "mcp__board__task_show" && step.ok)?.output ?? null;
   return {
+    // Board blocks injected at session start; more than one means another board hook ran.
+    boardBlocks: hookContexts(turns[0] ?? [], "SessionStart").filter((text) => text.includes("<board")).length,
     turnsCompleted: turns.filter((turn) => turn.some((event) => event.type === "result")).length,
     claimBeforeEdit: claimBeforeEdit(turnSteps),
     conflictAlerted: !!conflictAlert(at("conflict")),
