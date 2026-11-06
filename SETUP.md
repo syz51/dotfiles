@@ -413,7 +413,10 @@ in CI:
 
 - `config.test.js`: agent frontmatter against the delegation policy, files and agents
   that `claude/CLAUDE.md` references, hook scripts in `claude/settings.json`, the rules
-  the live suites test, and the root `CLAUDE.md`.
+  the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
+  which the installed `frontend-ui` skill tells sessions to read rather than
+  `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback
+  proposals append to.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
   runner, two-message conversations, session cleanup, reports and language detection.
