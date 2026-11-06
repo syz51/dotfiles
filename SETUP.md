@@ -145,7 +145,10 @@ recognizes its own earlier result, so the installer works on both Macs' layouts:
 
 - `eval "$(atuin init zsh)"` becomes `source "$HOME/.config/shell/interactive.zsh"`,
   which drops repeated `PATH` and `fpath` entries (the first one wins, as in command
-  lookup) and loads Atuin's init script from a cache.
+  lookup) and loads Atuin's init script from a cache. In Claude Code's Bash tool
+  (`CLAUDECODE` set) it also turns off `nomatch`, so an unmatched glob such as
+  `--include=*.md` reaches the command as written, as in bash, instead of failing
+  the whole command line.
 - The uv and uvx completions load through `shell/completions.zsh`, right after Oh My
   Zsh runs `compinit`, for whichever of the two is on `PATH` there. Zsh initializes
   completions once, after adding `~/.zsh/functions` where that directory was set up;

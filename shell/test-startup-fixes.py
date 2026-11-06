@@ -78,7 +78,7 @@ class FixtureTest(ScratchTest):
         self.mode = self.root / 'mode'
         self.mode.write_text('good')
         for name in list(self.env):
-            if name.startswith(('ATUIN_', '_ZO_')):
+            if name.startswith(('ATUIN_', '_ZO_')) or name == 'CLAUDECODE':
                 del self.env[name]
         self.env.update(PATH=f'{self.bin}:/usr/bin:/bin',
                         XDG_CACHE_HOME=str(self.cache.parent),
@@ -304,6 +304,7 @@ echo 'setopt interactive_comments' ''')
     def load(self, **env):
         script = '''source "$1"
 print -r -- "atuin:$ATUIN_FAKE comments:$options[interactivecomments]"
+print -r -- "nomatch:$options[nomatch]"
 print -r -- "path:$PATH"
 print -r -- "fpath:${(j.:.)fpath}"
 '''
@@ -352,6 +353,13 @@ print -r -- "fpath:${(j.:.)fpath}"
                 for _ in range(2):
                     self.assertIn('atuin:bound comments:on', self.load(**env))
                 self.assertEqual(self.calls('atuin') - calls, 2 if live else 1)
+
+    def test_unmatched_globs_pass_through_only_in_claude_code(self):
+        self.assertIn('nomatch:on\n', self.load())
+        self.assertIn('nomatch:off\n', self.load(CLAUDECODE='1'))
+        result = self.zsh('source "$1"; print -r -- --include=*.no-such-ext',
+                          ROOT / 'interactive.zsh', CLAUDECODE='1')
+        self.assertEqual(result.stdout.splitlines()[-1], '--include=*.no-such-ext')
 
     def test_duplicate_path_entries_keep_first_occurrence(self):
         path = f'{self.bin}:/usr/bin:{self.bin}:/bin:/usr/bin'
