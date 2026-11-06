@@ -109,7 +109,8 @@ describe("allows", () => {
     ["cat <<EOF > deploy.sh\ngit push -f origin main\nEOF"],
     ["bash -c 'echo hi' && git push origin feature"],
     ["git status > /dev/null && ls"],
-    ["command -v git && git push origin feature"],
+    // command -v only looks the command up
+    ["command -v git push -f origin main"],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeUndefined();
   });

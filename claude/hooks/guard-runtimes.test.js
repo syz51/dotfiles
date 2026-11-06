@@ -36,6 +36,14 @@ describe("blocks", () => {
     ["bash <<EOF\npytest\nEOF"],
     ["sh -c 'cd x && node y.js'"],
     ["command node check.js"],
+    // quoting, escaping and case do not hide the name
+    ['"no"de check.js'],
+    ["n\\ode check.js"],
+    ["PYTHON3 check.py"],
+    // more wrappers
+    ["env --unset FOO node check.js"],
+    ["arch -arm64 python3 check.py"],
+    ["arch -arch x86_64 node check.js"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeDefined();
   });
@@ -70,6 +78,13 @@ describe("allows", () => {
   ])("%s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
+});
+
+test("scripts nested too deeply to follow are skipped, not blocked", () => {
+  let command = "echo node_modules";
+  for (let i = 0; i < 10; i++) command = `bash -c ${JSON.stringify(command)}`;
+  expect(verdict(command)).toBeUndefined();
+  expect(verdict(`${command}; python3 check.py`)).toBeDefined();
 });
 
 test("the reason names the command and the replacement", () => {

@@ -10,10 +10,12 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { visitCommands } from "./guard-git-push.js";
 
-const PYTHON = /^(?:python|pip)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/;
-const NODE = /^(?:node|nodejs)$/;
-// A cheap prefilter: commands that never name a runtime are not parsed.
-const MENTION = /python|pip|py\.?test|node/;
+// Case-insensitive: the default macOS volume runs PYTHON3 as python3.
+const PYTHON = /^(?:python|pip)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/i;
+const NODE = /^(?:node|nodejs)$/i;
+// A cheap prefilter: commands that never name a runtime, even split by quotes or
+// backslashes ("no"de, n\ode), are not parsed.
+const MENTION = /python|pip|py\.?test|node/i;
 
 /** Why the command `words` must not run, or undefined when it may. */
 export function runtimeViolation(words) {
@@ -30,7 +32,7 @@ export function runtimeViolation(words) {
 }
 
 export function findRuntimeViolation(command, cwd) {
-  return MENTION.test(command) ? visitCommands(command, cwd, runtimeViolation) : undefined;
+  return MENTION.test(command.replace(/["'\\]/g, "")) ? visitCommands(command, cwd, runtimeViolation) : undefined;
 }
 
 if (import.meta.main) {
