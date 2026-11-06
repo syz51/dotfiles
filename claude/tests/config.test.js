@@ -86,7 +86,6 @@ describe("global instructions", () => {
 
   test("every ~/.claude file they reference is tracked in this repository", () => {
     const references = [...globalInstructions.matchAll(/~\/\.claude\/([\w./-]+)/g)].map((match) => match[1]);
-    expect(references).toContain("frontend-avoid.md");
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
@@ -168,6 +167,24 @@ test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(instructions).not.toMatch(/^\s*@/m);
   expect(instructions).toMatch(/clean up temporary test files/);
   expect(instructions).toMatch(/^- Keep the test suite in step with every change/m);
+});
+
+describe("rejected frontend defaults list", () => {
+  test("is tracked and keeps its rule for using and adding patterns", () => {
+    expect(tracked("claude/frontend-avoid.md")).toBe(true);
+    const list = read("claude/frontend-avoid.md");
+    expect(list).toMatch(/do not use them unless the brief, a reference, or the existing project calls for them/);
+    expect(list).toMatch(/explicitly rejects a pattern as an unwanted default, not for feedback on a single design/);
+    expect(list).toMatch(/one per line/);
+  });
+
+  // The skill feedback pipeline proposes additions as "- <pattern>" lines in this section.
+  test("ends with a Patterns section of one-line entries", () => {
+    const parts = read("claude/frontend-avoid.md").split(/^## Patterns\n/m);
+    expect(parts).toHaveLength(2);
+    expect(parts[1]).not.toMatch(/^## /m);
+    for (const line of parts[1].split("\n").filter((text) => text.trim())) expect(line).toMatch(/^- \S/);
+  });
 });
 
 // The work board (github.com/syz51/agent-board) hooks into every Claude Code and Codex
@@ -275,7 +292,13 @@ describe("rules the live suites test", () => {
     expect(skills).toMatch(/load `frontend-ui` first/);
     expect(skills).toMatch(/unrelated work in a TypeScript or Rust repository needs neither language skill/i);
     expect(skills).toMatch(/data-visualization skill/);
-    expect(skills).toContain("~/.claude/frontend-avoid.md");
+  });
+
+  // The installed frontend-ui skill tells Claude Code and Codex to read the list, and the
+  // list states its own rule, so the global instructions don't repeat either; the live
+  // chart scenario checks that the read still happens.
+  test("the rejected frontend defaults list is left to the frontend-ui skill", () => {
+    expect(globalInstructions).not.toContain("frontend-avoid");
   });
 
   test("Working preferences keep uv and bun with project lockfiles", () => {
@@ -354,5 +377,14 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/explicit output-only or structured-format requirement/);
     expect(workflow).toMatch(/Do not duplicate Chinese-only replies/);
     expect(workflow).toMatch(/`headless-browser` skill/);
+  });
+
+  // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
+  // refusals; plain one-command calls pass its checks the first time.
+  test("Workflow says how to run git in a worktree-isolated session", () => {
+    const workflow = section("Workflow");
+    expect(workflow).toMatch(/worktree-isolated session/);
+    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
   });
 });

@@ -11,7 +11,6 @@
 ## Skills
 
 - Load skills with the Skill tool before matching work: `frontend-ui` for frontend/UI work or its tooling, including TSX and Vue; `typescript` for TypeScript implementation, review, debugging, migration, or tooling; `rust` for Rust or Cargo/toolchain work; and `tauri` for Tauri work. When several apply, load `frontend-ui` first. Follow each skill's routing to the references the task needs; unrelated work in a TypeScript or Rust repository needs neither language skill.
-- Before choosing a visual direction, read `~/.claude/frontend-avoid.md`. Record only patterns I explicitly reject as defaults; keep project-specific exclusions in that project's instructions.
 - For charts, load a data-visualization skill such as `dataviz` and apply it within `frontend-ui`'s constraints.
 
 ## Workflow
@@ -21,6 +20,7 @@
 - Run the smallest meaningful checks and required project checks. Add focused tests for non-trivial or risky logic; visually inspect UI changes and state verification limits.
 - Keep temporary files in the session scratchpad when one is provided, otherwise in one task directory under `$TMPDIR`; remove them before finishing. Do not delete and reinstall tools between steps.
 - Prefer dedicated tools. Inspect UI with the `headless-browser` skill; use the in-app browser only when I ask for it.
+- In a worktree-isolated session, Claude Code refuses git it cannot verify stays in the worktree: give each git command its own Bash call with literal paths, without loops, variables or `$(…)` around it, and do work on other checkouts from a session or delegate started there.
 - Keep responses and durable instructions concise and nonduplicative. State substantial actions before starting, share material progress, and report results and blockers. Verify uncertain or time-sensitive claims and cite supporting sources.
 - For a requested draft or translation into a non-Chinese language, include the reply followed by its Chinese meaning. Omit the meaning only when an explicit output-only or structured-format requirement excludes it. Do not duplicate Chinese-only replies.
 - Do not add AI attribution or generated-by footers to commits, PRs, or anything else I publish.
