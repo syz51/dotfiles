@@ -212,6 +212,11 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   redirects, pipes, heredoc bodies, comments and subshells, which the settings check of
   ultra-effort shares. Over 7 days of real sessions it fails 99 of the 115 that edited
   files (inline Python replace scripts are most hits, then `sed -i`/`perl -pi`).
+- [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
+  rules, so each judged record keeps `instructions`: `global` with the sha256 of
+  `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
+  differs from it (null outside git), and `project` with the sha256 of each project
+  CLAUDE.md the judge saw. Detector-only records do not read instructions.
 - [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
   parallel scheduler, fresh fixture per run, agent override file plus `--agent`, installs
   and web blocked, overlay re-applied before the oracle so tests cannot be edited to

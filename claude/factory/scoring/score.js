@@ -1,5 +1,6 @@
 // `score`: run the detectors on every eligible session and the LLM judge on a sample,
 // storing one record per session in the state folder's scores.jsonl.
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -101,6 +102,21 @@ export function projectInstructions(cwd, home = homedir()) {
     return [];
   }
   return candidates.filter((file) => typeof read.get(file) === "string").map((file) => ({ file, text: read.get(file) }));
+}
+
+const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+// Which version of an instructions file a judgement used, as sessions are judged against
+// today's rules: the hash of the text, and in a git checkout the last commit that changed
+// the file and whether it differs from it. Outside git (or without git) both are null.
+export function instructionsRevision(file, text) {
+  const git = (...args) => {
+    const run = spawnSync("git", ["-C", dirname(file), ...args], { encoding: "utf8", timeout: 5000 });
+    return run.status === 0 ? run.stdout.trim() : null;
+  };
+  const commit = git("log", "-1", "--format=%H", "--", file) || null;
+  const status = commit === null ? null : git("status", "--porcelain", "--", file);
+  return { file, sha256: sha256(text), commit, modified: status === null ? null : status !== "" };
 }
 
 // The judge's input in two parts. system is the same for every session of a run (the
@@ -274,6 +290,7 @@ export async function run(argv, { now = Date.now() } = {}) {
   }
 
   const globalInstructions = readFileSync(GLOBAL_INSTRUCTIONS, "utf8");
+  const globalRevision = instructionsRevision(GLOBAL_INSTRUCTIONS, globalInstructions);
   const schema = judgeSchema();
   const rows = [];
   let total = 0;
@@ -309,8 +326,11 @@ export async function run(argv, { now = Date.now() } = {}) {
     const records = sessionRecords(candidate.session);
     const detectors = runDetectors(candidate.session, records);
     const digest = buildDigest(candidate.session, { records: records.main });
-    const { system, prompt } = judgeParts({ digest, globalInstructions, projectFiles: projectInstructions(candidate.session.cwd) });
-    const record = { ...base(candidate, detectors), model: options.model, effort: options.effort, digestChars: digest.length, costUSD: 0, dimensions: null, corrections: null, summary: null, error: null };
+    const projectFiles = projectInstructions(candidate.session.cwd);
+    const { system, prompt } = judgeParts({ digest, globalInstructions, projectFiles });
+    // The instructions as the judge saw them (project files may be cut at their limit).
+    const instructions = { global: globalRevision, project: projectFiles.map(({ file, text }) => ({ file, sha256: sha256(text) })) };
+    const record = { ...base(candidate, detectors), model: options.model, effort: options.effort, instructions, digestChars: digest.length, costUSD: 0, dimensions: null, corrections: null, summary: null, error: null };
     try {
       const { output, costUSD } = await judge({ prompt, system, schema, model: options.model, effort: options.effort, budgetUsd: options.budgetUsd });
       record.costUSD = costUSD;
