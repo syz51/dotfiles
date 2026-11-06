@@ -87,7 +87,7 @@ describe("audit command", () => {
     expect(found["permissions.writes-outside-workdir"].severity).toBe("low");
     expect(found["permissions.broad-allow"]).toMatchObject({ severity: "medium", title: "permissions.allow has tool-wide rules: Bash(*)" });
     expect(found["sandbox.disabled"].severity).toBe("medium");
-    expect(found["mcp.claude-ai-connectors-on"].severity).toBe("low");
+    expect(found["mcp.claude-ai-connectors-on"].severity).toBe("info");
     expect(found["plugin:formatter@team"].severity).toBe("low");
     expect(found["plugin:off@team"]).toBeUndefined();
     expect(found["codex-skills.review-missing"].severity).toBe("info");
