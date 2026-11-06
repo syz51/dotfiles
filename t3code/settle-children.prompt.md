@@ -1,8 +1,8 @@
 # Settle idle subagent threads and prune merged T3 branches
 
 T3 Code does not settle a thread's subagent children when the thread is settled, and
-its storage cleanup removes a merged thread's worktree but keeps the branch. This
-routine settles idle children and deletes those merged branches. Follow these steps
+its storage cleanup removes the worktree of a merged or long-settled thread but keeps
+the branch. This routine settles idle children and deletes those merged branches. Follow these steps
 exactly. Start no subagents, and do not read or quote any thread's contents.
 
 1. Plan. Run:
@@ -28,9 +28,10 @@ exactly. Start no subagents, and do not read or quote any thread's contents.
    ```
 
    It deletes merged local branches of T3 threads whose worktrees are gone and prints
-   each as `<repository> <branch>`. A repository it could not prune makes it exit 1
-   with a `failed:` line on stderr; the others are still pruned. Delete no branch or
-   worktree yourself.
+   each as `<repository> <branch>`. A repository it could not prune, or a failed
+   GitHub pull request lookup, makes it exit 1 with a `failed:` line on stderr naming
+   the repository and, for a lookup, the branch; everything else is still pruned.
+   Delete no branch or worktree yourself.
 5. Report in at most five lines: ids planned, settled, refused or failed with the
    reasons, ids still listed after verify, branches pruned and any prune failures.
 6. If nothing failed, the prune succeeded and verify listed only refused ids or none,
