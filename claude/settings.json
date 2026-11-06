@@ -20,6 +20,10 @@
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-git-push.js\""
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-runtimes.js\""
           }
         ]
       }

@@ -203,7 +203,8 @@ bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals. Proposals open draft PRs on this
+audit, scoring (judge budget $3) and proposals ($3 per proposer session, at most $10
+per run). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
 ids, not transcript text, because the repository is public. `weekly status` shows the
 last run; `weekly uninstall` removes the job. The living task list is
@@ -379,7 +380,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   the commit's SHA, in one background agent on the session's model in a worktree. A
   follow-up sent as soon as the first turn ends is answered while the review runs, and
   the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. The guard hook blocks a force push to `main`.
+  worktrees as they were. The guard hooks block a force push to `main` and a bare
+  `python3`, while `uv run python` still runs.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a

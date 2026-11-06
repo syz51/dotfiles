@@ -112,6 +112,11 @@ describe("global instructions", () => {
     expect(meta.description.length).toBeGreaterThan(20);
   });
 
+  test("headless-browser screenshots go to the session scratchpad when there is one", () => {
+    expect(read("claude/skills/headless-browser/SKILL.md")).toContain("`--dir <scratchpad>/headless-browser`");
+    expect(read("claude/skills/headless-browser/scripts/browse.ts")).toMatch(/case 'dir': opts\.dir = resolve\(next\(\)\)/);
+  });
+
   // No live scenario covers continuing an agent: it needs a defect to surface after a
   // track returns, which a fixture cannot trigger reliably.
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
@@ -149,10 +154,10 @@ describe("settings", () => {
     expect(settings.disableClaudeAiConnectors).toBeUndefined();
   });
 
-  test("the guard is registered for Bash PreToolUse", () => {
+  test.each(["guard-git-push.js", "guard-runtimes.js"])("the %s guard is registered for Bash PreToolUse", (script) => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
-      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes("hooks/guard-git-push.js")));
+      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
     expect(guard).toHaveLength(1);
   });
 

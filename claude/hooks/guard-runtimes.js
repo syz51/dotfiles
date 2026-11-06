@@ -1,0 +1,46 @@
+// Claude Code PreToolUse hook for the Bash tool. Enforces the runtime rule in
+// ~/.claude/CLAUDE.md: Python runs through `uv run` and JavaScript through `bun` or
+// `bunx`, so a command that starts python, pip, pytest or node directly is blocked.
+// `uv run python`, `uv pip`, `npm test` and words that only mention a runtime (`grep
+// python`, `command -v node`) still run. Exit 2 blocks the command and shows stderr to
+// Claude; a crash is a non-blocking hook error, so the guard fails open. It follows the
+// shell syntax that guard-git-push.js parses but cannot see into script files, package
+// scripts or expanded variables.
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
+import { visitCommands } from "./guard-git-push.js";
+
+const PYTHON = /^(?:python|pip)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/;
+const NODE = /^(?:node|nodejs)$/;
+// A cheap prefilter: commands that never name a runtime are not parsed.
+const MENTION = /python|pip|py\.?test|node/;
+
+/** Why the command `words` must not run, or undefined when it may. */
+export function runtimeViolation(words) {
+  const name = basename(words[0]);
+  if (PYTHON.test(name)) {
+    return `\`${words.join(" ")}\` runs ${name} directly. Run Python through uv instead: \`uv run python …\`, `
+      + "`uv run --with pytest pytest …` or `uv pip …`.";
+  }
+  if (NODE.test(name)) {
+    return `\`${words.join(" ")}\` runs ${name}. Use \`bun\` or \`bunx\` instead; use npm, npx, pnpm or yarn `
+      + "only where the project's lockfile selects them.";
+  }
+  return undefined;
+}
+
+export function findRuntimeViolation(command, cwd) {
+  return MENTION.test(command) ? visitCommands(command, cwd, runtimeViolation) : undefined;
+}
+
+if (import.meta.main) {
+  const input = JSON.parse(readFileSync(0, "utf8"));
+  const command = input?.tool_input?.command;
+  if (typeof command === "string") {
+    const violation = findRuntimeViolation(command, typeof input.cwd === "string" ? input.cwd : process.cwd());
+    if (violation) {
+      process.stderr.write(`Blocked by the guard-runtimes hook: ${violation}\n`);
+      process.exit(2);
+    }
+  }
+}
