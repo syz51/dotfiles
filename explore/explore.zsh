@@ -78,6 +78,16 @@ if [[ -o interactive ]]; then
   zle -N explore-widget
   bindkey $'\e[99~' explore-widget
   if (( $+commands[zoxide] )); then
-    eval "$(zoxide init zsh)"
+    # Reuse the dotfiles' init cache when present; zoxide bakes _ZO_* into its script.
+    if [[ -r ${_EXPLORE_ROOT:h}/shell/cache.zsh ]]; then
+      source "${_EXPLORE_ROOT:h}/shell/cache.zsh"
+      if _shell_cache -e '_ZO_*' zoxide-init.zsh -- zoxide init zsh; then
+        source "$REPLY"
+      else
+        eval "$REPLY"
+      fi
+    else
+      eval "$(zoxide init zsh)"
+    fi
   fi
 fi
