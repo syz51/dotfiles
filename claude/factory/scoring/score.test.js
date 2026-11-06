@@ -147,6 +147,33 @@ describe("eligibility and priority", () => {
   });
 });
 
+describe("instructions revision", () => {
+  test("hashes the text and, in git, names the last commit of the file and whether it changed since", () => {
+    const repo = join(scratch, "repo");
+    mkdirSync(repo);
+    const file = join(repo, "CLAUDE.md");
+    const git = (...args) => {
+      const result = Bun.spawnSync(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", ...args]);
+      expect(result.exitCode).toBe(0);
+      return result.stdout.toString().trim();
+    };
+    const hash = (text) => createHash("sha256").update(text).digest("hex");
+    writeFileSync(file, "rules v1");
+    // Outside a commit (and outside git) there is no revision, only the hash.
+    expect(score.instructionsRevision(file, "rules v1")).toEqual({ file, sha256: hash("rules v1"), commit: null, modified: null });
+    git("init", "-q");
+    git("add", "CLAUDE.md");
+    git("commit", "-q", "-m", "v1");
+    writeFileSync(join(repo, "other"), "x");
+    git("add", "other");
+    git("commit", "-q", "-m", "unrelated");
+    const v1 = git("log", "-1", "--format=%H", "HEAD~1");
+    expect(score.instructionsRevision(file, "rules v1")).toEqual({ file, sha256: hash("rules v1"), commit: v1, modified: false });
+    writeFileSync(file, "rules v2");
+    expect(score.instructionsRevision(file, "rules v2")).toEqual({ file, sha256: hash("rules v2"), commit: v1, modified: true });
+  });
+});
+
 // The judge's system part: what judge() appended to Claude Code's system prompt.
 const systemOf = (call) => call.system;
 
@@ -172,6 +199,9 @@ describe("score command", () => {
     expect(judged.detectors["package-runner"].verdict).toBe("fail");
     expect(Object.keys(judged.dimensions).sort()).toEqual(judgeDimensions().map((dimension) => dimension.id).sort());
     expect(records.filter((record) => record.dimensions === null && record.model === null)).toHaveLength(2);
+    // The revision of the rules it was judged against: this checkout's claude/CLAUDE.md.
+    expect(judged.instructions).toEqual({ global: score.instructionsRevision(GLOBAL_INSTRUCTIONS, readFileSync(GLOBAL_INSTRUCTIONS, "utf8")), project: [] });
+    expect(judged.instructions.global.sha256).toBe(createHash("sha256").update(readFileSync(GLOBAL_INSTRUCTIONS)).digest("hex"));
     expect(output.join("\n")).toContain("judge cost $0.05");
 
     // The judged session is skipped; detector-only records are not rewritten.
@@ -379,6 +409,8 @@ describe("score command", () => {
     expect(calls()).toHaveLength(3);
     expect(calls()[2].stdin).toContain(t.sessionId);
     expect(calls()[2].stdin).toContain("PROJECT RULE: use tabs");
+    // The record names the project instructions the judge saw, by hash.
+    expect(scores().at(-1).instructions.project).toEqual([{ file: join(cwd, "CLAUDE.md"), sha256: createHash("sha256").update("PROJECT RULE: use tabs").digest("hex") }]);
     expect(await run(["--session", "zzz"]).catch((error) => error.message)).toContain("matches 0 sessions");
   });
 
