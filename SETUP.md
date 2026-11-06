@@ -334,6 +334,17 @@ only while that file matches `codex/hooks.json` on `origin/main`, so pull first,
 Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
 token in `~/.local/share/agent-board/token` (mode 0600) instead.
 
+Agents' asks reach you on Telegram, and you can answer them from a shell with a user token
+kept in its own `BOARD_HOME`, so it does not replace the device's token. Create it on the
+server (`board admin device <mac>-user --user`, which prints the token once) and pipe it
+straight into the login, then answer with the same `BOARD_HOME`:
+
+```sh
+mkdir -m 700 -p ~/.local/share/agent-board-user
+BOARD_HOME=~/.local/share/agent-board-user board login --server <url> --device <mac>-user
+BOARD_HOME=~/.local/share/agent-board-user board answer <ask id> <option>
+```
+
 To host autopilot coordinators on a Mac, map each board repository to its local T3 Code
 project folder in `~/.local/share/agent-board/config.toml` and list the Mac among the
 board's home devices (`board board update <slug> --home-device <first> --home-device <second>`
