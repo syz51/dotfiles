@@ -23,10 +23,10 @@ import { delimiter, join, resolve } from "node:path";
 import { appendJsonl, readJson, writeJsonAtomic } from "../factory/lib/state.js";
 
 export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 30 * 60 * 1000, unknown: 60 * 1000 };
-// The beta Claude Code sends on every request. The API gates Claude Code traffic on its own
-// credit rule: a key whose plain Messages calls succeed can get "credit balance is too low"
-// for the same request with this beta (credits that cannot be spent on Claude Code), so the
-// check sends it too. A cached result counts only for the check that made it.
+// The beta on Claude Code's main-loop requests. The API gates them on their own credit rule:
+// a key whose plain Messages calls succeed can get "credit balance is too low" for the same
+// request with this beta (credits that cannot be spent on Claude Code), so the check sends
+// it too. A cached result counts only for the check that made it.
 export const CLAUDE_CODE_BETA = "claude-code-20250219";
 const CHECK = `messages+${CLAUDE_CODE_BETA}`;
 // A wrapped session may run a script that goes through the wrapper again; deeper than this

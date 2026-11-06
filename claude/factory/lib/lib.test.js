@@ -286,7 +286,7 @@ describe("claude runner", () => {
     expect(call.args[call.args.indexOf("--tools") + 1]).toBe("");
     expect(call.args[call.args.indexOf("--max-budget-usd") + 1]).toBe("0.3");
     expect(JSON.parse(call.args[call.args.indexOf("--json-schema") + 1])).toEqual(schema);
-    expect(call.args).not.toContain("--append-system-prompt");
+    expect(call.args).not.toContain("--append-system-prompt-file");
     expect(existsSync(call.cwd)).toBe(false);
   });
 
@@ -294,8 +294,11 @@ describe("claude runner", () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
     await judge({ prompt: "one session", system: "the rubric", schema, model: "m" });
     const [call] = calls();
-    expect(call.args[call.args.indexOf("--append-system-prompt") + 1]).toBe("the rubric");
+    expect(call.system).toBe("the rubric");
+    // The file lives in the judge's own folder, removed with it.
+    expect(call.args[call.args.indexOf("--append-system-prompt-file") + 1].endsWith("/judge-system.md")).toBe(true);
     expect(call.stdin).toBe("one session");
+    expect(existsSync(call.cwd)).toBe(false);
   });
 
   test.each(["tool", "mcp", "error", "malformed"])("judge fails closed on %s", async (mode) => {

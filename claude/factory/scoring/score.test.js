@@ -139,7 +139,7 @@ describe("eligibility and priority", () => {
 });
 
 // The judge's system part: what judge() appended to Claude Code's system prompt.
-const systemOf = (call) => call.args[call.args.indexOf("--append-system-prompt") + 1];
+const systemOf = (call) => call.system;
 
 describe("score command", () => {
   test("judges the highest-priority sample, runs detectors on the rest, and skips them next time", async () => {

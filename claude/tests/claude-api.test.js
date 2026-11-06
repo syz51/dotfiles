@@ -115,12 +115,14 @@ describe("decision", () => {
 
   test("a result cached by an earlier kind of check is checked again", async () => {
     // The check before CLAUDE_CODE_BETA wrote no `check` field and passed keys that Claude
-    // Code's own requests were refused with.
-    mkdirSync(join(root, "state"), { recursive: true });
-    const keyHash = new Bun.CryptoHasher("sha256").update("sk-test-key").digest("hex").slice(0, 16);
-    writeFileSync(join(root, "state", "state.json"), JSON.stringify({ keyHash, status: "ok", checkedAt: Date.now(), detail: "HTTP 200" }));
+    // Code's own requests were refused with. Same key, fresh entry: only `check` differs.
+    const now = Date.now();
+    expect((await decide({ env, now, check: statusOf("ok") })).mode).toBe("api");
+    const file = join(root, "state", "state.json");
+    const { check: _, ...old } = JSON.parse(readFileSync(file, "utf8"));
+    writeFileSync(file, JSON.stringify(old));
     const { calls, check } = counting("exhausted");
-    expect((await decide({ env, check })).mode).toBe("subscription");
+    expect((await decide({ env, now: now + 1, check })).mode).toBe("subscription");
     expect(calls).toHaveLength(1);
   });
 
