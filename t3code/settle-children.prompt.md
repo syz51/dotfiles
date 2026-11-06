@@ -30,7 +30,7 @@ commits are kept elsewhere. Follow these steps exactly. Start no subagents, and 
    It deletes the local branches of T3 threads whose worktrees are gone once they are
    merged, pushed, or abandoned with every thread on them archived or deleted. It
    prints each as `<repository> <branch>`, followed by `archived as <ref>` when it
-   saved an abandoned branch's tip under that ref first. A repository it could not
+   saved a pushed or abandoned branch's tip under that ref first. A repository it could not
    prune, or a failed remote lookup, makes it exit 1 with a `failed:` line on stderr
    naming the repository and, for a lookup, the branch; everything else is still
    pruned.

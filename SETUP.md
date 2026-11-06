@@ -272,19 +272,23 @@ now hold another branch. It deletes such a branch when:
 - it is pushed: `origin/<branch>`, both as last fetched and as `gh` or
   `git ls-remote` reads it live, is its tip or a known descendant, so a resumed
   thread gets the work back;
-- it is abandoned: every thread on it is archived or deleted. It first saves the tip
-  as `refs/t3-archive/<branch>@<12 hex digits>`, which `git branch` does not list.
-  List those refs with `git for-each-ref refs/t3-archive/` and restore one with
-  `git branch <branch> refs/t3-archive/<branch>@<digits>`.
+- it is abandoned: every thread on it, with a worktree or not, is archived or
+  deleted.
 
-Other branches stay, such as an unpushed branch of a thread that can still be
-resumed. An origin counts as github.com after `insteadOf` rewriting and, for SSH
-URLs, after `ssh -G` resolves a host alias such as `github-work`. The conditions are
-checked again just before deleting. It never deletes the default branch or a branch
-no T3 thread uses, and skips repositories without `origin/HEAD`. It exits 1 when a
-repository or a remote lookup fails, still pruning the rest. Lookups time out after
-60 seconds; after a failed one it skips the remaining `gh` lookups, or the remaining
-`git ls-remote` lookups in that repository.
+Before deleting a pushed or abandoned branch it saves the tip as
+`refs/t3-archive/<branch>@<12 hex digits>`, which `git branch` does not list and which
+keeps the work after origin's branch is gone. List those refs with
+`git for-each-ref refs/t3-archive/`, restore one with
+`git branch <branch> refs/t3-archive/<branch>@<digits>`, and drop one with
+`git update-ref -d <ref>`. Other branches stay, such as an unpushed branch of a
+thread that can still be resumed. An origin counts as github.com after `insteadOf`
+rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses resolves
+a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
+conditions are checked again just before deleting. It never deletes the default
+branch or a branch no T3 worktree thread uses, and skips repositories without
+`origin/HEAD`. It exits 1 when a repository or a remote lookup fails, still pruning
+the rest. Lookups never prompt and time out after 60 seconds; after a failed one it
+skips the remaining remote lookups in that repository.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and

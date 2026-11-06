@@ -116,6 +116,7 @@ if [ -n "$FAKE_GH_FAIL" ]; then echo "HTTP 401: Bad credentials" >&2; exit 1; fi
 if [ -n "$FAKE_GH_SLEEP" ]; then sleep "$FAKE_GH_SLEEP"; fi
 if [ -n "$FAKE_GH_GARBLE" ]; then echo "<html>"; exit 0; fi
 if [ "$1" = api ]; then
+  if [ -n "$FAKE_GH_API_FAIL" ]; then echo "gh: Bad Gateway (HTTP 502)" >&2; exit 1; fi
   file="$FAKE_GH_DIR/ref_$(echo "${2#*/git/ref/heads/}" | tr / _).json"
   if [ -f "$file" ]; then cat "$file"; exit 0; fi
   echo '{"message":"Not Found","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1
@@ -513,9 +514,9 @@ class PruneTest(unittest.TestCase):
         def resume_during_lookup(*args):
             self.fx.thread("p", "t3/resumed", run="running")
             self.fx.db.commit()
-            return 7
+            return [(7, tip)]
 
-        with mock.patch.object(prune_branches, "merged_pull_request", side_effect=resume_during_lookup):
+        with mock.patch.object(prune_branches, "merged_pull_requests", side_effect=resume_during_lookup):
             result = self.fx.prune()
         self.assertEqual(result["kept"], [
             {"repository": str(self.fx.repo), "branch": "t3/resumed", "sha": tip, "pullRequest": 7, "reason": "thread is active"},
@@ -546,27 +547,49 @@ class PruneTest(unittest.TestCase):
             ("github-work:acme/repo", "acme/repo"),
             ("ssh://git@github-work:2222/acme/repo.git", "acme/repo"),
             ("git+ssh://GitHub-Work/acme/repo", "acme/repo"),
+            ("git@github-443:acme/repo.git", "acme/repo"),
             ("git@gitlab-work:acme/repo.git", None),
+            ("-oProxyCommand=x:acme/repo", None),
             ("git@example.com:acme/repo.git", None),
             ("https://github-work/acme/repo.git", None),
             ("/srv/git/acme/repo.git", None),
             ("file:///srv/acme/repo.git", None),
         ):
             with self.subTest(url=url), mock.patch.dict(os.environ, {
-                "FAKE_SSH_HOSTS": "github-work=github.com GitHub-Work=GitHub.com gitlab-work=gitlab.com",
+                "FAKE_SSH_HOSTS": "github-work=github.com GitHub-Work=GitHub.com github-443=ssh.github.com gitlab-work=gitlab.com",
             }):
                 git(self.fx.repo, "config", "remote.origin.url", url)
                 self.assertEqual(prune_branches.github_repository(self.fx.repo), expected)
 
-    def test_an_ssh_alias_without_a_usable_ssh_is_not_github(self):
+    def test_an_ssh_alias_resolves_through_the_ssh_command_git_uses(self):
+        git(self.fx.repo, "config", "remote.origin.url", "git@github-work:acme/repo.git")
+        self.assertIsNone(prune_branches.github_repository(self.fx.repo))
+        work_ssh = self.fx.root / "bin" / "work-ssh"
+        work_ssh.write_text('#!/bin/sh\n[ "$1 $2 $3 $4" = "-F work.conf -G github-work" ] && echo "hostname github.com"\n')
+        work_ssh.chmod(0o755)
+        git(self.fx.repo, "config", "core.sshCommand", "work-ssh -F work.conf")
+        self.assertEqual(prune_branches.github_repository(self.fx.repo), "acme/repo")
+        git(self.fx.repo, "config", "--unset", "core.sshCommand")
+        with mock.patch.dict(os.environ, {"GIT_SSH_COMMAND": "work-ssh -F work.conf"}):
+            self.assertEqual(prune_branches.github_repository(self.fx.repo), "acme/repo")
+
+    def test_an_ssh_alias_without_a_usable_ssh_fails_its_lookups(self):
         git(self.fx.repo, "config", "remote.origin.url", "git@github-work:acme/repo.git")
         only_git = self.fx.root / "only-git"
         only_git.mkdir()
         (only_git / "git").symlink_to(shutil.which("git"))
-        with mock.patch.dict(os.environ, {"PATH": str(only_git)}):
-            self.assertIsNone(prune_branches.github_repository(self.fx.repo))
+        with mock.patch.dict(os.environ, {"PATH": str(only_git)}), self.assertRaises(FileNotFoundError):
+            prune_branches.github_repository(self.fx.repo)
         (self.fx.root / "bin" / "ssh").write_text("#!/bin/sh\necho 'hostname github.com'\nexit 255\n")
-        self.assertIsNone(prune_branches.github_repository(self.fx.repo))
+        self.fx.branch("t3/open", merged=False)
+        self.fx.thread("p", "t3/open")
+        tip = self.fx.branch("t3/abandoned", merged=False)
+        self.fx.thread("p", "t3/abandoned", archived=True)
+        result = self.fx.prune()
+        self.assertEqual(result["failed"], [{"project": str(self.fx.repo), "error": "ssh -G: hostname github.com"}])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/open", "remote lookup unavailable")])
+        self.assertEqual([e["archivedAs"] for e in result["deleted"]], [f"refs/t3-archive/t3/abandoned@{tip[:12]}"])
+        self.assertEqual(self.gh_calls(), [])
 
     def test_a_github_alias_origin_gets_pull_request_lookups(self):
         self.on_github()
@@ -595,11 +618,16 @@ class PruneTest(unittest.TestCase):
         git(self.fx.repo, "push", "-q", "-u", "origin", "t3/pushed")
         self.fx.thread("p", "t3/pushed")
         result = self.fx.prune()
-        self.assertEqual(result["deleted"], [
-            {"repository": str(self.fx.repo), "branch": "t3/pushed", "sha": tip, "pushedTo": "origin/t3/pushed"},
-        ])
+        archive = f"refs/t3-archive/t3/pushed@{tip[:12]}"
+        self.assertEqual(result["deleted"], [{
+            "repository": str(self.fx.repo), "branch": "t3/pushed", "sha": tip,
+            "pushedTo": "origin/t3/pushed", "archivedAs": archive,
+        }])
         self.assertFalse(has_branch(self.fx.repo, "t3/pushed"))
         self.assertEqual(git(self.fx.repo, "rev-parse", "origin/t3/pushed"), tip)
+        # The archive keeps the work even once origin's branch is deleted and pruned.
+        git(self.fx.repo, "push", "-q", "origin", "--delete", "t3/pushed")
+        self.assertEqual(git(self.fx.repo, "rev-parse", archive), tip)
 
     def test_a_pushed_branch_on_github_is_checked_live(self):
         self.on_github()
@@ -707,8 +735,14 @@ class PruneTest(unittest.TestCase):
         result = self.fx.prune(dry_run=True)
         self.assertEqual(result["deleted"], [{
             "repository": str(self.fx.repo), "branch": "t3/abandoned", "sha": tip,
-            "archivedAs": f"refs/t3-archive/t3/abandoned@{tip[:12]}",
+            "abandoned": True, "archivedAs": f"refs/t3-archive/t3/abandoned@{tip[:12]}",
         }])
+        self.fx.db.commit()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            prune_branches.main(["--db", str(self.fx.db_path), "--dry-run"])
+        self.assertEqual(stdout.getvalue(),
+                         f"{self.fx.repo} t3/abandoned to be archived as refs/t3-archive/t3/abandoned@{tip[:12]}\n")
         self.assertTrue(has_branch(self.fx.repo, "t3/abandoned"))
         self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
 
@@ -721,8 +755,9 @@ class PruneTest(unittest.TestCase):
             self.fx.db.execute("update orchestration_v2_projection_threads set archived_at = null where thread_id = ?",
                                (thread_id,))
             self.fx.db.commit()
+            return []
 
-        with mock.patch.object(prune_branches, "merged_pull_request", side_effect=restore_during_lookup):
+        with mock.patch.object(prune_branches, "merged_pull_requests", side_effect=restore_during_lookup):
             result = self.fx.prune()
         self.assertEqual(result["kept"], [
             {"repository": str(self.fx.repo), "branch": "t3/restored", "sha": tip, "reason": "thread was restored"},
@@ -743,6 +778,70 @@ class PruneTest(unittest.TestCase):
         git(self.fx.repo, "worktree", "remove", str(self.fx.root / "wt"))
         self.assertIsNone(prune_branches.delete_branch(self.fx.repo, "t3/busy", tip, archive))
         self.assertFalse(has_branch(self.fx.repo, "t3/busy"))
+
+    def test_a_live_thread_without_a_worktree_keeps_an_archived_threads_branch(self):
+        self.fx.branch("t3/shared", merged=False)
+        self.fx.thread("p", "t3/shared", archived=True)
+        self.fx.thread("p", "t3/shared", worktree=False)
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/shared", "not merged or pushed")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/shared"))
+
+    def test_a_branch_gone_from_fresh_state_stays(self):
+        self.on_github()
+        self.fx.branch("t3/gone", merged=False)
+        self.fx.thread("p", "t3/gone", archived=True)
+
+        def delete_project_during_lookup(*args):
+            self.fx.db.execute("update projection_projects set deleted_at = 'now'")
+            self.fx.db.commit()
+            return []
+
+        with mock.patch.object(prune_branches, "merged_pull_requests", side_effect=delete_project_during_lookup):
+            result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]],
+                         [("t3/gone", "no longer used by a worktree thread")])
+        self.assertTrue(has_branch(self.fx.repo, "t3/gone"))
+        self.assertEqual(git(self.fx.repo, "for-each-ref", "refs/t3-archive/"), "")
+
+    def pushed_on_github(self, name):
+        self.on_github()
+        self.fx.branch(name, merged=False)
+        git(self.fx.repo, "push", "-q", "origin", name)
+        self.fx.thread("p", name)
+
+    def test_a_failed_live_branch_lookup_keeps_the_branch(self):
+        self.pushed_on_github("t3/pushed")
+        with mock.patch.dict(os.environ, {"FAKE_GH_API_FAIL": "1"}):
+            result = self.fx.prune()
+        self.assertEqual(result["failed"], [
+            {"project": str(self.fx.repo), "branch": "t3/pushed", "error": "gh api: gh: Bad Gateway (HTTP 502)"},
+        ])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/pushed", "remote lookup unavailable")])
+
+    def test_a_prefix_listing_from_github_means_no_such_branch(self):
+        self.pushed_on_github("t3/pushed")
+        (self.pulls / "ref_t3_pushed.json").write_text(json.dumps(
+            [{"ref": "refs/heads/t3/pushed-2", "object": {"sha": "0" * 40}}]))
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/pushed", "not merged or pushed")])
+        self.assertEqual(result["failed"], [])
+
+    def test_unexpected_github_answers_fail_the_lookup_without_crashing(self):
+        self.pushed_on_github("t3/pushed")
+        (self.pulls / "ref_t3_pushed.json").write_text(json.dumps({"ref": "refs/heads/t3/pushed"}))
+        self.assertEqual([f["error"] for f in self.fx.prune()["failed"]], ["gh api: 'object'"])
+        self.pull("t3/pushed", {"number": 7})
+        self.assertEqual([f["error"] for f in self.fx.prune()["failed"]], ["gh pr list: 'headRefOid'"])
+
+    def test_a_local_git_error_fails_the_repository_not_its_lookups(self):
+        self.fx.branch("t3/pushed", merged=False)
+        git(self.fx.repo, "push", "-q", "origin", "t3/pushed")
+        self.fx.thread("p", "t3/pushed")
+        error = subprocess.CalledProcessError(128, ["git"], "", "fatal: bad object")
+        with mock.patch.object(prune_branches, "contains", side_effect=error):
+            result = self.fx.prune()
+        self.assertEqual(result["failed"], [{"project": str(self.fx.repo), "error": "git: fatal: bad object"}])
 
 
 class RoutinePromptTest(unittest.TestCase):
