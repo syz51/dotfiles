@@ -107,8 +107,9 @@ review on sai** for the feasibility notes the user asked about.
   prLinks: [{ url, number, repository, at }], automation, malformedLines }
 ```
 
-`lib/claude.js`: `judge({ prompt, schema, model, effort, budgetUsd })` returns
-`{ output, costUSD, events }`; `runTask({ prompt, cwd, model, effort, agent, settings,
+`lib/claude.js`: `judge({ prompt, system, schema, model, effort, budgetUsd })` returns
+`{ output, costUSD, events }`; `system`, the part shared by every call of a run, goes to
+the cached system prompt, `prompt` (per call) to stdin; `runTask({ prompt, cwd, model, effort, agent, settings,
 budgetUsd, timeoutMs })` returns `{ events, costUSD, ok, finalText }`. A `CLAUDE_FACTORY_BIN`
 override points both at a fake CLI in tests.
 
@@ -386,3 +387,11 @@ reports in the state folder's `reports/weekly-*.md`.
   handles `--`, treats spend limits as exhausted and leaves a caller's own auth alone. The codex-skills pipeline is handled in the "Review Agent
   Instructions" thread (its own API path since a98a27c; fallback proposal awaiting the
   user). The masters project's AGENTS.md now routes experiment billing through the wrapper.
+- 2026-11-06: Every API-mode run failed with "Credit balance is too low" while the credit
+  check passed. Cause: the API refuses requests carrying Claude Code's
+  `claude-code-20250219` beta for this account's credit, while the same key and body
+  without it succeed; the check never sent it. The check now sends the beta, so such runs
+  fall back to the subscription, and results cached by the old check are ignored. The
+  judge now puts its shared instructions and rubric in `--append-system-prompt-file`, inside
+  Claude Code's cached prefix (second call of a run: 8.2k cached tokens read instead of
+  3.7k).

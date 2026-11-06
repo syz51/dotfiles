@@ -23,6 +23,12 @@ import { delimiter, join, resolve } from "node:path";
 import { appendJsonl, readJson, writeJsonAtomic } from "../factory/lib/state.js";
 
 export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 30 * 60 * 1000, unknown: 60 * 1000 };
+// The beta on Claude Code's main-loop requests. The API gates them on their own credit rule:
+// a key whose plain Messages calls succeed can get "credit balance is too low" for the same
+// request with this beta (credits that cannot be spent on Claude Code), so the check sends
+// it too. A cached result counts only for the check that made it.
+export const CLAUDE_CODE_BETA = "claude-code-20250219";
+const CHECK = `messages+${CLAUDE_CODE_BETA}`;
 // A wrapped session may run a script that goes through the wrapper again; deeper than this
 // is a loop.
 export const MAX_DEPTH = 4;
@@ -83,15 +89,15 @@ export function mergedSettings(value, helper) {
   return JSON.stringify({ apiKeyHelper: helper, ...settings });
 }
 
-// ok: the key works and has credit. exhausted: out of credit or past a spend limit.
-// invalid: the key was refused. unknown: the check could not tell.
+// ok: the key works and has credit for Claude Code. exhausted: out of credit (for Claude
+// Code) or past a spend limit. invalid: the key was refused. unknown: the check could not tell.
 export async function checkCredit(key, { baseUrl = "https://api.anthropic.com", fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
   let status;
   let body;
   try {
     const response = await fetchImpl(`${baseUrl}/v1/messages`, {
       method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-beta": CLAUDE_CODE_BETA, "content-type": "application/json" },
       body: JSON.stringify({ model: "claude-haiku-5-5", max_tokens: 1, messages: [{ role: "user", content: "ok" }] }),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -122,9 +128,9 @@ function readState(dir) {
   }
 }
 
-// { mode: "api" | "subscription", reason }. A cached check counts only for the same key
-// and within its status's interval; an inconclusive check leaves the run on the API, where
-// Claude Code reports the error itself.
+// { mode: "api" | "subscription", reason }. A cached check counts only for the same key and
+// check, within its status's interval; an inconclusive check leaves the run on the API,
+// where Claude Code reports the error itself.
 export async function decide({ env = process.env, now = Date.now(), check = checkCredit } = {}) {
   const file = keyFile(env);
   if (!existsSync(file)) return { mode: "subscription", reason: `no key file at ${file}` };
@@ -133,10 +139,10 @@ export async function decide({ env = process.env, now = Date.now(), check = chec
   const dir = stateDir(env);
   const cached = readState(dir);
   let result;
-  if (cached?.keyHash === keyHash && now - cached.checkedAt < (TTL_MS[cached.status] ?? 0)) result = { ...cached, cached: true };
+  if (cached?.keyHash === keyHash && cached.check === CHECK && now - cached.checkedAt < (TTL_MS[cached.status] ?? 0)) result = { ...cached, cached: true };
   else {
     result = await check(key, env.API_FIRST_BASE_URL ? { baseUrl: env.API_FIRST_BASE_URL } : {});
-    writeJsonAtomic(join(dir, "state.json"), { keyHash, status: result.status, checkedAt: now, detail: result.detail });
+    writeJsonAtomic(join(dir, "state.json"), { keyHash, check: CHECK, status: result.status, checkedAt: now, detail: result.detail });
   }
   const reason = `${result.status}${result.cached ? ` (checked ${new Date(result.checkedAt).toISOString()})` : ""}: ${result.detail}`;
   return { mode: ["ok", "unknown"].includes(result.status) ? "api" : "subscription", reason };
