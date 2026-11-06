@@ -233,6 +233,32 @@ and falls back to the claude.ai subscription otherwise. The planner,
 - For scripts that call `claude` by name, put `~/.claude/bin/api-first` first on `PATH` for
   that run only, never in a login profile. A nesting limit stops a loop.
 
+## T3 Code subagent cleanup
+
+T3 Code settles only the thread you settle, not its subagent children, so they stay
+unsettled until something settles each one. `t3code/settle_children.py` lists the subagent
+threads that a cascade would settle: idle children whose parent or root is settled or
+archived, with no active run on themselves, their parent or their root, no unfinished
+spawning run, no pending request and no explicit unsettle. It opens the T3 state
+database read-only; settling goes through T3's own `t3_thread_organize` tool.
+
+A T3 scheduled task in the `.config` project runs every 6 hours with this prompt:
+
+```text
+Run the routine in ~/.config/t3code/settle-children.prompt.md exactly as written.
+```
+
+Each run plans, settles, verifies and then settles its own thread when nothing failed.
+`~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and verify,
+with the thread ids. Edit the prompt file to change the routine. Change the interval,
+pause or delete the task in T3's scheduled tasks, or ask an agent to call
+`schedule_task` with `enabled: false` or `delete_scheduled_task`. Run the finder by
+hand to see what the next run would settle:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
+```
+
 ## Verification
 
 From the repository root, run the focused local suites:
@@ -242,6 +268,7 @@ bun test nvim/tests/bun-outdated.test.js claude/hooks claude/tests claude/factor
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and
