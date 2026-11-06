@@ -152,6 +152,11 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   tokens, a Tokens column in the model mix, cost quantiles and cost per merged PR over
   sessions with a known cost, a Codex column in the history. GPT models are unpriced until
   the pricing fallback (dotfiles-6).
+- [x] Pushed branches (board task dotfiles-3): read from git push output in any tool call
+  (the `To <remote>` ref lines and GitHub's `pull/new/<branch>` hint), counted once per
+  branch in the headline and the PR section; PR links a server prints on push (`remote:`
+  lines) link the PR. GitHub prints none for an existing PR, and `-q` pushes print nothing.
+  7-day real run: 62 branches (61 new) from 39 sessions.
 
 ### 2. Scoring and proposals (`scoring/`)
 

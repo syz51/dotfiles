@@ -42,6 +42,7 @@ export const HEADLINE = [
   ["Cost, total", (s) => s.cost.totalUSD, "usd"],
   ["Cost per session, median (known cost)", (s) => s.cost.medianUSD, "usd"],
   ["Cost per session, p90 (known cost)", (s) => s.cost.p90USD, "usd"],
+  ["Branches pushed", (s) => s.pushes.branches, "count"],
   ["Merged PRs", (s) => s.prs.merged, "count"],
   ["Cost per merged PR (its sessions)", (s) => s.prs.costPerMergedUSD, "usd"],
   ["Spend per merged PR (all sessions)", (s) => s.prs.spendPerMergedUSD, "usd"],
@@ -110,7 +111,8 @@ export function renderMarkdown(report) {
 
   lines.push("## Pull requests", "");
   lines.push(`Linked from sessions in the window: ${current.prs.linked}; merged ${num(current.prs.merged)}, open ${num(current.prs.open)}, closed ${num(current.prs.closed)}, reverted ${num(current.prs.reverted)}. `
-    + "A session counts toward every PR it created or linked, and its cost and prompts split evenly across them.", "");
+    + "A session counts toward every PR it created or linked, and its cost and prompts split evenly across them. "
+    + `Branches pushed: ${current.pushes.branches} (${current.pushes.created} new) from ${current.pushes.sessions} sessions, read from git push output, so quiet pushes are missed.`, "");
   if (report.prs.length)
     lines.push(table(["PR", "Title", "State", "Merged", "Size", "Sessions", "Cost", "Prompts", "Reverted by"],
       report.prs.map((pr) => [`[${pr.repository}#${pr.number}](${pr.url})`, pr.title ?? "", pr.state ?? "unknown", pr.mergedAt ? day(pr.mergedAt) : "",

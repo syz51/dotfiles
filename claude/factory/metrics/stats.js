@@ -139,6 +139,12 @@ export function windowStats(entries, prInfo) {
       unpricedSessions: sessions.filter((session) => session.unpriced).length,
     },
     prs: prStats(entries, prInfo, totalPrompts),
+    // Branches pushed in the window, each once however many sessions pushed it.
+    pushes: (() => {
+      const created = new Map();
+      for (const entry of entries) for (const push of entry.pushes) created.set(push.key, created.get(push.key) === true || push.created);
+      return { branches: created.size, created: [...created.values()].filter(Boolean).length, sessions: entries.filter((entry) => entry.pushes.length).length };
+    })(),
     corrections: { heuristic: true, followUps, corrections, rate: ratio(corrections, followUps) },
     interrupts: { total: interrupts, perSession: ratio(interrupts, sessions.length) },
     toolErrors: {

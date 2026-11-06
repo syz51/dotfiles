@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { countCorrections, isCorrection } from "./corrections.js";
 import { reverts } from "./github.js";
 import { isHostPrompt } from "../lib/transcripts.js";
-import { prUrls, sessionPrs } from "./prs.js";
+import { prUrls, sessionPrs, sessionPushes } from "./prs.js";
 import { quantile } from "./stats.js";
 
 describe("correction heuristic", () => {
@@ -93,6 +93,34 @@ describe("pull request links", () => {
       ],
     };
     expect(sessionPrs(session).map((pr) => pr.key)).toEqual(["o/r#1", "o/r#2"]);
+  });
+
+  test("a PR link a git server prints on push counts; the new-PR hint does not", () => {
+    const output = "To https://github.com/o/r.git\n   abc1234..def5678  b -> b\nremote: View pull request for b => https://github.com/o/r/pull/9\nremote: https://github.com/o/r/pull/new/c\n";
+    const session = { prLinks: [], toolCalls: [{ name: "exec", input: "tools.exec_command({cmd: 'git push'})", output }] };
+    expect(sessionPrs(session).map((pr) => pr.key)).toEqual(["o/r#9"]);
+  });
+
+  test("pushed branches come from git push output, once each", () => {
+    const session = {
+      toolCalls: [
+        // A new branch over ssh, with GitHub's hint; an update, a forced update and an
+        // explicit ref over https; rejected, up-to-date, deleted and tag refs do not count.
+        { name: "Bash", input: { command: "git push -u origin feature" }, output: "remote: \nremote: Create a pull request for 'feature' on GitHub by visiting:\nremote:      https://github.com/O/R/pull/new/feature\nremote: \nTo github.com:O/R.git\n * [new branch]      feature -> feature\nbranch 'feature' set up to track 'origin/feature'.\n" },
+        { name: "Bash", input: { command: "git push" }, output: "To https://github.com/o/r.git\r\n   abc1234..def5678  feature -> feature\r\n + 1111111...2222222 fix -> fix (forced update)\r\n   3333333..4444444  HEAD -> refs/heads/topic\n" },
+        { name: "Bash", input: { command: "git push --all" }, output: "To https://github.com/o/r\n ! [rejected]        main -> main (fetch first)\n = [up to date]      old -> old\n - [deleted]         gone\n * [new tag]         v1 -> v1\nerror: failed to push some refs\n" },
+        // Output that only mentions a ref line outside a push block, and a quiet push.
+        { name: "Bash", input: { command: "cat notes.txt" }, output: "   abc1234..def5678  x -> x\n" },
+        { name: "Bash", input: { command: "git push -q" }, output: "" },
+        { name: "Bash", input: { command: "git push other" }, output: "To https://gitlab.com/g/p.git\n * [new branch]      mr -> mr\n" },
+      ],
+    };
+    expect(sessionPushes(session).map(({ repository, branch, created }) => [repository, branch, created])).toEqual([
+      ["O/R", "feature", true],
+      ["o/r", "fix", false],
+      ["o/r", "topic", false],
+      ["https://gitlab.com/g/p.git", "mr", true],
+    ]);
   });
 });
 

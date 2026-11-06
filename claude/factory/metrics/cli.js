@@ -9,7 +9,7 @@ import { loadSessions, mostCommon } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
 import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
-import { sessionPrs } from "./prs.js";
+import { sessionPrs, sessionPushes } from "./prs.js";
 import { attributePrs, windowStats } from "./stats.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -131,7 +131,7 @@ export async function buildReport(options) {
     }
     const prompts = session.prompts;
     excluded.hostPrompts += session.hostPrompts;
-    entries[ended > since ? "current" : "previous"].push({ session, prompts, prs: sessionPrs(session), corrections: countCorrections(prompts) });
+    entries[ended > since ? "current" : "previous"].push({ session, prompts, prs: sessionPrs(session), pushes: sessionPushes(session), corrections: countCorrections(prompts) });
   }
   const all = [...entries.current, ...entries.previous];
 
