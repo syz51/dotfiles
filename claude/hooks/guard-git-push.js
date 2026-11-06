@@ -437,7 +437,7 @@ export function findViolation(command, cwd, git) {
   return inspect(command, { dir: cwd }, git, 0);
 }
 
-export function runGit(dir, args) {
+function runGit(dir, args) {
   const result = spawnSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 });
   if (result.error) throw result.error;
   if (result.signal) throw new Error(`git was stopped by ${result.signal}`);
