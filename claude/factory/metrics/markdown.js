@@ -78,7 +78,7 @@ export function renderMarkdown(report) {
   lines.push(`By harness: ${Object.entries(HARNESSES).map(([harness, name]) => {
     const entry = current.harness[harness];
     return `${name} ${entry.sessions} sessions, ${usd(entry.costUSD)}, ${num(entry.tokens / 1e6)}M tokens, ${entry.subagentRuns} subagent runs${entry.unpricedSessions ? ` (${entry.unpricedSessions} sessions unpriced)` : ""}`;
-  }).join("; ")}. Codex records no cost, and models without a known price count as $0, so compare Codex work by tokens.`, "");
+  }).join("; ")}. Codex records no cost, so its cost is estimated from token usage, with LiteLLM's prices for models missing from the price table; models without any known price count as $0.`, "");
   lines.push("### Costliest sessions", "");
   lines.push(report.topSessions.length
     ? table(["Session", "Project", "Cost", "Prompts", "Cost source"], report.topSessions.map((session) => [sessionName(session), session.project, usd(session.costUSD), session.prompts, session.costSource]))

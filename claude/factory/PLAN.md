@@ -42,10 +42,12 @@ review on sai** for the feasibility notes the user asked about.
   `tools-used`, `system` (`compact_boundary`). Entrypoints are mostly `t3-code` and `sdk-ts`.
 - About 80 sessions and 25M output tokens in the last 30 days; main sessions are almost all
   Opus 5.5; subagents sent about 7,300 Opus and 700 Haiku messages.
-- Pricing (from the bundled claude-api skill's table, cached 2026-10-06; Pricing page in its
-  live sources): Opus 5.5 $4/$20 per MTok, cache read $0.20; Sonnet 5.5 $2/$10, cache read
-  $0.20; Haiku 5.5 $0.10/$0.50 (up to 100K-token prompts; $0.50/$2.50 above); cache writes
-  1.25x input (5 minutes) and 2x (1 hour). Only a fallback: prefer `cost-state`.
+- Pricing (Anthropic's pricing page, https://platform.claude.com/docs/en/about-claude/pricing,
+  checked 2026-11-07): Opus 5.5 $4/$20 per MTok, cache read $0.20; Sonnet 5.5 $2/$10, cache
+  read $0.10 (0.05x input, footnote 2; the claude-api skill's cached $0.20 is stale); Haiku
+  5.5 $0.10/$0.50 (up to 100K-token prompts; $0.50/$2.50 above); cache writes 1.25x input
+  (5 minutes) and 2x (1 hour). Only a fallback: prefer `cost-state`. Models missing from
+  the table (Codex's GPT models) take LiteLLM's public price list.
 - codex-skills (`~/.local/share/codex-skills/repository`, private `syz51/codex-skills`):
   hourly capture and source checks on both Macs, daily maintainer on this Mac via launchd.
   Its security posture is covered by the local `audit` (details stay in the state folder:
@@ -71,7 +73,8 @@ review on sai** for the feasibility notes the user asked about.
   `run(argv)`, so tracks never edit the same file.
 - Shared modules in `claude/factory/lib/` (written first, before parallel work):
   - `transcripts.js`: discover and parse sessions into normalized `Session` objects.
-  - `pricing.js`: fallback cost from usage when `cost-state` is missing.
+  - `pricing.js`: fallback cost from usage when `cost-state` is missing; `litellm.js`
+    prices models missing from its table from LiteLLM's list, cached in the state folder.
   - `claude.js`: run `claude -p` in restricted judge mode (no tools, no settings, JSON
     schema) or task mode; parse stream-json; reuse `claude/tests/lib/stream.js` and
     `process.js`.
@@ -150,8 +153,13 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   output, T3 Code's link tool); subagent threads skip the parent history they copy and count
   with their root session, which spans them in time. Report: per-harness sessions, cost and
   tokens, a Tokens column in the model mix, cost quantiles and cost per merged PR over
-  sessions with a known cost, a Codex column in the history. GPT models are unpriced until
-  the pricing fallback (dotfiles-6).
+  sessions with a known cost, a Codex column in the history.
+- [x] Pricing fallback (board task dotfiles-6): models missing from `lib/pricing.js` take
+  LiteLLM's `model_prices_and_context_window.json`, cached as `litellm-prices.json` in the
+  state folder and refreshed by `metrics` when over a week old (skipped with `--no-gh`; a
+  failed fetch keeps the old copy and adds a note). Cache prices LiteLLM lacks fall back to
+  input; its lowest "above N k tokens" tier is the long-prompt price. The report notes
+  which models it priced. Not done: reconciling estimates against T3 Code's totals.
 - [x] Pushed branches (board task dotfiles-3): read from git push output in any tool call
   (the `To <remote>` ref lines and GitHub's `pull/new/<branch>` hint), counted once per
   branch in the headline and the PR section; PR links a server prints on push (`remote:`
@@ -423,3 +431,7 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: Metrics include Codex sessions. 7-day real run: 340 sessions, 160 of them Codex
   with 771 subagent runs and 8.0B tokens (Claude Code: 180 sessions, 5.2B tokens); 112 merged
   PRs. Reading the two windows' rollouts takes about 7 seconds.
+- 2026-11-07: Pricing fallback. Sonnet 5.5 cache reads cost $0.10 per MTok, not $0.20 (Anthropic's
+  pricing page; LiteLLM agrees). On the real 7-day run LiteLLM's list priced gpt-6-luna,
+  gpt-6.1-sol and gpt-6.1-terra: all 160 Codex sessions now have an estimate (about $2,015
+  API-equivalent, beside about $2,363 for Claude Code), and none is unpriced.
