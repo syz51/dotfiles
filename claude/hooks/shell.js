@@ -9,15 +9,14 @@ const MAX_DEPTH = 8;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
-// Commands that run another command, with their options that take a separate value. A
-// combined short option takes a value when its last letter does, as in `sudo -iu me`.
+// Commands that run another command, with their options that take a value.
 const WRAPPERS = {
   arch: ["-e", "-arch"],
   builtin: [],
   caffeinate: ["-t", "-w"],
   command: [],
   doas: ["-u", "-C"],
-  env: ["-u", "-P", "--unset"],
+  env: ["-u", "-P", "-S", "-C", "--unset", "--split-string", "--chdir"],
   exec: ["-a"],
   nice: ["-n"],
   nohup: [],
@@ -25,12 +24,14 @@ const WRAPPERS = {
   sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"],
   time: ["-f", "-o"],
   timeout: ["-s", "-k", "--signal", "--kill-after"],
-  xargs: ["-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
+  xargs: ["-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
     "--max-lines", "--max-args", "--max-procs", "--max-chars"],
   xcrun: ["--sdk", "--toolchain"],
 };
 // ssh options that take a value (`man ssh`).
 const SSH_VALUE_LETTERS = "BbcDEeFIiJLlmOoPpQRSWw";
+// ssh -o options whose value is a command run locally through the user's shell.
+const SSH_LOCAL_COMMAND = /^\s*(?:ProxyCommand|LocalCommand|KnownHostsCommand)\s*(?:=\s*|\s+)(.+)$/is;
 // find actions that run a command up to `;` or `+`.
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 
@@ -53,13 +54,16 @@ function closeSubstitution(source, start) {
 
 /**
  * Splits shell source into simple commands. Each command has its argv, the heredoc bodies and
- * here-strings it reads (`inputs`), and the operator that ended it (`next`, "|" within a pipeline).
- * `substitutions` holds command substitutions found inside double quotes, which run as well.
+ * here-strings it reads (`inputs`), the operator that ended it (`next`, "|" within a pipeline),
+ * and how many `(` or `$(` open just before it (`opens`) and `)` close just after it (`closes`);
+ * the operator after a `)` ends the command that `)` closed. `substitutions` holds command
+ * substitutions found inside double quotes, which run as well.
  */
 export function parseScript(source) {
   const commands = [];
   const substitutions = [];
-  let current = { argv: [], inputs: [] };
+  const fresh = () => ({ argv: [], inputs: [], opens: 0, closes: 0 });
+  let current = fresh();
   let word;
   let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
   let heredocs = [];
@@ -74,8 +78,12 @@ export function parseScript(source) {
   const endCommand = (next) => {
     endWord();
     destination = "argv";
-    if (current.argv.length > 0 || current.inputs.length > 0) commands.push({ ...current, next });
-    current = { argv: [], inputs: [] };
+    if (current.argv.length > 0 || current.inputs.length > 0) {
+      commands.push({ ...current, next });
+      current = fresh();
+    } else if (commands.at(-1)?.next === ")") {
+      commands.at(-1).next = next;
+    }
   };
 
   let i = 0;
@@ -137,6 +145,7 @@ export function parseScript(source) {
       i += 2;
     } else if (c === "$" && source[i + 1] === "(") {
       endCommand("$(");
+      current.opens += 1;
       i += 2;
     } else if (c === "|") {
       const operator = source[i + 1] === "|" || source[i + 1] === "&" ? c + source[i + 1] : c;
@@ -149,7 +158,16 @@ export function parseScript(source) {
       const operator = source[i + 1] === "&" ? "&&" : "&";
       endCommand(operator);
       i += operator.length;
-    } else if ("`;()".includes(c)) {
+    } else if (c === "(") {
+      endCommand(c);
+      current.opens += 1;
+      i += 1;
+    } else if (c === ")") {
+      endCommand(c);
+      if (current.opens > 0) current.opens -= 1; // an empty `()`, as in a function definition
+      else if (commands.length > 0) Object.assign(commands.at(-1), { closes: commands.at(-1).closes + 1, next: ")" });
+      i += 1;
+    } else if (c === "`" || c === ";") {
       endCommand(c);
       i += 1;
     } else if (c === "<" || c === ">") {
@@ -197,34 +215,76 @@ export function changeDirectory(dir, path) {
   return dir === undefined ? undefined : resolve(dir, path);
 }
 
+/**
+ * Skips getopt-style options from `argv[start]`. A short option group ends at its first letter
+ * that takes a value, which is the rest of the word or else the next word; `--long=value`
+ * carries its value; `--` ends the options. Returns the index of the first operand and each
+ * option with its value.
+ */
+function skipOptions(argv, start, takesValue) {
+  const options = [];
+  let i = start;
+  while (i < argv.length && argv[i].startsWith("-")) {
+    const word = argv[i];
+    i += 1;
+    if (word === "--") break;
+    const equals = word.indexOf("=");
+    if (word.startsWith("--") && equals !== -1) options.push([word.slice(0, equals), word.slice(equals + 1)]);
+    else if (takesValue(word)) options.push([word, argv[i++]]);
+    else if (word.startsWith("--")) options.push([word, undefined]);
+    else {
+      for (let k = 1; k < word.length; k += 1) {
+        const option = `-${word[k]}`;
+        if (!takesValue(option)) {
+          options.push([option, undefined]);
+          continue;
+        }
+        options.push([option, k + 1 < word.length ? word.slice(k + 1) : argv[i++]]);
+        break;
+      }
+    }
+  }
+  return { next: i, options };
+}
+
 /** Whether a shell invocation reads its commands from standard input (no -c and no script file). */
 function readsStdin(words) {
   if (words.length === 0 || !SHELLS.has(basename(words[0]))) return false;
+  const fish = basename(words[0]) === "fish";
   for (let i = 1; i < words.length; i += 1) {
-    if (words[i] === "-" || /^-[A-Za-z]*s[A-Za-z]*$/.test(words[i])) return true;
-    if (SHELL_VALUE_OPTIONS.has(words[i])) i += 1;
-    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i]) || !/^[-+]/.test(words[i])) return false;
+    const word = words[i];
+    if (word === "-" || /^-[A-Za-z]*s[A-Za-z]*$/.test(word)) return true;
+    if (fish && /^--command(?:=|$)/.test(word)) return false;
+    if (SHELL_VALUE_OPTIONS.has(word) || (fish && (word === "-C" || word === "--init-command"))) i += 1;
+    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word) || !/^[-+]/.test(word)) return false;
   }
   return true;
 }
 
 /**
- * `ssh [options] host [command…]`. The remote shell runs the command words joined by spaces,
- * in an unknown directory, and reads its script from standard input when there is no command.
+ * `ssh [options] host [options] [command…]`: OpenSSH parses options again after the host
+ * unless `--` came before it. The remote shell runs the command words joined by spaces, in an
+ * unknown directory, and reads its script from standard input when there is no command or a
+ * command of it is a shell reading standard input. `-o ProxyCommand=…` and similar options
+ * run their command here, in `dir`.
  */
-function sshProgram(argv, i) {
-  let j = i + 1;
-  while (j < argv.length && argv[j].startsWith("-")) {
-    const option = argv[j];
-    j += 1;
-    if (option === "--") break;
-    if (/^-[A-Za-z]+$/.test(option) && SSH_VALUE_LETTERS.includes(option.at(-1))) j += 1;
-  }
-  const remote = argv.slice(j + 1).join(" ");
-  if (remote === "") return { words: [], nested: [], dir: undefined, readsInput: j < argv.length };
-  const first = parseScript(remote).commands[0];
-  const readsInput = first !== undefined && readsStdin(program(first.argv, undefined).words);
-  return { words: [], nested: [remote], dir: undefined, readsInput };
+function sshProgram(argv, i, dir) {
+  const takesValue = (option) => /^-[A-Za-z]$/.test(option) && SSH_VALUE_LETTERS.includes(option[1]);
+  const before = skipOptions(argv, i + 1, takesValue);
+  const hasHost = before.next < argv.length;
+  const after = hasHost && argv[before.next - 1] !== "--" ? skipOptions(argv, before.next + 1, takesValue) : { next: before.next + 1, options: [] };
+  const local = [...before.options, ...after.options]
+    .filter(([option, value]) => option === "-o" && value !== undefined)
+    .map(([, value]) => SSH_LOCAL_COMMAND.exec(value)?.[1])
+    .filter((command) => command !== undefined && command.trim().toLowerCase() !== "none")
+    .map((command) => [command, dir]);
+  const remote = argv.slice(after.next).join(" ");
+  if (remote === "") return { words: [], nested: [], local, dir: undefined, reads: () => hasHost };
+  const reads = () => parseScript(remote).commands.some((command) => {
+    const inner = program(command.argv, undefined);
+    return readsStdin(inner.words) || inner.reads?.() === true;
+  });
+  return { words: [], nested: [remote], local, dir: undefined, reads };
 }
 
 /** Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run. */
@@ -243,8 +303,8 @@ function program(argv, dir) {
       continue;
     }
     if (name === "ssh") {
-      const remote = sshProgram(argv, i);
-      return { ...remote, nested: [...nested, ...remote.nested] };
+      const remote = sshProgram(argv, i, dir);
+      return { ...remote, local: [...nested.map((script) => [script, dir]), ...remote.local] };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`.
@@ -261,21 +321,12 @@ function program(argv, dir) {
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     const values = WRAPPERS[name];
-    i += 1;
-    while (i < argv.length && argv[i].startsWith("-")) {
-      const option = argv[i];
-      if (name === "env" && (option === "-S" || option === "--split-string")) {
-        nested.push(argv[i + 1] ?? "");
-        i += 2;
-      } else if (name === "env" && (option.startsWith("--split-string=") || /^-S./.test(option))) {
-        nested.push(option.startsWith("-S") ? option.slice(2) : option.slice("--split-string=".length));
-        i += 1;
-      } else if (name === "env" && (option === "-C" || option === "--chdir")) {
-        dir = changeDirectory(dir, argv[i + 1]);
-        i += 2;
-      } else {
-        const combined = /^-[A-Za-z]{2,}$/.test(option) && values.includes(`-${option.at(-1)}`);
-        i += values.includes(option) || combined ? 2 : 1;
+    const { next, options } = skipOptions(argv, i + 1, (option) => values.includes(option));
+    i = next;
+    if (name === "env") {
+      for (const [option, value] of options) {
+        if (option === "-S" || option === "--split-string") nested.push(value ?? "");
+        else if (option === "-C" || option === "--chdir") dir = changeDirectory(dir, value);
       }
     }
     if (name === "timeout") i += 1; // the duration
@@ -283,24 +334,30 @@ function program(argv, dir) {
   return { words: argv.slice(i), nested, dir };
 }
 
-/** The script of `sh -c <script>`, skipping shell options that take a value. */
-function shellScript(words) {
+/** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
+function shellScripts(words) {
+  const fish = basename(words[0]) === "fish";
+  const scripts = [];
   for (let i = 1; i < words.length; i += 1) {
-    if (SHELL_VALUE_OPTIONS.has(words[i])) i += 1;
-    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i])) return words[i + 1];
-    else if (!/^[-+]/.test(words[i])) return undefined;
+    const word = words[i];
+    const long = fish ? /^--(?:command|init-command)(?:=(.*))?$/s.exec(word) : null;
+    if (long) scripts.push(long[1] ?? words[++i]);
+    else if (fish && word === "-C") scripts.push(words[++i]);
+    else if (SHELL_VALUE_OPTIONS.has(word)) i += 1;
+    else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(word)) return [...scripts, words[i + 1]];
+    else if (!/^[-+]/.test(word)) break;
   }
-  return undefined;
+  return scripts;
 }
 
-/** The commands `find … -exec command … ;` runs. */
-function findScripts(words) {
+/** The commands `find … -exec command … ;` runs, with their directory: `-execdir` and `-okdir` run in each match's own. */
+function findScripts(words, dir) {
   const scripts = [];
   for (let i = 1; i < words.length; i += 1) {
     if (!FIND_EXEC.has(words[i])) continue;
     let j = i + 1;
     while (j < words.length && words[j] !== ";" && words[j] !== "+") j += 1;
-    scripts.push(quote(words.slice(i + 1, j)));
+    scripts.push([quote(words.slice(i + 1, j)), words[i].endsWith("dir") ? undefined : dir]);
     i = j;
   }
   return scripts;
@@ -322,23 +379,36 @@ function inspect(source, state, visit, depth, tooDeep) {
     const violation = inspect(inner, { dir: state.dir }, visit, depth + 1, tooDeep);
     if (violation) return violation;
   }
+  // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
+  // shell feeds it everything its commands print.
+  const groups = [];
   let pipeline = [];
   for (const command of commands) {
-    pipeline.push(command);
+    const run = program(command.argv, state.dir);
+    for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
+    const text = run.words.length > 0 ? printed(run.words) : undefined;
+    run.printed = text === undefined ? [] : [text];
+    groups.at(-1)?.push(...run.printed);
+    for (let k = 0; k < command.closes + (command.argv[0] === "}" ? 1 : 0) && groups.length > 0; k += 1) {
+      run.printed = groups.pop();
+      groups.at(-1)?.push(...run.printed);
+    }
+    pipeline.push({ command, run });
     if (command.next === "|" || command.next === "|&") continue;
-    const programs = pipeline.map((each) => program(each.argv, state.dir));
     // A shell reading standard input runs the heredocs, here-strings and printed text piped to it.
-    const reader = programs.findIndex(({ words, readsInput }) => readsInput || readsStdin(words));
-    for (const [index, { words, nested, dir }] of programs.entries()) {
+    const fed = pipeline.length > 1 || pipeline[0].command.inputs.length > 0;
+    const reader = fed ? pipeline.findIndex(({ run: { words, reads } }) => reads?.() === true || readsStdin(words)) : -1;
+    for (const [index, { command: { inputs }, run: { words, nested, local, dir, printed: text } }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       // Scripts this command runs itself, and scripts the reading shell runs in its directory.
-      const own = [...nested];
-      if (SHELLS.has(name)) own.push(shellScript(words));
-      if (name === "eval") own.push(words.slice(1).join(" "));
-      if (name === "find") own.push(...findScripts(words));
-      const piped = reader === -1 ? [] : [...pipeline[index].inputs];
-      if (reader !== -1 && index < reader && words.length > 0) piped.push(printed(words));
-      const scripts = [...own.map((script) => [script, dir]), ...piped.map((script) => [script, programs[reader].dir])];
+      const scripts = [...nested.map((script) => [script, dir]), ...(local ?? [])];
+      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir]));
+      if (name === "eval") scripts.push([words.slice(1).join(" "), dir]);
+      if (name === "find") scripts.push(...findScripts(words, dir));
+      if (reader !== -1) {
+        const piped = index < reader ? [...inputs, ...text] : inputs;
+        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir]));
+      }
       for (const [script, where] of scripts) {
         const violation = script === undefined ? undefined : inspect(script, { dir: where }, visit, depth + 1, tooDeep);
         if (violation) return violation;

@@ -163,6 +163,8 @@ before creating a local `codex/config.toml`, which is intentionally ignored.
 Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
+Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
+`claude/hooks/shell.js`, and a guard that cannot load it fails open.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
@@ -256,8 +258,8 @@ and falls back to the claude.ai subscription otherwise. The planner,
 a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/build/v0/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
-`claude/hooks/board-hook.sh` from `~/.claude/hooks`, so link it there like the other hook
-scripts. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
+`claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
+provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
 with a device token created on the server host:
 
 ```sh

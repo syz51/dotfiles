@@ -78,6 +78,10 @@ describe("blocks", () => {
     ["ssh -p 22 host 'cd repo && git push --force origin main'"],
     ["ssh host git push -f origin feature"],
     ["ssh host <<'EOF'\ngit push -f origin main\nEOF"],
+    ["sudo -uhugh git push -f origin main"],
+    ["fish --command 'git push -f origin main'"],
+    // -execdir runs in each match's directory, whose branch is unknown here.
+    ["find /other -maxdepth 1 -name .git -execdir git push --force-with-lease=HEAD:abc123 origin HEAD \\;"],
     // the directory a push runs in
     ["cd /other && git push --force-with-lease=main:abc123"],
     ["env -C /other git push --force-with-lease=main:abc123"],
