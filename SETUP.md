@@ -297,13 +297,15 @@ rewriting and, for SSH URLs, when `ssh -G` through the SSH command git uses reso
 a host alias such as `github-work` to github.com or ssh.github.com. The T3 and local
 conditions are checked again just before deleting. It never deletes the default
 branch or a branch no T3 worktree thread uses, and skips repositories without
-`origin/HEAD`. Each repository makes one remote call for all its branches: on
-github.com a GraphQL query through `gh`, with aliased fields for each branch's merged
-pull requests and live branch (one query per 50 branches), and elsewhere one
-`git ls-remote` naming the branches, which git's protocol v2 filters on the server.
-A repository whose branches are all merged or unpushed makes none. Lookups never
-prompt and time out after 60 seconds. It exits 1 when a repository or its remote
-lookup fails, still pruning the rest.
+`origin/HEAD`. Remote lookups are batched per repository. On github.com, one
+GraphQL query through `gh` per 50 branches the default branch lacks has aliased
+fields for each branch's newest 100 merged pull requests and its live branch; a
+failed query stops that repository's later ones but keeps what earlier ones found.
+Elsewhere, one `git ls-remote --heads`, which asks the server for branches only,
+checks the branches the last fetch saw on origin. A repository whose branches are all
+merged by ancestry makes no call, nor does one off GitHub whose other branches were
+never fetched from origin. Lookups never prompt and time out after 60 seconds. It
+exits 1 when a repository or a remote lookup fails, still pruning the rest.
 
 Each run plans, settles, verifies, prunes and then settles its own thread when nothing
 failed. `~/.local/state/t3-settle-children/settle.jsonl` gets one line per plan and

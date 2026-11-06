@@ -114,13 +114,15 @@ class Fixture:
 # A fake gh answers the prune script's GraphQL query: merged pull requests from one
 # JSON file per head branch in FAKE_GH_DIR, and live branches from FAKE_GH_ORIGIN.
 FAKE_GH = r"""
-import json, os, subprocess, sys, time
+import json, os, re, subprocess, sys, time
 from pathlib import Path
 
 args = sys.argv[1:]
-with open(os.environ["FAKE_GH_LOG"], "a") as log:
+log_path = Path(os.environ["FAKE_GH_LOG"])
+earlier = len(log_path.read_text().splitlines()) if log_path.exists() else 0
+with log_path.open("a") as log:
     log.write(json.dumps(args) + "\n")
-if os.environ.get("FAKE_GH_FAIL"):
+if os.environ.get("FAKE_GH_FAIL") or earlier >= int(os.environ.get("FAKE_GH_FAIL_FROM", "1000")):
     sys.exit(print("gh: Bad credentials (HTTP 401)", file=sys.stderr) or 1)
 time.sleep(float(os.environ.get("FAKE_GH_SLEEP", "0")))
 if os.environ.get("FAKE_GH_GARBLE"):
@@ -129,16 +131,23 @@ assert args[:4] == ["api", "graphql", "--hostname", "github.com"], args
 assert args[4::2] == ["-f"] * len(args[4::2]), args
 fields = dict(arg.split("=", 1) for arg in args[5::2])
 query = fields["query"]
+# Like GitHub, refuse a declared variable the query does not use, or one not passed.
+declared = re.findall(r"\$(\w+): String!", query)
+unused = [v for v in declared if query.count(f"${v}") < 2 or v not in fields]
+if unused or sorted(declared) != sorted(k for k in fields if k != "query"):
+    sys.exit(print(f"gh: Variable ${unused} is declared but not used", file=sys.stderr) or 1)
 repository = {}
 for key, value in fields.items():
     index = key[1:]
-    if key[0] == "h" and index.isdigit() and f"p{index}:" in query:
+    if key[0] == "h" and index.isdigit() and f"p{index}: pullRequests(headRefName: ${key}," in query:
         found = Path(os.environ["FAKE_GH_DIR"], value.replace("/", "_") + ".json")
         repository[f"p{index}"] = {"nodes": json.loads(found.read_text()) if found.exists() else []}
-    if key[0] == "r" and index.isdigit() and f"{key}:" in query:
+    if key[0] == "r" and index.isdigit() and f"{key}: ref(qualifiedName: ${key})" in query:
         found = subprocess.run(["git", "-C", os.environ["FAKE_GH_ORIGIN"], "rev-parse", "-q", "--verify", value],
                                capture_output=True, text=True)
-        repository[key] = {"target": {"oid": found.stdout.strip()}} if found.returncode == 0 else None
+        name = value.removeprefix("refs/heads/") + ("-2" if os.environ.get("FAKE_GH_SHAPE") == "other-ref" else "")
+        repository[key] = ({"prefix": "refs/heads/", "name": name, "target": {"oid": found.stdout.strip()}}
+                           if found.returncode == 0 else None)
 shape = os.environ.get("FAKE_GH_SHAPE")
 print(json.dumps({"data": {"repository": None if shape == "no-repository" else {} if shape == "empty" else repository}}))
 """
@@ -708,6 +717,8 @@ class PruneTest(unittest.TestCase):
         for name in ("t3/a", "t3/b"):
             git(self.fx.repo, "push", "-q", "origin", name)
             self.fx.thread("p", name)
+        self.fx.branch("t3/new", merged=False)
+        self.fx.thread("p", "t3/new")
         git(self.fx.repo, "config", "remote.origin.url", str(self.fx.root / "missing.git"))
         other = self.fx.make_repo("other")
         self.fx.branch("t3/other", merged=False, repo=other)
@@ -720,6 +731,7 @@ class PruneTest(unittest.TestCase):
         self.assertTrue(failure["error"].startswith("git ls-remote: "), failure["error"])
         self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [
             ("t3/a", "remote lookup unavailable"), ("t3/b", "remote lookup unavailable"),
+            ("t3/new", "not merged or pushed"),
         ])
         self.assertEqual([e["branch"] for e in result["deleted"]], ["t3/other"])
 
@@ -881,7 +893,7 @@ class PruneTest(unittest.TestCase):
         with mock.patch.object(prune_branches, "git", wraps=prune_branches.git) as spy:
             result = self.fx.prune()
         calls = [call.args[1:] for call in spy.call_args_list if call.args[1] == "ls-remote"]
-        self.assertEqual(calls, [("ls-remote", "origin", "refs/heads/t3/a", "refs/heads/t3/b", "refs/heads/t3/c")])
+        self.assertEqual(calls, [("ls-remote", "--heads", "origin", "refs/heads/t3/a", "refs/heads/t3/b", "refs/heads/t3/c")])
         self.assertEqual([e["branch"] for e in result["deleted"]], ["t3/a", "t3/b"])
         self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]],
                          [("t3/c", "not merged or pushed"), ("t3/unpushed", "not merged or pushed")])
@@ -894,7 +906,12 @@ class PruneTest(unittest.TestCase):
         with mock.patch.object(prune_branches, "git", wraps=prune_branches.git) as spy:
             self.fx.prune()
         self.assertNotIn("ls-remote", [call.args[1] for call in spy.call_args_list])
+        # On GitHub an unpushed branch may still be squash-merged, so it is looked up,
+        # but a repository whose branches are all merged by ancestry makes no call.
         self.on_github()
+        self.fx.prune()
+        self.assertEqual(len(self.gh_calls()), 1)
+        git(self.fx.repo, "branch", "-D", "t3/unpushed")
         self.fx.branch("t3/merged-2")
         self.fx.thread("p", "t3/merged-2")
         self.fx.prune()
@@ -908,6 +925,57 @@ class PruneTest(unittest.TestCase):
         with mock.patch.object(prune_branches, "contains", side_effect=error):
             result = self.fx.prune()
         self.assertEqual(result["failed"], [{"project": str(self.fx.repo), "error": "git: fatal: bad object"}])
+
+    def test_the_github_query_asks_for_the_newest_pull_requests_and_exact_branches(self):
+        self.pushed_on_github("t3/pushed")
+        self.fx.prune()
+        (call,) = self.gh_calls()
+        query = dict(arg.split("=", 1) for arg in call[5::2])["query"]
+        self.assertEqual(query, "\n".join([
+            "query($owner: String!, $name: String!, $base: String!, $h0: String!, $r0: String!) {",
+            "  repository(owner: $owner, name: $name) {",
+            "    p0: pullRequests(headRefName: $h0, baseRefName: $base, states: MERGED, first: 100, "
+            "orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number headRefOid } }",
+            "    r0: ref(qualifiedName: $r0) { prefix name target { oid } }",
+            "  }",
+            "}",
+        ]))
+
+    def test_a_branch_github_names_differently_fails_the_lookup(self):
+        self.pushed_on_github("t3/pushed")
+        with mock.patch.dict(os.environ, {"FAKE_GH_SHAPE": "other-ref"}):
+            result = self.fx.prune()
+        self.assertEqual([f["error"] for f in result["failed"]], [
+            "gh api graphql: GitHub answered for refs/heads/t3/pushed-2 instead of refs/heads/t3/pushed",
+        ])
+        self.assertTrue(has_branch(self.fx.repo, "t3/pushed"))
+
+    def test_a_similarly_named_branch_on_github_does_not_count(self):
+        self.pushed_on_github("t3/pushed")
+        git(self.fx.repo, "push", "-q", "origin", "t3/pushed:refs/heads/t3/pushed-2")
+        git(self.fx.repo, "push", "-q", "origin", "--delete", "t3/pushed")
+        git(self.fx.repo, "update-ref", "refs/remotes/origin/t3/pushed", "t3/pushed")
+        result = self.fx.prune()
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [("t3/pushed", "not merged or pushed")])
+        self.assertEqual(result["failed"], [])
+
+    def test_a_failed_batch_keeps_earlier_batches_and_stops_later_ones(self):
+        self.on_github()
+        tips = {}
+        for name in ("t3/a", "t3/b", "t3/c", "t3/d", "t3/e"):
+            tips[name] = self.fx.branch(name, merged=False)
+            self.fx.thread("p", name)
+        self.pull("t3/a", {"number": 1, "headRefOid": tips["t3/a"]})
+        self.pull("t3/e", {"number": 5, "headRefOid": tips["t3/e"]})
+        with mock.patch.object(prune_branches, "GITHUB_BATCH", 2), mock.patch.dict(os.environ, {"FAKE_GH_FAIL_FROM": "1"}):
+            result = self.fx.prune()
+        self.assertEqual(len(self.gh_calls()), 2)
+        self.assertEqual([(e["branch"], e["pullRequest"]) for e in result["deleted"]], [("t3/a", 1)])
+        self.assertEqual([(e["branch"], e["reason"]) for e in result["kept"]], [
+            ("t3/b", "not merged or pushed"), ("t3/c", "remote lookup unavailable"),
+            ("t3/d", "remote lookup unavailable"), ("t3/e", "remote lookup unavailable"),
+        ])
+        self.assertEqual([f["error"] for f in result["failed"]], ["gh api graphql: gh: Bad credentials (HTTP 401)"])
 
 
 class RoutinePromptTest(unittest.TestCase):

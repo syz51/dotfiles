@@ -37,9 +37,10 @@ fresh state just before deleting, and git itself refuses to delete a branch that
 worktree has checked out, is rebasing or is bisecting. Project folders that are
 missing or not in a repository, and repositories without `origin/HEAD`, are skipped.
 Remote lookups are batched per repository: on github.com, one GraphQL query through
-`gh` per 50 branches for their merged pull requests and live branches, and elsewhere
-one `git ls-remote` for the branches to check. A repository with nothing to look up
-makes no remote call. An error fails only its repository. Each call prints the deleted branches as
+`gh` per 50 branches the default branch lacks, for their merged pull requests and live
+branches, and elsewhere one `git ls-remote --heads` for the branches the last fetch
+saw on origin. A repository with nothing to look up makes no remote call. An error
+fails only its repository, and a failed query stops that repository's later ones. Each call prints the deleted branches as
 `<repository> <branch>`, followed by `archived as <ref>` for archived ones, one per
 line, with `--log` appends one JSON line describing the call, and exits 1 when
 anything failed.
@@ -279,53 +280,50 @@ def github_repository(repo: Path) -> str | None:
     return path[1]
 
 
-GITHUB_QUERY = """query($owner: String!, $name: String!, $base: String!{variables}) {{
-  repository(owner: $owner, name: $name) {{{fields}
-  }}
-}}"""
-
-
 def github_lookup(
     github: str, base: str, branches: list[str], refs: set[str],
 ) -> tuple[dict[str, list[tuple[int, str]]], dict[str, str | None]]:
-    """For each of branches, the number and head commit of each merged pull request
-    from it into base, and for each of those in refs, the commit origin's branch of
-    that name points at now, or None. One GraphQL query per GITHUB_BATCH branches."""
+    """In one GraphQL query, for each of branches the number and head commit of the
+    newest 100 merged pull requests from it into base, and for each of those in refs
+    the commit origin's branch of that name points at now, or None."""
     owner, name = github.split("/")
+    variables = ["$owner: String!", "$name: String!", "$base: String!"]
+    fields = []
+    args = ["-f", f"owner={owner}", "-f", f"name={name}", "-f", f"base={base}"]
+    for i, branch in enumerate(branches):
+        variables.append(f"$h{i}: String!")
+        fields.append(f"p{i}: pullRequests(headRefName: $h{i}, baseRefName: $base, states: MERGED, first: 100, "
+                      "orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number headRefOid } }")
+        args += ["-f", f"h{i}={branch}"]
+        if branch in refs:
+            variables.append(f"$r{i}: String!")
+            fields.append(f"r{i}: ref(qualifiedName: $r{i}) {{ prefix name target {{ oid }} }}")
+            args += ["-f", f"r{i}=refs/heads/{branch}"]
+    query = (f"query({', '.join(variables)}) {{\n  repository(owner: $owner, name: $name) {{\n    "
+             + "\n    ".join(fields) + "\n  }\n}")
+    found = subprocess.run(
+        ["gh", "api", "graphql", "--hostname", "github.com", "-f", f"query={query}", *args],
+        capture_output=True, text=True, check=True, timeout=LOOKUP_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
+    )
+    repository = json.loads(found.stdout)["data"]["repository"]
+    if repository is None:
+        raise ValueError(f"GitHub has no repository {github}")
     pulls: dict[str, list[tuple[int, str]]] = {}
     heads: dict[str, str | None] = {}
-    for start in range(0, len(branches), GITHUB_BATCH):
-        batch = branches[start:start + GITHUB_BATCH]
-        variables, fields, args = [], [], ["-f", f"owner={owner}", "-f", f"name={name}", "-f", f"base={base}"]
-        for i, branch in enumerate(batch):
-            variables.append(f", $h{i}: String!")
-            fields.append(f"\n    p{i}: pullRequests(headRefName: $h{i}, baseRefName: $base, states: MERGED, first: 100)"
-                          " { nodes { number headRefOid } }")
-            args += ["-f", f"h{i}={branch}"]
-            if branch in refs:
-                variables.append(f", $r{i}: String!")
-                fields.append(f"\n    r{i}: ref(qualifiedName: $r{i}) {{ target {{ oid }} }}")
-                args += ["-f", f"r{i}=refs/heads/{branch}"]
-        query = GITHUB_QUERY.format(variables="".join(variables), fields="".join(fields))
-        found = subprocess.run(
-            ["gh", "api", "graphql", "--hostname", "github.com", "-f", f"query={query}", *args],
-            capture_output=True, text=True, check=True, timeout=LOOKUP_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
-        )
-        repository = json.loads(found.stdout)["data"]["repository"]
-        if repository is None:
-            raise ValueError(f"GitHub has no repository {github}")
-        for i, branch in enumerate(batch):
-            pulls[branch] = [(int(pull["number"]), str(pull["headRefOid"])) for pull in repository[f"p{i}"]["nodes"]]
-            if branch in refs:
-                ref = repository[f"r{i}"]
-                heads[branch] = None if ref is None else str(ref["target"]["oid"])
+    for i, branch in enumerate(branches):
+        pulls[branch] = [(int(pull["number"]), str(pull["headRefOid"])) for pull in repository[f"p{i}"]["nodes"]]
+        if branch in refs:
+            ref = repository[f"r{i}"]
+            if ref is not None and ref["prefix"] + ref["name"] != f"refs/heads/{branch}":
+                raise ValueError(f"GitHub answered for {ref['prefix']}{ref['name']} instead of refs/heads/{branch}")
+            heads[branch] = None if ref is None else str(ref["target"]["oid"])
     return pulls, heads
 
 
 def remote_heads(repo: Path, branches: set[str]) -> dict[str, str | None]:
     """The commit each of origin's branches of these names points at now, or None,
-    from one `git ls-remote`, whose patterns protocol v2 sends to the server."""
-    found = git(repo, "ls-remote", "origin", *(f"refs/heads/{branch}" for branch in sorted(branches)),
+    from one `git ls-remote --heads`, which asks the server for branches only."""
+    found = git(repo, "ls-remote", "--heads", "origin", *(f"refs/heads/{branch}" for branch in sorted(branches)),
                 timeout=LOOKUP_TIMEOUT_SECONDS)
     listed = {}
     for line in found.stdout.splitlines():
@@ -419,21 +417,38 @@ def find_candidates(repo: Path, branches: dict[str, Usage], result: dict) -> lis
     # Origin's branch can only hold the work when the last fetch saw it hold it.
     fetched = {
         entry["branch"] for entry, _ in unmerged
-        if contains(repo, ref_tip(repo, f"refs/remotes/origin/{entry['branch']}"), entry["sha"])
+        if available and contains(repo, ref_tip(repo, f"refs/remotes/origin/{entry['branch']}"), entry["sha"])
     }
+    # Branches every lookup they need has answered for; the rest stay unresolved.
     pulls: dict[str, list[tuple[int, str]]] = {}
     heads: dict[str, str | None] = {}
-    if available and unmerged and (github or fetched):
-        try:
-            if github:
-                pulls, heads = github_lookup(github, default_branch, [entry["branch"] for entry, _ in unmerged], fetched)
-            else:
+    if not available:
+        answered: set[str] = set()
+    elif github:
+        answered = set()
+        names = [entry["branch"] for entry, _ in unmerged]
+        for start in range(0, len(names), GITHUB_BATCH):
+            batch = names[start:start + GITHUB_BATCH]
+            try:
+                batch_pulls, batch_heads = github_lookup(github, default_branch, batch, fetched)
+            except LOOKUP_ERRORS as error:
+                # Later batches would likely fail the same way, or time out again.
+                result["failed"].append({"project": str(repo), "error": describe("gh api graphql", error)})
+                break
+            pulls.update(batch_pulls)
+            heads.update(batch_heads)
+            answered.update(batch)
+    else:
+        # Off GitHub, only branches the last fetch saw on origin need a lookup.
+        answered = {entry["branch"] for entry, _ in unmerged} - fetched
+        if fetched:
+            try:
                 heads = remote_heads(repo, fetched)
-        except LOOKUP_ERRORS as error:
-            available = False
-            result["failed"].append({"project": str(repo), "error": describe("gh api graphql" if github else "git ls-remote", error)})
+                answered |= fetched
+            except LOOKUP_ERRORS as error:
+                result["failed"].append({"project": str(repo), "error": describe("git ls-remote", error)})
     for entry, usage in unmerged:
-        decided.append((entry, keep_elsewhere(repo, entry, usage, pulls, heads, available)))
+        decided.append((entry, keep_elsewhere(repo, entry, usage, pulls, heads, entry["branch"] in answered)))
 
     candidates = []
     for entry, reason in sorted(decided, key=lambda decision: decision[0]["branch"]):
@@ -446,7 +461,7 @@ def find_candidates(repo: Path, branches: dict[str, Usage], result: dict) -> lis
 
 def keep_elsewhere(
     repo: Path, entry: dict, usage: Usage, pulls: dict[str, list[tuple[int, str]]],
-    heads: dict[str, str | None], available: bool,
+    heads: dict[str, str | None], answered: bool,
 ) -> str | None:
     """Record in entry where a branch the default branch lacks keeps its commits, or
     return why it stays: a merged pull request, or an archive ref and either origin's
@@ -463,7 +478,7 @@ def keep_elsewhere(
     if usage.abandoned:
         entry.update(abandoned=True, archivedAs=archive)
         return None
-    return "not merged or pushed" if available else "remote lookup unavailable"
+    return "not merged or pushed" if answered else "remote lookup unavailable"
 
 
 def delete_branch(repo: Path, branch: str, tip: str, archive: str | None = None) -> str | None:
