@@ -42,6 +42,35 @@ test("input goes to stdin; a child that ignores it still exits cleanly", async (
   expect(closed.stdout.trim()).toBe("0");
 });
 
+test("interact answers output while stdin stays open, and ends it itself", async () => {
+  // The child echoes each line it reads and reports when stdin ends.
+  const code = 'let b="";process.stdin.on("data",(c)=>{b+=c;let i;while((i=b.indexOf("\\n"))>=0){console.log("got "+b.slice(0,i));b=b.slice(i+1)}}).on("end",()=>console.log("end"))';
+  const seen = [];
+  const run = await runProcess([bun, "-e", code], {
+    interact: (stdin) => {
+      stdin.write("первый 中文\n");
+      return (text) => {
+        seen.push(text);
+        if (text.includes("got первый 中文")) stdin.write("second\n");
+        if (text.includes("got second")) stdin.end();
+      };
+    },
+  });
+  expect(run.stdout).toBe("got первый 中文\ngot second\nend\n");
+  expect(seen.join("")).toBe(run.stdout);
+  expect(() => runProcess([bun, "-e", "0"], { input: "x", interact: () => () => {} })).toThrow("not both");
+});
+
+test("a listener that throws fails the run and kills the child", async () => {
+  const error = await runProcess([bun, "-e", 'console.log("ready");setInterval(()=>{},1000)'], {
+    interact: () => () => {
+      throw new Error("listener failed");
+    },
+  }).catch((e) => e);
+  expect(error.message).toBe("listener failed");
+  expect(error.stdout).toBe("ready\n");
+});
+
 test("a timeout also kills descendants that started their own process group", async () => {
   const root = mkdtempSync(join(tmpdir(), "process-test-"));
   const pidFile = join(root, "pid");

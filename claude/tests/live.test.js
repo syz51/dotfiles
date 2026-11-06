@@ -270,6 +270,76 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     }
   }), 600_000);
 
+  // The Review rule on background review: the session hands the review to one background
+  // agent on its own model, in a worktree, with the diff pinned to the commit's SHA. The
+  // follow-up arrives as soon as the first turn ends, as a person typing mid-review: the
+  // session must answer it while the review still runs, and the review must still finish
+  // and reach the final reply.
+  test("a high-impact review runs in the background while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
+    const { remote, work } = publishedRepo(fixture, {
+      "README.md": "# Documents service\nauth/access.js is the shared authorization check that every service imports.\n",
+      "auth/access.js": "export function canEdit(user, doc) {\n  return user.roles.includes(\"admin\") || doc.ownerId === user.id;\n}\n",
+    });
+    writeFileSync(join(work, "auth/access.js"), "export function canEdit(user, doc) {\n  const admin = user.roles.includes(\"admin\");\n  return admin || doc.ownerId !== user.id;\n}\n");
+    git(work, "commit", "--quiet", "-am", "Name the admin check in canEdit");
+    const sha = git(work, "rev-parse", "HEAD");
+    const published = git(remote, "rev-parse", "main");
+    const ignore = new Set([".git", ".claude"]);
+    const before = snapshot(work, { ignore });
+    const worktrees = () => git(work, "worktree", "list", "--porcelain").split("\n")
+      .filter((line) => line.startsWith("worktree ")).map((line) => line.slice("worktree ".length))
+      .filter((path) => !existsSync(path) || realpathSync(path) !== work);
+    try {
+      const run = await session({
+        cwd: work,
+        timeout: 540_000,
+        prompt: "The latest commit changes auth/access.js, the shared authorization check every service imports, and it is "
+          + "final. Before I push it, run the review my instructions require for a change like this, and tell me what it "
+          + "finds. Keep this checkout read-only: report the findings, but don't fix, commit or push anything.",
+        followUp: "Unrelated quick question while that runs: what is 17 * 23? Reply with just the number.",
+      });
+
+      // One background agent on the session's own model, in a worktree, ran the review.
+      const spawns = agentSpawns(run.events).filter((spawn) => spawn.parent === null);
+      expect(spawns.map((spawn) => spawn.input), "the review was not one background agent").toEqual([expect.objectContaining({ run_in_background: true })]);
+      const [spawn] = spawns;
+      expect(spawn.input.subagent_type ?? "general-purpose", "the review went to an agent on another model").toBe("general-purpose");
+      expect(spawn.input.isolation, "the review shared the checkout").toBe("worktree");
+      const messages = subagentMessages(run.events, [spawn]);
+      expect(messages.length, "no messages from the review agent").toBeGreaterThan(0);
+      for (const message of messages) expect(message.message.model).toBe(MODEL);
+      const skills = toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review");
+      expect(skills.filter((use) => use.parent === null), "the main session ran the review itself").toEqual([]);
+      const reviews = skills.filter((use) => use.parent === spawn.id);
+      expect(reviews.length, "the agent did not run /code-review").toBe(1);
+      const args = reviews[0].input.args ?? "";
+      expect(args, "the review did not run at xhigh").toMatch(/\bxhigh\b/);
+      expect((args.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((hash) => sha.startsWith(hash)), `the review was not pinned to ${sha}: ${args}`).toBe(true);
+
+      // The follow-up was answered before the review ended, and the review still finished.
+      const ended = spawnEnds(run.events, [spawn]).get(spawn.id);
+      const answered = run.events.findIndex((event) => event.type === "result" && /\b391\b/.test(event.result ?? ""));
+      expect(answered, "the follow-up was never answered").toBeGreaterThan(-1);
+      expect(answered, "the follow-up was answered only after the review ended").toBeLessThan(ended);
+      const notification = run.events.find((event) => event.type === "system" && event.subtype === "task_notification" && event.tool_use_id === spawn.id);
+      expect(notification?.status, "the review did not finish").toBe("completed");
+      const reply = finalText(run.events);
+      expect(reply).toMatch(/owner/i);
+      expect(reply).toMatch(/!==|invert|revers|negat|flip|anyone|any user|non-?owner|not the owner|other users|everyone/i);
+
+      // Read-only: nothing changed, nothing was pushed, and the review's worktree is gone.
+      assertUnchanged(before, snapshot(work, { ignore }));
+      expect(git(work, "rev-parse", "HEAD")).toBe(sha);
+      expect(git(remote, "rev-parse", "main")).toBe(published);
+      expect(worktrees(), "the review's worktree was left behind").toEqual([]);
+      expect(git(work, "branch", "--format=%(refname:short)").split("\n"), "the review's branch was left behind").toEqual(["main"]);
+    } finally {
+      // Worktrees inside the fixture are removed with it; remove any made elsewhere.
+      for (const path of worktrees())
+        if (existsSync(path) && !realpathSync(path).startsWith(`${work}/`)) rmSync(path, { recursive: true, force: true });
+    }
+  }), 600_000);
+
   test("two explorers investigate independent modules in parallel", () => suite.scenario("parallel explorers", async ({ fixture, session }) => {
     const work = fixture({
       "a.js": "export function computeA(x) { return x * 7 + 11; }\n",

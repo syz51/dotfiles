@@ -103,6 +103,53 @@ if (mode.startsWith("chinese-")) {
   if (mode === "chinese-skill-edit") appendFileSync(join(home, "releases", "typescript", "SKILL.md"), "edited\n");
   answer = "我会参加明天的会议。";
 }
+if (mode.startsWith("review-")) {
+  // A conversation over stream-json input: each turn's events go out when the turn ends,
+  // and the session exits once stdin ends. review-background hands the review to a
+  // background agent and answers the follow-up while it runs; review-late does the same
+  // but answers only after the review; review-foreground runs the review itself.
+  const lines = (async function* () {
+    let pending = "";
+    for await (const chunk of process.stdin) {
+      pending += chunk;
+      for (let i; (i = pending.indexOf("\n")) >= 0; pending = pending.slice(i + 1)) yield pending.slice(0, i);
+    }
+  })();
+  const nextMessage = async () => {
+    const { value, done } = await lines.next();
+    return done ? null : JSON.parse(value).message.content;
+  };
+  const turn = (text) => {
+    emit({ type: "result", subtype: "success", is_error: false, result: text, total_cost_usd: 0.001, num_turns: counter + 1 });
+    for (const event of events.splice(0)) console.log(JSON.stringify(event));
+  };
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
+  const findings = "canEdit now lets anyone who is not the owner edit: `!==` should be `===`.";
+  await nextMessage();
+  if (mode === "review-foreground") {
+    tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }));
+    turn(findings);
+    await nextMessage();
+    turn("391");
+  } else {
+    const spawn = tool("Agent", { subagent_type: "general-purpose", run_in_background: true, isolation: "worktree", prompt: "Review it." },
+      () => ({ text: "Async agent launched successfully." }));
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
+    tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }), spawn);
+    const finish = () => {
+      emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status: "completed" });
+      emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    };
+    turn("The review is running in the background.");
+    await nextMessage();
+    if (mode === "review-late") finish();
+    turn("391");
+    if (mode !== "review-late") finish();
+    turn(findings);
+  }
+  while (await nextMessage() !== null);
+  process.exit(0);
+}
 if (mode === "article-claim") {
   skill("content-research-writer");
   answer = "I drafted the article and saved it as article.md.";

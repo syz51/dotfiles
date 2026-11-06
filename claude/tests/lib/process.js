@@ -35,22 +35,28 @@ function descendants(pid) {
 // and those that outlive the leader die too.
 // A rejection carries the output captured so far as error.stdout and error.stderr.
 // input, when given, is written to stdin, which is then closed; otherwise stdin is empty.
-export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input } = {}) {
+// interact, instead, holds stdin open for a conversation: it is called once with stdin and
+// returns a listener that gets stdout as text, chunk by chunk; it must end stdin itself.
+export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input, interact } = {}) {
+  if (input !== undefined && interact) throw new Error("runProcess takes input or interact, not both");
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const piped = input !== undefined || !!interact;
+    const child = spawn(argv[0], argv.slice(1), { cwd, env, detached: true, stdio: [piped ? "pipe" : "ignore", "pipe", "pipe"] });
     const out = [];
     const err = [];
     let size = 0;
     let failure;
-    if (input !== undefined) {
-      // A child that exits without reading its input makes the write fail with EPIPE,
-      // which is harmless; any other write error fails the run.
+    // A child that exits without reading its input makes the write fail with EPIPE,
+    // which is harmless; any other write error fails the run.
+    if (piped)
       child.stdin.on("error", (error) => {
         if (error.code !== "EPIPE") failure ??= error;
       });
-      child.stdin.end(input);
-    }
+    if (input !== undefined) child.stdin.end(input);
+    const listen = interact?.(child.stdin);
+    // Keeps a character split across chunks whole in the listener's text.
+    const decoder = new TextDecoder();
     // Kills once: later chunks past the bound must not rescan the process table. A
     // descendant that is gone (ESRCH) or not ours to signal (EPERM, such as a pid reused by
     // another user since the snapshot) is skipped, so the group kill below always runs.
@@ -80,7 +86,17 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
         if (size > maxBytes) {
           failure ??= new Error(`Output bound of ${maxBytes} bytes exceeded: ${argv[0]}`);
           kill();
-        } else chunks.push(Buffer.from(chunk));
+        } else {
+          chunks.push(Buffer.from(chunk));
+          // A listener that throws fails the run like any other failure.
+          if (listen && stream === child.stdout)
+            try {
+              listen(decoder.decode(chunk, { stream: true }));
+            } catch (error) {
+              failure ??= error;
+              kill();
+            }
+        }
       });
     child.on("error", (error) => {
       clearTimeout(timer);

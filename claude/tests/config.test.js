@@ -222,6 +222,18 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/Report the rest, as with unrelated issues, instead of fixing them/);
   });
 
+  // A review run in the main thread is cut off when a message arrives mid-review; in the
+  // background the thread stays free and the review finishes.
+  test("Review runs in one background agent, pinned to the commit, while this thread keeps answering", () => {
+    const review = section("Review");
+    expect(review).toMatch(/Run that review in one background agent on this session's model, such as `general-purpose`, so this thread stays free to answer me/);
+    expect(review).toMatch(/its own worktree at the commit under review/);
+    expect(review).toMatch(/run `\/code-review` on that commit's diff pinned to its SHA, such as `\/code-review xhigh origin\/main\.\.\.<SHA>`/);
+    expect(review).toMatch(/return the findings unchanged/);
+    expect(review).toMatch(/While it runs, answer my messages and continue other work, but don't push or report done until its findings are handled/);
+    expect(review).toMatch(/cancel and restart it only when I change what it reviews/);
+  });
+
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
     const delegation = section("Delegation");
     expect(delegation).toMatch(/Give each track that edits files its own worktree through the runtime's worktree facility when one is available, never one made in the shell/);

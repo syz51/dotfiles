@@ -36,6 +36,7 @@
 ## Review
 
 - `/code-review` is the only review process. For high-impact changes (shared or security-sensitive code, migrations, public interfaces, or anything hard to revert), run it once at `xhigh` on the final diff before pushing or reporting done; its level also sets the review's reasoning effort. Don't run a second review, `/simplify`, or `/security-review` unless I ask.
+- Run that review in one background agent on this session's model, such as `general-purpose`, so this thread stays free to answer me. Give it its own worktree at the commit under review, have it run `/code-review` on that commit's diff pinned to its SHA, such as `/code-review xhigh origin/main...<SHA>`, and return the findings unchanged. While it runs, answer my messages and continue other work, but don't push or report done until its findings are handled; cancel and restart it only when I change what it reviews.
 - Check each finding against the code before deciding. Fix every one that is a real defect in what the change is meant to do and verify the fix, delegating only fixes that split into parallel tracks under the Delegation section, then rerun the affected checks instead of reviewing again. Report the rest, as with unrelated issues, instead of fixing them.
 
 ## Basic safeguards
