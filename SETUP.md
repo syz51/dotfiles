@@ -227,16 +227,36 @@ bun ~/.claude/factory/cli.js metrics            # last 7 days vs the week before
 bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
 bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
+bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3) and proposals ($3 per proposer session; no session
-starts once the next one could take the run past $10, though a session can end slightly
-over its own budget). Proposals open draft PRs on this
+audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
+no session starts once the next one could take the run past $10, though a session can end
+slightly over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
-ids, not transcript text, because the repository is public. `weekly status` shows the
+ids, not transcript text, because the repository is public.
+
+The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
+board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
+`board-snapshot.json` in the state folder; the report shows the stats and the open
+feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
+one proposer session with clones of this repository and agent-board, which sees only that
+feedback. It may change only the "Work board" section of
+`claude/CLAUDE.md` and `codex/AGENTS.md` (identically), agent-board's coordinator prompt
+and docs, and the values of the server defaults in `impl Default for Settings`. The tool
+tests each changed repository (`cargo test --workspace --locked` for agent-board, its
+build folder kept under `cargo-target/` in the state folder) and opens a draft PR on each,
+against agent-board's `main` once it holds the server and `build/v0` until then. A change
+that breaks a test pinning a default stays a local patch for a person to finish, as with
+rule text. If the second PR fails after the first opened, the record says
+`partly-proposed` and is not retried. Feedback
+is agent-written and private: the proposer gets it as quoted data, and PR bodies list
+feedback task ids and counts, never its text. Reinstall the job after installing `cargo`
+so its folder is on the job's `PATH`. `weekly status` shows the
 last run; `weekly uninstall` removes the job. The living task list is
 [`claude/factory/PLAN.md`](claude/factory/PLAN.md).
 
@@ -500,7 +520,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   replies stay as asked.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,
-`gh` and `launchctl` programs. Its live sandbox check runs real Haiku sessions (about
+`gh`, `launchctl`, `board` and `cargo` programs. Its live sandbox check runs real Haiku sessions (about
 $0.01) and verifies that the strict profile blocks writes outside the working folder and
 unlisted hosts:
 
