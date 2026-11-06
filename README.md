@@ -18,7 +18,7 @@ there is no repository-wide installer.
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
-| `claude/`                | Claude Code instructions, subagents, settings, push guard, and a browser skill.  |
+| `claude/`                | Claude Code instructions, subagents, settings, Bash guards, and a browser skill. |
 | `claude/factory/`        | Metrics, session scoring, proposals, benchmarks and audit for the Claude setup.  |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |

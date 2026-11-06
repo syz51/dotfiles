@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
 const CLAUDE = join(import.meta.dir, "..");
@@ -133,6 +133,25 @@ describe("settings", () => {
       [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+)/g)].map((match) => match[1]));
     expect(scripts).toContain("hooks/guard-git-push.js");
     for (const path of scripts) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
+  });
+
+  // A copied hook that cannot load a module it imports exits 1, a non-blocking hook error, so
+  // the guards would fail open; SETUP.md has the whole hooks directory linked for this reason.
+  test("every module a hook script imports is tracked beside it", () => {
+    const pending = handlers.flatMap((hook) =>
+      [...hook.command.matchAll(/\$HOME\/\.claude\/([\w./-]+\.js)/g)].map((match) => `claude/${match[1]}`));
+    const seen = new Set();
+    while (pending.length > 0) {
+      const path = pending.pop();
+      if (seen.has(path)) continue;
+      seen.add(path);
+      for (const [, relative] of read(path).matchAll(/^import .* from "(\.{1,2}\/[^"]+)";$/gm)) {
+        const imported = join(dirname(path), relative);
+        expect(tracked(imported), `${path} imports ${imported}`).toBe(true);
+        pending.push(imported);
+      }
+    }
+    expect(seen).toContain("claude/hooks/shell.js");
   });
 
   // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read

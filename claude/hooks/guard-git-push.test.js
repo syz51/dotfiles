@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findViolation, parseScript } from "./guard-git-push.js";
+import { findViolation } from "./guard-git-push.js";
 
 const HOOK = join(import.meta.dir, "guard-git-push.js");
 
@@ -72,6 +72,16 @@ describe("blocks", () => {
     ["xargs git push -f origin main </dev/null"],
     ["watch -n 5 git push -f origin main"],
     ["stdbuf -oL git push -f origin main"],
+    ["sudo -iu me git push -f origin main"],
+    ["find . -maxdepth 0 -exec git push -f origin main \\;"],
+    ["echo 'git push -f origin main' | bash"],
+    ["ssh -p 22 host 'cd repo && git push --force origin main'"],
+    ["ssh host git push -f origin feature"],
+    ["ssh host <<'EOF'\ngit push -f origin main\nEOF"],
+    ["sudo -uhugh git push -f origin main"],
+    ["fish --command 'git push -f origin main'"],
+    // -execdir runs in each match's directory, whose branch is unknown here.
+    ["find /other -maxdepth 1 -name .git -execdir git push --force-with-lease=HEAD:abc123 origin HEAD \\;"],
     // the directory a push runs in
     ["cd /other && git push --force-with-lease=main:abc123"],
     ["env -C /other git push --force-with-lease=main:abc123"],
@@ -111,6 +121,10 @@ describe("allows", () => {
     ["git status > /dev/null && ls"],
     // command -v only looks the command up
     ["command -v git push -f origin main"],
+    ["ssh host 'git push origin feature'"],
+    ["ssh -o ConnectTimeout=5 host git fetch"],
+    ["echo 'git push -f origin main' > notes.txt"],
+    ["find . -name '*.md' -exec grep -l 'git push -f' {} +"],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeUndefined();
   });
@@ -130,12 +144,10 @@ test("a git query that fails blocks only history rewrites, with the reason", () 
   expect(findViolation("git push origin feature", "/repo", broken)).toBeUndefined();
 });
 
-test("parseScript splits operators, drops redirections, and keeps shell inputs", () => {
-  const { commands, substitutions } = parseScript('a \'b c\' && d >out 2>&1; e | f <<< "x" && echo "$(g h)"');
-  expect(commands.map((command) => command.argv)).toEqual([["a", "b c"], ["d"], ["e"], ["f"], ["echo", "$(g h)"]]);
-  expect(commands.map((command) => command.next)).toEqual(["&&", ";", "|", "&&", undefined]);
-  expect(commands[3].inputs).toEqual(["x"]);
-  expect(substitutions).toEqual(["g h"]);
+test("a script nested too deeply to check is blocked", () => {
+  let command = "git status";
+  for (let i = 0; i < 10; i++) command = `bash -c ${JSON.stringify(command)}`;
+  expect(verdict(command)).toContain("too deeply");
 });
 
 describe("hook process", () => {
