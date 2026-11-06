@@ -23,6 +23,7 @@ mole
 mpv/watch_later
 uv
 /codex/*
+!/codex/AGENTS.md
 !/codex/config.example.toml
 !/codex/hooks.json
 !/codex/keybindings.json

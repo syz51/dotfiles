@@ -15,8 +15,10 @@ test("childEnv drops parent-session variables and keeps the rest", () => {
   }, { CLAUDE_CODE_TMPDIR: "/tmp/root", TMPDIR: "/tmp/root" });
   expect(env).toEqual({
     PATH: "/bin", HOME: "/home/a", ANTHROPIC_API_KEY: "kept", NOT_CLAUDE_X: "kept",
-    CLAUDE_CODE_TMPDIR: "/tmp/root", TMPDIR: "/tmp/root",
+    AGENT_BOARD_HOOKS: "off", CLAUDE_CODE_TMPDIR: "/tmp/root", TMPDIR: "/tmp/root",
   });
+  expect(childEnv({ AGENT_BOARD_HOOKS: "on" }).AGENT_BOARD_HOOKS).toBe("off");
+  expect(childEnv({}, { AGENT_BOARD_HOOKS: "on" }).AGENT_BOARD_HOOKS).toBe("on");
 });
 
 test("output keeps UTF-8 characters split across byte-sized chunks", async () => {

@@ -329,6 +329,18 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [ ] Inherited host prompts of a forked session are not shown to the judge (the lib
   filters them); add if forks of slash-command sessions turn out to matter.
 
+### 6. Agent work board (`board/`)
+
+A shared, durable task board that every agent thread on every device reads and writes, so
+threads keep their working state across compaction and restarts and see each other's
+progress without reading transcripts. Its own living plan is `board/PLAN.md`; a dedicated
+thread owns it.
+
+- [~] Design every component (data model, storage, network, agent interface, runtime
+  integration, alerts, human view, agent rules, migration, operations): drafted in
+  `board/DESIGN.md`, awaiting the user's review.
+- [ ] Build after the design is accepted; then move this plan's open items onto the board.
+
 ## Deferred: daily review on sai
 
 The user asked whether the daily codex-skills review could run on `sai` (the user's
@@ -353,7 +365,8 @@ The build is complete and merged. Remaining work is the open `[ ]` items above, 
 blocking: Codex session coverage and LiteLLM pricing (area 1), judge calibration and a
 shell-edit detector (area 2), more benchmark cases and trials (area 3), public-export
 scanning (area 4), and hardening two flaky live scenarios. The weekly run (Mondays 13:30)
-reports in the state folder's `reports/weekly-*.md`.
+reports in the state folder's `reports/weekly-*.md`. Area 6 (agent work board) is in design
+in its own thread; follow `board/PLAN.md`.
 
 ## Log
 
@@ -414,3 +427,5 @@ reports in the state folder's `reports/weekly-*.md`.
   identity into "You are Claude Code" and carried 9k characters of coding-session
   guidance (second call: 6.5k cached tokens read, valid judgement). Rubric v4 rescores
   sessions under the new prompt; a test pins the prompt's hash to the version.
+- 2026-11-06: Area 6 opened: a shared agent work board, designed in a dedicated thread
+  (`board/PLAN.md`).
