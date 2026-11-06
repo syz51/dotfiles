@@ -60,6 +60,7 @@
       "effortLevel": "high"
     }
   },
+  "autoCompactWindow": 300000,
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark",
   "switchModelsOnFlag": false
