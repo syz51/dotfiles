@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { projectName } from "../../tests/lib/cleanup.js";
 import { main } from "../cli.js";
 import { API_FIRST, ClaudeCallError, judge, runTask } from "./claude.js";
 import { fromLitellm, litellmFetchedAt, LITELLM_FILE, LITELLM_URL, MAX_AGE_MS, refreshLitellm } from "./litellm.js";
@@ -436,6 +437,81 @@ describe("claude runner", () => {
     await runTask({ prompt: "do it", cwd, strictMcp: true });
     expect(calls()[1].args).toContain("--strict-mcp-config");
     expect(calls()[1].args).not.toContain("--mcp-config");
+  });
+
+  test("runTask with readEffort reads the effort from the transcript, then deletes it", async () => {
+    const config = join(scratch, "config");
+    fake("task");
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    // Session variables such as CLAUDE_CONFIG_DIR do not reach the session unless passed in env.
+    const run = await runTask({ prompt: "do it", cwd, effort: "low", readEffort: true, env: { CLAUDE_CONFIG_DIR: config } });
+    const [call] = calls();
+    expect(call.args).not.toContain("--no-session-persistence");
+    expect(call.args[call.args.indexOf("--session-id") + 1]).toMatch(/^[0-9a-f-]{36}$/);
+    expect(run.efforts).toEqual({ low: 1 });
+    // The fake wrote the transcript and a subagent folder in the project folder; all are gone.
+    expect(readdirSync(join(config, "projects"))).toEqual([]);
+    // Without readEffort the session is not saved and no efforts are returned.
+    const plain = await runTask({ prompt: "do it", cwd, effort: "low" });
+    expect(calls()[1].args).toContain("--no-session-persistence");
+    expect(calls()[1].args).not.toContain("--session-id");
+    expect(plain.efforts).toBeUndefined();
+  });
+
+  test("runTask with readEffort counts each message once and skips subagents", async () => {
+    const config = join(scratch, "config");
+    const script = join(scratch, "efforts.js");
+    // Two records of one message, a second message and a subagent message.
+    writeFileSync(script, `export default ({ emit }) => {
+      emit({ type: "system", subtype: "init", tools: [] });
+      for (const [id, parent] of [["m1", null], ["m1", null], ["m2", null], ["s1", "toolu_1"]])
+        emit({ type: "assistant", parent_tool_use_id: parent, message: { id, model: "m", content: [] } });
+      emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0, num_turns: 2, result: "ok" });
+    };`);
+    fake("script", { FAKE_CLAUDE_SCRIPT: script, FAKE_CLAUDE_EFFORT: "xhigh" });
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    expect((await runTask({ prompt: "x", cwd, effort: "low", readEffort: true, env: { CLAUDE_CONFIG_DIR: config } })).efforts).toEqual({ xhigh: 2 });
+  });
+
+  test("runTask with readEffort deletes the transcript of a failed session and of a refused try", async () => {
+    const config = join(scratch, "config");
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    const project = join(config, "projects", projectName(realpathSync(cwd)));
+    // A session that saved its transcript and a subagent folder, then crashed.
+    const script = join(scratch, "crash.js");
+    writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+      export default ({ option }) => {
+        mkdirSync(${JSON.stringify(project)} + "/" + option("--session-id") + "/subagents", { recursive: true });
+        writeFileSync(${JSON.stringify(project)} + "/" + option("--session-id") + ".jsonl", "{}\\n");
+        process.exit(3);
+      };`);
+    fake("script", { FAKE_CLAUDE_SCRIPT: script });
+    const env = { CLAUDE_CONFIG_DIR: config };
+    // Another session in the same project stays, and so does the project folder.
+    mkdirSync(project, { recursive: true });
+    writeFileSync(join(project, "other.jsonl"), "{}\n");
+    await expect(runTask({ prompt: "x", cwd, readEffort: true, env })).rejects.toThrow("exit 3");
+    expect(readdirSync(project)).toEqual(["other.jsonl"]);
+    rmSync(join(project, "other.jsonl"));
+    // A refused try and its retry use separate sessions; the efforts are the retry's.
+    rmSync(join(scratch, "log.jsonl"));
+    fake("refused", { FAKE_CLAUDE_THEN: "task", FAKE_CLAUDE_EFFORT: "medium" });
+    const run = await runTask({ prompt: "x", cwd, readEffort: true, env });
+    const ids = calls().map((call) => call.args[call.args.indexOf("--session-id") + 1]);
+    expect(new Set(ids).size).toBe(2);
+    expect(run.efforts).toEqual({ medium: 1 });
+    expect(existsSync(project)).toBe(false);
+  });
+
+  test("runTask with readEffort returns null efforts when no transcript was saved", async () => {
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    // Exiting before the fake saves leaves no transcript, as a CLI that ignored
+    // --session-id would.
+    const script = join(scratch, "nosave.js");
+    writeFileSync(script, `export default ({ emit }) => { emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0, num_turns: 1, result: "ok" }); process.exit(0); };`);
+    fake("script", { FAKE_CLAUDE_SCRIPT: script });
+    const run = await runTask({ prompt: "x", cwd, readEffort: true, env: { CLAUDE_CONFIG_DIR: join(scratch, "config") } });
+    expect([run.ok, run.efforts]).toEqual([true, null]);
   });
 
   test("runTask fails with the exit status when there is no stream", async () => {

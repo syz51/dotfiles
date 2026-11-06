@@ -17,9 +17,15 @@
 //   task          a success result with text FAKE_CLAUDE_TEXT; when FAKE_CLAUDE_WRITE is
 //                 set to "path=content", writes that file in the working folder first
 //   script        runs the module at FAKE_CLAUDE_SCRIPT with { args, cwd, stdin, emit }
-// FAKE_CLAUDE_COST sets total_cost_usd (default 0.01).
+// FAKE_CLAUDE_COST sets total_cost_usd (default 0.01). With --session-id and without
+// --no-session-persistence, the session's assistant messages are saved as Claude Code
+// saves them, under CLAUDE_CONFIG_DIR/projects (tests pass a scratch one); each
+// main-thread message records FAKE_CLAUDE_EFFORT or else the --effort value.
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { projectName } from "../../../tests/lib/cleanup.js";
+import { projectsRoot } from "../transcripts.js";
 
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
@@ -36,7 +42,26 @@ if (mode === "refused") {
 }
 const cost = Number(env.FAKE_CLAUDE_COST ?? 0.01);
 const model = option("--model") ?? "claude-opus-5-5";
-const emit = (event) => console.log(JSON.stringify(event));
+const sessionId = option("--session-id") || randomUUID();
+const emitted = [];
+const emit = (event) => {
+  if (event.type === "system" && event.subtype === "init") event = { session_id: sessionId, ...event };
+  emitted.push(event);
+  console.log(JSON.stringify(event));
+};
+// The transcript of what the session emitted; subagent messages go to the session's folder.
+function saveTranscript() {
+  const project = join(projectsRoot(), projectName(process.cwd()));
+  const effort = env.FAKE_CLAUDE_EFFORT ?? option("--effort");
+  const lines = (sub) => emitted.filter((event) => event.type === "assistant" && !!event.parent_tool_use_id === sub)
+    .map((event) => `${JSON.stringify({ type: "assistant", sessionId, isSidechain: sub, message: event.message, ...(effort && !sub ? { effort } : {}) })}\n`).join("");
+  mkdirSync(join(project, sessionId, "subagents"), { recursive: true });
+  writeFileSync(join(project, `${sessionId}.jsonl`), lines(false));
+  writeFileSync(join(project, sessionId, "subagents", "agent-a1.jsonl"), lines(true));
+}
+const save = () => {
+  if (option("--session-id") && !args.includes("--no-session-persistence")) saveTranscript();
+};
 const init = (extra = {}) => emit({ type: "system", subtype: "init", model, tools: ["StructuredOutput"], mcp_servers: [], ...extra });
 const result = (extra = {}) => emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: cost, num_turns: 1, result: "", ...extra });
 
@@ -58,6 +83,7 @@ switch (mode) {
     await Bun.sleep(Number(env.FAKE_CLAUDE_REFUSAL_MS ?? 0));
     init();
     emit({ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: "Credit balance is too low", total_cost_usd: cost });
+    save();
     process.exit(1);
   case "malformed":
     console.log("{not json");
@@ -71,6 +97,7 @@ switch (mode) {
       mkdirSync(dirname(join(process.cwd(), path)), { recursive: true });
       writeFileSync(join(process.cwd(), path), content.join("="));
     }
+    emit({ type: "assistant", parent_tool_use_id: null, message: { id: "msg_1", model, content: [{ type: "text", text: "working" }] } });
     result({ result: env.FAKE_CLAUDE_TEXT ?? "done" });
     break;
   }
@@ -83,3 +110,4 @@ switch (mode) {
     console.error(`Unknown FAKE_CLAUDE_MODE ${mode}`);
     process.exit(64);
 }
+save();

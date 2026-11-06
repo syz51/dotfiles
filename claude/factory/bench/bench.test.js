@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { projectName } from "../../tests/lib/cleanup.js";
 import { main } from "../cli.js";
 import { readJsonl } from "../lib/state.js";
 import { addFromCommit, defaultPrompt } from "./add.js";
@@ -31,6 +32,7 @@ beforeEach(() => {
     FAKE_CLAUDE_SCRIPT: SESSION, FAKE_BENCH_LOG: join(scratch, "sessions.jsonl"),
     FAKE_BENCH_SLEEP: undefined, FAKE_BENCH_WRITE: undefined, FAKE_BENCH_TEXT: undefined, FAKE_BENCH_RAN: undefined,
     FAKE_BENCH_SUBTYPE: undefined, FAKE_BENCH_IS_ERROR: undefined, FAKE_BENCH_API_ERROR: undefined, FAKE_BENCH_COST: undefined,
+    FAKE_CLAUDE_EFFORT: undefined,
   });
 });
 afterEach(() => {
@@ -228,7 +230,10 @@ describe("runs", () => {
     expect(option("--model")).toBe("claude-sonnet-5-5");
     expect(option("--effort")).toBe("high");
     expect(option("--max-budget-usd")).toBe("1.5");
-    expect(session.args).toContain("--no-session-persistence");
+    // The session is saved, so its effort can be read, and its transcript deleted after.
+    expect(session.args).not.toContain("--no-session-persistence");
+    expect(option("--session-id")).toMatch(/^[0-9a-f-]{36}$/);
+    expect(readdirSync(join(homedir(), ".claude", "projects")).filter((name) => name.startsWith(projectName(dirname(session.cwd))))).toEqual([]);
     expect(session.agentFile).toContain("model: claude-sonnet-5-5\neffort: high\n");
     expect(session.agentFile).toContain("name: worker");
     expect(session.settings.permissions.deny).toEqual(["WebFetch", "WebSearch"]);
@@ -237,7 +242,7 @@ describe("runs", () => {
     expect(existsSync(session.cwd)).toBe(false);
     expect(record).toMatchObject({
       runId: "r1", batch: "b1", caseId: "sample", role: "worker", model: "claude-sonnet-5-5", modelObserved: "claude-sonnet-5-5",
-      effort: "high", trial: 1, pass: true, oracleExit: 0, costUSD: 0.25, turns: 3, error: null, infra: false, cliVersion: "9.9.9",
+      effort: "high", effortObserved: "high", trial: 1, pass: true, oracleExit: 0, costUSD: 0.25, turns: 3, error: null, infra: false, cliVersion: "9.9.9",
     });
     expect(record.durationMs).toBeGreaterThan(0);
     expect(Date.parse(record.at)).not.toBeNaN();
@@ -290,6 +295,22 @@ describe("runs", () => {
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, infra: true, error: "session ended with an error result: Not logged in" });
     setEnv({ FAKE_CLAUDE_MODE: "exit" });
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, infra: true });
+  });
+
+  test("a session at another effort, or one whose effort is unrecorded, is an infrastructure failure", async () => {
+    const benchCase = loadCase(writeCase(caseValue()));
+    setEnv({ FAKE_CLAUDE_EFFORT: "low" });
+    expect(await runOne(benchCase, runOptions())).toMatchObject({
+      pass: false, infra: true, effort: "high", effortObserved: "low", error: "requested effort high but the session ran low",
+    });
+    // A transcript without effort leaves the requested effort unverified.
+    setEnv({ FAKE_CLAUDE_EFFORT: "" });
+    const unrecorded = await runOne(benchCase, runOptions());
+    expect(unrecorded).toMatchObject({ pass: false, infra: true, effortObserved: null });
+    expect(unrecorded.error).toContain("recorded no effort");
+    // The wrong model is reported over the wrong effort.
+    setEnv({ FAKE_CLAUDE_EFFORT: "low", FAKE_BENCH_RAN: "claude-haiku-5-5" });
+    expect((await runOne(benchCase, runOptions())).error).toContain("requested claude-sonnet-5-5 but the session ran claude-haiku-5-5");
   });
 
   test("a dated ID of the requested model is the requested model", async () => {

@@ -82,6 +82,8 @@ review on sai** for the feasibility notes the user asked about.
     scores, bench results and proposal records. Never inside the repo.
 - Model calls the tools make are bounded by `--max-budget-usd` and run with
   `--no-session-persistence`, so they never become transcripts that get scored or captured.
+  The exception is bench runs, which save the transcript to read its effort and delete it
+  when the run ends.
 - Default LLM judge: `claude-sonnet-5-5` at `medium` effort, configurable per run. Judging
   sends unredacted transcript digests to the model, same as codex-skills capture.
 - Proposals never edit settings, permissions or hooks. Allowed paths: `claude/CLAUDE.md`,
@@ -115,7 +117,8 @@ threads become `subagents` of their root thread and whose cost is the usage esti
 `{ output, costUSD, events }`; `system`, the part shared by every call of a run, goes to
 the cached system prompt (it replaces Claude Code's default one), `prompt` (per call) to
 stdin; a call the API refused before it did anything runs once more; `runTask({ prompt, cwd, model, effort, agent, settings,
-budgetUsd, timeoutMs })` returns `{ events, costUSD, ok, finalText }`. A `CLAUDE_FACTORY_BIN`
+budgetUsd, timeoutMs, strictMcp, readEffort })` returns `{ events, costUSD, ok, finalText }`,
+plus `efforts: {effort: count}` (or null) with `readEffort`. A `CLAUDE_FACTORY_BIN`
 override points both at a fake CLI in tests.
 
 ## Tasks
@@ -240,6 +243,12 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   else medium); effort is not in stream-json, only in saved transcripts.
 - Note: bench sessions load user settings, so the atuin hooks record their commands in
   shell history, as with the live suites.
+- [x] Effort check (board task dotfiles-12): `runTask({ readEffort })` drops
+  `--no-session-persistence`, gives each try its own `--session-id`, counts the main
+  thread's messages per `effort` in that transcript, then deletes the transcript, its
+  subagent folder and the project folder if nothing else is in it, also when the session
+  fails or times out. Each bench record keeps `effortObserved`; another effort, or none
+  recorded, marks the run infra, as the wrong model does.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 

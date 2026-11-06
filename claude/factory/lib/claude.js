@@ -1,12 +1,16 @@
 // Runs the Claude Code CLI for the factory: restricted judge calls with structured output,
 // and task sessions for benchmarks and proposals. CLAUDE_FACTORY_BIN replaces `claude`
 // (tests point it at a fake). Every call is bounded by a budget and a deadline and is
-// not saved as a session, so the factory's own calls never get scored or captured.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+// not saved as a session, or its transcript is deleted when the call ends, so the
+// factory's own calls never get scored or captured.
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { projectName } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused } from "../../tests/lib/stream.js";
+import { projectsRoot, readRecords } from "./transcripts.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
 // By default the API-first wrapper: billed to the API while it has credit, else the
@@ -91,16 +95,31 @@ export async function judge({ prompt, system, schema, model, effort = "medium", 
   }
 }
 
+// Messages per effort in a transcript's main thread; Claude Code writes one record per
+// content block, so each message counts once.
+function transcriptEfforts(file) {
+  const byMessage = new Map();
+  for (const record of readRecords(file).records)
+    if (record.type === "assistant" && !record.isSidechain && typeof record.effort === "string")
+      byMessage.set(record.message?.id ?? record.uuid, record.effort);
+  const counts = {};
+  for (const effort of byMessage.values()) counts[effort] = (counts[effort] ?? 0) + 1;
+  return counts;
+}
+
 // A task session in cwd with the user's configuration. agent runs the session as that
 // agent; settings is a path or JSON string passed to --settings; tools limits the
 // built-in tools; strictMcp loads no MCP servers (--strict-mcp-config with no
 // --mcp-config), as the user's servers would add tools that --tools does not limit.
-// Returns the stream whether or not the task succeeded.
+// readEffort lets the session save its transcript, the only place Claude Code records
+// the effort each request ran at (the stream does not), reads it and deletes it;
+// efforts then counts the main thread's messages per effort, or is null when no
+// transcript was found. Returns the stream whether or not the task succeeded.
 export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
-  permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false,
+  permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false, readEffort = false,
 }) {
-  const argv = [claudeBin(), "--print", "--no-session-persistence", "--output-format", "stream-json", "--verbose",
+  const argv = [claudeBin(), "--print", ...(readEffort ? [] : ["--no-session-persistence"]), "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
   if (model) argv.push("--model", model);
   if (effort) argv.push("--effort", effort);
@@ -110,13 +129,46 @@ export async function runTask({
   if (strictMcp) argv.push("--strict-mcp-config");
   // Extra folders the file tools may use; a sandbox profile's allowWrite covers Bash only.
   for (const dir of addDirs) argv.push("--add-dir", dir);
-  const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
-    const result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env), timeout, input: prompt });
-    return { result, events: eventsOf(result, "Task run") };
-  }, timeoutMs);
+  // Each attempt's transcript, known before it starts, so a failed or killed session's
+  // is removed too.
+  const transcripts = [];
+  let run;
+  let efforts = null;
+  try {
+    run = await retryRefused(async (timeout, { subscription }) => {
+      const attemptEnv = quietEnv(subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env);
+      const attemptArgv = [...argv];
+      if (readEffort) {
+        const id = randomUUID();
+        attemptArgv.push("--session-id", id);
+        transcripts.push(join(projectsRoot(attemptEnv), projectName(realpathSync(cwd)), id));
+      }
+      const result = await runProcess(attemptArgv, { cwd, env: attemptEnv, timeout, input: prompt });
+      return { result, events: eventsOf(result, "Task run") };
+    }, timeoutMs);
+  } finally {
+    try {
+      const last = transcripts.at(-1);
+      if (last && existsSync(`${last}.jsonl`)) efforts = transcriptEfforts(`${last}.jsonl`);
+    } finally {
+      // The transcript, the folder of its subagents, and the project folder when no other
+      // session is in it.
+      for (const base of transcripts) {
+        rmSync(`${base}.jsonl`, { force: true });
+        rmSync(base, { recursive: true, force: true });
+        try {
+          rmdirSync(dirname(base));
+        } catch (error) {
+          if (error.code !== "ENOTEMPTY" && error.code !== "ENOENT") throw error;
+        }
+      }
+    }
+  }
+  const { result, events, refused } = run;
   const final = resultEvent(events);
   return {
     events,
+    ...(readEffort ? { efforts } : {}),
     ok: completed(events),
     finalText: typeof final?.result === "string" ? final.result : "",
     costUSD: (refused ? cost(refused.events) : 0) + (final?.total_cost_usd ?? 0),
