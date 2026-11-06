@@ -363,11 +363,89 @@ export function ultraEffort(actions) {
   return verdictOf(true, hits);
 }
 
+// Where a shell write may go without being a file edit: devices and temporary folders.
+const SCRATCH = /^(?:\/dev\/|\/tmp\/|\/private\/(?:tmp|var\/folders)\/|\/var\/folders\/|\$\{?TMPDIR\b)/;
+const ASSIGNMENT = /(?:^|[\s;&|(])([A-Za-z_]\w*)=("[^"$`]*"|'[^']*'|[^\s;&|()$`'"]+)/g;
+const VARIABLE = /\$\{?([A-Za-z_]\w*)\}?/g;
+
+const REDIRECT = /^[\d&]?>>?(?!&)(.*)$/;
+const redirectTargets = (words) => words.flatMap((word, i) => {
+  const redirect = REDIRECT.exec(word);
+  return redirect ? [redirect[1] || words[i + 1]] : [];
+});
+const hasHeredoc = (words) => words.some((word) => word.startsWith("<<"));
+const IN_PLACE = { sed: /^-\w*i|^--in-place\b/, perl: /^-\w*i/ };
+// Inline code: `python3 - <<EOF`, `python3 -c '...'`, `bun -e '...'`, through `uv run` too.
+const INLINE_CODE = /^-$|^-[a-zA-Z]*[ce]$|^--eval$/;
+const FILE_WRITE = /\bopen\([^)]*,\s*(?:mode\s*=\s*)?["'][wax]|\.open\(\s*["'][wax]|\.write_(?:text|bytes)\(|\b(?:writeFile|appendFile)(?:Sync)?\(|\bBun\.write\(|\bFile\.write\(/;
+const PATH_LITERAL = /["'](~?\/[^"'\s]+)["']/g;
+
+// Files one Bash command writes the way the Edit or Write tool would: in place with
+// `sed -i` or `perl -pi`, text the agent wrote (echo, printf, a heredoc or here-string)
+// redirected or piped through `tee` into a file, or inline code that writes files.
+// Output of other programs redirected into a file (`git diff > x.patch`) is not an edit.
+// Scratch targets do not count, nor relative ones after a `cd` into scratch; variables
+// set by literal assignments in the command are followed. A target still built from an
+// unknown variable or a command substitution is unknown and does not count. An inline
+// script counts unless it runs in scratch, or every absolute path it names is scratch.
+export function shellEdits(command) {
+  const variables = new Map([...String(command).matchAll(ASSIGNMENT)].map((match) => [match[1], match[2].replace(/^(["'])(.*)\1$/, "$2")]));
+  const expand = (word) => word.replace(VARIABLE, (text, name) => (name === "HOME" ? "~" : variables.get(name) ?? text));
+  let inScratch = false;
+  // The file a shell write edits, or null when it is scratch, a file descriptor or unknown.
+  const editedFile = (target) => {
+    const path = expand(target ?? "");
+    if (!path || path.startsWith("&") || SCRATCH.test(path) || /[$`]/.test(path)) return null;
+    return inScratch && !/^[/~]/.test(path) ? null : path;
+  };
+  const edits = [];
+  const add = (how, targets) => {
+    for (const file of targets.map(editedFile)) if (file) edits.push({ how, file });
+  };
+  for (let words of simpleCommands(command)) {
+    const program = basename(words[0]);
+    const args = words.slice(1);
+    if (program === "cd") {
+      const path = expand(args.find((arg) => !arg.startsWith("-")) ?? "~");
+      if (SCRATCH.test(path)) inScratch = true;
+      else if (/^[/~]/.test(path)) inScratch = false;
+    } else if (Object.hasOwn(IN_PLACE, program) && args.some((arg) => IN_PLACE[program].test(arg))) add(`${program} in place`, [args.at(-1)]);
+    else if (["echo", "printf"].includes(program) || (program === "cat" && hasHeredoc(words))) add(`${program} into a file`, redirectTargets(words));
+    else if (program === "tee" && (hasHeredoc(words) || /\b(?:echo|printf)\b[^\n;&|]*\|\s*(?:sudo\s+)?tee\b/.test(command)))
+      add("tee into a file", args.filter((arg, i) => !/^[-<]/.test(arg) && !REDIRECT.test(arg) && !/^[\d&]?>>?$/.test(args[i - 1] ?? "")));
+    else {
+      if (program === "uv" && words[1] === "run") {
+        const python = words.findIndex((word, i) => i > 1 && /^python[\d.]*$/.test(word));
+        words = python < 0 ? [] : words.slice(python);
+      }
+      if (words.length && SCRIPT_RUNNERS.test(basename(words[0])) && basename(words[0]) !== "uv"
+        && (words.slice(1).some((word) => INLINE_CODE.test(word)) || hasHeredoc(words)) && FILE_WRITE.test(command)) {
+        const paths = [...command.matchAll(PATH_LITERAL)].map((match) => expand(match[1]));
+        if (paths.length ? paths.some((path) => !SCRATCH.test(path)) : !inScratch) edits.push({ how: "inline script writing files", file: null });
+      }
+    }
+  }
+  return edits;
+}
+
+const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
+
+export function shellFileEdit(actions) {
+  const hits = [];
+  for (const call of bashCommands(actions)) {
+    const edits = shellEdits(call.input.command);
+    if (edits.length) hits.push(hit(call, `${edits.map(({ how, file }) => (file ? `${how} ${file}` : how)).join(", ")}: ${call.input.command}`, { files: edits.map((edit) => edit.file).filter(Boolean) }));
+  }
+  // The rule applies to sessions that edited files at all.
+  return verdictOf(actions.calls.some((call) => EDIT_TOOLS.has(call.name)), hits);
+}
+
 export const DETECTORS = {
   "package-runner": packageRunner,
   "ai-attribution": aiAttribution,
   "force-push": forcePush,
   "ultra-effort": ultraEffort,
+  "shell-file-edit": shellFileEdit,
 };
 
 // Every detector's result for a session: { [id]: { verdict, hits } }.

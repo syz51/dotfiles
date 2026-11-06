@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -26,6 +26,12 @@
       "kind": "detector",
       "section": "Working preferences",
       "description": "A Skill call, settings edit or slash command turned on fast mode, ultrathink or ultracode effort, or an `ultra` code review that no prompt asked for."
+    },
+    {
+      "id": "shell-file-edit",
+      "kind": "detector",
+      "section": "Workflow",
+      "description": "Bash edited a file the Edit or Write tool should have: `sed -i` or `perl -pi`, echo, printf or a heredoc written into a file by redirect or `tee`, or an inline script that writes files. Temporary folders and devices do not count; na when the session edited no files."
     },
     {
       "id": "followed-instructions",

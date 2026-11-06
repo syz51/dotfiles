@@ -183,6 +183,12 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   rule steering file edits to the Edit tool, since that is the main source.
 - [x] Rubric v3 (2026-11-05): detector changes since v2 are scored afresh; v2 records no
   longer count toward proposals.
+- [x] Rubric v5 (2026-11-07, board task dotfiles-9): `shell-file-edit` detector for the
+  "Prefer dedicated tools" rule: `sed -i` or `perl -pi`, echo, printf or heredocs written
+  into files, and inline scripts that write files; scratch folders (followed through `cd`
+  and literal variables) and devices do not count, na when a session edited no files.
+  Over 7 days of real sessions it fails 105 of the 119 that edited files (inline Python
+  replace scripts are most hits, then `sed -i`/`perl -pi`).
 - [x] `bench` command (merged): `list`, `run` (model x effort x trials, budgeted
   parallel scheduler, fresh fixture per run, agent override file plus `--agent`, installs
   and web blocked, overlay re-applied before the oracle so tests cannot be edited to
