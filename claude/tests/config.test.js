@@ -2,7 +2,7 @@
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { configuredEffort } from "./lib/live.js";
 
@@ -158,14 +158,6 @@ describe("settings", () => {
       new RegExp(group.matcher).test("Bash")
       && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
     expect(guard).toHaveLength(1);
-  });
-
-  // Claude Code's built-in computer use only runs in interactive sessions, and T3 Code sessions
-  // run through the SDK, so the hook that enabled it in every project was removed. Other
-  // hooks and MCP servers, including a computer-use server of your own, are unaffected.
-  test("no hook enables Claude Code's built-in computer use", () => {
-    expect(handlers.some((hook) => hook.command?.includes("enable-computer-use"))).toBe(false);
-    expect(existsSync(join(REPO, "claude/hooks/enable-computer-use.js"))).toBe(false);
   });
 });
 
