@@ -324,7 +324,8 @@ loop itself, per setup with its title from `setups.toml`. It reads every item's 
 record from `board ls --board board-feedback --json`, and each routed item's owner task
 with `board show <id> --json`. For items active in the last 7 days it counts items,
 reports, sources (agent, capture, signal), recurrences, declined items reported again, and
-items whose owner task was done in the window. It also lists items still waiting at any
+fixes: items whose owner task was done in the window, and items triage resolved as `fixed`
+(it fixed the cause directly) in the window. It also lists items still waiting at any
 age: untriaged ones older than an hour, and routed ones whose owner task is still open,
 with their age. Tasks filed before the server kept feedback records are only counted. A
 failed `board` call fails the step and leaves out only what it would have read.
