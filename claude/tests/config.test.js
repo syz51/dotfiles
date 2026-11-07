@@ -172,6 +172,12 @@ describe("settings", () => {
     expect(settings.disableClaudeAiConnectors).toBeUndefined();
   });
 
+  // A `!`cmd`` line in a skill or custom slash command runs without PreToolUse hooks, so the
+  // guards never see it, and any repository a session opens can ship such a command.
+  test("skills and custom slash commands cannot run shell lines before the model reads them", () => {
+    expect(settings.disableSkillShellExecution).toBe(true);
+  });
+
   test.each(["guard-git-push.js", "guard-runtimes.js"])("the %s guard is registered for Bash PreToolUse", (script) => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
