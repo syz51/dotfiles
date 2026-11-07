@@ -361,7 +361,15 @@ describe("storage rule", () => {
     for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
     expect(rule).toContain("`storagectl dests`");
     expect(rule).toMatch(/root login shells/);
-    expect(rule).toContain("child task of `vps-44` on the `vps` board");
+    expect(rule).toContain("child task of `vps-44`");
+  });
+
+  test("says how to split work across machines and where that feedback goes", () => {
+    const rule = section("Storage");
+    expect(rule).toMatch(/Split work across machines/);
+    expect(rule).toMatch(/never run workloads as root on sai or svps/);
+    for (const task of ["vps-45", "vps-46"]) expect(rule).toContain(`\`${task}\``);
+    expect(rule).toMatch(/note on `vps-45` or `vps-46`/);
   });
 
   test("Codex gets the same rule", () => {
