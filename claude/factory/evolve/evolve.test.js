@@ -13,7 +13,7 @@ const item = (id, { about = "board", source = "agent", reports = 1, created = 24
   id, title: `item ${id}`, status: status ?? (resolution ? "done" : "open"), created_at: ago(created),
   feedback: { about, source, signature: `sig-${id}`, reports, reporters: ["claude:a"], last_reported_at: ago(reported), ...(resolution && { resolution }), ...(recurs && { recurs }) },
 });
-const resolved = (kind, hours, task) => ({ kind, at: ago(hours), by: "t3:triage", ...(task && { task }), ...(kind === "declined" && { reason: "by design" }) });
+const resolved = (kind, hours, task) => ({ kind, at: ago(hours), by: "t3:triage", ...(task && { task }), ...(kind === "declined" && { reason: "by design" }), ...(kind === "fixed" && { reason: ".gitignore:48" }) });
 
 const TASKS = [
   item("f1", { reports: 3, created: 2 }),
@@ -50,6 +50,20 @@ describe("report", () => {
     expect(of("factory").untriaged).toEqual([{ id: "f5", ageHours: 24 }]);
     expect(result.totals).toEqual({ items: 9, reports: 14, untriaged: 3, routedOpen: 1, fixed: 1, recurrences: 1, declinedWithReports: 1 });
     expect(result.legacy).toBe(1);
+  });
+
+  test("items the triager fixed directly count as fixed in the window, not as declined", () => {
+    const fixed = [
+      // Fixed, then reported again: fixed, never "declined but reported again".
+      item("g1", { about: "hooks", reports: 2, created: 48, reported: 12, resolution: resolved("fixed", 40) }),
+      // Fixed long ago: outside the window.
+      item("g2", { about: "hooks", created: 900, reported: 900, resolution: resolved("fixed", 899) }),
+    ];
+    const hooks = report(fixed, new Map(), { days: 7, now: NOW, setups: SETUPS }).setups.find((setup) => setup.id === "hooks");
+    expect(hooks).toMatchObject({ items: 1, fixed: 1, declinedWithReports: [], routedOpen: [], untriaged: [] });
+    // A kind this script does not know is neither fixed nor declined.
+    const other = report([item("g3", { resolution: resolved("superseded", 2) })], new Map(), { days: 7, now: NOW, setups: SETUPS });
+    expect(other.totals).toMatchObject({ items: 1, fixed: 0, declinedWithReports: 0 });
   });
 
   test("untriaged and routed-open items count at any age; a shorter window drops old activity", () => {
