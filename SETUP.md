@@ -211,6 +211,14 @@ a variable, command substitution or brace expansion, and one that sets push
 configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 cannot see git aliases or `GIT_CONFIG_*` variables.
+`claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
+they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
+isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
+fast-forwards it when it is checked out, has no tracked changes and is strictly behind
+its remote, so the worktree does not start on stale code. It leaves any other branch
+alone, tells Claude when it fast-forwarded or why it did not (including a failed fetch),
+and never blocks the call. Its fetch never prompts for credentials, and parallel calls
+take turns on a lock in the repository's git folder, so one fetches for all of them.
 Do not replace an existing tool home without backing up its local data.
 
 Two skills live here: `headless-browser`, and `work-stages`, which the Workflow sections
