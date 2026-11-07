@@ -1,0 +1,18 @@
+{
+  "id": "solver-guard-quoting-wrappers",
+  "title": "Harden the runtime guard against quoting, case and more wrappers",
+  "role": "solver",
+  "prompt": "The Bash guard hooks let some commands through that their tests say they must catch. Make the failing tests pass: claude/hooks/guard-runtimes.test.js and claude/hooks/guard-git-push.test.js. Change the code, not the tests.",
+  "fixture": {
+    "type": "git",
+    "repo": ".",
+    "commit": "8e6a4c68b3e5df2f9efe107c1287b37bde2665e3",
+    "overlay": "overlay"
+  },
+  "oracle": {
+    "command": "bun test claude/hooks/guard-runtimes.test.js claude/hooks/guard-git-push.test.js",
+    "timeoutMs": 300000
+  },
+  "budgetUsd": 3,
+  "timeoutMs": 900000
+}

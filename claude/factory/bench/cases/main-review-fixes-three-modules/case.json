@@ -1,0 +1,18 @@
+{
+  "id": "main-review-fixes-three-modules",
+  "title": "Fix three independent test failures in the process runner, the weekly run and session parsing",
+  "role": "main",
+  "prompt": "Three test files fail, each for its own reason in a different module: claude/factory/lib/lib.test.js, claude/factory/weekly/weekly.test.js and claude/tests/lib/process.test.js. Make all three pass. Change the code, not the tests.",
+  "fixture": {
+    "type": "git",
+    "repo": ".",
+    "commit": "f4ee249159939826eb918952eb9be9fb490de44b",
+    "overlay": "overlay"
+  },
+  "oracle": {
+    "command": "bun test claude/factory/lib/lib.test.js claude/factory/weekly/weekly.test.js claude/tests/lib/process.test.js",
+    "timeoutMs": 300000
+  },
+  "budgetUsd": 5,
+  "timeoutMs": 900000
+}

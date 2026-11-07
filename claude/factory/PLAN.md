@@ -285,6 +285,31 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   default branch and blocks it. The live sandbox check keeps a failed case's report and full
   stream in `failureDirectory()` (`CLAUDE_LIVE_REPORT_DIR`, else
   `$TMPDIR/claude-live-failures`), since its scratch folders are removed and failures are rare.
+- [x] Harder cases (board task dotfiles-18), each with an oracle that fails on the parent
+  commit:
+  - `explorer-board-hooks-off` (pinned 46ceea2), five questions across five files on how
+    test sessions stay off the work board. Its `reference/answer.md` passes the oracle;
+    `reference/parent-answer.md`, true at the parent, fails it, as does an empty answer. A
+    test holds every case with reference answers to this.
+  - `solver-guard-quoting-wrappers` (0583e84) and `solver-shell-getopt-wrappers` (dca5aa4):
+    the Bash guards' shell parsing.
+  - `main-review-fixes-three-modules` (2e5e782): three test files in different modules,
+    each failing on its own at the parent.
+  - The prompts name only the failing tests, not the commit's description of the fix.
+  - These are the first overlays holding bun tests. The root `bunfig.toml` keeps `bun test`
+    from discovering them in this checkout, where their imports do not resolve. bun reads
+    it only from the working directory, so run the suites from the repository root, as
+    SETUP and CI do.
+  - First live run (2026-11-07, Claude Code 2.1.319, medium effort, 1 trial, $1.90 in all):
+    every run passed.
+    - The explorer cost $0.004 on Haiku, $0.07 on Sonnet and $0.12 on Opus.
+    - Main: Haiku $0.02, 108 s; Opus $0.38, 105 s.
+    - The quoting solver: Haiku $0.01, 136 s; Opus $0.31, 171 s.
+    - The getopt solver: Haiku $0.20, 442 s; Opus $0.77, 264 s.
+  - So Haiku 5.5 does not fail these. The cases separate models on cost and time; pass
+    rates need more trials (dotfiles-11).
+  - Judge calibration stays with dotfiles-7: the bench runs agent roles, while the judge
+    runs in scoring with its own system prompt, so its calibration set belongs there.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 

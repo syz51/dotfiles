@@ -1,0 +1,4 @@
+[test]
+# A bench case's overlay holds a commit's test files at their repository paths; they run
+# only inside that case's fixture, where the code they import exists.
+pathIgnorePatterns = ["**/bench/cases/*/overlay/**"]

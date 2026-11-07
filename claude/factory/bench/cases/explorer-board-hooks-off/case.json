@@ -1,0 +1,13 @@
+{
+  "id": "explorer-board-hooks-off",
+  "title": "Trace how test and factory sessions stay off the work board",
+  "role": "explorer",
+  "prompt": "This repository holds Claude Code and Codex configurations. Their sessions report to an agent work board through hooks, but test, benchmark and factory sessions must stay off the board. Answer five questions, with repository-relative paths where a path is asked for: (1) which script every board hook runs; (2) which file registers it for Claude Code and which for Codex; (3) which environment variable, set to which value, makes that script do nothing; (4) which function sets that variable for test, benchmark and factory sessions, and in which file; (5) what the script writes to standard output when it skips a Codex Stop event, and why. Keep the answer under fifteen lines.",
+  "fixture": { "type": "git", "repo": ".", "commit": "46ceea2f78bde667790814210b9fa022deb5b8be" },
+  "oracle": {
+    "command": "f=\"$FINAL_ANSWER_FILE\"; [ \"$(wc -c < \"$f\")\" -le 4000 ] && grep -qF 'claude/hooks/board-hook.sh' \"$f\" && grep -qF 'claude/settings.json' \"$f\" && grep -qF 'codex/hooks.json' \"$f\" && grep -qE 'AGENT_BOARD_HOOKS.{0,24}[^A-Za-z]off([^A-Za-z]|$)' \"$f\" && grep -qF 'childEnv' \"$f\" && grep -qF 'claude/tests/lib/process.js' \"$f\" && grep -qF '{}' \"$f\" && grep -qiE 'empty|no output|nothing' \"$f\"",
+    "timeoutMs": 10000
+  },
+  "budgetUsd": 0.75,
+  "timeoutMs": 300000
+}
