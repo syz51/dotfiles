@@ -39,7 +39,7 @@ class Runner:
         if args[0] == "git":
             return sync.run_command(args)
         self.calls.append(args)
-        kind = "full" if args[:3] == ["board", "feedback", "--about"] else "plain" if args[:2] == ["board", "feedback"] else args[0]
+        kind = ("full" if "--about" in args else "plain") if args[0] == "board" else args[0]
         return subprocess.CompletedProcess(args, 1 if kind in self.fail else 0, "", "")
 
     def reports(self):
@@ -126,10 +126,10 @@ class BlockedTests(Sandbox):
         reports = runner.reports()
         self.assertEqual(len(reports), 1)
         call = reports[0]
-        self.assertEqual(call[:6], ["board", "feedback", "--about", "config-sync", "--activity", "operate"])
-        self.assertEqual(call[6:8], ["--signature", f"config-sync:{kind}"])
-        self.assertIn(f"- {kind}:", call[8])
-        self.assertTrue(call[8].startswith("config-sync on mac: "))
+        self.assertEqual(call[:9], ["board", "--agent", "claude:config-sync", "feedback", "--about", "config-sync", "--activity", "operate", "--signature"])
+        self.assertEqual(call[9:11], [f"config-sync:{kind}", "--"])
+        self.assertIn(f"- {kind}:", call[11])
+        self.assertTrue(call[11].startswith("config-sync on mac: "))
 
     def test_tracked_changes_are_reported_and_kept(self):
         before = self.head()
@@ -139,7 +139,7 @@ class BlockedTests(Sandbox):
         self.check(runner)
         self.assert_reported_untouched(runner, before, "dirty")
         self.assertEqual((self.repo / "claude" / "CLAUDE.md").read_text(), "hand-copied\n")
-        self.assertIn("claude/CLAUDE.md", runner.reports()[0][8])
+        self.assertIn("claude/CLAUDE.md", runner.reports()[0][11])
 
     def test_another_branch_is_reported_and_kept(self):
         git(self.repo, "checkout", "-q", "-b", "work")
@@ -159,7 +159,7 @@ class BlockedTests(Sandbox):
         runner = Runner()
         self.check(runner)
         self.assert_reported_untouched(runner, before, "diverged")
-        self.assertIn("1 local commit(s)", runner.reports()[0][8])
+        self.assertIn("1 local commit(s)", runner.reports()[0][11])
 
     def test_an_untracked_file_in_the_way_is_reported_as_a_failed_pull(self):
         before = self.head()
@@ -178,7 +178,7 @@ class BlockedTests(Sandbox):
         runner = Runner()
         self.check(runner)
         self.assertEqual(self.head(), target)
-        text = runner.reports()[0][8]
+        text = runner.reports()[0][11]
         self.assertIn("- link: ", text)
         self.assertIn("AGENTS.md is a copy, not a link to ", text)
 
@@ -213,8 +213,8 @@ class ReportTests(Sandbox):
         runner = Runner(fail={"full"})
         self.check(runner)
         plain = runner.reports()[1]
-        self.assertEqual(plain[:2], ["board", "feedback"])
-        self.assertTrue(plain[2].startswith("[config-sync] config-sync on mac: "))
+        self.assertEqual(plain[:5], ["board", "--agent", "claude:config-sync", "feedback", "--"])
+        self.assertTrue(plain[5].startswith("[config-sync] config-sync on mac: "))
         self.assertEqual(json.loads((self.state / "events.jsonl").read_text())["reported"], "feedback-plain")
 
     def test_an_unreachable_board_falls_back_to_a_notification(self):
@@ -244,7 +244,7 @@ class FetchTests(Sandbox):
         self.assertEqual(self.state_json()["fetch_failing_since"], NOW.isoformat())
         self.check(runner, NOW + timedelta(hours=24))
         self.assertEqual(len(runner.reports()), 1)
-        self.assertIn("fetch-failed", runner.reports()[0][7])
+        self.assertIn("fetch-failed", runner.reports()[0][9])
 
     def test_a_working_fetch_clears_the_failure(self):
         url = git(self.repo, "remote", "get-url", "origin")
