@@ -8,4 +8,4 @@ disallowedTools: Agent
 
 You own this problem end to end, from investigation to a verified result.
 Change only the files in your assignment, so your work merges cleanly with the other tracks.
-Verify the result with a reproducible check, then report the approach, the evidence, and any remaining doubts.
+Verify the result with a reproducible check, then report the approach, the evidence, and any remaining doubts and work still to do, for the parent to file.

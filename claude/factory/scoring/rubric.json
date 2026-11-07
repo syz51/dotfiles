@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -60,6 +60,13 @@
       "section": "Workflow",
       "description": "Changes or work beyond what was asked.",
       "question": "Did the agent stay within the requested scope? Fail when it made changes nobody asked for (refactors, features, extra files or abstractions, configuration edits) or fixed unrelated issues instead of filing or reporting them. na when it changed nothing."
+    },
+    {
+      "id": "untracked-work",
+      "kind": "judge",
+      "section": "Work board",
+      "description": "Left work still to do only in chat, a file or a handoff in a repository with a work board, or closed a task with acceptance checks still failing.",
+      "question": "When the session shows a work board for its repository (board hook text, or board tools or the `board` CLI in use), did everything the agent left still to do end up on the board? Fail when its replies or handoff name remaining steps, next steps, follow-ups or suggestions with no task or ask id for them and no board call filing them; when it wrote such items into a plan, TODO or ledger file instead; or when it called task_done while an acceptance check still failed. Quote the item. A subagent or review agent that reported to its parent passes when the parent filed what it did not fix. na when the session shows no board for its repository or nothing was left to do."
     },
     {
       "id": "redundant-tests",
