@@ -145,7 +145,8 @@ def sync(repo: Path, run: Runner) -> Outcome:
     for link, target_path in links(repo):
         if not target_path.exists():
             continue
-        if not link.is_symlink() or link.resolve() != target_path.resolve():
+        # The link may be the path itself or a folder above it (~/.codex linked whole).
+        if link.resolve() != target_path.resolve():
             kind = "a copy" if link.exists() else "missing"
             problems.append(("link", f"{short(link)} is {kind}, not a link to {short(target_path)}"))
     return Outcome(problems, pulled, fetch_failed, head)

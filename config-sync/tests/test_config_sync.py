@@ -170,6 +170,16 @@ class BlockedTests(Sandbox):
         self.assert_reported_untouched(runner, before, "pull-failed")
         self.assertEqual((self.repo / "clash.txt").read_text(), "mine")
 
+    def test_a_linked_folder_above_the_file_counts_as_linked(self):
+        # As on a Mac where ~/.codex itself links to ~/.config/codex.
+        codex = self.home / ".codex"
+        (codex / "AGENTS.md").unlink()
+        codex.rmdir()
+        codex.symlink_to(self.repo / "codex")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(runner.reports(), [])
+
     def test_a_copied_instruction_file_is_reported_after_pulling(self):
         link = self.home / ".codex" / "AGENTS.md"
         link.unlink()
