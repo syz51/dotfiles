@@ -154,10 +154,12 @@ export const commandText = (call) => {
   return [input.command, input.cmd, input.input].flat().filter((part) => typeof part === "string").join(" ");
 };
 
-// A call that filed feedback: the board's MCP tool, or `board feedback` run in a shell.
+// A call that filed feedback: the board's MCP tool, or `board feedback` run in a shell. A
+// call that failed (an older `board` rejecting its options, say) filed nothing, so the
+// capture still judges that turn.
 const FEEDBACK_TOOL = /(?:^|__|\.)feedback$/;
 const FEEDBACK_COMMAND = /\bboard\s+feedback\b/;
-export const filedFeedback = (turn) => turn.calls.some((call) => FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(commandText(call)));
+export const filedFeedback = (turn) => turn.calls.some((call) => call.ok !== false && (FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(commandText(call))));
 
 const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^board$/;
 const BOARD_COMMAND = /(?:^|[\s;&|(/"'])board\s+[a-z]/;

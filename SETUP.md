@@ -211,9 +211,28 @@ a variable, command substitution or brace expansion, and one that sets push
 configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 cannot see git aliases or `GIT_CONFIG_*` variables.
+`claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
+they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
+isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
+fast-forwards it when it is checked out, has no tracked changes and is strictly behind
+its remote, so the worktree does not start on stale code. It leaves any other branch
+alone, tells Claude when it fast-forwarded or why it did not (including a failed fetch),
+and never blocks the call. Its fetch never prompts for credentials, and parallel calls
+take turns on a lock in the repository's git folder, so one fetches for all of them.
 Do not replace an existing tool home without backing up its local data.
 
-The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
+Two skills live here: `headless-browser`, and `work-stages`, which the Workflow sections
+of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at, for Claude Code and
+Codex alike. Claude Code finds both through `~/.claude/skills` when `~/.claude` links to
+`~/.config/claude`; otherwise link each skill into `~/.claude/skills`. Link `work-stages`
+for Codex too, after checking that nothing is at the target:
+
+```sh
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+ln -s ~/.config/claude/skills/work-stages "${CODEX_HOME:-$HOME/.codex}/skills/work-stages"
+```
+
+The other skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
 Install the needed skills and their references from
 [syz51/skills](https://github.com/syz51/skills#install-skills), for example with
 `bunx skills add syz51/skills`, selecting the agents you use. Claude Code
@@ -304,7 +323,8 @@ in many turns is one item. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
-`feedback --source` (agent-board-23).
+`feedback --source` (agent-board-23). Install it on each Mac: a run reads only that Mac's
+transcripts and keeps its own cursor, so no turn is judged twice.
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
@@ -598,7 +618,8 @@ in CI:
   the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
   which the installed `frontend-ui` skill tells sessions to read rather than
   `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback
-  proposals append to.
+  proposals append to. It also pins the Feedback rule and the `work-stages` skill in
+  both instruction files, and that the setups they name are registered.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
   runner and leftover processes, two-message conversations, session cleanup, reports and language detection.
