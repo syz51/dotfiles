@@ -20,6 +20,7 @@ there is no repository-wide installer.
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
 | `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
 | `claude/`                | Claude Code instructions, subagents, settings, Bash guards, and a browser skill. |
+| `claude/skills/work-stages/` | Shared work stages (explore to verify) for Claude Code and Codex.           |
 | `claude/factory/`        | Metrics, scoring, proposals, benchmarks, audit and friction capture for the setup. |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |

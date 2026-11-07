@@ -1,5 +1,9 @@
 # Codex defaults
 
+## Workflow
+
+- Shape non-trivial work in the stages of the `work-stages` skill (explore, research, design, plan, build, verify), skipping those it does not need.
+
 ## Work board
 
 - When the session context names a work board for this repository, it is the shared plan for every thread and device: claim a task (`task_claim`) before working on it, lease files before changing them (`lease_paths`), keep your handoff current (`handoff_set`), finish with `task_done` and its evidence, and ask me through `ask_user` instead of waiting. Use the `board` CLI where the MCP tools are missing.
@@ -12,4 +16,9 @@
 - Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Start with `storagectl dests` to see which destinations are online, then use `put`, `get`, `ls`, `find`, `fetch <url> <dest>:<path>/` or `run --to <dest>:<path> -- <command>`. The commands, and how a service requests its own allocation, are in `docs/storage/README.md` in syz51/vps.
 - Choose the destination by need: `cloud` (Tencent COS; always reachable, deleted files recoverable for 30 days) or `sai` (12 GiB) when the data must not depend on a Mac being awake; `pro` for large data, offline while the Pro sleeps; `air` for small files; `svps` for small results only, since its uploads are slow. On sai and svps, `storagectl` works only in root login shells.
 - Split work across machines when another one suits a step better: `sai` for large downloads and COS-heavy steps, the Pro for large data and long CPU jobs. Pass each step's inputs and outputs through destinations. For now, an agent on the Air may run a step on the Pro with `ssh roy-macbook-pro '<command>'`; never run workloads as root on sai or svps. `storagectl run --on <machine>` (`vps-46`) and threads on the Pro through a linked T3 environment (`vps-45`) are being built; once either is done, use it instead.
-- Report what got in the way on the `vps` board, then continue with a workaround, giving the machine, command, error and workaround. A task that needed another machine goes as a note on `vps-45` or `vps-46` while they are open. A `storagectl` failure, gap or awkward step goes as a child task of `vps-44` (`task_add` with board `vps` and parent `vps-44`, or `board add --board vps --parent vps-44`).
+- Report what got in the way as Feedback with `about` `storage`, giving the machine, command, error and workaround, then continue with the workaround. A task that needed another machine also goes as a note on `vps-45` or `vps-46` while they are open.
+
+## Feedback
+
+- When a setup gets in your way (the board, these instructions, an agent definition, a skill, a hook, a tool or its configuration, storage, T3, or a project's own setup), report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <stage> "<what happened>"` where the tool is missing, then continue with a workaround. Name the setup (an id from `~/.config/setups.toml`, `other` when unsure), what you were doing, the error or cost, and the workaround. A report creates a task at once and repeats add to it; triage routes it to the setup's owner, so don't follow it up.
+- Report friction with the setup, not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture.

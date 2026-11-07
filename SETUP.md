@@ -193,7 +193,16 @@ refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirro
 cannot see git aliases or `GIT_CONFIG_*` variables.
 Do not replace an existing tool home without backing up its local data.
 
-The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
+Two skills live here: `headless-browser`, and `work-stages`, which the Workflow sections
+of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at. Claude Code finds
+both through `~/.claude/skills`. Link `work-stages` for Codex too, after checking that
+nothing is at the target:
+
+```sh
+ln -s ~/.config/claude/skills/work-stages ~/.codex/skills/work-stages
+```
+
+The other skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
 Install the needed skills and their references from
 [syz51/skills](https://github.com/syz51/skills#install-skills), for example with
 `bunx skills add syz51/skills`, selecting the agents you use. Claude Code

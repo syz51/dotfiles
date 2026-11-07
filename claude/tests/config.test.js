@@ -381,7 +381,9 @@ describe("storage rule", () => {
     for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
     expect(rule).toContain("`storagectl dests`");
     expect(rule).toMatch(/root login shells/);
-    expect(rule).toContain("child task of `vps-44`");
+    // Problems go through the Feedback section, whose triage routes storage to the vps board.
+    expect(rule).toMatch(/Report what got in the way as Feedback with `about` `storage`, giving the machine, command, error and workaround, then continue with the workaround/);
+    expect(rule).not.toContain("child task of `vps-44`");
   });
 
   test("says how to split work across machines and where that feedback goes", () => {
@@ -394,6 +396,51 @@ describe("storage rule", () => {
 
   test("Codex gets the same rule", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Storage\n${section("Storage").trimEnd()}\n`);
+  });
+});
+
+describe("feedback rule", () => {
+  test("reports setup friction once through the feedback tool, then continues", () => {
+    const rule = section("Feedback");
+    expect(rule).toMatch(/report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <stage> "<what happened>"` where the tool is missing, then continue with a workaround/);
+    expect(rule).toMatch(/an id from `~\/\.config\/setups\.toml`, `other` when unsure/);
+    expect(rule).toMatch(/triage routes it to the setup's owner, so don't follow it up/);
+    expect(rule).toMatch(/not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture/);
+  });
+
+  test("the setups it names are in the registry", () => {
+    const ids = Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id);
+    for (const id of ["board", "instructions", "agents", "skills", "hooks", "settings", "storage", "t3", "project", "other", "work-stages"]) expect(ids).toContain(id);
+  });
+
+  test("Codex gets the same rule, and Feedback follows Storage in both", () => {
+    expect(read("codex/AGENTS.md")).toContain(`## Feedback\n${section("Feedback").trimEnd()}\n`);
+    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md"]) expect(read(path)).toMatch(/\n## Storage\n[\s\S]*?\n## Feedback\n/);
+  });
+});
+
+describe("work stages", () => {
+  const STAGES = ["Explore", "Research", "Design", "Plan", "Build", "Verify"];
+  const WORKFLOW = "- Shape non-trivial work in the stages of the `work-stages` skill (explore, research, design, plan, build, verify), skipping those it does not need.";
+
+  test("both instruction files point non-trivial work at the skill", () => {
+    expect(section("Workflow")).toContain(WORKFLOW);
+    expect(read("codex/AGENTS.md")).toContain(`## Workflow\n\n${WORKFLOW}\n`);
+  });
+
+  test("the skill has its frontmatter, every stage in order and its feedback channel", () => {
+    const { meta, body } = frontmatter("claude/skills/work-stages/SKILL.md");
+    expect(meta.name).toBe("work-stages");
+    expect(meta.description).toMatch(/^Shape any non-trivial work, whether investigation, research, design, planning, implementation or verification, into stages with clear exit evidence, board records and agent roles\. Also use to review feedback to improve this skill\.$/);
+    const rows = body.split("\n").filter((line) => /^\| [A-Z]\w+ \|/.test(line) && !line.startsWith("| Stage")).map((line) => line.split("|")[1].trim());
+    expect(rows).toEqual(STAGES);
+    expect(body).toMatch(/A small fix may go straight to build/);
+    expect(body).toMatch(/recording why in a `decision` note/);
+    // The board's activities have no verify; Verify reports as review.
+    expect(body).toMatch(/`review` for Verify/);
+    expect(body).toMatch(/take precedence over this skill/);
+    expect(body).toMatch(/Feedback on this skill goes to `feedback` with `about` `work-stages`/);
+    expect(tracked("claude/skills/work-stages/SKILL.md")).toBe(true);
   });
 });
 
