@@ -23,6 +23,7 @@ there is no repository-wide installer.
 | `claude/factory/`        | Metrics, scoring, proposals, benchmarks, audit and friction capture for the setup. |
 | `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
+| `config-sync/`           | A LaunchAgent that fast-forwards each Mac's checkout to main and reports blockers. |
 | `git/`                   | Shared Git ignore patterns, and settings that `~/.gitconfig` includes.           |
 | `setups.toml`            | Every setup on both Macs, with its owner, for routing agents' friction reports.  |
 | `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
