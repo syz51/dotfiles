@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { appendJsonl, readJson, writeJsonAtomic } from "../lib/state.js";
 import { CaptureError, resolveRev, runChecks, treeState } from "./capture.js";
 import { ConfigError, loadConfig } from "./config.js";
-import { calibrationOf, DEFAULT_NOISE, JudgeFailedError, judgeKey, runJudge, signed, topIssues, verdict } from "./council.js";
+import { calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, runJudge, signed, topIssues, verdict } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { renderReport } from "./report.js";
 import {
@@ -36,7 +36,7 @@ Options
   --samples N       calibrate: calls per judge (default 3, at least 2)
   --all-judges      round: run every judge even after one fails
   --allow-dirty     round: judge the working tree with uncommitted changes (recorded as dirty)
-  --uncalibrated    round: run without a passing calibration (scores are not trustworthy)
+  --uncalibrated    round: run without a passing calibration, as a trial that never passes
   --checks          capture: run the configuration's checks too
   --out PATH        report: where to write the HTML (default in the run folder)
   --json            status, round: print JSON
@@ -60,14 +60,15 @@ const OPTIONS = {
   help: { type: "boolean", short: "h", default: false },
 };
 
-const money = (value) => `$${value.toFixed(2)}`;
 const log = (message) => console.error(message);
-const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
 const short = (sha) => sha.slice(0, 12);
+const percent = (share) => (typeof share === "number" ? `${Math.round(share * 100)}%` : "–");
+const firstLine = (text) => text.split("\n")[0].replace(/:$/, "").slice(0, 120);
 
+// A judge's noise from its passing calibration; the defaults, flagged, otherwise.
 function noiseOf(run, judge) {
-  const calibration = readJson(calibrationPath(run), null);
-  return calibration?.judges?.[judgeKey(judge)] ?? DEFAULT_NOISE;
+  const entry = readJson(calibrationPath(run), null)?.judges?.[judgeKey(judge)];
+  return entry?.pass ? entry : DEFAULT_NOISE;
 }
 
 function calibrated(config, run) {
@@ -77,14 +78,17 @@ function calibrated(config, run) {
 }
 
 // A short form of a judge's verdict for notes and tables.
-const verdictLine = (v, pass) => `${v.judge.split("@")[0]} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
+const verdictLine = (v, pass) => `${v.judge} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
 
 export function scoreLine(round, config) {
-  const head = `score: round ${round.round} ${round.pass ? "pass" : "fail"}`;
-  const commit = `${short(round.sha)}${round.dirty ? "+dirty" : ""}`;
-  if (round.stage === "gates") return `${head} · gates: ${round.gates.failures[0].split("\n")[0].replace(/:$/, "").slice(0, 120)} · ${money(round.costUSD)} · ${commit}`;
-  const judged = round.verdicts.map((v) => verdictLine(v, config.pass)).join(" · ");
-  return `${head} · ${judged}${round.stage === "budget" ? " · budget spent" : ""} · ${money(round.costUSD)} · ${commit}`;
+  const parts = [`score: round ${round.round} ${round.pass ? "pass" : "fail"}`];
+  if (round.stage === "gates") parts.push(`gates: ${firstLine(round.gates.failures[0])}`);
+  parts.push(...round.verdicts.map((v) => verdictLine(v, config.pass)));
+  if (round.stage === "budget") parts.push("budget spent");
+  if (round.stage === "error") parts.push(`error: ${firstLine(round.error)}`);
+  if (round.calibrated === false) parts.push("uncalibrated");
+  parts.push(money(round.costUSD), `${short(round.sha)}${round.dirty ? "+dirty" : ""}`);
+  return parts.join(" · ");
 }
 
 // The climb has plateaued when the first judge's best gain over main in the last two
@@ -154,15 +158,26 @@ async function calibrateCommand(config, values) {
     const versions = [{ key: "baseline", kind: "product", shots: baseline }, { key: "control", kind: "product", shots: control }, ...references];
     const results = {};
     let cost = 0;
+    let errored = false;
     for (const judge of config.judges) {
       log(`Calibrating ${judgeKey(judge)} with ${samples} calls…`);
-      const result = await runJudge({
-        judge: { ...judge, samples }, versions, config, seed: `${run.id}:calibrate`, budgetUsd: config.budgetUsd.call,
-        spend: (usd) => {
-          cost += usd;
-          record(run, `calibrate ${judgeKey(judge)}`, usd);
-        },
-      });
+      let result;
+      try {
+        result = await runJudge({
+          judge: { ...judge, samples }, versions, config, seed: `${run.id}:calibrate`, budgetUsd: config.budgetUsd.call,
+          room: () => config.budgetUsd.run - spent(run),
+          spend: (usd) => {
+            cost += usd;
+            record(run, `calibrate ${judgeKey(judge)}`, usd);
+          },
+        });
+      } catch (error) {
+        if (!(error instanceof JudgeFailedError)) throw error;
+        // Recorded, so the table shows it; the other judges still calibrate.
+        errored = true;
+        results[judgeKey(judge)] = { judge: judgeKey(judge), pass: false, error: error.message, reasons: [`could not finish: ${error.message}`], references: {} };
+        continue;
+      }
       results[judgeKey(judge)] = {
         ...calibrationOf(result),
         references: Object.fromEntries(references.map((ref) => [ref.key, result.overall[ref.key]])),
@@ -174,7 +189,11 @@ async function calibrateCommand(config, values) {
     console.log(`Calibration, run ${run.id} · main ${short(run.baseline.sha)} · ${samples} calls per judge · ${money(cost)}`);
     console.log("| Judge | Main | Control | Drop | Lower in | σ category | σ overall | References | Result |\n|---|---|---|---|---|---|---|---|---|");
     for (const [key, result] of Object.entries(results))
-      console.log(`| ${key} | ${fixed(result.baseline)} | ${fixed(result.control)} | ${fixed(result.drop)} | ${Math.round(result.lowerShare * 100)}% | ${fixed(result.sigmaCategory)} | ${fixed(result.sigmaOverall)} | ${Object.entries(result.references).map(([ref, score]) => `${ref.slice(4)} ${fixed(score)}`).join(", ") || "–"} | ${result.pass ? "pass" : `FAIL: ${result.reasons.join("; ")}`} |`);
+      console.log(`| ${key} | ${fixed(result.baseline)} | ${fixed(result.control)} | ${fixed(result.drop)} | ${percent(result.lowerShare)} | ${fixed(result.sigmaCategory)} | ${fixed(result.sigmaOverall)} | ${Object.entries(result.references).map(([ref, score]) => `${ref.slice(4)} ${fixed(score)}`).join(", ") || "–"} | ${result.pass ? "pass" : `FAIL: ${result.reasons.join("; ")}`} |`);
+    if (errored) {
+      console.log("\nA judge could not finish its calls (its cost is counted): see the reason in the table, then calibrate again.");
+      return 2;
+    }
     if (!pass) console.log("\nA judge that cannot tell main from the control, or that varies this much, cannot steer a climb: change the judges (a stronger model or higher effort), the screens, or the control, then calibrate again.");
     return pass ? 0 : 1;
   } finally {
@@ -218,6 +237,7 @@ async function roundCommand(config, values) {
       const verdicts = [];
       let cost = 0;
       let stage = "judges";
+      let error = null;
       for (const judge of config.judges) {
         const need = judge.samples * config.budgetUsd.call;
         if (cost + need > config.budgetUsd.round || spent(run) + need > config.budgetUsd.run) {
@@ -225,26 +245,38 @@ async function roundCommand(config, values) {
           break;
         }
         log(`Judging with ${judgeKey(judge)} (${judge.samples} calls)…`);
-        const outcome = await runJudge({
-          judge, versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call,
-          spend: (usd) => {
-            cost += usd;
-            record(run, `round ${number} ${judgeKey(judge)}`, usd);
-          },
-        });
+        let outcome;
+        try {
+          outcome = await runJudge({
+            judge, versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call,
+            room: () => Math.min(config.budgetUsd.round - cost, config.budgetUsd.run - spent(run)),
+            spend: (usd) => {
+              cost += usd;
+              record(run, `round ${number} ${judgeKey(judge)}`, usd);
+            },
+          });
+        } catch (failure) {
+          if (!(failure instanceof JudgeFailedError)) throw failure;
+          // Recorded with its cost, so the round's spending and number stay accounted for.
+          stage = "error";
+          error = failure.message;
+          break;
+        }
         judged.push(outcome);
         const v = verdict({ result: outcome, pass: config.pass, noise: noiseOf(run, judge), references: referenceKeys });
         verdicts.push({ ...v, calibrated: noiseOf(run, judge).calibrated !== false, references: Object.fromEntries(referenceKeys.map((key) => [key, outcome.overall[key]])), baseline: outcome.overall.baseline, scores: outcome.scores });
         if (!v.pass && !values["all-judges"]) break;
       }
-      const pass = stage !== "budget" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
-      result = { ...base, stage, pass, verdicts, costUSD: cost, issues: topIssues(judged), samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })) };
+      // An uncalibrated round is a trial: it never passes.
+      const pass = calibration.ok && stage === "judges" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
+      result = { ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), issues: topIssues(judged), samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })) };
     }
     writeJsonAtomic(join(run.dir, "rounds", `${name}.json`), result);
     const { samples: _, issues: __, ...summary } = result;
     appendJsonl(roundsPath(run), { ...summary, gates: { ok: gates.ok, failures: gates.failures, totals: gates.totals }, verdicts: result.verdicts.map(({ scores, ...rest }) => rest) });
     printRound(result, config, run, values.json);
     if (result.stage === "budget") return 3;
+    if (result.stage === "error") return 2;
     return result.pass ? 0 : 1;
   } finally {
     unlock();
@@ -265,7 +297,7 @@ function printRound(result, config, run, json) {
     for (const v of result.verdicts)
       console.log(`| ${v.judge} | ${fixed(v.overall)} | ${fixed(v.baseline)} | ${v.lowestCategory} ${fixed(v.lowest)} (bar ${config.pass.min}) | ${signed(v.gain)} (${fixed(v.gainBar)}) | ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)} | ${v.pass ? "pass" : `fail: ${v.reasons.join("; ")}`} |`);
     const categories = Object.keys(result.verdicts[0].scores.candidate);
-    console.log(`\n| Category | ${result.verdicts.map((v) => `${v.judge.split("@")[0]} this / main`).join(" | ")} |\n|---|${result.verdicts.map(() => "---|").join("")}`);
+    console.log(`\n| Category | ${result.verdicts.map((v) => `${v.judge} this / main`).join(" | ")} |\n|---|${result.verdicts.map(() => "---|").join("")}`);
     for (const category of categories)
       console.log(`| ${category} | ${result.verdicts.map((v) => `${fixed(v.scores.candidate[category])} / ${fixed(v.scores.baseline[category])}`).join(" | ")} |`);
   }
@@ -277,6 +309,8 @@ function printRound(result, config, run, json) {
     });
   }
   if (result.stage === "budget") console.log("\nThe budget ran out before every judge ran.");
+  if (result.stage === "error") console.log(`\nA judge could not finish, so the round has no verdict (its cost is counted): ${result.error}\nRun the round again.`);
+  if (!result.calibrated) console.log("\nThis round ran without a passing calibration: it is a trial and does not pass.");
   console.log(`\nScreenshots: ${versionDir(run, `round-${result.round}`)}`);
   console.log(`Spent this round ${money(result.costUSD)}; run total ${money(spent(run))} of ${money(config.budgetUsd.run)}.`);
   console.log(`\n${scoreLine(result, config)}`);
@@ -289,7 +323,7 @@ function statusCommand(config, values) {
   const status = {
     run: run.id, baseline: run.baseline, spentUSD: spent(run), budgetUSD: config.budgetUsd.run,
     calibrated: calibrated(config, run).ok, rounds: list.map((round) => ({ ...round, scoreLine: scoreLine(round, config) })),
-    plateau: plateau(list, sigma), passed: list.some((round) => round.pass && !round.dirty),
+    plateau: plateau(list, sigma), passed: list.some((round) => round.pass && !round.dirty && round.calibrated !== false),
   };
   if (values.json) {
     console.log(JSON.stringify(status, null, 2));
@@ -341,7 +375,7 @@ export async function run(argv) {
     const config = loadConfig(values.config);
     return await commands[subcommand](config, values);
   } catch (error) {
-    if (error instanceof UsageError || error.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION" || error.code === "ERR_PARSE_ARGS_INVALID_OPTION_VALUE") {
+    if (error instanceof UsageError || error.code?.startsWith("ERR_PARSE_ARGS_")) {
       console.error(`${error.message}\n\n${USAGE}`);
       return 2;
     }
@@ -349,6 +383,8 @@ export async function run(argv) {
       console.error(error.message);
       return 2;
     }
-    throw error;
+    // Anything else is a fault in the command, not a failed round: exit 1 means fail.
+    console.error(error.stack ?? String(error));
+    return 2;
   }
 }

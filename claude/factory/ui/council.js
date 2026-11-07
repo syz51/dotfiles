@@ -6,13 +6,17 @@
 // mean of the categories, computed here, not asked of the judge.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { judge as callJudge } from "../lib/claude.js";
 import { IMAGE_TYPES } from "./config.js";
 
 export const RUBRIC = JSON.parse(readFileSync(join(import.meta.dir, "rubric.json"), "utf8"));
 export const AVOID_FILE = () => process.env.CLAUDE_FACTORY_AVOID || join(homedir(), ".claude", "frontend-avoid.md");
 const SEVERITY = { high: 3, medium: 2, low: 1 };
+// The API's limits on a request: 32 MB in all, with headroom here for the prompts and the
+// JSON around the images, and 5 MB per base64 image.
+export const MAX_REQUEST_BYTES = 30 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 // Used when a judge has no calibration yet; flagged wherever it is used.
 export const DEFAULT_NOISE = { sigmaCategory: 0.5, sigmaOverall: 0.25, calibrated: false };
 
@@ -110,10 +114,25 @@ const describeView = (shot) => `${shot.view.startsWith("phone") || shot.narrow ?
 // What a judge sees as a shot's identifier: the screen for the product, the view for a reference.
 const shotLabel = (shot) => (shot.screen ? `${shot.screen}.${shot.view}` : shot.view);
 
+// Every screenshot of versions as an image source, read and encoded once: Map<file, source>.
+export function encodeImages(versions) {
+  const images = new Map();
+  for (const version of versions)
+    for (const shot of version.shots)
+      if (!images.has(shot.file))
+        images.set(shot.file, {
+          type: "base64",
+          media_type: IMAGE_TYPES[extname(shot.file).toLowerCase()] ?? "image/png",
+          data: readFileSync(shot.file).toString("base64"),
+        });
+  return images;
+}
+
 // The content blocks of one call. versions: [{ key, kind: "product" | "reference", title,
 // shots: [{ id, file, screen?, title, view, scheme, width, height, narrow }] }], already
-// in the order they are labeled. Returns { content, labels: Map<design number, key> }.
-export function buildContent(versions) {
+// in the order they are labeled; images from encodeImages. Returns { content, labels:
+// Map<design number, key> }.
+export function buildContent(versions, images = encodeImages(versions)) {
   const product = versions.flatMap((version, index) => (version.kind === "product" ? [index + 1] : []));
   const others = versions.flatMap((version, index) => (version.kind === "reference" ? [index + 1] : []));
   const intro = [
@@ -131,8 +150,7 @@ export function buildContent(versions) {
     content.push({ type: "text", text: `Design ${number}${version.kind === "reference" ? ` (${version.title})` : ""}: ${version.shots.length} screenshot${version.shots.length > 1 ? "s" : ""}.` });
     for (const shot of version.shots) {
       content.push({ type: "text", text: `Design ${number} · ${shot.title} · [${shotLabel(shot)}] · ${describeView(shot)}` });
-      const type = IMAGE_TYPES[shot.file.slice(shot.file.lastIndexOf(".")).toLowerCase()] ?? "image/png";
-      content.push({ type: "image", source: { type: "base64", media_type: type, data: readFileSync(shot.file).toString("base64") } });
+      content.push({ type: "image", source: images.get(shot.file) });
     }
   });
   content.push({ type: "text", text: `Now score the ${versions.length} designs.` });
@@ -204,24 +222,48 @@ export function combine(samples) {
   return { scores, overall };
 }
 
+const megabytes = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+// Checks that a call carrying images fits the API's request limits, before any is made.
+export function checkRequestSize(images) {
+  let total = 0;
+  for (const [file, source] of images) {
+    if (source.data.length > MAX_IMAGE_BYTES)
+      throw new JudgeFailedError(`${file} is ${megabytes(source.data.length)} encoded, over the API's ${megabytes(MAX_IMAGE_BYTES)} limit per image: use a smaller viewport or reference image`);
+    total += source.data.length;
+  }
+  if (total > MAX_REQUEST_BYTES)
+    throw new JudgeFailedError(`a judge call would carry ${megabytes(total)} of screenshots, over the ${megabytes(MAX_REQUEST_BYTES)} that fits one request: capture fewer screens, views or references`);
+}
+
 // Runs one judge: samples calls in parallel, each with its own order of the designs. A
-// call whose output does not fit is retried once. spend(usd) reports each call's cost.
-export async function runJudge({ judge, versions, config, seed, budgetUsd, spend, call = callJudge, avoid }) {
+// call that fails or whose output does not fit is retried once, when room() (the money
+// left for this judge) covers the retry beside the calls still running. budgetUsd caps
+// each call; spend(usd) reports each call's cost.
+export async function runJudge({ judge, versions, config, seed, budgetUsd, spend, room = () => Infinity, call = callJudge, avoid }) {
   const system = systemPrompt(config, avoid);
   const schema = outputSchema();
+  const images = encodeImages(versions);
+  checkRequestSize(images);
+  let running = 0;
   const sample = async (index) => {
     let lastError;
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0 && room() < (running + 1) * budgetUsd)
+        throw new JudgeFailedError(`${judgeKey(judge)} sample ${index + 1} failed, and the budget has no room to retry it: ${lastError.message}`);
       const ordered = shuffle(versions, `${seed}:${judgeKey(judge)}:${index}:${attempt}`);
-      const { content, labels } = buildContent(ordered);
+      const { content, labels } = buildContent(ordered, images);
       let result;
+      running += 1;
       try {
         result = await call({ content, system, schema, model: judge.model, effort: judge.effort, budgetUsd, timeoutMs: 900_000 });
       } catch (error) {
+        running -= 1;
         spend(error.costUSD ?? budgetUsd);
         lastError = error;
         continue;
       }
+      running -= 1;
       spend(result.costUSD);
       try {
         return { ...readOutput(result.output, labels, versions), costUSD: result.costUSD, order: ordered.map((version) => version.key) };
@@ -264,6 +306,8 @@ export function verdict({ result, pass, noise, candidate = "candidate", baseline
 }
 
 export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
+export const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
+export const money = (value) => `$${(value ?? 0).toFixed(2)}`;
 
 // The candidate's issues over every judge and sample, grouped by screen and category, most
 // weighty first: severity counts 3, 2, 1, and repeats across calls add up.

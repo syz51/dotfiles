@@ -1,17 +1,20 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "../../tests/lib/process.js";
-import { browseArgv } from "./capture.js";
+import { browseArgv, captureShots, prepareRevision, serve } from "./capture.js";
 import { checkTotals } from "./checks.js";
-import { plateau, scoreLine } from "./cli.js";
+import { plateau, run as runCli, scoreLine } from "./cli.js";
 import { ConfigError, DEFAULT_CONTROL_CSS, MAX_IMAGES, productShots, referenceShots, validateConfig } from "./config.js";
 import {
-  avoidList, buildContent, calibrationOf, combine, JudgeOutputError, readOutput, RUBRIC, runJudge, shuffle, systemPrompt, topIssues, verdict,
+  avoidList, buildContent, calibrationOf, checkRequestSize, combine, JudgeFailedError, JudgeOutputError, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
+  readOutput, RUBRIC, runJudge, shuffle, systemPrompt, topIssues, verdict,
 } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { endLabels, escape, renderReport } from "./report.js";
+import { lockRun, RunError } from "./run.js";
 
 const CLI = join(import.meta.dir, "..", "cli.js");
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
@@ -65,6 +68,9 @@ describe("config", () => {
     [{ screens: [{ id: "a", title: "A", path: "/", views: ["tablet-light"] }] }, '"tablet-light" is not'],
     [{ screens: [{ id: "a", title: "A", path: "/", views: ["desktop-light"], steps: [{ click: "x", hover: "y" }] }] }, "exactly one of"],
     [{ screens: [{ id: "a", title: "A", path: "/", views: ["desktop-light"], steps: [{ fill: "input" }] }] }, "SELECTOR=TEXT"],
+    // Names inherited from Object are not viewports or steps.
+    [{ screens: [{ id: "a", title: "A", path: "/", views: ["constructor-light"] }] }, '"constructor-light" is not'],
+    [{ screens: [{ id: "a", title: "A", path: "/", views: ["desktop-light"], steps: [{ toString: "x" }] }] }, "exactly one of"],
     [{ screens: [{ id: "a", title: "A", path: "x", views: ["desktop-light"] }] }, "path must start with /"],
     [{ screens: [{ id: "a", title: "A", path: "/", views: ["desktop-light"] }, { id: "a", title: "B", path: "/b", views: ["desktop-light"] }] }, "used twice"],
     [{ references: [{ id: "r", title: "R" }] }, "either url (with views) or files"],
@@ -110,6 +116,100 @@ describe("capture", () => {
     expect(argv[argv.indexOf("--click") + 1]).toBe("text=Open");
     expect(argv.at(-1)).toBe("/tmp/x.png");
     expect(argv.at(-3)).toContain("pageChecks");
+  });
+
+  const gitIn = async (cwd, ...args) => {
+    const result = await runProcess(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, env: process.env });
+    expect(result.code).toBe(0);
+    return result.stdout.trim();
+  };
+
+  test("extracts a revision's root inside the extract, even when the root is reached through a symbolic link", async () => {
+    const repo = mkdtempSync(join(scratch, "revision-"));
+    mkdirSync(join(repo, "web"));
+    writeFileSync(join(repo, "web", "index.html"), "committed");
+    await gitIn(repo, "init", "-q", "-b", "main");
+    await gitIn(repo, "add", "-A");
+    await gitIn(repo, "commit", "-q", "-m", "c");
+    const sha = await gitIn(repo, "rev-parse", "HEAD");
+    writeFileSync(join(repo, "web", "index.html"), "uncommitted");
+    const link = join(scratch, "web-link");
+    symlinkSync(join(repo, "web"), link);
+    const source = await prepareRevision({ rootDir: link, setup: [] }, sha);
+    try {
+      expect(source.root.endsWith("/web")).toBe(true);
+      expect(realpathSync(source.root).startsWith(realpathSync(repo))).toBe(false);
+      expect(readFileSync(join(source.root, "index.html"), "utf8")).toBe("committed");
+    } finally {
+      source.dispose();
+    }
+    expect(existsSync(source.root)).toBe(false);
+  });
+
+  test("keeps a reference file's type for the judges and the report", async () => {
+    const jpeg = join(scratch, "peer.jpg");
+    writeFileSync(jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const [record] = await captureShots([{ id: "peer.desktop-light", file: jpeg }], { dir: join(scratch, "peer-copy") });
+    expect(record.file).toBe(join(scratch, "peer-copy", "peer.desktop-light.jpg"));
+    const shot = { ...record, title: "Peer", view: "desktop-light", scheme: "light", width: 1280, height: 800, narrow: false };
+    const { content } = buildContent([{ key: "ref:peer", kind: "reference", title: "Peer", shots: [shot] }]);
+    expect(content.find((block) => block.type === "image").source.media_type).toBe("image/jpeg");
+  });
+
+  test("finds a server on either loopback address and stops its descendants in other process groups", async () => {
+    const ipv6 = await new Promise((resolve) => {
+      const probe = createServer();
+      probe.once("error", () => resolve(false));
+      probe.listen(0, "::1", () => probe.close(() => resolve(true)));
+    });
+    const dir = mkdtempSync(join(scratch, "serve-"));
+    const pidFile = join(dir, "helper.pid");
+    writeFileSync(join(dir, "server.js"), `import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+const helper = spawn("sleep", ["300"], { detached: true, stdio: "ignore" });
+writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid));
+Bun.serve({ hostname: ${JSON.stringify(ipv6 ? "::1" : "127.0.0.1")}, port, fetch: () => new Response("ok") });
+`);
+    const server = await serve({ serve: { command: ["bun", "server.js", "--port", "{port}"], ready: "/", timeoutMs: 20_000 } }, dir, join(dir, "server.log"));
+    expect(server.origin).toContain(ipv6 ? "[::1]" : "127.0.0.1");
+    const helper = Number(readFileSync(pidFile, "utf8"));
+    const alive = (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(alive(helper)).toBe(true);
+    await server.stop();
+    // A killed process is gone once its new parent reaps it.
+    for (const deadline = Date.now() + 3000; alive(helper) && Date.now() < deadline;) await Bun.sleep(50);
+    expect(alive(helper)).toBe(false);
+  }, 30_000);
+});
+
+describe("run", () => {
+  test("a run's lock keeps out a live holder and recovers from a dead or abandoned one", () => {
+    const run = { id: "r1", dir: mkdtempSync(join(scratch, "lock-")) };
+    const file = join(run.dir, "lock");
+    const unlock = lockRun(run);
+    expect(() => lockRun(run)).toThrow(`in use by process ${process.pid}`);
+    unlock();
+    // A holder that has exited.
+    writeFileSync(file, String(Bun.spawnSync(["true"]).pid));
+    lockRun(run)();
+    // A holder this process may not signal is alive all the same.
+    writeFileSync(file, "1");
+    expect(() => lockRun(run)).toThrow("in use by process 1");
+    // A lock its owner is still writing, then one its owner left half-written.
+    writeFileSync(file, "");
+    expect(() => lockRun(run)).toThrow(RunError);
+    const old = (Date.now() - 60_000) / 1000;
+    utimesSync(file, old, old);
+    lockRun(run)();
+    expect(existsSync(file)).toBe(false);
   });
 });
 
@@ -225,6 +325,48 @@ describe("council", () => {
     expect(count).toBe(2);
   });
 
+  test("a failed call is retried only when the budget has room for it beside the calls still running", async () => {
+    const versions = versionsFor(join(scratch, "room"));
+    const attempt = async (samples, left) => {
+      let count = 0;
+      let spentUsd = 0;
+      const call = async () => {
+        count++;
+        return { output: { designs: [], issues: [], strengths: [] }, costUSD: 0.4 };
+      };
+      const outcome = await runJudge({
+        judge: { model: "m", effort: "low", samples }, versions, config, seed: "s", budgetUsd: 1,
+        spend: (usd) => (spentUsd += usd), room: () => left - spentUsd, call,
+      }).catch((error) => error);
+      return { count, spentUsd, outcome };
+    };
+    let result = await attempt(1, 0.9);
+    expect(result.count).toBe(1);
+    expect(result.outcome).toBeInstanceOf(JudgeFailedError);
+    expect(result.outcome.message).toContain("no room to retry it: scored 0 of 3 designs");
+    result = await attempt(1, 1.5);
+    expect(result.count).toBe(2);
+    expect(result.outcome.message).toContain("failed twice");
+    // Two samples with $2.50: after the first fails, its retry needs $1 beside the other
+    // call still running; after the second fails, $1.70 is left, short of two calls' worth.
+    result = await attempt(2, 2.5);
+    expect(result.count).toBe(3);
+    expect(result.spentUsd).toBeCloseTo(1.2);
+  });
+
+  test("a call that would not fit the API's request limits fails before any is made", async () => {
+    expect(() => checkRequestSize(new Map(Array.from({ length: 7 }, (_, index) => [`s${index}.png`, { data: "x".repeat(MAX_IMAGE_BYTES) }]))))
+      .toThrow(`over the ${(MAX_REQUEST_BYTES / 1024 / 1024).toFixed(1)} MB that fits one request`);
+    const versions = versionsFor(join(scratch, "large"));
+    // 4 MB of bytes is over 5 MB once encoded.
+    writeFileSync(versions[2].shots[0].file, Buffer.alloc(4 * 1024 * 1024, 1));
+    let calls = 0;
+    const call = async () => (calls++, {});
+    await expect(runJudge({ judge: { model: "m", effort: "low", samples: 1 }, versions, config, seed: "s", budgetUsd: 1, spend: () => {}, call }))
+      .rejects.toThrow("limit per image");
+    expect(calls).toBe(0);
+  });
+
   test("combines samples and calibrates from main against the control", () => {
     const sample = (main, control) => ({
       scores: { baseline: Object.fromEntries(CATEGORIES.map((id) => [id, main])), control: Object.fromEntries(CATEGORIES.map((id) => [id, control])) },
@@ -280,9 +422,16 @@ describe("rounds", () => {
   const judged = (round, gain, extra = {}) => ({ round, sha: "abcdef1234567890", dirty: false, pass: false, stage: "judges", costUSD: 1.234, verdicts: [{ judge: "claude-sonnet-5-5@medium", lowest: 8.25, gain, referenceMargin: null, overall: 8.6 }], ...extra });
 
   test("the score line names the round, result, bar, gain, cost and commit", () => {
-    expect(scoreLine(judged(3, 0.75, { pass: true }), config)).toBe("score: round 3 pass · claude-sonnet-5-5 min 8.25 (bar 8.5) · +0.75 vs main · $1.23 · abcdef123456");
+    expect(scoreLine(judged(3, 0.75, { pass: true }), config)).toBe("score: round 3 pass · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.75 vs main · $1.23 · abcdef123456");
     expect(scoreLine({ round: 4, sha: "abcdef1234567890", dirty: true, pass: false, stage: "gates", costUSD: 0, verdicts: [], gates: { failures: ["check `bun test` exited 1:\nlots"] } }, config))
       .toBe("score: round 4 fail · gates: check `bun test` exited 1 · $0.00 · abcdef123456+dirty");
+    expect(scoreLine(judged(5, 0.2, { stage: "error", error: "claude-opus-5-5@high sample 2 failed twice: timed out\nmore" }), config))
+      .toBe("score: round 5 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.20 vs main · error: claude-opus-5-5@high sample 2 failed twice: timed out · $1.23 · abcdef123456");
+    expect(scoreLine(judged(6, 0.9, { calibrated: false }), config)).toBe("score: round 6 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · uncalibrated · $1.23 · abcdef123456");
+  });
+
+  test("a stray argument is a usage error, exit 2", async () => {
+    expect(await runCli(["status", "stray"])).toBe(2);
   });
 
   test("a plateau is two judged rounds without gain beyond the noise", () => {
@@ -298,12 +447,16 @@ describe("rounds", () => {
 
   test("the report escapes what judges and the configuration wrote", () => {
     expect(escape(`<script>"x" & 'y'</script>`)).toBe("&lt;script&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/script&gt;");
+    const jpeg = join(scratch, "report.jpg");
+    writeFileSync(jpeg, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
     const html = renderReport({
       config: { ...config, name: "demo" },
       run: { id: "r1", baseline: { rev: "origin/main", sha: "abcdef1234567890" } },
       rounds: [{ ...judged(1, 0.3), issues: [{ screen: "<img src=x onerror=alert(1)>", category: "color", severity: "high", count: 2, problems: ["<b>bold</b>"], fixes: ["</li><script>"] }], gates: { failures: [], totals: { candidate: checkTotals([]), baseline: checkTotals([]) } } }],
-      calibration: null, spentUSD: 1, versions: {},
+      calibration: null, spentUSD: 1,
+      versions: { baseline: [{ id: "home.x", file: jpeg }], "round-1": [{ id: "home.x", file: jpeg }] },
     });
+    expect(html).toContain('src="data:image/jpeg;base64,');
     expect(html).not.toContain("<img src=x");
     expect(html).not.toContain("<b>bold</b>");
     expect(html).not.toContain("</li><script>");
@@ -418,14 +571,14 @@ button { font: inherit; padding: 8px 16px; }
     const first = await commit("tweak");
     result = await ui(["round"], { candidate: 8 });
     expect(result.code).toBe(1);
-    expect(result.stdout).toContain(`score: round 1 fail · claude-sonnet-5-5 min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · $0.10 · ${first.slice(0, 12)}`);
+    expect(result.stdout).toContain(`score: round 1 fail · claude-sonnet-5-5@medium min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · $0.10 · ${first.slice(0, 12)}`);
     expect(result.stdout).toContain("home.desktop-light · color · high ×2: <b>low contrast</b>");
     expect(Object.values(calls().at(-1).order).sort()).toEqual(["baseline", "candidate", "references"]);
 
     // Round 2: the judges rate it above the bar, ahead of main and the reference.
     result = await ui(["round"], { candidate: 9 });
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("score: round 2 pass · claude-sonnet-5-5 min 9.00 (bar 8.5) · +2.00 vs main · +1.00 vs refs");
+    expect(result.stdout).toContain("score: round 2 pass · claude-sonnet-5-5@medium min 9.00 (bar 8.5) · +2.00 vs main · +1.00 vs refs");
 
     // Round 3: an unlabeled control, faint text and a console error fail the gates; no judge runs.
     const judgeCalls = calls().length;
@@ -455,12 +608,20 @@ button { font: inherit; padding: 8px 16px; }
     expect(result.stderr).toContain("uncommitted changes");
     rmSync(join(repo, "web", "extra.txt"));
 
+    // Round 5: a judge whose answers never fit is recorded with its cost, exit 2.
+    rmSync(join(repo, "web", "FAIL"));
+    const fifth = await commit("fix the checks");
+    result = await ui(["round"], { broken: true });
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain(`score: round 5 fail · error: claude-sonnet-5-5@medium sample 1 failed twice: scored Design 99, which was not shown · $0.20 · ${fifth.slice(0, 12)}`);
+    expect(JSON.parse(readFileSync(join(run, "rounds", "round-5.json"), "utf8"))).toMatchObject({ stage: "error", pass: false, costUSD: 0.2 });
+
     result = await ui(["status", "--json"]);
     expect(result.code).toBe(0);
     const status = JSON.parse(result.stdout);
-    expect(status.rounds.map((round) => [round.round, round.pass, round.stage])).toEqual([[1, false, "judges"], [2, true, "judges"], [3, false, "gates"], [4, false, "gates"]]);
+    expect(status.rounds.map((round) => [round.round, round.pass, round.stage])).toEqual([[1, false, "judges"], [2, true, "judges"], [3, false, "gates"], [4, false, "gates"], [5, false, "error"]]);
     expect(status).toMatchObject({ passed: true, calibrated: true, plateau: { plateau: false } });
-    expect(status.spentUSD).toBeCloseTo(0.3);
+    expect(status.spentUSD).toBeCloseTo(0.5);
 
     result = await ui(["report", "--out", join(scratch, "report.html")]);
     expect(result.code).toBe(0);
@@ -475,12 +636,29 @@ button { font: inherit; padding: 8px 16px; }
     // A changed configuration needs a new run, which captures main again.
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
     write("ui-climb.json", JSON.stringify({ ...config, pass: { ...config.pass, min: 8 } }));
-    rmSync(join(repo, "web", "FAIL"));
     await commit("lower the bar");
     result = await ui(["round"]);
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("--new-run");
   }, 600_000);
+
+  test("an uncalibrated round is a trial that never passes", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("trial.json", JSON.stringify({ ...config, name: "trial" }));
+    // A design that differs from main, so the judge tells them apart.
+    write("web/home.html", page("This week", "<p>Trial</p>"));
+    await commit("trial");
+    const result = await runProcess(["bun", CLI, "ui", "round", "--uncalibrated", "--config", join(repo, "trial.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "trial", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 9.5, references: 8 }) },
+    });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("UNCALIBRATED");
+    expect(result.stdout).toContain("a trial and does not pass");
+    expect(result.stdout).toMatch(/score: round 1 fail · claude-sonnet-5-5@medium min 9\.50 \(bar 8\) · \+2\.50 vs main · \+1\.50 vs refs · uncalibrated · /);
+    const status = JSON.parse((await runProcess(["bun", CLI, "ui", "status", "--json", "--config", join(repo, "trial.json")], { cwd: repo, env, timeout: 60_000 })).stdout);
+    expect(status).toMatchObject({ passed: false, calibrated: false });
+  }, 300_000);
 
   test("stops before spending past the run's budget", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));

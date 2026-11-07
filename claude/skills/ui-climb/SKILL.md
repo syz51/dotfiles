@@ -131,7 +131,10 @@ Rules:
   calibration included. `$UI status` shows what is spent.
 - Exit 2 means the command could not run (configuration, git, the app did not start, a
   baseline or reference shot failed): its message says what to do. The app's output
-  is in `server.log` beside the round's screenshots.
+  is in `server.log` beside the round's screenshots. A judge that could not finish its
+  calls also exits 2; the round is recorded as an error with its cost, and you run it
+  again (its `score:` line still goes in a note).
+- `--uncalibrated` runs a trial round that never passes; never hand one over.
 - State lives in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/ui/<name>/runs/<id>/`:
   screenshots per version, `rounds/round-N.json` with every judge's scores and issues,
   `calibration.json` and the spending ledger.

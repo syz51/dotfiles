@@ -64,7 +64,8 @@ function paths(file, value, where) {
 // A view is <viewport>-<scheme>, such as desktop-light or phone-dark.
 export function parseView(view, viewports) {
   const at = typeof view === "string" ? view.lastIndexOf("-") : -1;
-  const viewport = at > 0 ? viewports[view.slice(0, at)] : undefined;
+  const name = at > 0 ? view.slice(0, at) : null;
+  const viewport = name && Object.hasOwn(viewports, name) ? viewports[name] : undefined;
   const scheme = at > 0 ? view.slice(at + 1) : undefined;
   if (!viewport || (scheme !== "light" && scheme !== "dark")) return null;
   return { view, width: viewport.width, height: viewport.height, scheme, narrow: viewport.width < NARROW_WIDTH };
@@ -82,7 +83,7 @@ function steps(file, value, where) {
   if (!Array.isArray(value)) fail(file, `${where} must be a list`);
   return value.map((step, index) => {
     const keys = step && typeof step === "object" && !Array.isArray(step) ? Object.keys(step) : [];
-    if (keys.length !== 1 || !STEP_FLAGS[keys[0]])
+    if (keys.length !== 1 || !Object.hasOwn(STEP_FLAGS, keys[0]))
       fail(file, `${where}[${index}] must have exactly one of ${Object.keys(STEP_FLAGS).join(", ")}`);
     const [kind] = keys;
     const arg = step[kind];

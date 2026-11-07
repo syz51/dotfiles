@@ -6,10 +6,14 @@ import { spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, closeSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
-import { childEnv, runProcess } from "../../tests/lib/process.js";
+import { extname, join } from "node:path";
+import { childEnv, descendants, runProcess } from "../../tests/lib/process.js";
+import { extractCommit } from "../bench/cases.js";
 import { injectCssExpression, pageChecksExpression } from "./checks.js";
 import { NARROW_WIDTH, STEP_FLAGS } from "./config.js";
+
+// How long one readiness probe, or one before/after call, may take.
+const FETCH_TIMEOUT_MS = 10_000;
 
 export const BROWSE = () => process.env.CLAUDE_FACTORY_BROWSE || join(import.meta.dir, "..", "..", "skills", "headless-browser", "scripts", "browse.ts");
 const SETUP_SCRIPT = join(import.meta.dir, "..", "..", "skills", "headless-browser", "scripts", "setup.sh");
@@ -60,20 +64,18 @@ export const runChecks = (config, root = config.rootDir) => runSteps(config.chec
 // A copy of the config's root folder at commit sha, with the setup commands run in it.
 // Returns { root, dispose }.
 export async function prepareRevision(config, sha) {
-  const top = await repoRoot(config.rootDir);
+  // git's own path of the root inside the repository, so a root reached through a symbolic
+  // link still lands inside the extract.
+  const [top, prefix] = await Promise.all([repoRoot(config.rootDir), git(config.rootDir, ["rev-parse", "--show-prefix"]).then((path) => path.replace(/\/$/, ""))]);
   const dir = mkdtempSync(join(tmpdir(), "claude-factory-ui-"));
   try {
-    const archive = spawn("git", ["-C", top, "archive", "--format=tar", sha], { stdio: ["ignore", "pipe", "pipe"] });
-    const extract = spawn("tar", ["-x", "-C", dir], { stdio: ["pipe", "ignore", "pipe"] });
-    archive.stdout.pipe(extract.stdin);
-    let errors = "";
-    archive.stderr.on("data", (chunk) => (errors += chunk));
-    extract.stderr.on("data", (chunk) => (errors += chunk));
-    const exited = (child) => new Promise((resolve) => child.on("close", resolve));
-    const [archived, extracted] = await Promise.all([exited(archive), exited(extract)]);
-    if (archived !== 0 || extracted !== 0) throw new CaptureError(`could not extract ${sha.slice(0, 12)}: ${tail(errors.trim())}`);
-    const root = join(dir, relative(top, config.rootDir));
-    if (!existsSync(root)) throw new CaptureError(`${relative(top, config.rootDir) || "."} does not exist at ${sha.slice(0, 12)}`);
+    try {
+      extractCommit(top, sha, dir);
+    } catch (error) {
+      throw new CaptureError(`could not extract ${sha.slice(0, 12)}: ${tail(error.message)}`);
+    }
+    const root = join(dir, prefix);
+    if (!existsSync(root)) throw new CaptureError(`${prefix || "."} does not exist at ${sha.slice(0, 12)}`);
     const setup = await runSetup(config, root);
     if (!setup.ok) throw new CaptureError(`${setup.failed} at ${sha.slice(0, 12)}:\n${setup.results.at(-1).output}`);
     return { root, dispose: () => rmSync(dir, { recursive: true, force: true }) };
@@ -94,8 +96,38 @@ function freePort() {
   });
 }
 
-// Starts the app from root on a free port and waits until its ready path answers.
-// Returns { origin, stop }; stop ends the server's whole process group.
+// A GET with a deadline. Resolves with the status, or rejects with why it failed.
+async function get(url) {
+  const response = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  await response.body?.cancel();
+  return response;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Signals pids, then the process group led by leader. A process that is gone (ESRCH), or a
+// pid reused by another user since the snapshot (EPERM), is skipped.
+function signalTree(leader, pids, name) {
+  for (const pid of [...pids, -leader])
+    try {
+      process.kill(pid, name);
+    } catch (error) {
+      if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
+    }
+}
+
+const running = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// Starts the app from root on a free port and waits until its ready path answers, on
+// IPv4 or IPv6 loopback. Returns { origin, stop }; stop ends the server, its process group
+// and its descendants in other groups (a dev server's watcher or bundler, say).
 export async function serve(config, root, logFile) {
   const port = await freePort();
   const argv = config.serve.command.map((part) => part.replaceAll("{port}", String(port)));
@@ -105,26 +137,24 @@ export async function serve(config, root, logFile) {
   let exit = null;
   const exited = new Promise((resolve) => child.on("exit", (code, signal) => resolve((exit = { code, signal }))));
   child.on("error", (error) => (exit = { error }));
-  const signal = (name) => {
-    try {
-      process.kill(-child.pid, name);
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+  let stopping = null;
+  const stop = () => (stopping ??= (async () => {
+    if (exit?.error) return;
+    // Taken before the leader exits: its children are then reparented and untraceable.
+    const tree = exit ? [] : descendants(child.pid);
+    signalTree(child.pid, tree, "SIGTERM");
+    for (const deadline = Date.now() + 3000; (!exit || tree.some(running)) && Date.now() < deadline;) await sleep(100);
+    if (!exit || tree.some(running)) {
+      signalTree(child.pid, tree, "SIGKILL");
+      await exited;
     }
-  };
-  const stop = async () => {
-    if (exit) return;
-    signal("SIGTERM");
-    const timer = setTimeout(() => signal("SIGKILL"), 3000);
-    await exited;
-    clearTimeout(timer);
-  };
-  const origin = `http://127.0.0.1:${port}`;
+  })());
+  const origins = [`http://127.0.0.1:${port}`, `http://[::1]:${port}`];
   const deadline = Date.now() + config.serve.timeoutMs;
   while (true) {
     if (exit) throw new CaptureError(`\`${argv.join(" ")}\` exited before it was ready (${exit.error?.message ?? `code ${exit.code}`}): ${tail(readFileSync(logFile, "utf8"))}`);
-    const ok = await fetch(`${origin}${config.serve.ready}`).then((response) => response.ok, () => false);
-    if (ok) return { origin, stop };
+    for (const origin of origins)
+      if (await get(`${origin}${config.serve.ready}`).then((response) => response.ok, () => false)) return { origin, stop };
     if (Date.now() > deadline) {
       await stop();
       throw new CaptureError(`\`${argv.join(" ")}\` did not answer ${config.serve.ready} on port ${port} within ${config.serve.timeoutMs} ms: ${tail(readFileSync(logFile, "utf8"))}`);
@@ -162,14 +192,16 @@ export async function captureShots(shots, { dir, origin, settleMs, inject }) {
   mkdirSync(dir, { recursive: true });
   const records = [];
   for (const shot of shots) {
-    const out = join(dir, `${shot.id}.png`);
     if (shot.file) {
-      copyFileSync(shot.file, out);
-      records.push({ id: shot.id, file: out, error: null, checks: null, pageErrors: [], consoleErrors: [], failedRequests: [] });
+      // A reference file keeps its type: its extension names it to the judges and the report.
+      const copy = join(dir, `${shot.id}${extname(shot.file).toLowerCase()}`);
+      copyFileSync(shot.file, copy);
+      records.push({ id: shot.id, file: copy, error: null, checks: null, pageErrors: [], consoleErrors: [], failedRequests: [] });
       continue;
     }
+    const out = join(dir, `${shot.id}.png`);
     const call = async (path) => {
-      const response = await fetch(`${origin}${path}`).catch((error) => ({ ok: false, status: error.message }));
+      const response = await get(`${origin}${path}`).catch((error) => ({ ok: false, status: error.message }));
       if (!response.ok) throw new CaptureError(`GET ${path} for ${shot.id} failed: ${response.status}`);
     };
     for (const path of shot.before ?? []) await call(path);
@@ -188,13 +220,18 @@ export async function captureShots(shots, { dir, origin, settleMs, inject }) {
   return records;
 }
 
-// Serves root and captures shots, then stops the server whatever happened.
-export async function captureServed(config, root, shots, { dir, inject }) {
+// Serves root, logging to dir/server.log, and runs fn(origin); stops the server whatever
+// happened.
+export async function withServer(config, root, dir, fn) {
   mkdirSync(dir, { recursive: true });
   const server = await serve(config, root, join(dir, "server.log"));
   try {
-    return await captureShots(shots, { dir, origin: server.origin, settleMs: config.settleMs, inject });
+    return await fn(server.origin);
   } finally {
     await server.stop();
   }
 }
+
+// Serves root and captures shots into dir.
+export const captureServed = (config, root, shots, { dir, inject }) =>
+  withServer(config, root, dir, (origin) => captureShots(shots, { dir, origin, settleMs: config.settleMs, inject }));

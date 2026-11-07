@@ -15,7 +15,7 @@ export function childEnv(base, overrides = {}) {
 // Process ids descending from pid, from one snapshot of the process table. A child that
 // started its own process group (as nested runProcess calls do) is outside pid's group,
 // so killing the group alone would leave it running.
-function descendants(pid) {
+export function descendants(pid) {
   const table = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
   if (table.status !== 0) return [];
   const children = new Map();

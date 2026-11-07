@@ -3,10 +3,10 @@
 // tied to its configuration, the rubric and the owner's preferences; changing any of them
 // starts a new run, so scores within a run stay comparable.
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, openSync, readdirSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appendJsonl, readJson, readJsonl, statePath, writeJsonAtomic } from "../lib/state.js";
-import { captureServed, CaptureError, captureShots, prepareRevision, resolveRev, runSetup } from "./capture.js";
+import { captureServed, CaptureError, captureShots, prepareRevision, resolveRev, runSetup, withServer } from "./capture.js";
 import { productShots, referenceShots } from "./config.js";
 import { avoidList, RUBRIC } from "./council.js";
 
@@ -47,8 +47,25 @@ export async function openRun(config, { id, fresh = false, avoid = avoidList() }
   return { ...run, dir };
 }
 
+// A lock file without a pid younger than this is being written by its owner; older, its
+// owner died between creating and writing it.
+const LOCK_WRITE_MS = 10_000;
+
+// Whether the process holding a lock is alive: signal 0 reaches it (or reaches a process
+// we may not signal, EPERM, which is alive too).
+function holderAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    if (error.code === "EPERM") return true;
+    throw error;
+  }
+}
+
 // One process at a time per run: two rounds at once would share captures and the ledger.
-export function lockRun(run) {
+export function lockRun(run, { now = Date.now } = {}) {
   const file = join(run.dir, "lock");
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -58,17 +75,22 @@ export function lockRun(run) {
       return () => rmSync(file, { force: true });
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
-      const pid = Number(readJson(file, null));
-      let alive = false;
+      let text;
+      let age;
       try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch {}
-      if (alive) throw new RunError(`run ${run.id} is in use by process ${pid}; wait for it to finish`);
+        text = readFileSync(file, "utf8").trim();
+        age = now() - statSync(file).mtimeMs;
+      } catch (read) {
+        if (read.code === "ENOENT") continue; // released meanwhile
+        throw read;
+      }
+      const pid = /^[1-9]\d*$/.test(text) ? Number(text) : null;
+      if (pid === null ? age < LOCK_WRITE_MS : holderAlive(pid))
+        throw new RunError(`run ${run.id} is in use${pid ? ` by process ${pid}` : ""}; wait for it to finish${pid ? "" : `, or remove ${file} if no ui command is running`}`);
       rmSync(file, { force: true });
     }
   }
-  throw new RunError(`could not lock run ${run.id}`);
+  throw new RunError(`could not lock run ${run.id}: another process keeps taking ${file}`);
 }
 
 export const ledgerPath = (run) => join(run.dir, "ledger.jsonl");
@@ -107,13 +129,16 @@ export async function baselineVersions(config, run, { control = false, log = () 
     log(`Capturing ${wanted.map(([name]) => (name === "baseline" ? "main" : name)).join(" and ")} at ${run.baseline.sha.slice(0, 12)}…`);
     const source = await prepareRevision(config, run.baseline.sha);
     try {
-      for (const [name, inject] of wanted) {
-        const dir = versionDir(run, name);
-        rmSync(dir, { recursive: true, force: true });
-        const records = await captureServed(config, source.root, shots, { dir, inject });
-        fatal(records, name === "baseline" ? `main (${run.baseline.sha.slice(0, 12)})` : "the control");
-        writeJsonAtomic(join(dir, "capture.json"), { sha: run.baseline.sha, at: new Date().toISOString(), shots: records });
-      }
+      for (const [name] of wanted) rmSync(versionDir(run, name), { recursive: true, force: true });
+      // One server for both: the control differs only by a style sheet added in the page.
+      await withServer(config, source.root, versionDir(run, wanted[0][0]), async (origin) => {
+        for (const [name, inject] of wanted) {
+          const dir = versionDir(run, name);
+          const records = await captureShots(shots, { dir, origin, settleMs: config.settleMs, inject });
+          fatal(records, name === "baseline" ? `main (${run.baseline.sha.slice(0, 12)})` : "the control");
+          writeJsonAtomic(join(dir, "capture.json"), { sha: run.baseline.sha, at: new Date().toISOString(), shots: records });
+        }
+      });
     } finally {
       source.dispose();
     }

@@ -3,12 +3,13 @@
 // every shot, the gates and the calibration. Every string from a judge or the
 // configuration is escaped.
 import { existsSync, readFileSync } from "node:fs";
-import { RUBRIC, signed } from "./council.js";
+import { extname } from "node:path";
+import { IMAGE_TYPES } from "./config.js";
+import { fixed, judgeKey, money, RUBRIC, signed } from "./council.js";
 
 export const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
-const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
-const money = (value) => `$${(value ?? 0).toFixed(2)}`;
-const image = (file) => (file && existsSync(file) ? `data:image/png;base64,${readFileSync(file).toString("base64")}` : null);
+const image = (file) => (file && existsSync(file) ? `data:${IMAGE_TYPES[extname(file).toLowerCase()] ?? "image/png"};base64,${readFileSync(file).toString("base64")}` : null);
+const OUTCOME = { gates: "gates failed", budget: "budget", error: "error" };
 
 // Labels at the end of the lines, moved apart so none overlaps: [[y, text]] by y.
 export function endLabels(labels, gap = 14) {
@@ -55,11 +56,11 @@ ${endLabels([[y(bar), `bar ${bar}`], [y(points[last].main), `main ${fixed(points
 function roundsTable(rounds, config) {
   if (!rounds.length) return `<p class="muted">No rounds yet.</p>`;
   return `<div class="scroll"><table>
-<thead><tr><th>Round</th><th>Commit</th><th>Result</th>${config.judges.map((judge) => `<th>${escape(judge.model)}<br><span class="muted">lowest · gain · refs</span></th>`).join("")}<th class="num">Cost</th></tr></thead>
+<thead><tr><th>Round</th><th>Commit</th><th>Result</th>${config.judges.map((judge) => `<th>${escape(judgeKey(judge))}<br><span class="muted">lowest · gain · refs</span></th>`).join("")}<th class="num">Cost</th></tr></thead>
 <tbody>${rounds.map((round) => `<tr><td>${round.round}</td><td><code>${escape(round.sha.slice(0, 12))}${round.dirty ? "+dirty" : ""}</code></td>
-<td>${round.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">${round.stage === "gates" ? "gates failed" : round.stage === "budget" ? "budget" : "fail"}</span>`}</td>
+<td>${round.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">${OUTCOME[round.stage] ?? "fail"}</span>`}${round.calibrated === false ? ` <span class="muted">uncalibrated</span>` : ""}</td>
 ${config.judges.map((judge) => {
-    const v = round.verdicts?.find((item) => item.judge === `${judge.model}@${judge.effort}`);
+    const v = round.verdicts?.find((item) => item.judge === judgeKey(judge));
     return v ? `<td class="num">${fixed(v.lowest)} · ${signed(v.gain)} · ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)}</td>` : `<td class="muted">not run</td>`;
   }).join("")}<td class="num">${money(round.costUSD)}</td></tr>`).join("\n")}</tbody></table></div>`;
 }
@@ -67,7 +68,7 @@ ${config.judges.map((judge) => {
 function categoryTable(round) {
   if (!round?.verdicts?.length || !round.verdicts[0].scores) return "";
   return `<div class="scroll"><table>
-<thead><tr><th>Category</th>${round.verdicts.map((v) => `<th class="num">${escape(v.judge.split("@")[0])}<br><span class="muted">this · main</span></th>`).join("")}</tr></thead>
+<thead><tr><th>Category</th>${round.verdicts.map((v) => `<th class="num">${escape(v.judge)}<br><span class="muted">this · main</span></th>`).join("")}</tr></thead>
 <tbody>${RUBRIC.categories.map((category) => `<tr><td>${escape(category.name)}</td>${round.verdicts.map((v) => {
     const mine = v.scores.candidate[category.id];
     const main = v.scores.baseline[category.id];
@@ -109,7 +110,7 @@ function shotsBlock(round, versions) {
 function calibrationBlock(calibration) {
   if (!calibration) return `<p class="muted">Not calibrated yet.</p>`;
   return `<div class="scroll"><table><thead><tr><th>Judge</th><th class="num">Main</th><th class="num">Control</th><th class="num">Drop</th><th class="num">Lower in</th><th class="num">σ category</th><th class="num">σ overall</th><th>Result</th></tr></thead><tbody>
-${Object.entries(calibration.judges).map(([key, item]) => `<tr><td>${escape(key)}</td><td class="num">${fixed(item.baseline)}</td><td class="num">${fixed(item.control)}</td><td class="num">${fixed(item.drop)}</td><td class="num">${Math.round(item.lowerShare * 100)}%</td><td class="num">${fixed(item.sigmaCategory)}</td><td class="num">${fixed(item.sigmaOverall)}</td><td>${item.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">fail</span> ${escape(item.reasons.join("; "))}`}</td></tr>`).join("\n")}</tbody></table></div>
+${Object.entries(calibration.judges).map(([key, item]) => `<tr><td>${escape(key)}</td><td class="num">${fixed(item.baseline)}</td><td class="num">${fixed(item.control)}</td><td class="num">${fixed(item.drop)}</td><td class="num">${typeof item.lowerShare === "number" ? `${Math.round(item.lowerShare * 100)}%` : "–"}</td><td class="num">${fixed(item.sigmaCategory)}</td><td class="num">${fixed(item.sigmaOverall)}</td><td>${item.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">fail</span> ${escape(item.reasons.join("; "))}`}</td></tr>`).join("\n")}</tbody></table></div>
 <p class="muted">${calibration.samples} calls per judge, ${money(calibration.costUSD)}, ${escape(calibration.at)}.</p>`;
 }
 
