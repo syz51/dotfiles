@@ -18,7 +18,7 @@
 - Inspect available context, then finish authorized work through implementation, verification, and reporting without repeated confirmation. Ask only for consequential missing information or actions beyond existing authorization; use reasonable assumptions for reversible details.
 - Fix shared causes and verify through the closest feasible user-facing path. Report unrelated issues without expanding scope.
 - Run the smallest meaningful checks and required project checks. Add focused tests for non-trivial or risky logic; visually inspect UI changes and state verification limits.
-- Keep temporary files in the session scratchpad when one is provided, otherwise in one task directory under `$TMPDIR`; remove them before finishing. Do not delete and reinstall tools between steps.
+- Keep temporary files in the session scratchpad when one is provided, otherwise in one task directory under `$TMPDIR`; remove them before finishing. Before finishing, stop the background commands and processes you started and confirm none is still running, unless I asked to keep them running. Do not delete and reinstall tools between steps.
 - Prefer dedicated tools. Inspect UI with the `headless-browser` skill; use the in-app browser only when I ask for it.
 - In a worktree-isolated session, Claude Code refuses git it cannot verify stays in the worktree: give each git command its own Bash call with literal paths, without loops, variables or `$(…)` around it, and do work on other checkouts from a session or delegate started there.
 - Keep responses and durable instructions concise and nonduplicative. State substantial actions before starting, share material progress, and report results and blockers. Verify uncertain or time-sensitive claims and cite supporting sources.

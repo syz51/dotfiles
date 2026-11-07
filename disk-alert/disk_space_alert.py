@@ -15,6 +15,13 @@ until the message gets through, without repeating the notification; a start that
 timed out or printed no thread id is not retried, since it may have gone through.
 Recovering to `ok` posts one notification and ends the episode.
 
+While space is low, each check first removes the scratch folders of idle Claude Code
+sessions, `/private/tmp/claude-<uid>/<project>/<session id>`: those whose folder,
+transcript and subagent transcripts have not changed for 24 hours, and that no
+running process names or works inside. When the process list cannot be read,
+nothing is removed. The alert says what was freed; `sweep --dry-run` lists what
+would go now, whatever the free space.
+
 State lives in `~/.local/state/disk-space-alert/state.json` and every alert adds
 one line to `events.jsonl` there. `test` sends a test alert through both channels
 without touching the state, `status` reports the current reading, and `install`
@@ -27,7 +34,9 @@ import argparse
 import json
 import os
 import plistlib
+import re
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import asdict, dataclass, replace
@@ -52,6 +61,10 @@ COMMAND_TIMEOUT_SECONDS = 90
 TIMEOUT_EXIT = 124
 
 LEVELS = ("ok", "low", "critical")
+DEFAULT_CLAUDE_TMP = Path("/private/tmp") / f"claude-{os.getuid()}"
+DEFAULT_CLAUDE_PROJECTS = HOME / ".claude" / "projects"
+SWEEP_IDLE = timedelta(hours=24)
+SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 Runner = Callable[[list, Optional[str]], subprocess.CompletedProcess]
 
@@ -83,6 +96,9 @@ class Config:
     t3: Optional[str] = str(DEFAULT_T3)
     t3_project: str = str(DEFAULT_T3_PROJECT)
     osascript: Optional[str] = DEFAULT_OSASCRIPT
+    # Claude Code's temp folder to sweep while space is low; None turns the sweep off.
+    claude_tmp: Optional[Path] = None
+    claude_projects: Path = DEFAULT_CLAUDE_PROJECTS
 
 
 @dataclass(frozen=True)
@@ -168,6 +184,109 @@ def append_event(state_dir: Path, event: dict) -> None:
         log.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
+@dataclass(frozen=True)
+class Swept:
+    path: str
+    bytes: int
+    error: Optional[str] = None
+
+
+def running_processes(run: Runner) -> Optional[tuple]:
+    """Every process's command line, joined, and working directory, or None when the
+    process list cannot be read."""
+    ps = run(["ps", "-axww", "-o", "command="], None)
+    # lsof exits 1 when it could not inspect some processes; what it printed still counts.
+    lsof = run(["lsof", "-nP", "-d", "cwd", "-Fn"], None)
+    if ps.returncode != 0 or not ps.stdout or not lsof.stdout:
+        return None
+    cwds = [line[1:] for line in lsof.stdout.splitlines() if line.startswith("n/")]
+    return ps.stdout, cwds
+
+
+def changed_since(path: Path, cutoff: float) -> bool:
+    """Whether path or anything under it changed after cutoff, links not followed. An
+    unreadable folder counts as changed, so it is never taken for idle."""
+    try:
+        stats = path.lstat()
+    except FileNotFoundError:
+        return False
+    if max(stats.st_mtime, stats.st_ctime) > cutoff:
+        return True
+    if not stat.S_ISDIR(stats.st_mode):
+        return False
+    unreadable = []
+    for folder, dirs, files in os.walk(path, onerror=unreadable.append):
+        for name in dirs + files:
+            try:
+                stats = os.lstat(os.path.join(folder, name))
+            except FileNotFoundError:
+                continue
+            if max(stats.st_mtime, stats.st_ctime) > cutoff:
+                return True
+    return bool(unreadable)
+
+
+def disk_usage(path: Path) -> int:
+    total = 0
+    for folder, dirs, files in os.walk(path):
+        for name in dirs + files:
+            try:
+                total += os.lstat(os.path.join(folder, name)).st_blocks * 512
+            except FileNotFoundError:
+                continue
+    return total
+
+
+def sweep_sessions(
+    tmp_root: Path, projects: Path, run: Runner, now: datetime, dry_run: bool = False
+) -> list:
+    """Remove the scratch folders of idle Claude Code sessions (see the module doc)."""
+    if not tmp_root.is_dir():
+        return []
+    processes = running_processes(run)
+    if processes is None:
+        return []
+    commands, cwds = processes
+    cutoff = (now - SWEEP_IDLE).timestamp()
+    swept = []
+    for project in sorted(tmp_root.iterdir()):
+        if project.is_symlink() or not project.is_dir():
+            continue
+        for session in sorted(project.iterdir()):
+            if not SESSION_ID.match(session.name) or session.is_symlink() or not session.is_dir():
+                continue
+            real = str(session.resolve())
+            if session.name in commands or any(cwd == real or cwd.startswith(real + "/") for cwd in cwds):
+                continue
+            transcripts = projects / project.name
+            if (
+                changed_since(session, cutoff)
+                or changed_since(transcripts / f"{session.name}.jsonl", cutoff)
+                or changed_since(transcripts / session.name, cutoff)
+            ):
+                continue
+            size = disk_usage(session)
+            error = None
+            if not dry_run:
+                try:
+                    shutil.rmtree(session)
+                except OSError as failure:
+                    error = str(failure)
+            swept.append(Swept(str(session), size, error))
+    return swept
+
+
+def sweep_note(swept: list) -> str:
+    removed = [item for item in swept if item.error is None]
+    if not removed:
+        return ""
+    freed = sum(item.bytes for item in removed) / 1e9
+    return (
+        f"Before this alert the monitor removed {len(removed)} idle Claude Code session "
+        f"scratch folder{'s' if len(removed) != 1 else ''} ({freed:.1f} GB)."
+    )
+
+
 def describe(level: str, config: Config) -> str:
     if level == "critical":
         return f"below the {config.critical_gb:g} GB critical threshold"
@@ -179,13 +298,13 @@ def thread_title(level: str, free: float) -> str:
     return f"{prefix}: {free:.1f} GB free"
 
 
-def start_message(level: str, free: float, config: Config) -> str:
+def start_message(level: str, free: float, config: Config, note: str = "") -> str:
     return (
         "This thread was started by the disk space monitor "
         f"(`~/.config/disk-alert/disk_space_alert.py`, LaunchAgent `{LABEL}`).\n\n"
         f"Free space on {config.volume} is {free:.1f} GB, {describe(level, config)}. "
         f"The monitor alerts below {config.low_gb:g} GB and again below "
-        f"{config.critical_gb:g} GB.\n\n"
+        f"{config.critical_gb:g} GB.{' ' + note if note else ''}\n\n"
         "Make a read-only check of where the space is going: the largest folders in the "
         "home directory, Docker and Colima disks, caches, build output such as Rust "
         "`target/` folders, and anything that grew recently. Reply with a short summary "
@@ -195,10 +314,10 @@ def start_message(level: str, free: float, config: Config) -> str:
     )
 
 
-def update_message(level: str, free: float, config: Config) -> str:
+def update_message(level: str, free: float, config: Config, note: str = "") -> str:
     return (
         f"Update from the disk space monitor: free space on {config.volume} is now "
-        f"{free:.1f} GB, {describe(level, config)}. Refresh your read-only summary in a "
+        f"{free:.1f} GB, {describe(level, config)}.{' ' + note if note else ''} Refresh your read-only summary in a "
         "few lines. Still do not delete, move or change anything."
     )
 
@@ -288,9 +407,10 @@ def deliver(
 
 
 def check(
-    free: float, state: State, now: datetime, config: Config, run: Runner
+    free: float, state: State, now: datetime, config: Config, run: Runner, note: str = ""
 ) -> tuple:
-    """Act on one reading. Returns (new state, event record or None)."""
+    """Act on one reading; note says what the sweep before it freed. Returns (new state,
+    event record or None)."""
     level = classify(free, state.level, config.low_gb, config.critical_gb)
     event = plan(state, level, now)
     record = {
@@ -316,8 +436,8 @@ def check(
         config,
         state.thread_id,
         title,
-        start_message(level, free, config),
-        update_message(level, free, config),
+        start_message(level, free, config, note),
+        update_message(level, free, config, note),
     )
     record["thread_id"] = delivery.thread_id
     record["t3_error"] = delivery.error
@@ -329,6 +449,8 @@ def check(
     )
     if event != "retry":
         body = f"{free:.1f} GB free on {config.volume}, {describe(level, config)}."
+        if note:
+            body += " " + note
         if delivery.retry:
             body += " T3 Code could not be reached; retrying."
         elif delivery.error:
@@ -343,13 +465,46 @@ def check(
 def run_check(config: Config, run: Runner, free_override: Optional[float], now: datetime) -> int:
     free = free_override if free_override is not None else free_gb(config.volume)
     state_path = config.state_dir / "state.json"
-    state, record = check(free, load_state(state_path), now, config, run)
+    state = load_state(state_path)
+    note = ""
+    failed = False
+    if config.claude_tmp and classify(free, state.level, config.low_gb, config.critical_gb) != "ok":
+        swept = sweep_sessions(config.claude_tmp, config.claude_projects, run, now)
+        if swept:
+            freed = sum(item.bytes for item in swept if item.error is None) / 1e9
+            sweep_record = {
+                "at": now.isoformat(timespec="seconds"),
+                "event": "swept",
+                "freed_gb": round(freed, 2),
+                "removed": [item.path for item in swept if item.error is None],
+                "errors": {item.path: item.error for item in swept if item.error},
+            }
+            append_event(config.state_dir, sweep_record)
+            print(json.dumps(sweep_record, ensure_ascii=False))
+            failed = bool(sweep_record["errors"])
+            note = sweep_note(swept)
+            free = free_override - freed if free_override is not None else free_gb(config.volume)
+    state, record = check(free, state, now, config, run, note)
     save_state(state_path, state)
     if record is None:
-        return 0
+        return 1 if failed else 0
     append_event(config.state_dir, record)
     print(json.dumps(record, ensure_ascii=False))
-    return 1 if record.get("t3_error") or record.get("notify_error") else 0
+    return 1 if failed or record.get("t3_error") or record.get("notify_error") else 0
+
+
+def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
+    swept = sweep_sessions(config.claude_tmp, config.claude_projects, run, now, dry_run)
+    print(json.dumps(
+        {
+            "dry_run": dry_run,
+            "freed_gb": round(sum(item.bytes for item in swept if item.error is None) / 1e9, 2),
+            "sessions": [asdict(item) for item in swept],
+        },
+        indent=2,
+        ensure_ascii=False,
+    ))
+    return 1 if any(item.error for item in swept) else 0
 
 
 def run_test(config: Config, run: Runner, now: datetime) -> int:
@@ -472,6 +627,12 @@ def parse_args(argv: list) -> argparse.Namespace:
         command.add_argument("--no-t3", action="store_true", help="skip T3 Code")
         command.add_argument("--osascript", default=DEFAULT_OSASCRIPT)
         command.add_argument("--no-notify", action="store_true", help="skip macOS notifications")
+        add_sweep(command)
+
+    def add_sweep(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--claude-tmp", type=Path, default=DEFAULT_CLAUDE_TMP)
+        command.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
+        command.add_argument("--no-sweep", action="store_true", help="never remove session folders")
 
     check_command = commands.add_parser("check", help="measure once and alert if needed")
     add_common(check_command)
@@ -485,9 +646,12 @@ def parse_args(argv: list) -> argparse.Namespace:
     install.add_argument("--low-gb", type=float, default=DEFAULT_LOW_GB)
     install.add_argument("--critical-gb", type=float, default=DEFAULT_CRITICAL_GB)
     commands.add_parser("uninstall", help="unload and remove the LaunchAgent")
+    sweep = commands.add_parser("sweep", help="remove idle Claude Code session scratch now")
+    sweep.add_argument("--dry-run", action="store_true", help="list them without removing")
+    add_sweep(sweep)
 
     args = parser.parse_args(argv)
-    if args.command != "uninstall" and args.critical_gb >= args.low_gb:
+    if args.command not in ("uninstall", "sweep") and args.critical_gb >= args.low_gb:
         parser.error("--critical-gb must be below --low-gb")
     return args
 
@@ -499,6 +663,12 @@ def main(argv: Optional[list] = None, run: Runner = run_command) -> int:
         return run_install(run, args.dry_run, args.low_gb, args.critical_gb)
     if args.command == "uninstall":
         return run_uninstall(run)
+    claude_tmp = None if args.no_sweep else args.claude_tmp
+    if args.command == "sweep":
+        if claude_tmp is None:
+            return 0
+        config = Config(claude_tmp=claude_tmp, claude_projects=args.claude_projects)
+        return run_sweep(config, run, now, args.dry_run)
     config = Config(
         volume=args.volume,
         low_gb=args.low_gb,
@@ -507,6 +677,8 @@ def main(argv: Optional[list] = None, run: Runner = run_command) -> int:
         t3=None if args.no_t3 else args.t3,
         t3_project=args.t3_project,
         osascript=None if args.no_notify else args.osascript,
+        claude_tmp=claude_tmp,
+        claude_projects=args.claude_projects,
     )
     if args.command == "check":
         return run_check(config, run, args.free_gb, now)

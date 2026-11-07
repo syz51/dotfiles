@@ -1,8 +1,10 @@
-// A two-message print-mode conversation over `--input-format stream-json`: the prompt,
-// then a follow-up sent as soon as the first turn ends, as a person typing while the
-// session still works in the background. Closing stdin stops the session's background
-// tasks, so stdin stays open until a later turn ends with none left. A task that ends
-// always starts a turn, whose result then closes stdin.
+// A print-mode conversation over `--input-format stream-json`: the prompt, then a
+// follow-up sent as soon as the first turn ends, as a person typing while the session
+// still works in the background. Closing stdin stops the session's background tasks, so
+// stdin stays open until a later turn ends with none left. A task that ends always
+// starts a turn, whose result then closes stdin. Without a follow-up, stdin closes when
+// the first turn ends, as when a person reads the answer and leaves: whatever the
+// session left running in the background is stopped then, and the stream shows it.
 
 export const userMessage = (text) => `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
 
@@ -35,7 +37,8 @@ export function conversation(prompt, followUp) {
         if (event.type === "system" && event.subtype === "background_tasks_changed")
           background = (event.tasks ?? []).filter((task) => !task.ambient);
         if (event.type !== "result" || stdin.writableEnded) continue;
-        if (!sent) {
+        if (followUp === undefined) stdin.end();
+        else if (!sent) {
           sent = true;
           stdin.write(userMessage(followUp));
         } else if (!background.length) stdin.end();

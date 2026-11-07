@@ -10,6 +10,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,6 +20,10 @@ alert = importlib.util.module_from_spec(spec)
 # dataclasses resolve string annotations through sys.modules.
 sys.modules[spec.name] = alert
 spec.loader.exec_module(alert)
+# No test may reach the real Claude Code folders: the defaults point at an empty folder.
+SANDBOX = tempfile.TemporaryDirectory()
+alert.DEFAULT_CLAUDE_TMP = Path(SANDBOX.name) / "claude-tmp"
+alert.DEFAULT_CLAUDE_PROJECTS = Path(SANDBOX.name) / "projects"
 
 NOW = datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc)
 THREAD = "mcp:11111111-2222-3333-4444-555555555555"
@@ -27,15 +32,21 @@ THREAD = "mcp:11111111-2222-3333-4444-555555555555"
 class FakeRunner:
     """Records commands and answers t3 and osascript calls."""
 
-    def __init__(self, start_code=0, send_code=0, notify_code=0, start_stdout=None):
+    def __init__(self, start_code=0, send_code=0, notify_code=0, start_stdout=None,
+                 ps="/sbin/launchd\n", lsof="p1\nn/\n", ps_code=0):
         self.calls = []
         self.start_code = start_code
         self.send_code = send_code
         self.notify_code = notify_code
         self.start_stdout = start_stdout or json.dumps({"threadId": THREAD})
+        self.ps, self.lsof, self.ps_code = ps, lsof, ps_code
 
     def __call__(self, args, input_text):
         self.calls.append((list(args), input_text))
+        if args[0] == "ps":
+            return subprocess.CompletedProcess(args, self.ps_code, self.ps, "")
+        if args[0] == "lsof":
+            return subprocess.CompletedProcess(args, 1, self.lsof, "lsof: WARNING")
         if args[1:3] == ["thread", "start"]:
             out = self.start_stdout if self.start_code == 0 else ""
             return subprocess.CompletedProcess(args, self.start_code, out, "server unreachable")
@@ -46,7 +57,9 @@ class FakeRunner:
     def kinds(self):
         kinds = []
         for args, _ in self.calls:
-            if args[1:3] == ["thread", "start"]:
+            if args[0] in ("ps", "lsof"):
+                kinds.append(args[0])
+            elif args[1:3] == ["thread", "start"]:
                 kinds.append("start")
             elif args[1:3] == ["thread", "send"]:
                 kinds.append("send")
@@ -227,6 +240,142 @@ class CheckTest(unittest.TestCase):
         self.assertIn("osascript exit 1", record["notify_error"])
 
 
+SESSION = "0a9024fd-a30a-4bb8-8c37-bbfa4baf0b29"
+OTHER = "4225d866-30e2-494e-a22c-4a2fb40e92ac"
+
+
+class SweepTest(unittest.TestCase):
+    """Files made now count as idle two days ahead; a recent change is an mtime set
+    after the 24-hour cutoff."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name).resolve()
+        self.claude_tmp = root / "claude-501"
+        self.projects = root / "projects"
+        self.now = datetime.now(timezone.utc) + timedelta(days=2)
+        self.project = "-Users-me-repo"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def session(self, session_id=SESSION, size=4096):
+        folder = self.claude_tmp / self.project / session_id
+        (folder / "scratchpad" / "target").mkdir(parents=True)
+        (folder / "scratchpad" / "target" / "lib.rlib").write_bytes(b"x" * size)
+        (folder / "tasks").mkdir()
+        transcripts = self.projects / self.project
+        transcripts.mkdir(parents=True, exist_ok=True)
+        (transcripts / f"{session_id}.jsonl").write_text("{}\n")
+        return folder
+
+    def touch_recent(self, path):
+        recent = (self.now - timedelta(hours=1)).timestamp()
+        os.utime(path, (recent, recent), follow_symlinks=False)
+
+    def sweep(self, runner=None, dry_run=False):
+        return alert.sweep_sessions(
+            self.claude_tmp, self.projects, runner or FakeRunner(), self.now, dry_run
+        )
+
+    def test_idle_session_is_removed_with_its_size(self):
+        folder = self.session(size=100_000)
+        swept = self.sweep()
+        self.assertEqual([item.path for item in swept], [str(folder)])
+        self.assertGreaterEqual(swept[0].bytes, 100_000)
+        self.assertIsNone(swept[0].error)
+        self.assertFalse(folder.exists())
+        self.assertTrue((self.projects / self.project / f"{SESSION}.jsonl").exists())
+
+    def test_recent_file_in_the_folder_keeps_it(self):
+        folder = self.session()
+        self.touch_recent(folder / "scratchpad" / "target" / "lib.rlib")
+        self.assertEqual(self.sweep(), [])
+        self.assertTrue(folder.exists())
+
+    def test_recent_transcript_or_subagent_transcript_keeps_it(self):
+        folder = self.session()
+        self.touch_recent(self.projects / self.project / f"{SESSION}.jsonl")
+        self.assertEqual(self.sweep(), [])
+        other = self.session(OTHER)
+        subagents = self.projects / self.project / OTHER / "subagents"
+        subagents.mkdir(parents=True)
+        (subagents / "agent-a1.jsonl").write_text("{}\n")
+        self.touch_recent(subagents / "agent-a1.jsonl")
+        self.assertEqual(self.sweep(), [])
+        self.assertTrue(folder.exists() and other.exists())
+
+    def test_running_processes_keep_their_sessions(self):
+        named = self.session()
+        inside = self.session(OTHER)
+        runner = FakeRunner(
+            ps=f"/bin/zsh\ncat {named}/scratchpad/login.fifo\n",
+            lsof=f"p10\nfcwd\nn/\np11\nfcwd\nn{inside}/scratchpad/target\n",
+        )
+        self.assertEqual(self.sweep(runner), [])
+        self.assertTrue(named.exists() and inside.exists())
+
+    def test_unreadable_process_list_removes_nothing(self):
+        folder = self.session()
+        self.assertEqual(self.sweep(FakeRunner(ps_code=1, ps="")), [])
+        self.assertEqual(self.sweep(FakeRunner(lsof="")), [])
+        self.assertTrue(folder.exists())
+
+    def test_only_session_folders_are_candidates(self):
+        self.session()
+        project = self.claude_tmp / self.project
+        (project / "not-a-session").mkdir()
+        (self.claude_tmp / "cache-break-state-x.json").write_text("{}")
+        (self.claude_tmp / "uv-1.lock").touch()
+        target = Path(self.tmp.name) / "keep"
+        (target / "data").mkdir(parents=True)
+        (project / OTHER).symlink_to(target, target_is_directory=True)
+        (self.claude_tmp / "-linked-project").symlink_to(project, target_is_directory=True)
+        self.assertEqual(len(self.sweep()), 1)
+        self.assertTrue((project / "not-a-session").exists())
+        self.assertTrue((self.claude_tmp / "cache-break-state-x.json").exists())
+        self.assertTrue((target / "data").exists())
+
+    def test_dry_run_lists_without_removing(self):
+        folder = self.session()
+        swept = self.sweep(dry_run=True)
+        self.assertEqual([item.path for item in swept], [str(folder)])
+        self.assertTrue(folder.exists())
+
+    def test_missing_temp_folder_is_nothing_to_do(self):
+        runner = FakeRunner()
+        self.assertEqual(self.sweep(runner), [])
+        self.assertEqual(runner.calls, [])
+
+    def config(self, state_dir):
+        return replace(CONFIG, state_dir=state_dir, claude_tmp=self.claude_tmp, claude_projects=self.projects)
+
+    def test_low_space_check_sweeps_then_alerts_with_what_it_freed(self):
+        folder = self.session(size=20_000_000)
+        state_dir = Path(self.tmp.name) / "state"
+        runner = FakeRunner()
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = alert.run_check(self.config(state_dir), runner, 25.0, self.now)
+        self.assertEqual(code, 0)
+        self.assertFalse(folder.exists())
+        self.assertEqual(runner.kinds(), ["ps", "lsof", "start", "notify"])
+        self.assertIn("removed 1 idle Claude Code session scratch folder (0.0 GB)", runner.calls[2][1])
+        events = [json.loads(line) for line in (state_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["swept", "escalated"])
+        self.assertEqual(events[0]["removed"], [str(folder)])
+        self.assertLess(events[1]["free_gb"], 25.0)
+
+    def test_ok_space_or_no_sweep_leaves_sessions(self):
+        folder = self.session()
+        state_dir = Path(self.tmp.name) / "state"
+        runner = FakeRunner()
+        alert.run_check(self.config(state_dir), runner, 50.0, self.now)
+        with contextlib.redirect_stdout(io.StringIO()):
+            alert.run_check(replace(self.config(state_dir), claude_tmp=None), runner, 25.0, self.now)
+        self.assertTrue(folder.exists())
+        self.assertNotIn("ps", runner.kinds())
+
+
 class StateFileTest(unittest.TestCase):
     def test_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -381,6 +530,21 @@ class CommandLineTest(unittest.TestCase):
             )
         self.assertEqual(code, 1)
         self.assertIn("start exit 127", json.loads(out.getvalue())["t3_error"])
+
+    def test_sweep_command_dry_run_and_no_sweep(self):
+        claude_tmp = self.root / "claude-tmp"
+        folder = claude_tmp / "-p" / SESSION
+        folder.mkdir(parents=True)
+        later = datetime.now(timezone.utc) + timedelta(days=2)
+        os.utime(folder, (later.timestamp() - 3 * 86400,) * 2)
+        base = ["sweep", "--claude-tmp", str(claude_tmp), "--claude-projects", str(self.root / "projects")]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(alert.main(base + ["--dry-run"]), 0)
+        self.assertEqual(json.loads(out.getvalue())["dry_run"], True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(alert.main(base + ["--no-sweep"]), 0)
+        self.assertTrue(folder.exists())
 
     def test_critical_must_be_below_low(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

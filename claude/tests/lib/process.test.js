@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { childEnv, runProcess } from "./process.js";
+import { childEnv, processesUnder, runProcess } from "./process.js";
 
 const bun = process.execPath;
 
@@ -127,6 +128,24 @@ test("a timeout also kills descendants that started their own process group", as
     }
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("processesUnder finds a process working in a folder or naming it, and nothing else", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "process-under-")));
+  const children = [];
+  try {
+    const idle = ["-e", "setInterval(()=>{},1000)"];
+    children.push(spawn(bun, idle, { cwd: root, stdio: "ignore" }));
+    children.push(spawn(bun, [...idle, join(root, "marker")], { stdio: "ignore" }));
+    await Bun.sleep(300);
+    expect(processesUnder(root).map((found) => found.pid).sort()).toEqual(children.map((child) => child.pid).sort());
+    expect(processesUnder(join(root, "elsewhere"))).toEqual([]);
+  } finally {
+    for (const child of children) child.kill("SIGKILL");
+    rmSync(root, { recursive: true, force: true });
+  }
+  await Bun.sleep(200);
+  expect(processesUnder(root)).toEqual([]);
 });
 
 test("stdout and stderr share one output bound", async () => {
