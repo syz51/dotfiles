@@ -496,6 +496,45 @@ first climb is agent-board's web view (`agent-board-21`).
   friction goes to `board feedback --about ui-climb`; the owner decides the merge through
   an ask.
 
+### 8. Code review (from Anthropic's post, `dotfiles-99`)
+
+Source: "How the Claude Code team does code review" (claude.dev, 2026-10-15) and the Code
+Review docs on code.claude.com, read 2026-11-07.
+
+- The post's practices:
+  - Parallel finders, then a verifier vote on each finding, with cleanup and style
+    findings dropped after A/B tests.
+  - Labels Important, Nit and Pre-existing.
+  - Known bugs from past incidents as a daily eval set, and comments sorted by the author's
+    response (fixed, wrong, intentional, didn't matter).
+  - Revert and incident rates as the guardrail.
+  - A cap of 3 rounds, diff-only re-review, no repeated findings, and fixing each bug class.
+  - Risk tiers set from the change, not the author.
+  - Results: one-round passes rose from 65% to 78%, and mean reviews to pass fell from
+    2.08 to 1.32.
+- Local `/code-review` reads `CLAUDE.md` but not `REVIEW.md`. Its arguments are the only
+  per-review channel.
+- Claude Code 2.1.319 picks a recipe per model and level. For Opus 5.x:
+  - medium and high: one careful diff pass.
+  - xhigh: 10 inline angles, dedup without verification, a sweep, at most 15 findings.
+  - max: parallel finders with a one-vote verify. It needs the Agent tool, and without
+    it max falls back to a single inline pass.
+- Measured over 30 days to 2026-11-07:
+  - 88 background reviews ran in 37 of 272 sessions, all xhigh on Opus 5.5.
+  - Inner review agents cost $416.49 (median $2.33). With wrappers, reviews took 11.7%
+    of $3,763.
+  - The median review returned 15 findings, the cap. 3 of 151 returned none.
+  - No review recorded its outcomes as typed data.
+  - Sessions with many reviews reviewed distinct commits, not one change in a loop.
+- Decision (user, 2026-11-07, ask #37): a circuit breaker. Agents keep merging, and PRs to
+  high-impact paths wait for the user while the revert rate of reviewed PRs is above a
+  limit. The limit, window, reset rule and paths stay in one config file the user can
+  change at any time.
+- Tasks: dotfiles-100 (outcome records, accepted), dotfiles-102 (path tiers and
+  skipped-review detector, accepted), dotfiles-107 (the breaker), and proposals
+  dotfiles-101 (level bench), 103 (review briefs), 104 (weekly review of main) and 105
+  (fixes for recurring finding classes).
+
 ## Deferred: daily review on sai
 
 The user asked whether the daily codex-skills review could run on `sai` (the user's
@@ -621,3 +660,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: Report-style bench (dotfiles-88) run: 80 runs, $2.99. The Simple Technical
   English rule kept 347/350 facts against the control's 343/350, at 8.3 words per sentence
   against 12.4. Adopted in `claude/CLAUDE.md`; Codex left for its own run.
+- 2026-11-07: Compared the review setup with Anthropic's code review post (dotfiles-99).
+  Reviews take 11.7% of spend, all at xhigh without verification, with a median of 15
+  findings. The user chose a revert-rate circuit breaker. Section 8 has the details.
