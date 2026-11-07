@@ -51,14 +51,17 @@ function eventsOf(result, what) {
 // appending would turn into "You are Claude Code". Passed from a file, so their size is
 // not bound by argv limits, they fall inside the prefix Claude Code caches, and a run of
 // judge calls reads them from the cache. prompt, the part that changes per call, goes on
-// stdin.
-export async function judge({ prompt, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
+// stdin. content replaces prompt when the call needs images: Messages API content blocks
+// (text, and image with a base64 source), sent as one stream-json user message.
+export async function judge({ prompt, content, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
     const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
       "--json-schema", JSON.stringify(schema)];
+    if (content) argv.push("--input-format", "stream-json");
+    const input = content ? `${JSON.stringify({ type: "user", message: { role: "user", content } })}\n` : prompt;
     if (system) {
       const file = join(cwd, "judge-system.md");
       writeFileSync(file, system);
@@ -69,7 +72,7 @@ export async function judge({ prompt, system, schema, model, effort = "medium", 
     const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
       let result;
       try {
-        result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {}), timeout, input: prompt });
+        result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {}), timeout, input });
       } catch (error) {
         // A deadline, the output bound or a spawn failure: one failed call, not a crash of
         // the caller's loop. The partial stream may still say what it cost.

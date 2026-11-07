@@ -246,7 +246,15 @@ bun ~/.claude/factory/cli.js bench board report # agent-board text format benchm
 bun ~/.claude/factory/cli.js setups --check     # the setup registry agents report about
 bun ~/.claude/factory/cli.js friction run --dry-run # turns the friction capture would judge
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
+bun ~/.claude/factory/cli.js ui round           # judge a UI design round (ui-climb skill)
 ```
+
+`ui` hill-climbs a web UI's design: it captures configured screens of the committed
+candidate, main and public reference products with the headless-browser skill (run its
+`setup.sh` first), gates them on the project's checks and page checks, and has Claude
+judges score the screenshots blind against a rubric. The `ui-climb` skill describes the
+configuration and the procedure; every judge call is bounded by the configuration's
+per-call, per-round and per-run budgets.
 
 ### Setup registry and friction capture
 
