@@ -48,6 +48,9 @@ DEFAULT_STATE_DIR = HOME / ".local" / "state" / "config-sync"
 LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 REMOTE = "origin"
 BRANCH = "main"
+# The board agent reports file as: launchd's environment names no session, and the board
+# takes only t3, claude or codex agent ids (as the factory's friction capture does).
+AGENT = "claude:config-sync"
 SEARCH_PATH = f"{HOME / '.cargo' / 'bin'}:{HOME / '.local' / 'bin'}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 Runner = Callable[[list], subprocess.CompletedProcess]
@@ -142,7 +145,8 @@ def sync(repo: Path, run: Runner) -> Outcome:
     for link, target_path in links(repo):
         if not target_path.exists():
             continue
-        if not link.is_symlink() or link.resolve() != target_path.resolve():
+        # The link may be the path itself or a folder above it (~/.codex linked whole).
+        if link.resolve() != target_path.resolve():
             kind = "a copy" if link.exists() else "missing"
             problems.append(("link", f"{short(link)} is {kind}, not a link to {short(target_path)}"))
     return Outcome(problems, pulled, fetch_failed, head)
@@ -158,10 +162,10 @@ def report_text(host: str, repo: Path, problems: list) -> str:
 def report(run: Runner, board: Optional[str], text: str, signature: str) -> str:
     """File feedback, falling back to the plain command, then to a notification. Returns the channel."""
     if board:
-        full = [board, "feedback", "--about", "config-sync", "--activity", "operate", "--signature", signature, text]
+        full = [board, "--agent", AGENT, "feedback", "--about", "config-sync", "--activity", "operate", "--signature", signature, "--", text]
         if run(full).returncode == 0:
             return "feedback"
-        if run([board, "feedback", f"[config-sync] {text}"]).returncode == 0:
+        if run([board, "--agent", AGENT, "feedback", "--", f"[config-sync] {text}"]).returncode == 0:
             return "feedback-plain"
     title = text.splitlines()[0]
     script = f"display notification {json.dumps(text)} with title {json.dumps(title)}"
