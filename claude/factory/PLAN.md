@@ -308,6 +308,24 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
     - The getopt solver: Haiku $0.20, 442 s; Opus $0.77, 264 s.
   - So Haiku 5.5 does not fail these. The cases separate models on cost and time; pass
     rates need more trials (dotfiles-11).
+- [x] Three trials per configuration (board task dotfiles-11, 2026-11-07, Claude Code
+  2.1.319, $7.64 in 47 new runs). With the earlier runs, 62 runs over the 7 cases: every run
+  passed, with no infrastructure failures. Each configuration has 3 or 4 trials. Medians:
+
+  | Role (effort) | Haiku | Sonnet | Opus |
+  |---|---|---|---|
+  | explorer, 2 cases (medium) | $0.007, 19 s | $0.10, 21 s | $0.20, 28 s |
+  | main, 1 case (medium) | $0.02, 108 s | $0.16, 92 s | $0.38, 115 s |
+  | solver, 2 cases (medium) | $0.17, 498 s | $0.43, 217 s | $1.04, 461 s |
+  | worker, 2 cases (high) | $0.06, 327 s | $0.50, 246 s | tuios only: $0.24, 58 s |
+
+  - The report's Pareto front (pass rate against cost) is Haiku alone in every case and
+    role, so it recommends Haiku throughout. Sonnet was the fastest on the solver cases,
+    but the front leaves out duration.
+  - No agent file changes on this evidence. Every case passes on every model, so these
+    cases cannot show what the cheaper models lose. The agent files' efforts were not run
+    either: explorer and solver at xhigh, worker on Opus for the temp-deletes case. Board
+    task dotfiles-26 adds cases where models differ and runs the configured efforts first.
   - Judge calibration stays with dotfiles-7: the bench runs agent roles, while the judge
     runs in scoring with its own system prompt, so its calibration set belongs there.
 
@@ -525,3 +543,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   pricing page; LiteLLM agrees). On the real 7-day run LiteLLM's list priced gpt-6-luna,
   gpt-6.1-sol and gpt-6.1-terra: all 160 Codex sessions now have an estimate (about $2,015
   API-equivalent, beside about $2,363 for Claude Code), and none is unpriced.
+- 2026-11-07: Bench at 3+ trials per configuration: all 62 runs pass, so Haiku wins every
+  case on cost. The agent files stay as they are until harder cases separate the models
+  (dotfiles-26).
