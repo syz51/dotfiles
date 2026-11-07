@@ -98,8 +98,9 @@ export function liveSuite(name) {
   // blocked. Throws unless the session completed (or, with maxTurns, stopped at the
   // limit) and left the configuration as it found it. Cost and duration go to the ledger
   // even when it throws. With followUp, the prompt and the follow-up go in as a
-  // conversation (see conversation.js), and the stream has one result per turn.
-  async function session(dir, { label, cwd, prompt, followUp, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report }) {
+  // conversation (see conversation.js), and the stream has one result per turn. With
+  // stopAtAnswer, the session ends when its first turn does, background tasks included.
+  async function session(dir, { label, cwd, prompt, followUp, stopAtAnswer = false, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report }) {
     const id = `session-${String(++sequence).padStart(2, "0")}`;
     const recordDir = join(dir, `${id}-hooks`);
     mkdirSync(recordDir);
@@ -109,7 +110,8 @@ export function liveSuite(name) {
     writeFileSync(settings, JSON.stringify({
       hooks: { PreToolUse: [{ hooks: [record, block] }], InstructionsLoaded: [{ hooks: [record] }] },
     }));
-    const args = ["-p", ...(followUp === undefined ? [prompt] : ["--input-format", "stream-json"]), "--model", model, "--effort", effort,
+    const streamed = followUp !== undefined || stopAtAnswer;
+    const args = ["-p", ...(streamed ? ["--input-format", "stream-json"] : [prompt]), "--model", model, "--effort", effort,
       "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--settings", settings];
     if (maxTurns) args.push("--max-turns", String(maxTurns));
     const env = childEnv(process.env, {
@@ -148,7 +150,7 @@ export function liveSuite(name) {
           }
           const run = await runProcess([BIN, ...args], {
             cwd, env: subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env, timeout: limit,
-            interact: followUp === undefined ? undefined : conversation(prompt, followUp),
+            interact: streamed ? conversation(prompt, followUp) : undefined,
           });
           return { run, events: partialEvents(run.stdout) };
         };

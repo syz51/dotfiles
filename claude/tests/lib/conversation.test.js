@@ -55,6 +55,16 @@ test("a session with no background work ends after the follow-up's turn", () => 
   expect(stdin.writableEnded).toBe(true);
 });
 
+test("without a follow-up, stdin ends when the first turn ends, even with background work", () => {
+  const stdin = fakeStdin();
+  const listen = conversation("start the server and check it")(stdin);
+  listen(background({ task_id: "server" }) + result("The check passed."));
+  expect(stdin.writes).toEqual(["start the server and check it"]);
+  expect(stdin.writableEnded).toBe(true);
+  listen(result("late"));
+  expect(stdin.writes).toHaveLength(1);
+});
+
 test("a malformed line fails the conversation with its cause", () => {
   const listen = conversation("review it", "what is 17 * 23?")(fakeStdin());
   expect(() => listen("{bad\n")).toThrow("Malformed stream line: {bad");

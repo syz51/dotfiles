@@ -475,6 +475,19 @@ notification and ends the episode. The state is in
 `~/.local/state/disk-space-alert/state.json`, each alert adds a line to
 `events.jsonl` there, and launchd writes errors to `launchd.log`.
 
+While space is low, each check first removes the scratch folders of idle Claude Code
+sessions, `/private/tmp/claude-<uid>/<project>/<session id>`, where Rust `target/`
+folders and other build output pile up. A folder qualifies only when nothing in it, in
+its transcript or in its subagent transcripts has changed for 24 hours, Claude Code's
+registry of running sessions (`~/.claude/sessions`) does not list it, and no running
+process names the session or works inside the folder. Anything that cannot be read
+keeps the folder, and a sweep that fails still lets the alert go out. The alert says
+what was freed, or a notification does when the sweep alone brings space back, and
+`events.jsonl` gets a `swept` line listing the folders. `sweep --dry-run` lists
+what would go now, whatever the free space, `sweep` removes it and logs it, and
+`--no-sweep` turns the sweep off for a run. A simulated reading (`check --free-gb`)
+never sweeps.
+
 Install it on each Mac from the main checkout, which the plist points to, and send a
 test alert through both channels:
 
@@ -514,7 +527,7 @@ in CI:
   proposals append to.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
-  runner, two-message conversations, session cleanup, reports and language detection.
+  runner and leftover processes, two-message conversations, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
   check that tampers with the fixture when re-run fails, and so do a single-track task
@@ -563,7 +576,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   `bun` unless the project's lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
   rename across several files whose check proves from its own output that it passed
-  in the fixture, spawn no subagent. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
+  in the fixture, spawn no subagent. No scenario leaves a process running in its
+  fixture, and a server the check needs, which detaches itself, is stopped by the time
+  the session answers. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,

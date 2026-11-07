@@ -176,6 +176,19 @@ export function concurrentSpawns(events, spawns) {
 export const printedFrom = (output, marker, dir) => output.split(/\r?\n/)
   .some((line) => { const words = line.trim().split(/\s+/); return words[0] === marker && words.includes(dir); });
 
+// The background tasks the session still had running when its first turn ended, from
+// the last background_tasks_changed event before the first result. Ambient tasks, which
+// Claude Code starts itself, are left out.
+export function backgroundAtAnswer(events) {
+  let tasks = [];
+  for (const event of events) {
+    if (event.type === "result") return tasks;
+    if (event.type === "system" && event.subtype === "background_tasks_changed")
+      tasks = (event.tasks ?? []).filter((task) => !task.ambient);
+  }
+  return tasks;
+}
+
 // Whether a main-session Bash call issued after event index after printed marker from dir
 // (see printedFrom). The check's own output proves which copy of it passed, however the
 // command moved the shell; the command text and the directory the call started in cannot.

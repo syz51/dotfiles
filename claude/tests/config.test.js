@@ -381,6 +381,10 @@ describe("rules the live suites test", () => {
     expect(preferences).toMatch(/lockfiles/);
   });
 
+  test("Workflow stops background work before finishing", () => {
+    expect(section("Workflow")).toMatch(/Before finishing, stop the background commands and processes you started and confirm none is still running, unless I asked to keep them running/);
+  });
+
   test("Delegation is a standing request limited to parallel tracks", () => {
     const delegation = section("Delegation");
     expect(delegation).toMatch(/standing request to use subagents, so don't wait for me to ask/);

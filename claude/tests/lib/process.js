@@ -31,6 +31,50 @@ function descendants(pid) {
   return found;
 }
 
+// Processes, other than this one, working inside dir or naming it in their command line:
+// what a session left running in a fixture. dir must be a real path, as lsof reports
+// working directories resolved. Returns [{ pid, command }].
+export function processesUnder(dir) {
+  const inside = (path) => path === dir || path.startsWith(`${dir}/`);
+  const pids = new Set();
+  // lsof exits 1 when it could not inspect some processes; its output still counts.
+  const cwds = spawnSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8" });
+  if (cwds.error) throw cwds.error;
+  let pid;
+  for (const line of cwds.stdout.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1));
+    else if (line.startsWith("n") && inside(line.slice(1))) pids.add(pid);
+  }
+  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" });
+  if (table.status !== 0) throw new Error(`ps failed: ${table.stderr}`);
+  const commands = new Map();
+  for (const line of table.stdout.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s(.*)$/);
+    if (!match) continue;
+    commands.set(Number(match[1]), match[2]);
+    if (match[2].includes(dir)) pids.add(Number(match[1]));
+  }
+  pids.delete(process.pid);
+  // A process that exited between the two snapshots has no command: it is gone.
+  return [...pids].filter((id) => commands.has(id)).map((id) => ({ pid: id, command: commands.get(id) }));
+}
+
+// Processes still under dir once graceMs has passed (see processesUnder), each then
+// killed: what a session left behind, given its own children time to finish exiting.
+// Returns them as found. A process gone by the time it is signalled is skipped.
+export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100 } = {}) {
+  let left = processesUnder(dir);
+  for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir))
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  for (const { pid } of left)
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  return left;
+}
+
 // Runs argv in its own process group. Resolves with the exit status and UTF-8 output;
 // rejects on a spawn error, on the deadline or when stdout and stderr together exceed
 // maxBytes, killing every descendant and the whole group, so processes in nested groups

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
-  agentSpawns, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
+  agentSpawns, backgroundAtAnswer, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
   partialEvents, printedFrom, refusedBeforeWork, retryRefused, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
 
@@ -17,6 +17,16 @@ describe("parsing", () => {
     expect(initEvent(events).skills).toEqual(["rust"]);
     expect(cost(events)).toBe(0.5);
     expect(cost([init()])).toBe(0);
+  });
+});
+
+describe("background tasks at the answer", () => {
+  const changed = (...tasks) => ({ type: "system", subtype: "background_tasks_changed", tasks });
+  test("reads the last list before the first result, without ambient tasks", () => {
+    expect(backgroundAtAnswer([init(), changed({ task_id: "server" }), result()])).toEqual([{ task_id: "server" }]);
+    expect(backgroundAtAnswer([changed({ task_id: "server" }), changed(), result(), changed({ task_id: "late" })])).toEqual([]);
+    expect(backgroundAtAnswer([changed({ task_id: "watcher", ambient: true }), result()])).toEqual([]);
+    expect(backgroundAtAnswer([init(), result()])).toEqual([]);
   });
 });
 
