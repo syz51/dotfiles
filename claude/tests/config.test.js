@@ -242,21 +242,15 @@ describe("work board", () => {
     expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
   });
 
-  test("Claude Code's board hooks see every tool and every session start", () => {
-    const found = boardHooks(JSON.parse(read("claude/settings.json")).hooks);
-    const matcher = (event) => found.find((entry) => entry.event === event)?.matcher;
-    expect(matcher("PostToolUse")).toBe("*");
-    expect(matcher("SessionStart")).toBe("startup|resume|clear|compact");
-  });
-
-  // board marks each shell call's start, so PostToolUse (or PostToolUseFailure, as a failing
-  // command may still change files) can record the files it changed.
+  // Matchers as `board install` writes them. board marks each shell call's start, so
+  // PostToolUse (or PostToolUseFailure, as a failing command may still change files) can
+  // record the files it changed.
   test.each([
-    ["claude/settings.json", ["PreToolUse", "PostToolUseFailure"]],
-    ["codex/hooks.json", ["PreToolUse"]],
-  ])("%s marks shell calls for the board", (path, events) => {
+    ["claude/settings.json", { PostToolUse: "*", SessionStart: "startup|resume|clear|compact", PreToolUse: "Bash", PostToolUseFailure: "Bash" }],
+    ["codex/hooks.json", { SessionStart: "startup|resume|clear|compact|fork", PreToolUse: "Bash" }],
+  ])("%s gives the board hooks the matchers board install writes", (path, matchers) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
-    for (const event of events) expect(found.find((entry) => entry.event === event)?.matcher, event).toBe("Bash");
+    for (const [event, matcher] of Object.entries(matchers)) expect(found.find((entry) => entry.event === event)?.matcher, event).toBe(matcher);
   });
 
   function withHome(body) {
@@ -267,6 +261,14 @@ describe("work board", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  }
+
+  // Installs a fake board that records its arguments and stdin in home, then runs script.
+  function fakeBoard(home, script = "") {
+    mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+    const fake = join(home, ".cargo/bin/board");
+    writeFileSync(fake, `#!/bin/sh\nprintf '%s ' "$@" > "${home}/args"\ncat > "${home}/stdin"\n${script}`);
+    chmodSync(fake, 0o755);
   }
 
   test("without board each hook does nothing, except the JSON Codex requires from Stop", () => {
@@ -285,10 +287,7 @@ describe("work board", () => {
 
   test("an installed board gets the event and runtime, unless AGENT_BOARD_HOOKS=off", () => {
     withHome((home, run) => {
-      mkdirSync(join(home, ".cargo/bin"), { recursive: true });
-      const fake = join(home, ".cargo/bin/board");
-      writeFileSync(fake, `#!/bin/sh\nprintf '%s ' "$@" > "${home}/args"\ncat > "${home}/stdin"\n`);
-      chmodSync(fake, 0o755);
+      fakeBoard(home);
       expect(run(["stop", "codex"], { AGENT_BOARD_HOOKS: "off" }).stdout).toBe("{}\n");
       expect(existsSync(join(home, "args"))).toBe(false);
       expect(run(["post-tool-use", "claude"]).status).toBe(0);
@@ -297,19 +296,27 @@ describe("work board", () => {
     });
   });
 
-  // An older board rejects an event it does not know with exit 2, which would block every
-  // shell call from PreToolUse.
-  test("a failing board counts as absent, so it never blocks a call", () => {
+  test("the board's output, stderr and exit status reach the runtime unchanged", () => {
     withHome((home, run) => {
-      mkdirSync(join(home, ".cargo/bin"), { recursive: true });
-      const fake = join(home, ".cargo/bin/board");
-      writeFileSync(fake, "#!/bin/sh\necho \"error: invalid value '$2'\" >&2\nexit 2\n");
-      chmodSync(fake, 0o755);
-      const pre = run(["pre-tool-use", "claude"]);
-      expect(pre.status).toBe(0);
-      expect(pre.stdout).toBe("");
-      expect(pre.stderr).toBe("");
-      expect(run(["stop", "codex"])).toMatchObject({ status: 0, stdout: "{}\n" });
+      fakeBoard(home, "printf '{\"decision\":\"block\"}'\necho warn >&2\nexit 3\n");
+      for (const event of ["stop", "pre-tool-use"]) {
+        expect(run([event, "codex"]), event).toMatchObject({ status: 3, stdout: "{\"decision\":\"block\"}", stderr: "warn\n" });
+        expect(readFileSync(join(home, "args"), "utf8")).toBe(`hook ${event} --runtime codex `);
+      }
+    });
+  });
+
+  // A board older than agent-board#8 rejects pre-tool-use and post-tool-use-failure with
+  // exit 2, which would block every shell call from PreToolUse. Only for those events, exit 2
+  // becomes 1, a failed hook that does not block; other events keep the board's status.
+  test("a board that rejects a newer event fails the hook without blocking the call", () => {
+    withHome((home, run) => {
+      fakeBoard(home, "echo \"error: invalid value '$2'\" >&2\nexit 2\n");
+      for (const event of ["pre-tool-use", "post-tool-use-failure"]) {
+        expect(run([event, "claude"]), event).toMatchObject({ status: 1, stdout: "", stderr: `error: invalid value '${event}'\n` });
+        expect(readFileSync(join(home, "args"), "utf8")).toBe(`hook ${event} --runtime claude `);
+      }
+      expect(run(["stop", "claude"]).status).toBe(2);
     });
   });
 
