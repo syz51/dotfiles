@@ -242,8 +242,40 @@ bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
 bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
+bun ~/.claude/factory/cli.js setups --check     # the setup registry agents report about
+bun ~/.claude/factory/cli.js friction run --dry-run # turns the friction capture would judge
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
 ```
+
+### Setup registry and friction capture
+
+[`setups.toml`](setups.toml) lists every setup on both Macs, from the board, instructions,
+agents, hooks, settings, skills, storage and T3 Code to each tool configured here, a
+project's own setup and `other`. Each entry gives the `id` agents name with
+`board feedback --about <id>`, what it covers, its owner (repository, board and optional
+parent task), its channel (`skill-notes` for codex-skills skills, which record their own
+feedback), how a change is made and how to verify it. The feedback board's triage routes
+reports with it. `setups --check` validates the schema and ids and checks that the
+repository paths in `covers` exist; add an entry when you add a component.
+
+Most friction never gets reported, so `friction run` looks for it. It reads the main
+sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
+back), skipping automation, the factory's own runs and turns that ran the `feedback` tool
+or `board feedback`. A turn has ended at the next prompt, when Claude Code's Stop hooks let
+it end or Codex marks it complete; one with no such mark counts as ended after 6 hours
+without activity, and until then holds the cursor. Turns with board or other failed calls
+(a search that found nothing does not count), hook blocks, retries of the same program, or
+phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
+points; up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
+$0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
+agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
+factual lines quoting at most one error line and naming the session, turn and project
+folder. The board merges reports with the same setup and title, so the same friction seen
+in many turns is one item. Records stay in `friction.jsonl` and the cursor in
+`friction-state.json` in the state folder; a filing that fails is retried next run without
+judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
+hour; `friction status` shows it and the last run. It needs the `board` CLI with
+`feedback --source` (agent-board-23).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;

@@ -1,6 +1,6 @@
 // The factory's state folder: reports, scores, benchmark results and proposal records.
 // It lives outside the repository, under XDG_DATA_HOME, or CLAUDE_FACTORY_STATE when set.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -45,4 +45,31 @@ export function writeJsonAtomic(path, value) {
 export function readJson(path, fallback) {
   if (!existsSync(path)) return fallback;
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+// A lock file holding the running process id, created atomically, so two runs starting
+// together cannot both take it. A lock whose process is gone is taken over; a process we
+// may not signal (EPERM) is alive.
+export function acquireLock(path) {
+  mkdirSync(dirname(path), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(path, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    const pid = Number(readFileSync(path, "utf8"));
+    if (pid) {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch (error) {
+        if (error.code === "EPERM") return false;
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    rmSync(path, { force: true });
+  }
+  return false;
 }

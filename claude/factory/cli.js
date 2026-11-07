@@ -8,6 +8,8 @@ const COMMANDS = {
   bench: ["./bench/cli.js", "Benchmark model and effort configurations on real tasks"],
   audit: ["./audit/cli.js", "Audit the security posture of this setup"],
   board: ["./board/cli.js", "Collect the work board's stats and feedback for the weekly review"],
+  setups: ["./setups/cli.js", "List and check the setup registry agents report friction about"],
+  friction: ["./friction/cli.js", "File friction found in recent sessions as board feedback, and schedule it hourly"],
   weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
 };
 
