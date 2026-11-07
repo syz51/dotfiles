@@ -5,6 +5,8 @@
 //   permissions                         Screen Recording and Accessibility status
 //   displays                            active displays, in points and pixels
 //   frontmost                           the frontmost app
+//   focused                             the app that has keyboard focus, which can differ from the
+//                                       frontmost app (Spotlight and other non-activating panels)
 //   app-at <x> <y>                      the app whose window is topmost at a point
 //   app-info <name or bundle id>        a running or installed app
 //   screenshot <display id> <w> <h> <path>   JPEG of a display, scaled to w x h
@@ -14,8 +16,12 @@
 //   scroll <x> <y> <dx> <dy>            in lines; positive dy scrolls up
 //   type <text>
 //   key <keycode> [modifiers]           modifiers: comma-separated cmd,ctrl,alt,shift,fn
-//   overlay <parent pid> <text>         stop panel; exits 0 when the user stops (button or Esc),
-//                                       3 when the parent is gone
+//   overlay <parent pid> <stop file> <text>   stop panel; when the user stops (button or Esc) it
+//                                       writes the stop file and exits 0; it exits 3 when the
+//                                       parent is gone
+//
+// Input commands stop between steps, with exit 4, once the file named by DESKTOP_STOP_FILE
+// exists, so a long typing or drag ends when the user presses Stop.
 import AppKit
 import ApplicationServices
 import CoreGraphics
@@ -81,6 +87,16 @@ func displays() -> [[String: Any]] {
 
 func frontmost() -> [String: Any]? {
   NSWorkspace.shared.frontmostApplication.map(appInfo)
+}
+
+func focused() -> [String: Any]? {
+  var value: CFTypeRef?
+  let error = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value)
+  guard error == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+  var pid: pid_t = 0
+  guard AXUIElementGetPid(value as! AXUIElement, &pid) == .success,
+        let app = NSRunningApplication(processIdentifier: pid) else { return nil }
+  return appInfo(app)
 }
 
 // The topmost visible window containing the point decides the app. The menu bar belongs to
@@ -166,7 +182,13 @@ func flags(_ text: String?) -> CGEventFlags {
   return result
 }
 
+let stopFile = ProcessInfo.processInfo.environment["DESKTOP_STOP_FILE"]
+
 func post(_ event: CGEvent?, _ mods: CGEventFlags = []) {
+  if let stopFile, FileManager.default.fileExists(atPath: stopFile) {
+    FileHandle.standardError.write(Data("stopped by the user\n".utf8))
+    exit(4)
+  }
   guard let event else { fail("could not create the event") }
   if !mods.isEmpty { event.flags = mods }
   event.setIntegerValueField(.eventSourceUserData, value: MARK)
@@ -216,10 +238,15 @@ func drag(_ from: CGPoint, _ to: CGPoint, _ mods: CGEventFlags) {
 func typeText(_ text: String) {
   for (index, line) in text.components(separatedBy: "\n").enumerated() {
     if index > 0 { pressKey(36, []) }
-    var units = Array(line.utf16)
-    while !units.isEmpty {
-      let chunk = Array(units.prefix(16))
-      units.removeFirst(chunk.count)
+    // Chunks of whole characters, at most 16 UTF-16 units each, so a surrogate pair or a
+    // combined emoji never splits across two events.
+    var chunks: [[UniChar]] = [[]]
+    for character in line {
+      let units = Array(String(character).utf16)
+      if chunks[chunks.count - 1].count + units.count > 16 && !chunks[chunks.count - 1].isEmpty { chunks.append([]) }
+      chunks[chunks.count - 1] += units
+    }
+    for chunk in chunks where !chunk.isEmpty {
       for down in [true, false] {
         let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
         event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
@@ -236,19 +263,23 @@ func pressKey(_ code: CGKeyCode, _ mods: CGEventFlags) {
 
 final class Overlay: NSObject, NSApplicationDelegate {
   let parent: pid_t
+  let stopFile: String
   let text: String
   var panel: NSPanel?
 
-  init(parent: pid_t, text: String) {
+  init(parent: pid_t, stopFile: String, text: String) {
     self.parent = parent
+    self.stopFile = stopFile
     self.text = text
   }
 
+  // The bottom-right corner of the main display, above the Dock, where app toolbars and
+  // address bars are not.
   func applicationDidFinishLaunching(_ notification: Notification) {
     let frame = (NSScreen.screens.first ?? NSScreen.main!).visibleFrame
     let size = NSSize(width: 420, height: 44)
     let panel = NSPanel(
-      contentRect: NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height - 8, width: size.width, height: size.height),
+      contentRect: NSRect(x: frame.maxX - size.width - 12, y: frame.minY + 12, width: size.width, height: size.height),
       styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     panel.level = .statusBar
     panel.isFloatingPanel = true
@@ -267,8 +298,8 @@ final class Overlay: NSObject, NSApplicationDelegate {
     panel.contentView?.addSubview(button)
     panel.orderFrontRegardless()
     self.panel = panel
-    NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
-      if event.keyCode == 53, event.cgEvent?.getIntegerValueField(.eventSourceUserData) != MARK { exit(0) }
+    NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [self] event in
+      if event.keyCode == 53, event.cgEvent?.getIntegerValueField(.eventSourceUserData) != MARK { stop() }
     }
     Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [parent] _ in
       if kill(parent, 0) != 0 { exit(3) }
@@ -276,7 +307,10 @@ final class Overlay: NSObject, NSApplicationDelegate {
     emit(["ready": true])
   }
 
-  @objc func stop() { exit(0) }
+  @objc func stop() {
+    FileManager.default.createFile(atPath: stopFile, contents: Data())
+    exit(0)
+  }
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
@@ -296,6 +330,9 @@ case "displays":
   emit(displays())
 case "frontmost":
   emit(frontmost() ?? NSNull())
+case "focused":
+  requireAccessibility()
+  emit(focused() ?? NSNull())
 case "app-at":
   emit(appAt(point(0)) ?? NSNull())
 case "app-info":
@@ -336,7 +373,7 @@ case "overlay":
   guard let parent = pid_t(arg(0)) else { fail("overlay: bad pid") }
   let app = NSApplication.shared
   app.setActivationPolicy(.accessory)
-  let delegate = Overlay(parent: parent, text: arg(1))
+  let delegate = Overlay(parent: parent, stopFile: arg(1), text: arg(2))
   app.delegate = delegate
   app.run()
 default:

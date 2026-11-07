@@ -4,10 +4,10 @@
 // - One session at a time holds the lock file; another session's request_access is refused.
 // - A stop panel (button or Esc) ends the session at any time.
 // Every action checks the app it lands on: the app under the pointer for mouse actions, the
-// frontmost app for keys and typing. helper.swift does the macOS calls.
+// app with keyboard focus for keys and typing. helper.swift does the macOS calls.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -51,6 +51,7 @@ const KEYS = {
 const KEY_ALIASES = { enter: "return", esc: "escape", forwarddelete: "delete", pgup: "pageup", pgdn: "pagedown", arrowleft: "left", arrowright: "right", arrowup: "up", arrowdown: "down", " ": "space", plus: "=" };
 
 export function modifierList(names = []) {
+  if (!Array.isArray(names)) throw new ToolError("modifiers must be a list, such as [\"cmd\"].");
   return [...new Set(names.map((name) => {
     const modifier = MODIFIERS[String(name).toLowerCase()];
     if (!modifier) throw new ToolError(`Unknown modifier "${name}". Use cmd, ctrl, alt, shift or fn.`);
@@ -60,7 +61,8 @@ export function modifierList(names = []) {
 
 /** Parses a combo such as "cmd+shift+t" or "Return" into a key code and helper modifiers. */
 export function parseKey(combo) {
-  const parts = String(combo).split("+").map((part) => part.trim());
+  if (typeof combo !== "string" || combo === "") throw new ToolError("Give combo, such as cmd+t or Return.");
+  const parts = combo.split("+").map((part) => part.trim());
   const keyName = parts.pop();
   const lower = keyName.length === 1 ? keyName.toLowerCase() : keyName.toLowerCase().replace(/[\s_]/g, "");
   const code = KEYS[KEY_ALIASES[lower] ?? lower];
@@ -74,11 +76,14 @@ const SENSITIVE_CATEGORIES = {
   "public.app-category.healthcare-fitness": "a health app",
 };
 // Matched against the app's name and bundle id, word by word.
-const SENSITIVE_WORDS = /\b(bank|banking|paypal|venmo|revolut|wise|coinbase|binance|crypto|wallet|ledger|trezor|turbotax|taxact|irs|gov|government|health|medical|mychart|patient|pharmacy|1password|bitwarden|lastpass|dashlane|keychain|passwords)\b/i;
+const SENSITIVE_WORDS = /\b(bank|banking|paypal|venmo|revolut|wise|coinbase|binance|crypto|wallet|ledger|trezor|turbotax|taxact|irs|gov|government|health|medical|mychart|patient|pharmacy|password|passwords|passwordmanager|1password|bitwarden|lastpass|dashlane|keeper|keepass|keepassxc|enpass|proton pass|authy|authenticator|keychain)\b/i;
+
+// The helper binary is named desktop-helper-<hash>; its stop panel is never controlled.
+const HELPER_NAME = /^desktop-helper(-[0-9a-f]+)?$/;
 
 /** Why `app` may never be controlled, or undefined. */
 export function sensitiveReason(app) {
-  if (app.name === "desktop-helper") return "it is the stop panel";
+  if (HELPER_NAME.test(app.name ?? "")) return "it is the stop panel";
   const category = SENSITIVE_CATEGORIES[app.category];
   if (category) return `it is ${category}`;
   const words = `${app.name ?? ""} ${(app.bundleId ?? "").replace(/\./g, " ")}`;
@@ -91,13 +96,26 @@ export class ToolError extends Error {}
 
 const appKey = (app) => (app.bundleId || app.name).toLowerCase();
 
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
+/** The file the stop panel writes when the user stops the session of server `pid`. */
+export const stopPath = (stateDir, pid) => join(stateDir, `stop-${pid}`);
+
+// A lock holder counts only while its pid still runs this server, so a pid reused after a
+// crash or a reboot does not hold the lock.
+function holdsLock(pid) {
+  const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+  return result.status === 0 && result.stdout.includes("desktop.js");
+}
+
+function integer(value, name, min, max, fallback) {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value < min || value > max) throw new ToolError(`${name} must be a whole number from ${min} to ${max}.`);
+  return value;
+}
+
+function choice(value, name, options, fallback) {
+  if (value === undefined) return fallback;
+  if (!options.includes(value)) throw new ToolError(`${name} must be one of ${options.join(", ")}.`);
+  return value;
 }
 
 const POINT = { type: "number", description: "Pixels in the latest screenshot of the display." };
@@ -160,12 +178,12 @@ export const TOOLS = [
   },
   {
     name: "type",
-    description: "Type text into the frontmost app, which must be approved. A newline presses Return.",
+    description: "Type text into the app with keyboard focus, which must be approved. A newline presses Return.",
     inputSchema: { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", maxLength: 5000 } } },
   },
   {
     name: "key",
-    description: "Press a key or combination in the frontmost app, such as cmd+t, Return, Escape or shift+Tab.",
+    description: "Press a key or combination in the app with keyboard focus, which must be approved, such as cmd+t, Return, Escape or shift+Tab.",
     inputSchema: { type: "object", additionalProperties: false, required: ["combo"], properties: { combo: { type: "string" } } },
   },
   {
@@ -178,44 +196,61 @@ export const TOOLS = [
 
 /**
  * The session. Dependencies are injected for tests:
- * helper(args) returns the helper's parsed JSON; dialog(text) resolves true when the user allows;
- * startOverlay(text, onExit) returns a handle with stop(); open(app) brings an app forward;
- * readImage(path) returns base64 and deletes the file.
+ * helper(args) returns the helper's parsed JSON; dialog(text) resolves true when the user allows
+ * and throws when the dialog could not be shown; startOverlay(text, stopFile, onExit) returns a
+ * handle with stop(); open(app) brings an app forward; readImage(path) returns base64 and
+ * deletes the file; holds(pid) says whether that pid still runs a desktop server.
  */
-export function createDesktop({ helper, dialog, startOverlay, open, readImage, stateDir, pid = process.pid, alive = isAlive }) {
+export function createDesktop({ helper, dialog, startOverlay, open, readImage, stateDir, pid = process.pid, holds = holdsLock }) {
   const lockPath = join(stateDir, "session.json");
+  const stopFile = stopPath(stateDir, pid);
   const approved = new Map();
   const shots = new Map();
   let lastDisplay;
   let overlay;
   let stopped = false;
 
+  function lockHolder() {
+    try {
+      const holder = JSON.parse(readFileSync(lockPath, "utf8"))?.pid;
+      return Number.isInteger(holder) ? holder : null;
+    } catch (error) {
+      if (error.code === "ENOENT") return undefined;
+      if (error instanceof SyntaxError) return null; // empty or corrupt: stale
+      throw error;
+    }
+  }
+
   function holdLock() {
     mkdirSync(stateDir, { recursive: true });
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         writeFileSync(lockPath, JSON.stringify({ pid }), { flag: "wx" });
         return;
       } catch (error) {
         if (error.code !== "EEXIST") throw error;
       }
-      const holder = JSON.parse(readFileSync(lockPath, "utf8")).pid;
+      const holder = lockHolder();
       if (holder === pid) return;
-      if (alive(holder)) throw new ToolError(`Another session (pid ${holder}) is controlling this computer. Try again after it releases.`);
-      rmSync(lockPath, { force: true });
+      if (holder && holds(holder)) throw new ToolError(`Another session (pid ${holder}) is controlling this computer. Try again after it releases.`);
+      // Move the stale lock aside under a unique name, so two sessions taking it over cannot
+      // delete each other's new lock.
+      const aside = `${lockPath}.${pid}.stale`;
+      try {
+        renameSync(lockPath, aside);
+        rmSync(aside, { force: true });
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
     }
     throw new ToolError("Could not take the session lock.");
   }
 
   function dropLock() {
-    try {
-      if (JSON.parse(readFileSync(lockPath, "utf8")).pid === pid) rmSync(lockPath, { force: true });
-    } catch (error) {
-      if (error.code !== "ENOENT") throw error;
-    }
+    if (lockHolder() === pid) rmSync(lockPath, { force: true });
   }
 
-  function release() {
+  function endSession() {
     const handle = overlay;
     overlay = undefined;
     handle?.stop();
@@ -223,12 +258,27 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     dropLock();
   }
 
+  function release() {
+    endSession();
+    rmSync(stopFile, { force: true });
+  }
+
+  // The stop file is checked as well as the panel's exit event, because the event waits for
+  // the event loop while queued actions run.
   function requireSession() {
+    if (overlay && existsSync(stopFile)) {
+      endSession();
+      stopped = true;
+    }
     if (stopped) {
       stopped = false;
       throw new ToolError("The user stopped computer use. Ask the user before calling request_access again.");
     }
     if (!overlay) throw new ToolError("Call request_access first.");
+    if (lockHolder() !== pid) {
+      endSession();
+      throw new ToolError("This session lost the session lock, so it no longer controls the computer. Call request_access again.");
+    }
   }
 
   function check(app, where) {
@@ -240,25 +290,39 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
   }
 
   function point(args, x = args.x, y = args.y) {
-    const index = args.display ?? lastDisplay;
+    const index = integer(args.display, "display", 0, 15, lastDisplay);
     const shot = shots.get(index);
     if (!shot) throw new ToolError(index === undefined ? "Take a screenshot first." : `Take a screenshot of display ${index} first.`);
     return toGlobal(shot.display, shot, x, y);
   }
 
   const appAt = (p) => check(helper(["app-at", String(p.x), String(p.y)]), "under the pointer");
-  const frontmost = () => check(helper(["frontmost"]), "the frontmost app");
+  const focused = () => check(helper(["focused"]), "the app with keyboard focus");
   const at = (p) => [String(p.x), String(p.y)];
   const text = (value) => ({ content: [{ type: "text", text: value }] });
 
+  function startPanel() {
+    let handle;
+    handle = startOverlay("Claude is controlling this Mac", stopFile, () => {
+      if (overlay !== handle) return; // a panel this session already closed
+      overlay = undefined;
+      stopped = true;
+      approved.clear();
+      dropLock();
+    });
+    overlay = handle;
+  }
+
   async function requestAccess({ apps, reason }) {
-    if (!Array.isArray(apps) || apps.length === 0 || typeof reason !== "string") throw new ToolError("Give apps (a list of names) and a reason.");
-    if (stopped) stopped = false; // the model asks again after a stop; the dialog is the user's answer
+    if (!Array.isArray(apps) || apps.length === 0 || apps.length > 10 || !apps.every((app) => typeof app === "string")) {
+      throw new ToolError("apps must be a list of 1 to 10 app names or bundle ids.");
+    }
+    if (typeof reason !== "string" || reason.trim() === "") throw new ToolError("Give a reason the user reads in the dialog.");
     const notFound = [];
     const refused = [];
     const wanted = [];
     for (const name of apps) {
-      const app = helper(["app-info", String(name)]);
+      const app = helper(["app-info", name]);
       if (!app) notFound.push(name);
       else if (sensitiveReason(app)) refused.push(`${app.name}: ${sensitiveReason(app)}`);
       else if (!approved.has(appKey(app)) && !wanted.some((w) => appKey(w) === appKey(app))) wanted.push(app);
@@ -269,20 +333,21 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     if (wanted.length) {
       holdLock();
       const names = wanted.map((app) => app.name).join(", ");
-      const allowed = await dialog(`Claude wants to control: ${names}.\n\nReason: ${reason}\n\nIt can click and type in these apps until you press Stop or Esc, or the session ends.`);
+      let allowed;
+      try {
+        allowed = await dialog(`Claude wants to control: ${names}.\n\nReason: ${reason}\n\nIt can click and type in these apps until you press Stop or Esc, or the session ends.`);
+      } finally {
+        if (!allowed && !overlay) dropLock();
+      }
       if (allowed) {
+        // Stop during the dialog dropped the lock and the approvals; the Allow is the newer answer.
+        holdLock();
+        stopped = false;
+        rmSync(stopFile, { force: true });
         for (const app of wanted) approved.set(appKey(app), app);
-        overlay ??= startOverlay("Claude is controlling this Mac", (code) => {
-          if (overlay) {
-            overlay = undefined;
-            stopped = true;
-            approved.clear();
-            dropLock();
-          }
-        });
+        if (!overlay) startPanel();
         lines.push(`Approved: ${names}.`);
       } else {
-        if (!overlay) dropLock();
         lines.push(`The user denied: ${names}.`);
       }
     }
@@ -296,8 +361,9 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     screenshot(args) {
       requireSession();
       const displays = helper(["displays"]);
-      const display = args.display === undefined ? displays.find((d) => d.main) ?? displays[0] : displays[args.display];
-      if (!display) throw new ToolError(`No display ${args.display}; there are ${displays.length}.`);
+      const index = integer(args.display, "display", 0, 15, undefined);
+      const display = index === undefined ? displays.find((d) => d.main) ?? displays[0] : displays[index];
+      if (!display) throw new ToolError(`No display ${index}; there are ${displays.length}.`);
       const size = fitScreenshot(display.pixelWidth, display.pixelHeight);
       mkdirSync(stateDir, { recursive: true });
       const path = join(stateDir, `shot-${pid}.jpg`);
@@ -313,10 +379,12 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     },
     click(args) {
       requireSession();
+      const button = choice(args.button, "button", ["left", "right", "middle"], "left");
+      const count = integer(args.count, "count", 1, 3, 1);
+      const modifiers = modifierList(args.modifiers);
       const p = point(args);
       const app = appAt(p);
-      const count = args.count ?? 1;
-      helper(["click", ...at(p), args.button ?? "left", String(count), modifierList(args.modifiers)]);
+      helper(["click", ...at(p), button, String(count), modifiers]);
       return text(`Clicked in ${app.name}.`);
     },
     mouse_move(args) {
@@ -328,40 +396,43 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     },
     drag(args) {
       requireSession();
+      const modifiers = modifierList(args.modifiers);
       const from = point(args, args.from_x, args.from_y);
       const to = point(args, args.to_x, args.to_y);
       appAt(from);
       const app = appAt(to);
-      helper(["drag", ...at(from), ...at(to), modifierList(args.modifiers)]);
+      helper(["drag", ...at(from), ...at(to), modifiers]);
       return text(`Dragged in ${app.name}.`);
     },
     scroll(args) {
       requireSession();
+      const direction = choice(args.direction, "direction", ["up", "down", "left", "right"], undefined);
+      if (!direction) throw new ToolError("Give direction: up, down, left or right.");
+      const amount = integer(args.amount, "amount", 1, 50, 3);
       const p = point(args);
       const app = appAt(p);
-      const amount = args.amount ?? 3;
-      const [dx, dy] = { up: [0, amount], down: [0, -amount], left: [amount, 0], right: [-amount, 0] }[args.direction] ?? [];
-      if (dx === undefined) throw new ToolError(`Unknown direction "${args.direction}".`);
+      const [dx, dy] = { up: [0, amount], down: [0, -amount], left: [amount, 0], right: [-amount, 0] }[direction];
       helper(["scroll", ...at(p), String(dx), String(dy)]);
-      return text(`Scrolled ${args.direction} in ${app.name}.`);
+      return text(`Scrolled ${direction} in ${app.name}.`);
     },
     type(args) {
       requireSession();
-      if (typeof args.text !== "string") throw new ToolError("Give text.");
-      const app = frontmost();
+      if (typeof args.text !== "string" || args.text.length > 5000) throw new ToolError("Give text of at most 5000 characters.");
+      const app = focused();
       helper(["type", args.text]);
       return text(`Typed into ${app.name}.`);
     },
     key(args) {
       requireSession();
       const { code, modifiers } = parseKey(args.combo);
-      const app = frontmost();
+      const app = focused();
       helper(["key", String(code), modifiers]);
       return text(`Pressed ${args.combo} in ${app.name}.`);
     },
     open_app(args) {
       requireSession();
-      const app = check(helper(["app-info", String(args.app)]), "by that name");
+      if (typeof args.app !== "string" || args.app === "") throw new ToolError("Give app, a name or bundle id.");
+      const app = check(helper(["app-info", args.app]), "by that name");
       open(app);
       return text(`Opened ${app.name}.`);
     },
@@ -372,9 +443,12 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     },
   };
 
-  async function call(name, args = {}) {
+  async function call(name, args) {
     const tool = tools[name];
     if (!tool) return { content: [{ type: "text", text: `Unknown tool ${name}.` }], isError: true };
+    if (args === null || typeof args !== "object" || Array.isArray(args)) {
+      return { content: [{ type: "text", text: "Tool arguments must be an object." }], isError: true };
+    }
     try {
       return await tool(args);
     } catch (error) {
@@ -385,13 +459,15 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
 
   return { call, release };
 }
-
 const INSTRUCTIONS = "Controls this Mac's screen, mouse and keyboard. Call request_access with the apps you need; "
   + "the user approves them in a dialog and can stop you at any time. Take a screenshot before pointing; coordinates "
   + "are pixels in the latest screenshot of that display. Prefer keyboard shortcuts. Call release when done.";
 
 /** Answers one JSON-RPC message; undefined for notifications. */
 export async function handle(desktop, message) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) {
+    return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } };
+  }
   const { id, method, params } = message;
   const reply = (result) => ({ jsonrpc: "2.0", id, result });
   if (method === "initialize") {
@@ -415,29 +491,34 @@ export async function handle(desktop, message) {
   return { jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${method}` } };
 }
 
-// Compiles helper.swift once per source version into the state folder.
+// Compiles helper.swift once per source version into the state folder. Binaries of other
+// versions stay, since another session may still run one; each build writes its own
+// temporary file and renames it into place.
 function helperBinary(stateDir) {
   const source = join(import.meta.dir, "helper.swift");
   const hash = createHash("sha256").update(readFileSync(source)).digest("hex").slice(0, 12);
   const binary = join(stateDir, `desktop-helper-${hash}`);
   if (existsSync(binary)) return binary;
   mkdirSync(stateDir, { recursive: true });
-  const build = spawnSync("xcrun", ["swiftc", "-O", "-swift-version", "5", source, "-o", `${binary}.tmp`], { encoding: "utf8" });
-  if (build.status !== 0) throw new Error(`could not compile helper.swift: ${build.stderr || build.error?.message}`);
-  renameSync(`${binary}.tmp`, binary);
-  for (const name of readdirSync(stateDir)) {
-    if (name.startsWith("desktop-helper-") && join(stateDir, name) !== binary) rmSync(join(stateDir, name), { force: true });
+  const temporary = `${binary}.${process.pid}.tmp`;
+  const build = spawnSync("xcrun", ["swiftc", "-O", "-swift-version", "5", source, "-o", temporary], { encoding: "utf8" });
+  if (build.status !== 0) {
+    rmSync(temporary, { force: true });
+    throw new Error(`could not compile helper.swift: ${build.stderr || build.error?.message}`);
   }
+  renameSync(temporary, binary);
   return binary;
 }
 
 function realDependencies(stateDir) {
   let binary;
   const bin = () => (binary ??= helperBinary(stateDir));
+  const env = { ...process.env, DESKTOP_STOP_FILE: stopPath(stateDir, process.pid) };
   return {
     helper(args) {
-      const result = spawnSync(bin(), args, { encoding: "utf8", timeout: 20_000 });
+      const result = spawnSync(bin(), args, { encoding: "utf8", timeout: 20_000, env });
       if (result.error) throw result.error;
+      if (result.status === 4) throw new ToolError("The user stopped computer use during this action.");
       if (result.status !== 0) {
         const message = result.stderr.trim() || `exit ${result.status}`;
         // Missing permissions are for the model to report, not a crash.
@@ -453,14 +534,17 @@ function realDependencies(stateDir) {
         "return button returned of result",
         "end run",
       ];
-      const child = Bun.spawn(["osascript", ...script.flatMap((line) => ["-e", line]), message], { stdout: "pipe", stderr: "ignore" });
-      const answer = (await new Response(child.stdout).text()).trim();
-      await child.exited;
-      return answer === "Allow";
+      const child = Bun.spawn(["osascript", ...script.flatMap((line) => ["-e", line]), message], { stdout: "pipe", stderr: "pipe" });
+      const [answer, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      // Exit 0 with no button means the dialog gave up after 120 s; error -128 is Deny.
+      if (code === 0) return answer.trim() === "Allow";
+      if (/\(-128\)/.test(errors)) return false;
+      throw new Error(`the approval dialog failed: ${errors.trim() || `exit ${code}`}`);
     },
-    startOverlay(label, onExit) {
-      const child = spawn(bin(), ["overlay", String(process.pid), label], { stdio: ["ignore", "ignore", "inherit"] });
+    startOverlay(label, stopFile, onExit) {
+      const child = spawn(bin(), ["overlay", String(process.pid), stopFile, label], { stdio: ["ignore", "ignore", "inherit"] });
       child.on("exit", onExit);
+      child.on("error", onExit);
       return { stop: () => child.kill() };
     },
     open(app) {
@@ -476,12 +560,15 @@ function realDependencies(stateDir) {
 }
 
 if (import.meta.main) {
-  const stateDir = process.env.DESKTOP_MCP_STATE ?? join(process.env.XDG_STATE_HOME ?? join(homedir(), ".local/state"), "desktop-mcp");
+  // An empty variable counts as unset, so the state folder is never relative to the cwd.
+  const stateDir = process.env.DESKTOP_MCP_STATE || join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "desktop-mcp");
   const desktop = createDesktop({ ...realDependencies(stateDir), stateDir });
   process.on("exit", () => desktop.release());
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => process.exit(0));
 
-  // Messages are handled one at a time, so actions never interleave.
+  const send = (response) => process.stdout.write(`${JSON.stringify(response)}\n`);
+  // Messages are handled one at a time, so actions never interleave. A failure answers that
+  // message and leaves the queue running.
   let queue = Promise.resolve();
   let buffer = "";
   process.stdin.setEncoding("utf8");
@@ -497,11 +584,16 @@ if (import.meta.main) {
         try {
           message = JSON.parse(line);
         } catch {
-          process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } })}\n`);
+          send({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
           return;
         }
-        const response = await handle(desktop, message);
-        if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+        try {
+          const response = await handle(desktop, message);
+          if (response) send(response);
+        } catch (error) {
+          process.stderr.write(`desktop: ${error.stack ?? error}\n`);
+          if (message?.id !== undefined) send({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: String(error.message ?? error) } });
+        }
       });
     }
   });

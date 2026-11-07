@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDesktop, fitScreenshot, handle, parseKey, SERVER_NAME, sensitiveReason, toGlobal, TOOLS } from "./desktop.js";
+import { createDesktop, fitScreenshot, handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
 
 // A Retina laptop as the main display and a 1080p display to its left, one point above.
 const RETINA = { index: 0, id: 1, main: true, x: 0, y: 0, width: 1470, height: 956, pixelWidth: 2940, pixelHeight: 1912, scale: 2 };
@@ -57,6 +57,12 @@ describe("keys", () => {
     expect(() => parseKey("cmd+banana")).toThrow('Unknown key "banana"');
     expect(() => parseKey("hyper+a")).toThrow('Unknown modifier "hyper"');
   });
+
+  test("a combo that is not text and modifiers that are not a list are refused", () => {
+    expect(() => parseKey(undefined)).toThrow("Give combo");
+    expect(() => parseKey(5)).toThrow("Give combo");
+    expect(() => modifierList("cmd")).toThrow("modifiers must be a list");
+  });
 });
 
 describe("sensitive apps", () => {
@@ -70,6 +76,11 @@ describe("sensitive apps", () => {
     [{ name: "Keychain Access", bundleId: "com.apple.keychainaccess" }, "keychain"],
     [{ name: "Doctor Notes", category: "public.app-category.medical" }, "medical"],
     [{ name: "desktop-helper", bundleId: "" }, "stop panel"],
+    [{ name: "desktop-helper-0123456789ab", bundleId: "" }, "stop panel"],
+    [{ name: "Bitwarden", bundleId: "com.bitwarden.desktop" }, "bitwarden"],
+    [{ name: "KeePassXC", bundleId: "org.keepassxc.keepassxc" }, "keepassxc"],
+    [{ name: "Proton Pass", bundleId: "me.proton.pass.electron" }, "proton pass"],
+    [{ name: "Authy Desktop", bundleId: "com.authy.authy-mac" }, "authy"],
   ])("%o is refused", (app, word) => {
     expect(sensitiveReason(app)).toContain(word);
   });
@@ -87,19 +98,19 @@ describe("session", () => {
   });
   afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 
-  // A fake Mac: apps by name, the app under each point, the frontmost app, and a log of the
+  // A fake Mac: apps by name, the app under each point, the focused app, and a log of the
   // helper calls that change something.
-  function fakeMac({ under = () => SAFARI, front = SAFARI, allow = true, pid = 100, alive = () => true } = {}) {
+  function fakeMac({ under = () => SAFARI, front = SAFARI, allow = true, pid = 100, holds = () => true } = {}) {
     const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK };
     const mac = { actions: [], dialogs: [], overlays: [] };
     mac.desktop = createDesktop({
-      stateDir, pid, alive,
+      stateDir, pid, holds,
       helper(args) {
         switch (args[0]) {
           case "displays": return [RETINA, SIDE];
           case "app-info": return apps[args[1]] ?? null;
           case "app-at": return under({ x: Number(args[1]), y: Number(args[2]) });
-          case "frontmost": return front;
+          case "focused": return front;
           case "screenshot": return { path: args[4] };
           default:
             mac.actions.push(args);
@@ -108,10 +119,10 @@ describe("session", () => {
       },
       async dialog(text) {
         mac.dialogs.push(text);
-        return allow;
+        return typeof allow === "function" ? allow(mac) : allow;
       },
-      startOverlay(label, onExit) {
-        const overlay = { label, onExit, stopped: false, stop() { overlay.stopped = true; } };
+      startOverlay(label, stopFile, onExit) {
+        const overlay = { label, stopFile, onExit, stopped: false, stop() { overlay.stopped = true; } };
         mac.overlays.push(overlay);
         return overlay;
       },
@@ -187,7 +198,7 @@ describe("session", () => {
     expect(mac.actions).toEqual([]);
   });
 
-  test("keys and typing go only to an approved frontmost app", async () => {
+  test("keys and typing go only to an approved focused app", async () => {
     const mac = fakeMac({ front: NOTES });
     await mac.call("request_access", { apps: ["Safari"], reason: "r" });
     expect((await mac.call("key", { combo: "cmd+t" })).error).toBe(true);
@@ -241,10 +252,79 @@ describe("session", () => {
     expect((await second.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
   });
 
+  test("pressing Stop interrupts actions already queued", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    // The panel writes the stop file before its exit event reaches the server.
+    expect(mac.overlays[0].stopFile).toBe(stopPath(stateDir, 100));
+    writeFileSync(mac.overlays[0].stopFile, "");
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("The user stopped computer use. Ask the user before calling request_access again.");
+    expect(mac.overlays[0].stopped).toBe(true);
+    expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    expect(mac.actions).toEqual([]);
+    // A later approval clears the stop file.
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect(existsSync(stopPath(stateDir, 100))).toBe(false);
+    await mac.call("screenshot", {});
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Clicked in Safari.");
+  });
+
+  test("Allow after Stop during the dialog takes the lock again", async () => {
+    const mac = fakeMac({
+      allow: (m) => {
+        // The user presses Stop on the open panel, then answers Allow in the second dialog.
+        if (m.dialogs.length === 2) m.overlays[0].onExit(0);
+        return true;
+      },
+    });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect((await mac.call("request_access", { apps: ["Notes"], reason: "r" })).text).toContain("Approved apps: Notes.");
+    expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 100 });
+    expect(mac.overlays).toHaveLength(2);
+    await mac.call("screenshot", {});
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toContain("Safari (under the pointer) is not approved");
+  });
+
+  test("a session that lost its lock stops acting", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    writeFileSync(join(stateDir, "session.json"), JSON.stringify({ pid: 300 }));
+    expect((await mac.call("screenshot", {})).text).toContain("lost the session lock");
+    expect(mac.overlays[0].stopped).toBe(true);
+    expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+  });
+
+  test("a corrupt lock file counts as free", async () => {
+    writeFileSync(join(stateDir, "session.json"), "{not json");
+    const mac = fakeMac();
+    expect((await mac.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
+    expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 100 });
+  });
+
+  test("bad arguments are tool errors and do nothing", async () => {
+    const mac = fakeMac();
+    expect((await mac.call("request_access", { apps: "Safari", reason: "r" })).text).toContain("apps must be a list");
+    expect((await mac.call("request_access", { apps: ["Safari"] })).text).toContain("Give a reason");
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    expect((await mac.call("click", { x: 10, y: 10, button: "huge" })).text).toBe("button must be one of left, right, middle.");
+    expect((await mac.call("click", { x: 10, y: 10, count: 9 })).text).toBe("count must be a whole number from 1 to 3.");
+    expect((await mac.call("click", { x: 10, y: 10, modifiers: "cmd" })).error).toBe(true);
+    expect((await mac.call("scroll", { x: 10, y: 10, direction: "sideways" })).error).toBe(true);
+    expect((await mac.call("scroll", { x: 10, y: 10, direction: "up", amount: 0.5 })).error).toBe(true);
+    expect((await mac.call("type", { text: 42 })).error).toBe(true);
+    expect((await mac.call("key", {})).text).toContain("Give combo");
+    expect((await mac.call("open_app", {})).text).toContain("Give app");
+    expect((await mac.call("screenshot", { display: "0" })).error).toBe(true);
+    expect((await mac.call("click", null)).text).toBe("Tool arguments must be an object.");
+    expect(mac.actions).toEqual([]);
+  });
+
   test("a lock left by a dead session is taken over", async () => {
     const first = fakeMac({ pid: 100 });
     await first.call("request_access", { apps: ["Safari"], reason: "r" });
-    const second = fakeMac({ pid: 200, alive: (pid) => pid !== 100 });
+    const second = fakeMac({ pid: 200, holds: (pid) => pid !== 100 });
     expect((await second.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
     expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 200 });
   });
@@ -273,6 +353,11 @@ describe("MCP protocol", () => {
     const broken = { call: async () => { throw new Error("boom"); } };
     const call = await handle(broken, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "click", arguments: {} } });
     expect(call.result).toEqual({ content: [{ type: "text", text: "The desktop helper failed: boom" }], isError: true });
+  });
+
+  test("a message that is not an object is an invalid request", async () => {
+    expect((await handle(desktop, null)).error.code).toBe(-32600);
+    expect((await handle(desktop, [1])).error.code).toBe(-32600);
   });
 
   test("notifications get no answer and unknown methods an error", async () => {
