@@ -508,10 +508,16 @@ describe("rules the live suites test", () => {
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
   // refusals; plain one-command calls pass its checks the first time.
-  test("Workflow says how to run git in a worktree-isolated session", () => {
+  // The guard also refuses commands that are not git (sed -i with heredocs, cd to computed
+  // paths, CLI text naming git, terraform with a variable path): feedback items 9, 13, 24.
+  test("Workflow says which forms pass the guard in a worktree-isolated session", () => {
     const workflow = section("Workflow");
-    expect(workflow).toMatch(/worktree-isolated session/);
-    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/In a worktree-isolated session, Claude Code refuses any Bash command, not only git, that it cannot verify stays in the worktree/);
+    expect(workflow).toMatch(/Give each git command its own Bash call; use literal program paths and directories, without loops, variables, `\$\(…\)` or `cd` to a computed path/);
+    expect(workflow).toMatch(/edit files with the Edit and Write tools, not `sed -i` or heredocs/);
+    expect(workflow).toMatch(/pass long text that may mention git through MCP tools \(such as `task_add`\) or a file, not as a command-line argument or ssh script/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
+    // Codex has no such guard, so its instructions leave the rule out.
+    expect(read("codex/AGENTS.md")).not.toMatch(/worktree-isolated/);
   });
 });

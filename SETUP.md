@@ -304,7 +304,8 @@ in many turns is one item. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
-`feedback --source` (agent-board-23).
+`feedback --source` (agent-board-23). Install it on each Mac: a run reads only that Mac's
+transcripts and keeps its own cursor, so no turn is judged twice.
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
