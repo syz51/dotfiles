@@ -162,6 +162,9 @@ describe("background review", () => {
     ["review-foreground", "the review was not one background agent"],
     ["review-late", "the follow-up was answered only after the review ended"],
     ["review-unrecorded", "the session did not record the outcomes once through ReportFindings"],
+    ["review-early", "the outcomes were recorded before the review ended"],
+    ["review-dismissed", "the real owner-check finding was not recorded as skipped"],
+    ["review-uncategorized", "a finding has no category"],
   ])
     test(mode, async () => {
       const run = await runLive("live.test.js", name, mode);

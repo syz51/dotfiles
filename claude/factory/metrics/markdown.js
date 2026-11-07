@@ -70,14 +70,14 @@ const OUTCOME_NAMES = { fixed: "fixed", no_change_needed: "no change needed", sk
 function renderReviews(reviews) {
   const lines = ["## Code reviews", ""];
   const levels = Object.entries(reviews.byLevel).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([level, count]) => `${level} ${count}`).join(", ");
-  lines.push(`- Reviews: ${reviews.reviews} (/code-review runs) in ${reviews.sessions} sessions${levels ? `; levels: ${levels}` : ""}.`);
-  lines.push(`- Cost: ${usd(reviews.cost.totalUSD)}, median ${usd(reviews.cost.medianUSD)} per review, ${pct(reviews.cost.share)} of the window's cost. It counts the agent that ran each review and the agents it started`
+  lines.push(`- Reviews: ${reviews.reviews} (/code-review runs, not counting refused or interrupted ones) in ${reviews.sessions} sessions${levels ? `; levels: ${levels}` : ""}.`);
+  lines.push(`- Cost: ${usd(reviews.cost.totalUSD)}, median ${usd(reviews.cost.medianUSD)} per review, ${pct(reviews.cost.share)} of the window's cost. It counts the agent that ran each review and every agent below it`
     + `${reviews.cost.mainThread ? `. ${reviews.cost.mainThread} reviews ran in a session's main thread: their forked review agents count, the thread's own turns do not` : ""}`
-    + `${reviews.cost.unsplit ? `, and ${reviews.cost.unsplit} of them had no forked agent, so their cost stays in the session's` : ""}.`);
+    + `${reviews.cost.unpriced ? `, and ${reviews.cost.unpriced} of them had no forked agent, so their cost stays in the session's` : ""}.`);
   const { recorded } = reviews;
-  lines.push(`- Recorded outcomes: ${recorded.triages} ReportFindings records with ${recorded.findings} findings, median ${num(recorded.medianPerTriage)} per record. `
+  lines.push(`- Recorded outcomes: ${recorded.triages} reviews recorded through ReportFindings, with ${recorded.findings} findings, median ${num(recorded.medianPerTriage)} per review. `
     + `${Object.entries(OUTCOME_NAMES).map(([key, name]) => `${name} ${recorded.outcomes[key]} (${pct(recorded.outcomeShares[key])})`).join(", ")}. `
-    + `Correctness or security findings: ${pct(recorded.correctnessShare)}; the rest are cleanups or other categories.`);
+    + `Correctness, security or reliability findings: ${pct(recorded.defectShare)}; the rest are cleanups or other categories.`);
   lines.push(`- Reviews per change: ${num(reviews.perChange.mean)}, over the ${reviews.perChange.sessions} sessions that ran a review and linked exactly one PR.`);
   lines.push("- A PR counts as reviewed when a session that linked it ran a review.");
   const revert = (entry) => (entry ? `${entry.reverted} of ${entry.merged} merged (${pct(entry.rate)})` : "unknown without GitHub lookups");

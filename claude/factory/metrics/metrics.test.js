@@ -370,28 +370,43 @@ describe("pull requests", () => {
 describe("code reviews", () => {
   // Opus output at $20 per million tokens: dollars as output tokens.
   const spend = (usd) => ({ use: usage(0, usd * 50_000, { cacheRead: 0, cacheWrite: 0 }) });
-  const finding = (category, outcome) => ({ file: "a.js", summary: "s", failure_scenario: "f", category, ...(outcome ? { outcome } : {}) });
+  const finding = (category, summary, outcome) => ({ file: "a.js", line: 1, summary, failure_scenario: "f", category, ...(outcome ? { outcome } : {}) });
+  // The forked review agent's first prompt is the review recipe.
+  const recipe = (start) => new Transcript({ start: at(start) }).prompt("Review target: `HEAD`\n\n`xhigh effort → 10 inline angles`");
 
   function reviewed() {
-    // A: a background review ($1) whose forked child costs $2, then recorded outcomes.
+    // A: a background review. The wrapper ($1) has a forked child ($2), which starts a
+    // web-fetch agent ($0.50); the wrapper also starts an agent that runs its own low
+    // review ($1). The session lists the findings, then records outcomes in two calls; an
+    // interrupted call records nothing.
     const a = new Transcript({ start: at("2026-11-03T10:00:00Z") })
       .prompt("Ship the change")
       .tool("Agent", { description: "Review the commit", prompt: "Run /code-review xhigh origin/main...abc1234", run_in_background: true }, "started", { use: free })
-      .tool("ReportFindings", { findings: [finding("correctness"), finding("simplification")] }, "ok", { use: free })
-      .tool("ReportFindings", { level: "xhigh", findings: [
-        finding("correctness", "fixed"), finding("Correctness", "no_change_needed"), finding("simplification", "skipped"), finding("efficiency", "fixed"),
-      ] }, "ok", { use: free })
+      .tool("ReportFindings", { findings: [finding("correctness", "a"), finding("simplification", "b")] }, "ok", { use: free })
+      .tool("ReportFindings", { level: "xhigh", findings: [finding("correctness", "a", "fixed"), finding("Correctness", "c", "no_change_needed")] }, "ok", { use: free })
+      .tool("ReportFindings", { findings: [finding("simplification", "b", "skipped"), finding("efficiency", "d", "fixed")] }, "ok", { use: free })
+      .tool("ReportFindings", { findings: [finding("correctness", "a", "skipped")] }, "[Request interrupted by user for tool use]", { isError: true, use: free })
       .prLink("https://github.com/o/r/pull/1");
     const wrapper = new Transcript({ sessionId: a.sessionId, start: at("2026-11-03T10:01:00Z") })
       .tool("Skill", { skill: "code-review", args: "xhigh origin/main...abc1234" }, "15 findings", spend(1));
-    const child = new Transcript({ sessionId: a.sessionId, start: at("2026-11-03T10:01:30Z") }).text("findings", spend(2));
-    // B: the main thread runs two medium reviews; their forked agent costs $3 in all.
+    const child = recipe("2026-11-03T10:01:30Z").text("findings", spend(2));
+    const fetcher = new Transcript({ start: at("2026-11-03T10:01:40Z") }).prompt("Read the page").text("page", spend(0.5));
+    const nested = new Transcript({ start: at("2026-11-03T10:02:00Z") }).prompt("Check it")
+      .tool("Skill", { skill: "code-review", args: "low" }, "done", spend(1));
+    // B: the main thread runs a medium review, records it, runs a high review with a flag
+    // first, and has a review refused, then records a clean result. Each review forks an
+    // agent ($1 and $2); a /simplify fork ($5) is not a review.
     const b = new Transcript({ start: at("2026-11-04T10:00:00Z") })
       .prompt("Review my change")
       .tool("Skill", { skill: "code-review", args: "medium" }, "done", { use: free })
-      .tool("Skill", { skill: "code-review", args: "" }, "done", { use: free })
+      .tool("ReportFindings", { findings: [finding("efficiency", "e", "fixed")] }, "ok", { use: free })
+      .tool("Skill", { skill: "code-review", args: "--max-findings all high" }, "done", { use: free })
+      .tool("Skill", { skill: "code-review", args: "max" }, "The user doesn't want to proceed with this tool use.", { isError: true, use: free })
+      .tool("ReportFindings", { findings: [] }, "ok", { use: free })
       .prLink("https://github.com/o/r/pull/2");
-    const forked = new Transcript({ sessionId: b.sessionId, start: at("2026-11-04T10:01:00Z") }).text("findings", spend(3));
+    const first = recipe("2026-11-04T10:00:01.500Z").text("findings", spend(1));
+    const second = recipe("2026-11-04T10:00:05.500Z").text("findings", spend(2));
+    const simplify = new Transcript({ start: at("2026-11-04T10:00:06Z") }).prompt("Simplify the change").text("done", spend(5));
     // C: no review; D: a review without a forked agent and two PRs.
     const c = session("2026-11-05T10:00:00Z").prLink("https://github.com/o/r/pull/3");
     const d = new Transcript({ start: at("2026-11-05T12:00:00Z") })
@@ -399,12 +414,19 @@ describe("code reviews", () => {
       .tool("Skill", { skill: "code-review", args: "high HEAD~1" }, "done", { use: free })
       .prLink("https://github.com/o/r/pull/4")
       .prLink("https://github.com/o/r/pull/5");
+    const forkMeta = { agentType: "general-purpose", spawnDepth: 1 };
     write([
       { transcript: a, subagents: [
         { id: "agent-w1", meta: { agentType: "general-purpose", toolUseId: "toolu_2", spawnDepth: 1 }, transcript: wrapper },
         { id: "agent-c1", meta: { agentType: "general-purpose", parentAgentId: "w1", spawnDepth: 2 }, transcript: child },
+        { id: "agent-g1", meta: { agentType: "web-fetch", toolUseId: "toolu_9", parentAgentId: "c1", spawnDepth: 3 }, transcript: fetcher },
+        { id: "agent-n1", meta: { agentType: "general-purpose", toolUseId: "toolu_8", parentAgentId: "w1", spawnDepth: 2 }, transcript: nested },
       ] },
-      { transcript: b, subagents: [{ id: "agent-f1", meta: { agentType: "general-purpose", spawnDepth: 1 }, transcript: forked }] },
+      { transcript: b, subagents: [
+        { id: "agent-f1", meta: forkMeta, transcript: first },
+        { id: "agent-f2", meta: forkMeta, transcript: second },
+        { id: "agent-s1", meta: forkMeta, transcript: simplify },
+      ] },
       { transcript: c },
       { transcript: d },
     ]);
@@ -414,25 +436,29 @@ describe("code reviews", () => {
     reviewed();
     const { current, previous } = await report("--no-gh");
     const reviews = current.reviews;
-    expect([reviews.reviews, reviews.sessions, reviews.byLevel]).toEqual([4, 3, { xhigh: 1, medium: 1, default: 1, high: 1 }]);
-    // $3 for A's review, $1.50 for each of B's; D's has no forked agent, so it is unsplit.
-    expect(reviews.cost.totalUSD).toBeCloseTo(6);
+    expect([reviews.reviews, reviews.sessions, reviews.byLevel]).toEqual([5, 3, { xhigh: 1, low: 1, medium: 1, high: 2 }]);
+    // A's review $3.50 (wrapper, forked child and its web-fetch agent) and the nested low
+    // review $1, counted once; B's $1 and $2, each from its own fork. D's has no forked
+    // agent, so it is unpriced.
+    expect(reviews.cost.totalUSD).toBeCloseTo(7.5);
     expect(reviews.cost.medianUSD).toBeCloseTo(1.5);
-    expect([reviews.cost.unsplit, reviews.cost.mainThread]).toEqual([1, 3]);
-    expect(reviews.cost.share).toBeCloseTo(6 / current.cost.totalUSD);
-    // The report without outcomes records nothing; the other records 4 findings.
+    expect([reviews.cost.unpriced, reviews.cost.mainThread]).toEqual([1, 3]);
+    // Of the estimated total, the same base as the subagent share.
+    expect(reviews.cost.share).toBeCloseTo((7.5 / current.subagents.costUSD) * current.subagents.share);
+    // A's calls merge into one record of 4 findings; B records one review with 1 finding
+    // and a clean one.
     expect(reviews.recorded).toMatchObject({
-      triages: 1, findings: 4, medianPerTriage: 4, meanPerTriage: 4,
-      outcomes: { fixed: 2, no_change_needed: 1, skipped: 1 }, outcomeShares: { fixed: 0.5, no_change_needed: 0.25, skipped: 0.25 },
-      fixedRate: 0.5, correctnessShare: 0.5,
+      triages: 3, findings: 5, medianPerTriage: 1,
+      outcomes: { fixed: 3, no_change_needed: 1, skipped: 1 }, outcomeShares: { fixed: 0.6, no_change_needed: 0.2, skipped: 0.2 },
+      fixedRate: 0.6, defectShare: 0.4,
     });
     expect(reviews.recorded.categories).toEqual([
       { category: "correctness", findings: 2, fixed: 1, no_change_needed: 1, skipped: 0 },
-      { category: "efficiency", findings: 1, fixed: 1, no_change_needed: 0, skipped: 0 },
+      { category: "efficiency", findings: 2, fixed: 2, no_change_needed: 0, skipped: 0 },
       { category: "simplification", findings: 1, fixed: 0, no_change_needed: 0, skipped: 1 },
     ]);
     // A and B linked one PR each; D's two PRs leave it out of rounds per change.
-    expect(reviews.perChange).toEqual({ sessions: 2, mean: 1.5 });
+    expect(reviews.perChange).toEqual({ sessions: 2, mean: 2 });
     expect(reviews.reverts).toEqual({ reviewed: null, unreviewed: null });
     expect(previous.reviews).toMatchObject({ reviews: 0, recorded: { triages: 0, fixedRate: null } });
   });
@@ -449,16 +475,17 @@ describe("code reviews", () => {
       unreviewed: { merged: 1, reverted: 0, rate: 0 },
     });
     const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
-    expect(markdown).toContain("- Reviews: 4 (/code-review runs) in 3 sessions; levels: default 1, high 1, medium 1, xhigh 1.");
-    expect(markdown).toContain("- Cost: $6.00, median $1.50 per review");
+    expect(markdown).toContain("- Reviews: 5 (/code-review runs, not counting refused or interrupted ones) in 3 sessions; levels: high 2, low 1, medium 1, xhigh 1.");
+    expect(markdown).toContain("- Cost: $7.50, median $1.50 per review");
     expect(markdown).toContain("3 reviews ran in a session's main thread");
-    expect(markdown).toContain("1 ReportFindings records with 4 findings, median 4 per record. fixed 2 (50.0%), no change needed 1 (25.0%), skipped 1 (25.0%)");
+    expect(markdown).toContain("3 reviews recorded through ReportFindings, with 5 findings, median 1 per review. fixed 3 (60.0%), no change needed 1 (20.0%), skipped 1 (20.0%)");
+    expect(markdown).toContain("Correctness, security or reliability findings: 40.0%");
     expect(markdown).toContain("Reverts: reviewed PRs 1 of 4 merged (25.0%); unreviewed PRs 0 of 1 merged (0.0%).");
     expect(markdown).toContain("| correctness | 2 | 1 | 1 | 0 |");
     expect(markdown).toContain("| Revert rate, reviewed merged PRs | 25.0% |");
     const [entry] = readJsonl(join(scratch, "state", "metrics-history.jsonl"));
-    expect(entry).toMatchObject({ reviews: 4, recordedFindings: 4, findingsFixedRate: 0.5 });
-    expect(entry.reviewCostUSD).toBeCloseTo(6);
+    expect(entry).toMatchObject({ reviews: 5, recordedFindings: 5, findingsFixedRate: 0.6 });
+    expect(entry.reviewCostUSD).toBeCloseTo(7.5);
   });
 });
 

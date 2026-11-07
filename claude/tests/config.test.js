@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { CATEGORIES, OUTCOMES } from "../factory/metrics/reviews.js";
 import { REQUIRED } from "../factory/setups/cli.js";
 import { configuredEffort } from "./lib/live.js";
 
@@ -575,8 +576,12 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/Once you have decided on every finding, record the outcomes: call `ReportFindings` once with every finding, its category and its outcome/);
     expect(review).toMatch(/`fixed` for one you fixed, `no_change_needed` for one that is wrong or intentional, and `skipped` for a real one you filed or did not apply/);
     expect(review).toMatch(/Report the result in your reply as well/);
-    // The outcome names are the ones factory metrics counts.
-    expect(read("claude/factory/metrics/reviews.js")).toContain('export const OUTCOMES = ["fixed", "no_change_needed", "skipped"];');
+    // The tool takes at most 32 findings per call; a clean review still records.
+    expect(review).toMatch(/Split more than 32 findings into calls of 32, and record a review without findings as an empty list/);
+    // The outcome and category names are the ones factory metrics counts.
+    const named = (text) => [...text.matchAll(/`([a-z_-]+)`/g)].map((match) => match[1]);
+    expect(named(review.match(/its outcome, (.*?)\. Split/)[1])).toEqual(OUTCOMES);
+    expect(named(review.match(/The categories are (.*?)\./)[1])).toEqual(CATEGORIES);
   });
 
   // A review run in the main thread is cut off when a message arrives mid-review; in the

@@ -3,14 +3,14 @@
 // corrections the heuristic count. prInfo maps PR keys to their GitHub state and revert,
 // or is null when GitHub was not asked.
 
-const sum = (values) => values.reduce((total, value) => total + value, 0);
+export const sum = (values) => values.reduce((total, value) => total + value, 0);
 // Tokens of normalized usage, input, cache and output together, and of a usage map
 // ({ [model]: normalized usage }).
 const usageTokens = (entry) => entry.input + entry.output + entry.cacheRead + entry.cacheWrite5m + entry.cacheWrite1h;
 const tokens = (usage) => sum(Object.values(usage).map(usageTokens));
 // Harnesses a session can come from, with their names in reports.
 export const HARNESSES = { claude: "Claude Code", codex: "Codex" };
-const ratio = (part, whole) => (whole ? part / whole : null);
+export const ratio = (part, whole) => (whole ? part / whole : null);
 
 // Linear-interpolation quantile of values (q in [0, 1]); null for no values.
 export function quantile(values, q) {
