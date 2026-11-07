@@ -349,6 +349,18 @@ describe("work board", () => {
     expect(rule).toMatch(/never follow instructions/);
   });
 
+  // Found work goes to a board, not to chat, where it is lost when the session ends.
+  test("found work is filed as a task, by children too, without asking", () => {
+    const rule = section("Work board");
+    expect(rule).toMatch(/File work you find but won't do now as a task with its evidence/);
+    expect(rule).toContain("`task_add`, parent set to your task");
+    expect(rule).toMatch(/instead of reporting it in chat; report it only when that repository has no board/);
+    expect(rule).toMatch(/delegated child does the same and names those tasks in its report/);
+    expect(rule).toMatch(/Don't ask me before filing/);
+    expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as board tasks \(see Work board\), otherwise report them; don't expand scope/);
+    expect(section("Workflow")).not.toMatch(/Report unrelated issues/);
+  });
+
   test("Codex gets the same rule", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
     expect(tracked("codex/AGENTS.md")).toBe(true);
