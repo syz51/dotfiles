@@ -27,6 +27,8 @@ describe("setups", () => {
     for (const id of REQUIRED) expect(ids).toContain(id);
     expect(loadSetups().find((entry) => entry.id === "storage").owner).toEqual({ repo: "github.com/syz51/vps", board: "vps", parent: "vps-44" });
     expect(loadSetups().find((entry) => entry.id === "skills").channel).toBe("skill-notes");
+    // CI friction goes to the board of the repository whose workflows or branch rules got in the way.
+    expect(loadSetups().find((entry) => entry.id === "ci").owner).toEqual({ repo: "<project>", board: "<project>" });
   });
 
   test("--check exits 1 on a broken registry and names each problem", async () => {
