@@ -1,0 +1,208 @@
+[
+  {
+    "id": "focus-replay",
+    "title": "A skill investigation closed after replaying a UI defect",
+    "task": "Replay the frontend-ui focus-transition case from a project revision and record the outcome.",
+    "notes": [
+      "originating design worktree gone; an archive branch of the private web app kept it as left",
+      "exported archive to scratch, bun install --frozen-lockfile --ignore-scripts, vite dev server",
+      "session log had the exact fix patch; reversed it in the 4 affected layouts to get the pre-fix code",
+      "flow: open reply view -> missing-context panel -> add-context shortcut; measured details open, checkVisibility, activeElement",
+      "pre-fix: 8/8 (4 layouts x 1280 and 390 px) back on the message, context field closed, hidden, unfocused - matches the note",
+      "fixed: 8/8 field open, visible, focused; no page errors",
+      "contrast Escape from reply view: 8/8 field stays closed, focus back on the reply button - reveal not over-applied",
+      "original session's own final browser review caught it before delivery -> no shared guidance gap",
+      "edit retention not exercised: shortcut only offered before a draft exists",
+      "investigation runner sandbox can't host the app (128 copied files, no node_modules, 120 s) -> replay host-local, not hash-bound; synthetic case runs used for closure: baseline fails as designed, candidate and contrast pass",
+      "event resolved, action keep, no guidance change; codex-skills PR #16 merged; 713 unit tests OK",
+      "codex-skills CI still can't run (GitHub Actions billing on private repos)"
+    ],
+    "facts": [
+      "The issue was resolved with action keep, and no guidance changed.",
+      "The pre-fix code was rebuilt by reversing the original session's own fix patch.",
+      "The replay covered four layouts at two widths, 1280 and 390 px.",
+      "On the pre-fix code, all 8 runs left the context field closed, hidden and unfocused, matching the note.",
+      "On the fixed code, all 8 runs opened, showed and focused the field.",
+      "The Escape contrast kept the field closed in all 8 runs, with focus on the reply entry, so the reveal does not over-apply.",
+      "The original session's own review caught the defect before delivery, so no shared guidance gap was shown.",
+      "Edit retention was not tested, because the shortcut is offered only before a draft exists.",
+      "The project replay ran outside the investigation runner, so its runs are not hash-bound; the synthetic case gave the closure runs.",
+      "PR #16 was merged and the 713 unit tests pass.",
+      "CI still cannot run because of GitHub Actions billing on private repositories."
+    ]
+  },
+  {
+    "id": "sync-failure",
+    "title": "Why an hourly sync job exited 1 after a deploy change",
+    "task": "Check that the hourly codex-skills sync deploys with the new verification after PR #11.",
+    "notes": [
+      "launchd job com.syz51.codex-skills.sync ran at 08:00, exit 1",
+      "sync-status.json: capture ok, evidence failed, upload ok, deploy ok, frontend_avoid ok",
+      "deploy stage used the tree's own sync.py verify (the F1 fix) - verified end to end",
+      "current symlink -> releases/00d402f",
+      "evidence stage failure: retrying 4 new rust/tauri notes captured this hour; unrelated to #11 (notes newer than the merge, retry path unchanged)",
+      "no action taken on the notes; next hourly run should pick them up",
+      "if the 09:00 run fails the same way it needs its own task"
+    ],
+    "facts": [
+      "The 08:00 run of the hourly sync job exited with status 1.",
+      "Only the evidence stage failed; capture, upload, deploy and frontend_avoid succeeded.",
+      "The deploy stage verified with the tree's own sync.py verify, so the F1 fix works end to end.",
+      "The current release points to releases/00d402f.",
+      "The evidence stage was retrying 4 new rust and tauri notes.",
+      "The failure is not caused by PR #11.",
+      "Nothing was changed for the notes; the next hourly run should pick them up.",
+      "If the 09:00 run fails the same way, it needs its own task."
+    ]
+  },
+  {
+    "id": "live-suites",
+    "title": "Live test suite results with two infrastructure retries",
+    "task": "Run the opt-in live Claude Code suites after the instruction change.",
+    "notes": [
+      "RUN_CLAUDE_LIVE=1 bun test claude/tests, about $5.80 per full run",
+      "run 1: config guard tripped - another agent wrote a rust note under ~/.codex/skill-feedback mid-run",
+      "run 2: config guard tripped again - a codex-skills deploy relinked ~/.claude/skills/content-research-writer",
+      "waited for codex-skills to be quiet; run 3 passed except uv scenario",
+      "uv scenario failure: model ran check.py before fixing calc.py; rerun of that scenario passed",
+      "no product defect found; both guard trips were concurrent changes, not test bugs",
+      "offline suites passed before the live runs"
+    ],
+    "facts": [
+      "The live suites cost about $5.80 per full run.",
+      "The first run tripped the config guard because another agent wrote a rust note during the run.",
+      "The second run tripped the guard because a codex-skills deploy relinked the content-research-writer skill.",
+      "The third run, started once codex-skills was quiet, passed except the uv scenario.",
+      "The uv scenario failed because the model ran check.py before fixing calc.py.",
+      "A rerun of the uv scenario passed.",
+      "No product defect was found; both guard trips came from concurrent changes, not test bugs.",
+      "The offline suites passed before the live runs."
+    ]
+  },
+  {
+    "id": "held-branch",
+    "title": "An instruction change for branches another worktree holds",
+    "task": "Tell agents how to continue a branch that another worktree has checked out.",
+    "notes": [
+      "problem: git refuses to check out a branch twice; agents tried checkout, failed, then improvised",
+      "rule added as one Workflow bullet in claude/CLAUDE.md (after the worktree-isolated bullet) and codex/AGENTS.md (after the work-stages bullet)",
+      "rule: work on a local branch started from origin/<branch>, push to <branch>; brief children the same way",
+      "test in claude/tests/config.test.js checks both files' Workflow sections",
+      "offline suites pass; live suites pass (one rerun for a config guard trip)",
+      "PR #92 merged as 5601632"
+    ],
+    "facts": [
+      "Git refuses to check out a branch twice, and agents improvised after that failure.",
+      "The rule was added as one Workflow bullet in claude/CLAUDE.md.",
+      "The same bullet was added to codex/AGENTS.md.",
+      "The rule is to work on a local branch started from origin/<branch> and push to <branch>.",
+      "Briefs for child agents must continue such a branch the same way.",
+      "A test in claude/tests/config.test.js checks both files.",
+      "The offline and live suites pass, with one live rerun for a config guard trip.",
+      "PR #92 was merged as 5601632."
+    ]
+  },
+  {
+    "id": "restricted-display",
+    "title": "A provisional skill revision with a follow-up check",
+    "task": "Investigate repeated displays of restricted research material and revise the research guidance if the evidence supports it.",
+    "notes": [
+      "originating delivery documents two accidental displays of restricted examples; its own verifier left the display check unpassed",
+      "4 later sessions in the same research program also displayed restricted material; all had the research guide loaded; one inherited a pattern filter that missed a joined field",
+      "restricted material itself was never opened for this review",
+      "change: one bullet in references/research-and-citations.md - read mixed sources through an explicit allowlist of permitted fields; treat any accidental display as an incident",
+      "frozen synthetic case restricted-display: deny-filter baseline leaks a renamed and a nested value (fails); allowlist candidate passes; fully permitted contrast passes",
+      "event provisional revise; real-use check filed as dotfiles-82",
+      "origin/main moved (PR #14) before pushing; merged it, revalidated; 711 unit tests OK",
+      "PR #15 merged"
+    ],
+    "facts": [
+      "The originating delivery documents two accidental displays, and its verifier left the display check unpassed.",
+      "Four later sessions also displayed restricted material, all with the research guide loaded.",
+      "In one session an inherited pattern filter missed a joined field.",
+      "The restricted material was never opened for this review.",
+      "The change is one bullet: read mixed sources through an explicit allowlist of permitted fields, and treat an accidental display as an incident.",
+      "In the frozen case, the deny-filter baseline leaks a renamed and a nested value and fails.",
+      "The allowlist candidate and the fully permitted contrast pass.",
+      "The revision is provisional; the real-use check is filed as dotfiles-82.",
+      "Main moved (PR #14) before the push, so it was merged and everything revalidated, with 711 unit tests OK.",
+      "PR #15 was merged."
+    ]
+  },
+  {
+    "id": "plan-not-adopted",
+    "title": "A proposed planning rule dropped after inspection",
+    "task": "Decide whether a reported release-hold planning technique should become research-writer guidance.",
+    "notes": [
+      "inspected the source-bound plan read-only in its registered project",
+      "at-capture bytes never committed; first committed version came 18 hours after the note",
+      "plan keeps integration and release gates in their own section with evidence-based acceptance",
+      "plan says it is not a release approval, authorizes no activation, bars verification tasks from adding features -> technique observed",
+      "chosen without any rule or correction",
+      "existing scope, authorization and no-unperformed-claim guidance already covers it",
+      "contrast: same-week research program plan, release gating irrelevant, has no release-hold section",
+      "decision: dropped, action keep, no guidance change - a plan-structure rule would add work without a demonstrated defect",
+      "PR #13 merged"
+    ],
+    "facts": [
+      "The plan was inspected read-only in its registered project.",
+      "The first committed version came 18 hours after the note; the at-capture version was never committed.",
+      "The plan keeps release gates in their own section with evidence-based acceptance.",
+      "The plan says it is not a release approval and authorizes no activation.",
+      "The technique was chosen without any rule or correction.",
+      "Existing scope, authorization and no-unperformed-claim guidance already covers it.",
+      "The contrast plan, where release gating is irrelevant, has no release-hold section.",
+      "The proposal was dropped with no guidance change, because a rule would add work without a demonstrated defect.",
+      "PR #13 was merged."
+    ]
+  },
+  {
+    "id": "ci-billing",
+    "title": "CI failures on a private repository traced to billing",
+    "task": "Find out why every codex-skills pull request check fails.",
+    "notes": [
+      "all GitHub Actions runs on syz51/codex-skills fail within seconds since about 2026-11-06",
+      "no job logs; annotation says the account's Actions spending is blocked by a billing problem",
+      "public dotfiles repo runs normally (public repos don't use paid minutes)",
+      "nothing in the workflow files changed",
+      "meanwhile: run validate_skill, sync.py verify, investigations validate and the unit tests locally before each merge",
+      "fix needs the account owner: update the payment method or spending limit in GitHub billing settings; agents can't do it",
+      "after the fix, re-run the failed checks on the open PRs"
+    ],
+    "facts": [
+      "Every Actions run on the private codex-skills repository fails within seconds, since about 2026-11-06.",
+      "The runs have no job logs, and the annotation names a billing problem.",
+      "The public dotfiles repository is not affected.",
+      "The workflow files did not change.",
+      "Until it is fixed, the checks run locally before each merge.",
+      "Only the account owner can fix it, by updating the payment method or spending limit in GitHub billing settings.",
+      "After the fix, the failed checks on open PRs should be re-run."
+    ]
+  },
+  {
+    "id": "accounting-kept",
+    "title": "A provisional revision kept after later real use",
+    "task": "Check whether the failure and exclusion accounting revision helped in later real research.",
+    "notes": [
+      "a later session counts only if it loaded the revised reference",
+      "every note captured between the revision and 2026-11-04 came from one long thread whose read was the pre-revision version (hash 966ed324...) -> none eligible",
+      "found eligible sessions in host-local session logs instead",
+      "2026-11-04 comparison report: declared its all-success cohort; showed with an invented two-item counterexample that a compared method can count a partially failed item in the numerator but not the denominator; labelled it synthetic, not an executed result",
+      "3 sessions the same day excluded pre-correction displays with counts and reasons, did not fold them back in",
+      "frozen case rerun on current guidance: baseline fails as designed, candidate and legitimate-exclusion contrast pass",
+      "limits: observational evidence from one research project; frozen case is synthetic, not proof of benefit",
+      "resolved, keep; PR #12 merged"
+    ],
+    "facts": [
+      "A later session counted only if it loaded the revised reference.",
+      "No captured note was eligible, because they all came from one thread holding the pre-revision version.",
+      "Eligible sessions were found in host-local session logs instead.",
+      "The 2026-11-04 comparison report declared its all-success cohort.",
+      "That report used an invented two-item counterexample for the numerator and denominator problem, and labelled it synthetic rather than executed.",
+      "Three sessions excluded pre-correction displays with counts and reasons, without folding them back in.",
+      "The frozen case on current guidance: the baseline fails as designed, and the candidate and contrast pass.",
+      "The evidence is observational and comes from one research project; the frozen case is synthetic.",
+      "The revision is kept and the issue resolved; PR #12 was merged."
+    ]
+  }
+]

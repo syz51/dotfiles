@@ -586,6 +586,13 @@ describe("rules the live suites test", () => {
     expect(read("codex/AGENTS.md").match(/\n## Workflow\n((?:(?!\n## )[\s\S])*)/)[1]).toContain(rule);
   });
 
+  // The report-style bench (bench style, dotfiles-88) kept 347/350 facts with this rule
+  // against 343/350 without it, at 8.3 words per sentence against 12.4.
+  test("Workflow asks for reports in Simple Technical English that keep every fact", () => {
+    const rule = "- Write reports in Simple Technical English: one fact or instruction per sentence, sentences under 20 words for steps and 25 for descriptions, active voice, one word for one meaning, a vertical list for complex text. Keep every fact, number and caveat.";
+    expect(section("Workflow")).toContain(rule);
+  });
+
   test("Workflow keeps the Chinese meaning rule and its exceptions", () => {
     const workflow = section("Workflow");
     expect(workflow).toMatch(/followed by its Chinese meaning/);

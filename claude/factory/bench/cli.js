@@ -1,5 +1,5 @@
 // bench: benchmark model and effort configurations on real tasks. Subcommands list,
-// run, report and add-from-commit, plus board (bench/board/); results and reports live in
+// run, report and add-from-commit, plus board (bench/board/) and style (bench/style/); results and reports live in
 // the state folder.
 import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
@@ -31,8 +31,9 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js bench <subcommand> [options]
       [--role worker] [--prompt "..."] [--title "..."] [--budget-usd 3]
       [--timeout-ms 900000] [--oracle-timeout-ms 300000]
   board <subcommand>         The agent-board text format benchmark (bench board --help)
+  style <subcommand>         The report-style benchmark (bench style --help)
 
-Every subcommand but board takes --cases <dir> (default ${CASES_DIR}).`;
+Every subcommand but board and style takes --cases <dir> (default ${CASES_DIR}).`;
 
 const list = (value) => value.split(",").map((item) => item.trim()).filter(Boolean);
 
@@ -169,6 +170,7 @@ export async function run(argv) {
     return subcommand ? 0 : 2;
   }
   if (subcommand === "board") return (await import("./board/cli.js")).run(rest);
+  if (subcommand === "style") return (await import("./style/cli.js")).run(rest);
   try {
     const { values } = parseArgs({ args: rest, options: OPTIONS, strict: true, allowPositionals: false });
     if (values.help) {
