@@ -19,10 +19,14 @@ const tail = (text) => text.length > TAIL ? text.slice(-TAIL) : text;
 // Keeps fixture tasks offline, as in the live suites.
 const OFFLINE = { UV_OFFLINE: "1", UV_PYTHON_DOWNLOADS: "never", CARGO_NET_OFFLINE: "true", PYTHONDONTWRITEBYTECODE: "1" };
 
-// Settings passed with --settings: the live suites' install and download hook, and web
-// tools denied outright.
-export const benchSettings = () => ({
-  permissions: { deny: ["WebFetch", "WebSearch"] },
+// Main-session tools a spawned subagent does not get (Claude Code 2.1.319). A subagent
+// role runs as the main session with --agent, so they are denied to match.
+export const MAIN_ONLY_TOOLS = ["ScheduleWakeup", "Workflow"];
+
+// Settings passed with --settings: the live suites' install and download hook, web tools
+// denied outright, and for a subagent role the main-session-only tools.
+export const benchSettings = ({ subagent = false } = {}) => ({
+  permissions: { deny: ["WebFetch", "WebSearch", ...(subagent ? MAIN_ONLY_TOOLS : [])] },
   hooks: { PreToolUse: [{ hooks: [{ type: "command", command: `"${process.execPath}" "${BLOCK_HOOK}"` }] }] },
 });
 
@@ -75,7 +79,7 @@ export async function runOne(benchCase, { model, effort, trial, runId, batch, cl
     const agent = benchCase.role === "main" ? undefined : benchCase.role;
     if (agent) writeAgentOverride(workspace, agent, { model, effort }, agentsDir);
     const settings = join(root, "settings.json");
-    writeFileSync(settings, JSON.stringify(benchSettings()));
+    writeFileSync(settings, JSON.stringify(benchSettings({ subagent: !!agent })));
     const finalAnswerFile = join(root, "final-answer.txt");
     const started = Date.now();
     let task;

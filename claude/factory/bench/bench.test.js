@@ -236,7 +236,8 @@ describe("runs", () => {
     expect(readdirSync(join(homedir(), ".claude", "projects")).filter((name) => name.startsWith(projectName(dirname(session.cwd))))).toEqual([]);
     expect(session.agentFile).toContain("model: claude-sonnet-5-5\neffort: high\n");
     expect(session.agentFile).toContain("name: worker");
-    expect(session.settings.permissions.deny).toEqual(["WebFetch", "WebSearch"]);
+    // As a spawned subagent would, the role runs without the main session's own tools.
+    expect(session.settings.permissions.deny).toEqual(["WebFetch", "WebSearch", "ScheduleWakeup", "Workflow"]);
     expect(session.settings.hooks.PreToolUse[0].hooks[0].command).toContain("tests/lib/hooks/block-installs.js");
     expect(session.env).toMatchObject({ UV_OFFLINE: "1", TMPDIR: dirname(session.cwd), CLAUDE_CODE_TMPDIR: dirname(session.cwd) });
     expect(existsSync(session.cwd)).toBe(false);
@@ -252,6 +253,7 @@ describe("runs", () => {
     const record = await runOne(loadCase(writeCase(caseValue())), runOptions());
     expect(sessions()[0].args).not.toContain("--agent");
     expect(sessions()[0].agentFile).toBeNull();
+    expect(sessions()[0].settings.permissions.deny).toEqual(["WebFetch", "WebSearch"]);
     expect(record.pass).toBe(true);
   });
 

@@ -249,6 +249,27 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   subagent folder and the project folder if nothing else is in it, also when the session
   fails or times out. Each bench record keeps `effortObserved`; another effort, or none
   recorded, marks the run infra, as the wrong model does.
+- [x] Decision, subagent roles (board task dotfiles-13): keep running a role as the main
+  session with `--agent`, not as a subagent a main session spawns. Evidence, a live
+  experiment (Claude Code 2.1.319, Haiku, explorer role, same task both ways, about $0.03
+  in all), read from the requests each session saved:
+  - Both ways the agent body is the system prompt, the global CLAUDE.md is in context, and
+    the override's model applies. A spawned subagent takes the override's effort (`low`
+    while its main ran `medium`); `--agent` needs `--effort`, now checked per run.
+  - What `--agent` changes: the system prompt lacks the notes Claude Code adds for
+    subagents (absolute paths, final-message format, no report files; 663 vs 1,524
+    characters), and the session gets the main-only tools ScheduleWakeup and Workflow.
+    Bench settings now deny those two for subagent roles; a live check confirmed the deny
+    removes them from the session. Deferred tool lists were not compared.
+  - What spawning would cost: a main session's 8K-character system prompt and turns
+    (1.2 to 2 times the cost of the `--agent` runs here) mixed into the role's cost, a brief
+    the main model rewrites, so the case prompt is no longer fixed, and one more model and
+    effort to choose. In print mode the default background spawn let the main session end
+    before the subagent answered ("still running"); only an explicit foreground spawn
+    returned the answer.
+  - So `--agent` measures the role itself at the configuration under test, with a fixed
+    prompt and cost that belongs to it. Whether a main session delegates well is a separate
+    question for main-role cases.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 
