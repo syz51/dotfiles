@@ -220,11 +220,11 @@ describe("work board", () => {
           .filter((hook) => hook.command.includes("board"))
           .map((hook) => ({ event, matcher: group.matcher, hook, match: HOOK.exec(hook.command) }))));
   const CLAUDE_EVENTS = {
-    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
-    PreCompact: "pre-compact", Stop: "stop", StopFailure: "stop-failure", SessionEnd: "session-end",
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PreToolUse: "pre-tool-use", PostToolUse: "post-tool-use",
+    PostToolUseFailure: "post-tool-use-failure", PreCompact: "pre-compact", Stop: "stop", StopFailure: "stop-failure", SessionEnd: "session-end",
   };
   const CODEX_EVENTS = {
-    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PostToolUse: "post-tool-use",
+    SessionStart: "session-start", UserPromptSubmit: "user-prompt-submit", PreToolUse: "pre-tool-use", PostToolUse: "post-tool-use",
     Stop: "stop", SessionEnd: "session-end",
   };
 
@@ -247,6 +247,16 @@ describe("work board", () => {
     const matcher = (event) => found.find((entry) => entry.event === event)?.matcher;
     expect(matcher("PostToolUse")).toBe("*");
     expect(matcher("SessionStart")).toBe("startup|resume|clear|compact");
+  });
+
+  // board marks each shell call's start, so PostToolUse (or PostToolUseFailure, as a failing
+  // command may still change files) can record the files it changed.
+  test.each([
+    ["claude/settings.json", ["PreToolUse", "PostToolUseFailure"]],
+    ["codex/hooks.json", ["PreToolUse"]],
+  ])("%s marks shell calls for the board", (path, events) => {
+    const found = boardHooks(JSON.parse(read(path)).hooks);
+    for (const event of events) expect(found.find((entry) => entry.event === event)?.matcher, event).toBe("Bash");
   });
 
   function withHome(body) {
@@ -284,6 +294,22 @@ describe("work board", () => {
       expect(run(["post-tool-use", "claude"]).status).toBe(0);
       expect(readFileSync(join(home, "args"), "utf8")).toBe("hook post-tool-use --runtime claude ");
       expect(readFileSync(join(home, "stdin"), "utf8")).toBe("{}");
+    });
+  });
+
+  // An older board rejects an event it does not know with exit 2, which would block every
+  // shell call from PreToolUse.
+  test("a failing board counts as absent, so it never blocks a call", () => {
+    withHome((home, run) => {
+      mkdirSync(join(home, ".cargo/bin"), { recursive: true });
+      const fake = join(home, ".cargo/bin/board");
+      writeFileSync(fake, "#!/bin/sh\necho \"error: invalid value '$2'\" >&2\nexit 2\n");
+      chmodSync(fake, 0o755);
+      const pre = run(["pre-tool-use", "claude"]);
+      expect(pre.status).toBe(0);
+      expect(pre.stdout).toBe("");
+      expect(pre.stderr).toBe("");
+      expect(run(["stop", "codex"])).toMatchObject({ status: 0, stdout: "{}\n" });
     });
   });
 

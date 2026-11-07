@@ -312,8 +312,11 @@ a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
 `claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
-provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. On each Mac,
-with a device token created on the server host:
+provides. It runs `~/.cargo/bin/board` and does nothing until that is installed, and a
+`board` that fails counts as absent, so an older build that rejects a newer event never blocks
+a tool call. Files changed through Bash are recorded only by a `board` that knows the
+`pre-tool-use` event (agent-board#8 or later); reinstall with the first command below. On each
+Mac, with a device token created on the server host:
 
 ```sh
 cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
