@@ -297,6 +297,18 @@ judges score the screenshots blind against a rubric. The `ui-climb` skill descri
 configuration and the procedure; every judge call is bounded by the configuration's
 per-call, per-round and per-run budgets.
 
+The metrics report has a Code reviews section. Each `/code-review` Skill call that was
+not refused or interrupted counts as one review, at the first level its arguments name.
+Its cost is the agent that ran it plus every agent below it, except agents that ran
+reviews of their own. For a review a session's main thread ran, the cost is the forked
+review agent that started after the call. The outcomes come from the `ReportFindings`
+calls that the Review rule in `claude/CLAUDE.md` asks for. Calls between one review and
+the next merge into one record, and a repeated finding counts once. The section shows
+findings per recorded review, the fixed, no-change-needed and skipped shares, and the
+share of correctness, security and reliability findings. A PR counts as reviewed when a
+session that linked it ran a review. The section compares the revert rate of reviewed
+and unreviewed merged PRs.
+
 ### Setup registry and friction capture
 
 [`setups.toml`](setups.toml) lists every setup on both Macs, from the board, instructions,
@@ -670,7 +682,10 @@ in CI:
   check that tampers with the fixture when re-run fails, and so do a single-track task
   handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
   too, as does a claimed but unsaved artifact or an unwritable report. So do a review
-  the main session runs itself and a follow-up answered only after the background review.
+  the main session runs itself, a follow-up answered only after the background review,
+  and a review whose outcomes are never recorded. Outcomes recorded before the review
+  ends, a real finding recorded as no change needed, and a finding without a category
+  also fail.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
@@ -702,7 +717,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   the commit's SHA, in one background agent on the session's model in a worktree. A
   follow-up sent as soon as the first turn ends is answered while the review runs, and
   the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. The guard hooks block a user-authorized leased force push to the branch the
+  worktrees as they were. After the review, the session records each finding once
+  through `ReportFindings`, with a category and an outcome. The real owner-check
+  finding is `skipped`, because the checkout stays read-only. The guard hooks block a user-authorized leased force push to the branch the
   remote's HEAD names as its default and a bare
   `python3`, while `uv run python` still runs.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,

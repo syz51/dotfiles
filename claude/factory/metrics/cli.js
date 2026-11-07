@@ -12,6 +12,7 @@ import { countCorrections } from "./corrections.js";
 import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
 import { sessionPrs, sessionPushes } from "./prs.js";
+import { reviewStats, sessionReviews } from "./reviews.js";
 import { attributePrs, windowStats } from "./stats.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -136,7 +137,9 @@ export async function buildReport(options) {
     }
     const prompts = session.prompts;
     excluded.hostPrompts += session.hostPrompts;
-    entries[ended > since ? "current" : "previous"].push({ session, prompts, prs: sessionPrs(session), pushes: sessionPushes(session), corrections: countCorrections(prompts) });
+    entries[ended > since ? "current" : "previous"].push({
+      session, prompts, prs: sessionPrs(session), pushes: sessionPushes(session), corrections: countCorrections(prompts), reviews: sessionReviews(session),
+    });
   }
   const all = [...entries.current, ...entries.previous];
 
@@ -149,14 +152,15 @@ export async function buildReport(options) {
     prInfo = new Map([...states].map(([key, state]) => [key, { ...state, revertedBy: reverted.get(key) ?? null }]));
   } else notes.push("GitHub lookups were skipped (--no-gh), so PR states, merged-PR counts and reverts are unknown.");
 
+  const stats = (list) => ({ ...windowStats(list, prInfo), reviews: reviewStats(list, prInfo) });
   const projectKeys = [...new Set(all.map((entry) => entry.session.project))];
   const projects = projectKeys.map((project) => {
     const of = (list) => list.filter((entry) => entry.session.project === project);
     return {
       project,
       label: tilde(mostCommon(of(all).map((entry) => entry.session.cwd))) ?? project,
-      current: windowStats(of(entries.current), prInfo),
-      previous: windowStats(of(entries.previous), prInfo),
+      current: stats(of(entries.current)),
+      previous: stats(of(entries.previous)),
     };
   }).sort((a, b) => b.current.cost.totalUSD - a.current.cost.totalUSD || b.previous.cost.totalUSD - a.previous.cost.totalUSD);
 
@@ -187,8 +191,8 @@ export async function buildReport(options) {
     notes.push("Codex sessions: subagent threads count with their root thread's session, tool errors are calls whose script failed or never ran (not non-zero exits inside a script), and API errors are turns that ended with an error such as a usage limit.");
   const malformed = all.reduce((total, { session }) => total + session.malformedLines, 0);
   if (malformed) notes.push(`${malformed} transcript lines did not parse (usually a session still being written).`);
-  const current = windowStats(entries.current, prInfo);
-  const previous = windowStats(entries.previous, prInfo);
+  const current = stats(entries.current);
+  const previous = stats(entries.previous);
   const fallback = [...new Set([...current.modelMix, ...previous.modelMix].map((row) => row.model))].filter((model) => priceSource(model) === "litellm").sort();
   if (fallback.length) notes.push(`Priced from LiteLLM's list (fetched ${litellmFetchedAt().slice(0, 10)}), as the price table lacks them: ${fallback.join(", ")}.`);
 
@@ -230,6 +234,10 @@ function historyEntry(report, path) {
     toolErrorRate: current.toolErrors.main.rate,
     api429: current.apiErrors["429"] ?? 0,
     subagentShare: current.subagents.share,
+    reviews: current.reviews.reviews,
+    reviewCostUSD: current.reviews.cost.totalUSD,
+    recordedFindings: current.reviews.recorded.findings,
+    findingsFixedRate: current.reviews.recorded.fixedRate,
     report: path,
   };
 }

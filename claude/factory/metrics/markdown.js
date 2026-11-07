@@ -55,9 +55,38 @@ export const HEADLINE = [
   ["API errors, all", (s) => sum(Object.values(s.apiErrors)), "count"],
   ["Compactions", (s) => s.compactions.total, "count"],
   ["Subagent share of cost", (s) => s.subagents.share, "rate"],
+  ["Code reviews", (s) => s.reviews.reviews, "count"],
+  ["Review share of cost", (s) => s.reviews.cost.share, "rate"],
+  ["Findings per recorded review, median", (s) => s.reviews.recorded.medianPerTriage, "number"],
+  ["Findings fixed (recorded outcomes)", (s) => s.reviews.recorded.fixedRate, "rate"],
+  ["Revert rate, reviewed merged PRs", (s) => s.reviews.reverts.reviewed?.rate, "rate"],
+  ["Revert rate, unreviewed merged PRs", (s) => s.reviews.reverts.unreviewed?.rate, "rate"],
 ];
 
 const sessionName = (session) => session.title ?? `untitled ${session.id.slice(0, 8)}`;
+
+const OUTCOME_NAMES = { fixed: "fixed", no_change_needed: "no change needed", skipped: "skipped" };
+
+function renderReviews(reviews) {
+  const lines = ["## Code reviews", ""];
+  const levels = Object.entries(reviews.byLevel).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([level, count]) => `${level} ${count}`).join(", ");
+  lines.push(`- Reviews: ${reviews.reviews} (/code-review runs, not counting refused or interrupted ones) in ${reviews.sessions} sessions${levels ? `; levels: ${levels}` : ""}.`);
+  lines.push(`- Cost: ${usd(reviews.cost.totalUSD)}, median ${usd(reviews.cost.medianUSD)} per review, ${pct(reviews.cost.share)} of the window's cost. It counts the agent that ran each review and every agent below it`
+    + `${reviews.cost.mainThread ? `. ${reviews.cost.mainThread} reviews ran in a session's main thread: their forked review agents count, the thread's own turns do not` : ""}`
+    + `${reviews.cost.unpriced ? `, and ${reviews.cost.unpriced} of them had no forked agent, so their cost stays in the session's` : ""}.`);
+  const { recorded } = reviews;
+  lines.push(`- Recorded outcomes: ${recorded.triages} reviews recorded through ReportFindings, with ${recorded.findings} findings, median ${num(recorded.medianPerTriage)} per review. `
+    + `${Object.entries(OUTCOME_NAMES).map(([key, name]) => `${name} ${recorded.outcomes[key]} (${pct(recorded.outcomeShares[key])})`).join(", ")}. `
+    + `Correctness, security or reliability findings: ${pct(recorded.defectShare)}; the rest are cleanups or other categories.`);
+  lines.push(`- Reviews per change: ${num(reviews.perChange.mean)}, over the ${reviews.perChange.sessions} sessions that ran a review and linked exactly one PR.`);
+  lines.push("- A PR counts as reviewed when a session that linked it ran a review.");
+  const revert = (entry) => (entry ? `${entry.reverted} of ${entry.merged} merged (${pct(entry.rate)})` : "unknown without GitHub lookups");
+  lines.push(`- Reverts: reviewed PRs ${revert(reviews.reverts.reviewed)}; unreviewed PRs ${revert(reviews.reverts.unreviewed)}.`, "");
+  if (recorded.categories.length)
+    lines.push(table(["Category", "Findings", "Fixed", "No change needed", "Skipped"],
+      recorded.categories.slice(0, 10).map((row) => [row.category, row.findings, row.fixed, row.no_change_needed, row.skipped])), "");
+  return lines;
+}
 
 export function renderMarkdown(report) {
   const { window, previousWindow: before, current, previous: prior } = report;
@@ -95,6 +124,8 @@ export function renderMarkdown(report) {
     ? table(["Status", "This window", "Previous window"], statuses.map((status) => [status === "429" ? "429 (rate limit)" : status, current.apiErrors[status] ?? 0, prior.apiErrors[status] ?? 0]))
     : "None in either window.", "");
 
+  lines.push(...renderReviews(current.reviews));
+
   lines.push("## Subagents and models", "");
   lines.push(`Subagents: ${current.subagents.runs} runs, ${usd(current.subagents.costUSD)} estimated, ${pct(current.subagents.share)} of the estimated cost (previous window ${pct(prior.subagents.share)}).`, "");
   lines.push(current.modelMix.length
@@ -126,9 +157,11 @@ export function renderMarkdown(report) {
 // The history file as a Markdown table, oldest first.
 export function renderHistory(entries) {
   if (!entries.length) return "No metrics runs recorded yet.";
-  return table(["Run (UTC)", "Window", "Project", "Sessions", "Codex sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s"],
+  return table(["Run (UTC)", "Window", "Project", "Sessions", "Codex sessions", "Cost", "Merged PRs", "Cost per merged PR", "Prompts per session", "Correction rate", "Tool error rate", "429s", "Reviews", "Review cost"],
     entries.map((entry) => [entry.at.slice(0, 16).replace("T", " "), `${day(entry.since)} to ${day(entry.until)}`, entry.project ?? "all", entry.sessions,
       // Runs before Codex was included have no count: their sessions are Claude Code only.
       entry.codexSessions ?? "not read", usd(entry.costUSD),
-      num(entry.mergedPRs), usd(entry.costPerMergedPRUSD), num(entry.promptsPerSession), pct(entry.correctionRate), pct(entry.toolErrorRate), entry.api429]));
+      num(entry.mergedPRs), usd(entry.costPerMergedPRUSD), num(entry.promptsPerSession), pct(entry.correctionRate), pct(entry.toolErrorRate), entry.api429,
+      // Runs before reviews were counted have no entry.
+      entry.reviews ?? "not read", usd(entry.reviewCostUSD)]));
 }

@@ -388,6 +388,24 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(reply).toMatch(/owner/i);
       expect(reply).toMatch(/!==|invert|revers|negat|flip|anyone|any user|non-?owner|not the owner|other users|everyone/i);
 
+      // The session recorded every finding's outcome once, after the review ended. Nothing
+      // was fixed in a read-only checkout, and the inverted owner check is real, so it is
+      // skipped, not dismissed.
+      const records = toolUses(run.events, "ReportFindings").filter((use) => use.parent === null);
+      expect(records.length, "the session did not record the outcomes once through ReportFindings").toBe(1);
+      const recordedAt = run.events.findIndex((event) => event.type === "assistant" && Array.isArray(event.message?.content)
+        && event.message.content.some((block) => block.id === records[0].id));
+      expect(recordedAt, "the outcomes were recorded before the review ended").toBeGreaterThan(ended);
+      const findings = records[0].input.findings ?? [];
+      expect(findings.length, "the record holds no findings").toBeGreaterThan(0);
+      for (const finding of findings) {
+        expect(["no_change_needed", "skipped"], `a finding has no read-only outcome: ${JSON.stringify(finding)}`).toContain(finding.outcome);
+        expect(finding.category, `a finding has no category: ${JSON.stringify(finding)}`).toBeTruthy();
+      }
+      const inverted = findings.filter((finding) => /owner/i.test(`${finding.summary} ${finding.failure_scenario}`));
+      expect(inverted.length, "no recorded finding names the owner check").toBeGreaterThan(0);
+      expect(inverted.some((finding) => finding.outcome === "skipped"), "the real owner-check finding was not recorded as skipped").toBe(true);
+
       // Read-only: nothing changed, nothing was pushed, and the review's worktree is gone.
       assertUnchanged(before, snapshot(work, { ignore }));
       expect(git(work, "rev-parse", "HEAD")).toBe(sha);
