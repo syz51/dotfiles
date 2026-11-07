@@ -2,7 +2,8 @@
 // prompts, host notices, the main session's assistant text, its tool calls with an
 // output excerpt, subagent spawns and the final assistant message. Events are labeled
 // ([P2] prompt, [H1] host notice, [A7] assistant text, [T14] tool call, [I1] a fork's
-// prompt from its parent conversation) so the judge can cite them. Over the size limit
+// prompt from its parent conversation) so the judge can cite them; context that session
+// start and prompt hooks added shows as [hook <event>, <time>]. Over the size limit
 // it keeps prompts and host notices first, then other events from the start and the
 // end, and says what it left out.
 import { INTERRUPT, isHostPrompt, readRecords, textOf } from "../lib/transcripts.js";
@@ -12,6 +13,11 @@ const PROMPT_CHARS = 4_000;
 const TEXT_CHARS = 2_000;
 const INPUT_CHARS = 300;
 const OUTPUT_CHARS = 300;
+const HOOK_CHARS = 400;
+// Hook context the judge needs, such as which work board the session's repository has:
+// the session start and each prompt. PostToolUse context (lease warnings on each edit) is
+// left out, since it would crowd tool calls out of the digest.
+const HOOK_EVENTS = new Set(["SessionStart", "UserPromptSubmit"]);
 
 const flat = (text) => String(text).replace(/\s*\n\s*/g, " ⏎ ");
 // The start of text, at most max characters.
@@ -106,6 +112,10 @@ function collectEvents(session, records) {
         }
       }
     } else if (record.type === "system" && record.subtype === "compact_boundary") events.push({ kind: "note", text: "[context compacted]" });
+    else if (record.type === "attachment" && !record.isSidechain && record.attachment?.type === "hook_additional_context" && HOOK_EVENTS.has(record.attachment.hookEvent)) {
+      const text = [record.attachment.content].flat().filter((part) => typeof part === "string").join("\n").trim();
+      if (text) events.push({ kind: "hook", text: `[hook ${record.attachment.hookEvent}, ${time(record.timestamp)}] ${head(flat(text), HOOK_CHARS)}` });
+    }
   }
   const final = events.findLast((event) => event.kind === "assistant");
   for (const event of events)
@@ -164,7 +174,7 @@ function render(events, kept, start = 0, end = events.length) {
   let omitted = null;
   const flush = () => {
     if (!omitted) return;
-    const parts = Object.entries(omitted).map(([kind, n]) => `${n} ${{ prompt: "prompt", host: "host notice", assistant: "assistant message", tool: "tool call", note: "note" }[kind]}${n === 1 ? "" : "s"}`);
+    const parts = Object.entries(omitted).map(([kind, n]) => `${n} ${{ prompt: "prompt", host: "host notice", assistant: "assistant message", tool: "tool call", note: "note", hook: "hook context" }[kind]}${n === 1 ? "" : "s"}`);
     lines.push(`[… omitted to fit the digest: ${parts.join(", ")} …]`);
     omitted = null;
   };

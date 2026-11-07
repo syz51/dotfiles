@@ -87,7 +87,7 @@ review on sai** for the feasibility notes the user asked about.
 - Default LLM judge: `claude-sonnet-5-5` at `medium` effort, configurable per run. Judging
   sends unredacted transcript digests to the model, same as codex-skills capture.
 - Proposals never edit settings, permissions or hooks. Allowed paths: `claude/CLAUDE.md`,
-  `claude/agents/*.md`, `claude/tests/**`. The proposer has no Bash; the tool runs the tests
+  `codex/AGENTS.md` (its Work board section mirrors the global one), `claude/agents/*.md`. The proposer has no Bash; the tool runs the tests
   and opens a **draft** PR on `syz51/dotfiles`; the user reviews and merges.
 - Interactive sandboxing stays off unless the user opts in. The tools provide a tested
   sandbox profile and an audit; the unattended maintainer gets the sandbox.
@@ -219,6 +219,10 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   so `scope-creep` passes filing as well as reporting unrelated issues, and
   `unnecessary-confirmation` no longer counts filing on the repository's board as an
   external write that needs approval.
+- [x] Rubric v7 (2026-11-07, board task dotfiles-51): `untracked-work` judge dimension for
+  the Work board rule that nothing still to do stays only in chat, a file or a handoff:
+  fails remaining or next steps named without a task or ask id, work written into plan
+  or ledger files, and `task_done` with a failing acceptance check; na without a board.
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
