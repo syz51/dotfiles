@@ -74,6 +74,15 @@ change = "A PR on dotfiles; screenshot a page with it after the change"
 verify = ["bun claude/skills/headless-browser/scripts/browse.ts --help"]
 
 [[setup]]
+id = "ui-climb"
+title = "UI design climbs: the ui-climb skill and the factory's ui command"
+covers = ["claude/skills/ui-climb", "claude/factory/ui"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests; record the change in claude/factory/PLAN.md's log"
+verify = ["bun test claude/factory/ui"]
+
+[[setup]]
 id = "work-stages"
 title = "Shared work stages"
 covers = ["claude/skills/work-stages", "the work-stages skill: explore, research, design, plan, build, verify"]
@@ -135,6 +144,15 @@ owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests"
 verify = ["uv run --no-project python -B -m unittest discover -s disk-alert/tests"]
+
+[[setup]]
+id = "config-sync"
+title = "Keeping each Mac's ~/.config checkout current with main"
+covers = ["config-sync"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B -m unittest discover -s config-sync/tests"]
 
 [[setup]]
 id = "shell"

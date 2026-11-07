@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "scale": [
+    [10, "Best in class: nothing a top product designer would change."],
+    [9, "Excellent: only nitpicks remain."],
+    [8, "Good: a few noticeable flaws."],
+    [7, "Decent, but clearly unpolished in places."],
+    [6, "Acceptable: several real problems."],
+    [5, "Mediocre: problems on most screens."],
+    [3, "Poor: the design gets in the way of the task."],
+    [1, "Broken."]
+  ],
+  "categories": [
+    {
+      "id": "hierarchy",
+      "name": "Hierarchy and focus",
+      "description": "The most important content and actions stand out; grouping and reading order are clear; nothing competes for attention without a reason."
+    },
+    {
+      "id": "layout",
+      "name": "Layout and spacing",
+      "description": "Alignment, a consistent spacing rhythm, sensible use of space and a density that suits the task; no awkward gaps or crowding."
+    },
+    {
+      "id": "typography",
+      "name": "Typography",
+      "description": "A clear type scale, suitable sizes and weights, comfortable line length and height, legible small text, and monospace only where it helps."
+    },
+    {
+      "id": "color",
+      "name": "Color and contrast",
+      "description": "A coherent palette with enough contrast in every theme shown; color carries meaning and emphasis rather than decoration; neither garish nor washed out."
+    },
+    {
+      "id": "components",
+      "name": "Components and states",
+      "description": "Controls look like what they do (buttons, links, inputs, switches); statuses and badges read at a glance; empty, error and loading states are designed, not left plain."
+    },
+    {
+      "id": "consistency",
+      "name": "Consistency",
+      "description": "The same kind of thing looks and is named the same across screens and themes; radii, borders, icons, spacing and labels follow one system."
+    },
+    {
+      "id": "responsive",
+      "name": "Small screens",
+      "description": "Phone layouts reflow cleanly, keep tap targets usable and text readable, and nothing overflows or hides essential information.",
+      "needsNarrow": true
+    },
+    {
+      "id": "polish",
+      "name": "Polish",
+      "description": "Details are finished: optical alignment, truncation, borders, icon quality, visible focus and hover hints; the whole feels deliberate."
+    }
+  ]
+}

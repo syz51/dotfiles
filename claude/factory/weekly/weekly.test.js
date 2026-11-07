@@ -31,6 +31,11 @@ if (command === "score") console.log("scored 2 sessions, $0.30");
 if (command === "board") console.log(JSON.stringify({ collectedAt: "2026-11-09T13:30:00.000Z", days: 7, errors: process.env.FAKE_EXIT_board ? ["board stats exited 2: unrecognized subcommand"] : [],
   stats: { days: 7, tasks_created: 9, tasks_done: 5, claims_refused: 1, tasks_taken_stale: 0, lease_conflicts: 2, asks_created: 3, asks_answered: 2, ask_answer_minutes_median: 41.5, doing_minutes_median: null, done_without_check_evidence: 1 },
   feedback: [{ id: "board-feedback-4", title: "Leases expire mid-review", body: "x", status: "open" }] }));
+if (command === "evolve") console.log(JSON.stringify({ collectedAt: "2026-11-09T13:30:00.000Z", days: 7, legacy: 2, errors: [],
+  totals: { items: 3, reports: 5, untriaged: 1, routedOpen: 1, fixed: 1, recurrences: 1, declinedWithReports: 0 },
+  setups: [{ id: "board", title: "Work board (agent-board)", items: 3, reports: 5, sources: { agent: 2, capture: 1, signal: 0 },
+    untriaged: [{ id: "board-feedback-9", ageHours: 3 }], routedOpen: [{ id: "board-feedback-7", task: "agent-board-12", status: "doing", ageDays: 4 }],
+    fixed: 1, recurrences: 1, declinedWithReports: [] }] }));
 if (command === "propose") console.log("Nothing qualifies.");
 process.exit(Number(process.env["FAKE_EXIT_" + command] ?? 0));
 `);
@@ -60,9 +65,10 @@ describe("steps", () => {
     expect(steps({ pr: false }).find(([name]) => name === "propose")[1]).toContain("--dry-run");
     // The board step writes the snapshot that the proposals read.
     const all = steps({ boardSnapshot: "/s/board.json" });
-    expect(all.map(([name]) => name)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    expect(all.map(([name]) => name)).toEqual(["metrics", "audit", "score", "board", "evolve", "propose"]);
     expect(all[3][1]).toEqual(["board", "--days", "7", "--json", "--out", "/s/board.json"]);
-    expect(all[4][1].slice(-2)).toEqual(["--board-snapshot", "/s/board.json"]);
+    expect(all[4][1]).toEqual(["evolve", "--days", "7", "--json"]);
+    expect(all[5][1].slice(-2)).toEqual(["--board-snapshot", "/s/board.json"]);
     expect(steps({ scoreUsd: "1", sample: "2" }).find(([name]) => name === "score")[1]).toEqual(["score", "--sample", "2", "--max-total-usd", "1"]);
   });
 
@@ -81,8 +87,8 @@ describe("steps", () => {
 describe("runWeekly", () => {
   test("runs every step in order and writes a summary with the highlights", async () => {
     expect(await runWeekly({ pr: false })).toBe(0);
-    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
-    expect(calls()[4]).toContain("--dry-run");
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "evolve", "propose"]);
+    expect(calls()[5]).toContain("--dry-run");
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     const summary = readFileSync(last.summary, "utf8");
     expect(summary).toContain("Sessions: 4 (1 launched by an agent); cost $12.50");
@@ -98,6 +104,12 @@ describe("runWeekly", () => {
     expect(summary).toContain("- Asks: 2 of 3 answered; median answer 42 min");
     // Agent-written titles appear quoted.
     expect(summary).toContain('- Open feedback tasks: 1\n- board-feedback-4: "Leases expire mid-review"');
+    // The feedback loop per setup, after the board review.
+    expect(summary).toContain("## evolve: ok (exit 0");
+    expect(summary).toContain("- Feedback in the last 7 days: 3 items, 5 reports; untriaged 1; routed and open 1; fixed 1; recurrences 1; declined but reported again 0\n"
+      + "- board (Work board (agent-board)): 3 items, 5 reports (agent 2, capture 1, signal 0); untriaged 1: board-feedback-9 3 h; routed and open 1: agent-board-12 doing 4 d; fixed 1; recurrences 1\n"
+      + "- Tasks without a feedback record (filed before the server kept them): 2");
+    expect(summary.indexOf("## board:")).toBeLessThan(summary.indexOf("## evolve:"));
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
   });
 
@@ -152,7 +164,7 @@ describe("runWeekly", () => {
   test("a failing step is reported, the rest still run, and the run exits 1", async () => {
     setEnv({ FAKE_EXIT_score: "4" });
     expect(await runWeekly({ pr: false })).toBe(1);
-    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "evolve", "propose"]);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     expect(readFileSync(last.summary, "utf8")).toContain("## score: FAILED (exit 4");
   });
@@ -160,7 +172,7 @@ describe("runWeekly", () => {
   test("a failing board command fails the board step in the report, and the proposals still run", async () => {
     setEnv({ FAKE_EXIT_board: "1" });
     expect(await runWeekly({ pr: false })).toBe(1);
-    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "propose"]);
+    expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "evolve", "propose"]);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     const summary = readFileSync(last.summary, "utf8");
     expect(summary).toContain("## board: FAILED (exit 1");

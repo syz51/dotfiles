@@ -1,5 +1,5 @@
-// weekly: the factory loop in one run (metrics, audit, scoring, the work board, proposals) with a summary
-// report, and the LaunchAgent that runs it every week on this Mac.
+// weekly: the factory loop in one run (metrics, audit, scoring, the work board, the feedback
+// loop, proposals) with a summary report, and the LaunchAgent that runs it every week on this Mac.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { agentStatus, installAgent, plistPath, plistText, toolPath, uninstallAge
 import { acquireLock, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { stateDir as apiStateDir } from "../../bin/api-first.js";
 import { summaryLines as boardLines } from "../board/cli.js";
+import { summaryLines as evolveLines } from "../evolve/cli.js";
 import { detectorDimensions } from "../scoring/rubric.js";
 
 // CLAUDE_FACTORY_WEEKLY_CLI replaces the factory CLI the steps run (tests use a fake).
@@ -21,8 +22,8 @@ const PROPOSE_TIMEOUT = 150 * 60 * 1000;
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall|status> [options]
 
-  run        Run metrics, audit, scoring, the board review and proposals once and
-             write a summary
+  run        Run metrics, audit, scoring, the board review, the feedback loop report
+             and proposals once and write a summary
     --no-pr            Dry-run proposals (no push, no PR)
     --score-usd N      Total judge budget for scoring (default 3)
     --sample N         Sessions to judge (default 8)
@@ -41,6 +42,7 @@ export function steps({ pr = true, scoreUsd = "3", sample = "8", boardSnapshot =
     ["audit", ["audit", "--json", "--fail-on", "medium"], "json"],
     ["score", ["score", "--sample", sample, "--max-total-usd", scoreUsd], "text"],
     ["board", ["board", "--days", "7", "--json", "--out", boardSnapshot], "json"],
+    ["evolve", ["evolve", "--days", "7", "--json"], "json"],
     // Judge verdicts are not yet calibrated, so only detector dimensions and the board can
     // open PRs.
     ["propose", ["propose", ...detectors, "--board-snapshot", boardSnapshot, ...(pr ? [] : ["--dry-run"])], "text"],
@@ -67,6 +69,7 @@ function highlights(name, output) {
     return [`Unaccepted findings: ${counts.join(", ")}`, ...open.filter((finding) => finding.severity === "high").map((finding) => `- ${finding.title}`)];
   }
   if (name === "board") return boardLines(output);
+  if (name === "evolve") return evolveLines(output);
   return [];
 }
 

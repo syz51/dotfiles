@@ -8,9 +8,11 @@ const COMMANDS = {
   bench: ["./bench/cli.js", "Benchmark model and effort configurations on real tasks"],
   audit: ["./audit/cli.js", "Audit the security posture of this setup"],
   board: ["./board/cli.js", "Collect the work board's stats and feedback for the weekly review"],
+  evolve: ["./evolve/cli.js", "Report the feedback loop per setup: intake, triage, owner tasks and fixes"],
   setups: ["./setups/cli.js", "List and check the setup registry agents report friction about"],
   friction: ["./friction/cli.js", "File friction found in recent sessions as board feedback, and schedule it hourly"],
   weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
+  ui: ["./ui/cli.js", "Hill-climb a web UI's design: captures, gates, a Claude judge council, reports"],
 };
 
 function usage() {

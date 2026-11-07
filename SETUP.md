@@ -39,6 +39,26 @@ Macs. If both Macs have new commits, commit any unfinished work, fetch with
 Resolve any conflicts and run the verification checks below before pushing.
 The other Mac can then update with the fast-forward command above.
 
+The `com.syz51.config-sync` LaunchAgent does that update every 30 minutes on each Mac,
+so a merge reaches both within the hour. `config-sync/config_sync.py check` fetches
+`origin/main` and fast-forwards the checkout only when it is on `main` with no tracked
+changes and no commits of its own; it never stashes, resets or merges. Otherwise it
+leaves the checkout as it is and files one Feedback report about `config-sync` per
+distinct set of problems: off `main`, tracked changes, diverged, a fast-forward that
+failed (an untracked file in the way, say), a fetch failing for over 24 hours, or an
+instruction link (`~/.claude`, Codex's `AGENTS.md`) that is a copy or missing. It uses
+plain `board feedback` where the installed CLI lacks `--about`, and a macOS notification
+when the board is unreachable. State is in `~/.local/state/config-sync/state.json`, each
+pull or report adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
+Install it on each Mac and check it:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/config-sync/config_sync.py install
+uv run --no-project --python 3.11 python -B ~/.config/config-sync/config_sync.py status
+```
+
+`install --dry-run` prints the plist, and `uninstall` unloads and removes it.
+
 Keep credentials and machine-specific settings in ignored local files, including
 `ghostty/config.local` and `codex/config.toml`; Git does not synchronize them.
 Installed applications and the separately built TUIOS fork also need to be
@@ -251,12 +271,21 @@ bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
 bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
 bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
+bun ~/.claude/factory/cli.js evolve             # the feedback loop per setup this week
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js setups --check     # the setup registry agents report about
 bun ~/.claude/factory/cli.js friction run --dry-run # turns the friction capture would judge
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
+bun ~/.claude/factory/cli.js ui round           # judge a UI design round (ui-climb skill)
 ```
+
+`ui` hill-climbs a web UI's design: it captures configured screens of the committed
+candidate, main and public reference products with the headless-browser skill (run its
+`setup.sh` first), gates them on the project's checks and page checks, and has Claude
+judges score the screenshots blind against a rubric. The `ui-climb` skill describes the
+configuration and the procedure; every judge call is bounded by the configuration's
+per-call, per-round and per-run budgets.
 
 ### Setup registry and friction capture
 
@@ -289,7 +318,7 @@ hour; `friction status` shows it and the last run. It needs the `board` CLI with
 `feedback --source` (agent-board-23).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
+audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
 no session starts once the next one could take the run past $10, though a session can end
 slightly over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
@@ -298,7 +327,19 @@ ids, not transcript text, because the repository is public.
 The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
 board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
 `board-snapshot.json` in the state folder; the report shows the stats and the open
-feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+feedback, and a failing `board` call fails the step.
+
+Triage resolves feedback within minutes and closes it, so the `evolve` step reports the
+loop itself, per setup with its title from `setups.toml`. It reads every item's `feedback`
+record from `board ls --board board-feedback --json`, and each routed item's owner task
+with `board show <id> --json`. For items active in the last 7 days it counts items,
+reports, sources (agent, capture, signal), recurrences, declined items reported again, and
+items whose owner task was done in the window. It also lists items still waiting at any
+age: untriaged ones older than an hour, and routed ones whose owner task is still open,
+with their age. Tasks filed before the server kept feedback records are only counted. A
+failed `board` call fails the step and leaves out only what it would have read.
+
+Proposals read the board snapshot: feedback
 no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
 one proposer session with clones of this repository and agent-board, which sees only that
 feedback. It may change only the "Work board" section of
@@ -557,6 +598,7 @@ uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s config-sync/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and

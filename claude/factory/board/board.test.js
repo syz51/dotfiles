@@ -7,7 +7,7 @@ import { runSuite } from "../lib/proposal.js";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { run as propose } from "../scoring/propose.js";
 import { run as collect } from "./cli.js";
-import { boardCandidate, boardPrompt, boardSignals, defaultsOnly } from "./proposal.js";
+import { boardCandidate, boardPrompt, boardSignals, defaultsOnly, readSnapshot } from "./proposal.js";
 
 const FAKE_CLAUDE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 let scratch;
@@ -143,6 +143,26 @@ describe("board command", () => {
     expect(await collect(["--json", "--out", out])).toBe(1);
     expect(JSON.parse(readFileSync(out, "utf8")).errors).toHaveLength(2);
     expect(await collect(["--days", "0"])).toBe(2);
+  });
+
+  test("tasks with and without a feedback record collect alike, and the proposer reads them", async () => {
+    const record = (resolution) => ({ about: "board", source: "capture", signature: "s", reports: 2, reporters: ["claude:a"], last_reported_at: "2026-11-05T10:00:00Z", ...(resolution && { resolution }) });
+    const untriaged = { ...FEEDBACK[0], id: "board-feedback-6", feedback: record() };
+    const routed = { ...FEEDBACK[1], id: "board-feedback-7", feedback: record({ kind: "routed", task: "agent-board-3", at: "2026-11-05T10:05:00Z", by: "t3:x" }) };
+    setEnv({ FAKE_BOARD_LS: JSON.stringify([FEEDBACK[0], FEEDBACK[1], untriaged, routed]) });
+    const out = join(scratch, "state", "snapshot.json");
+    expect(await collect(["--json", "--out", out])).toBe(0);
+    const snapshot = readSnapshot(out);
+    // Open tasks keep the same fields whether or not they carry a record; resolved ones close.
+    expect(snapshot.feedback.map((task) => [task.id, Object.keys(task).sort()])).toEqual([
+      ["board-feedback-1", ["body", "created_at", "id", "status", "title"]],
+      ["board-feedback-6", ["body", "created_at", "id", "status", "title"]],
+    ]);
+    const candidate = boardCandidate(snapshot, [], Date.parse("2026-11-09T00:00:00Z"));
+    expect(candidate.group.feedback.map((task) => task.id)).toEqual(["board-feedback-1", "board-feedback-6"]);
+    const prompt = boardPrompt(candidate);
+    expect(prompt).toContain('"id":"board-feedback-6"');
+    expect(prompt).not.toContain("signature");
   });
 
   test("a full page of feedback is reported, since open tasks may be missing from it", async () => {
