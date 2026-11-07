@@ -1,7 +1,8 @@
 // Shell parsing shared by the Bash PreToolUse guards. It follows quotes, substitutions,
 // heredocs, here-strings, redirections, `cd`, `sh -c`, `eval`, wrappers such as `sudo`
 // and `env`, `find -exec`, scripts piped into a shell, and commands run over `ssh`. It
-// cannot see through aliases, script files, package scripts or expanded variables.
+// cannot see through aliases, script files, package scripts, expanded variables or the
+// output of a command substitution, which stays in its word unexpanded.
 import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 
@@ -35,34 +36,78 @@ const SSH_LOCAL_COMMAND = /^\s*(?:ProxyCommand|LocalCommand|KnownHostsCommand)\s
 // find actions that run a command up to `;` or `+`.
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 
-/** Index just past the `)` closing a `$(` whose body starts at `start`. */
-function closeSubstitution(source, start) {
+/** Index of the quote closing a string opened at `start`, past backslash escapes when `escapes`; source.length when unclosed. */
+function closeQuote(source, start, quote, escapes) {
+  let i = start + 1;
+  while (i < source.length && source[i] !== quote) i += escapes && source[i] === "\\" ? 2 : 1;
+  return Math.min(i, source.length);
+}
+
+/** Whether the reserved word `name` starts at `i`: at a word boundary and followed by one. */
+const reserved = (source, i, name) => source.startsWith(name, i)
+  && (i === 0 || /[\s;&|(]/.test(source[i - 1]))
+  && (i + name.length === source.length || /[\s;&|)]/.test(source[i + name.length]));
+
+/**
+ * The command substitution `$(…)` or `` `…` `` starting at `start`: its script (`body`) and the
+ * index just past it (`end`). Inside `case … esac`, a pattern's `)` does not close it.
+ */
+function substitution(source, start) {
+  if (source[start] === "`") {
+    const close = closeQuote(source, start, "`", true);
+    return { body: source.slice(start + 1, close), end: close + 1 };
+  }
   let depth = 1;
-  let i = start;
+  let cases = 0;
+  let i = start + 2;
   while (i < source.length) {
     const c = source[i];
     if (c === "\\") i += 2;
-    else if (c === "'") i = source.indexOf("'", i + 1) === -1 ? source.length : source.indexOf("'", i + 1) + 1;
-    else {
-      if (c === "(") depth += 1;
-      else if (c === ")" && (depth -= 1) === 0) return i + 1;
+    else if (c === "'" || c === '"') i = closeQuote(source, i, c, c === '"') + 1;
+    else if (reserved(source, i, "case")) {
+      cases += 1;
+      i += 4;
+    } else if (reserved(source, i, "esac")) {
+      cases = Math.max(0, cases - 1);
+      i += 4;
+    } else if (c === "(") {
+      depth += 1;
       i += 1;
-    }
+    } else if (c === ")" && depth === 1 && cases > 0) {
+      i += 1; // a case pattern
+    } else if (c === ")" && (depth -= 1) === 0) {
+      return { body: source.slice(start + 2, i), end: i + 1 };
+    } else i += 1;
   }
-  return source.length;
+  return { body: source.slice(start + 2), end: source.length };
+}
+
+/** The `$(…)` and `` `…` `` substitutions in text the shell expands outside quotes, such as a heredoc body: { start, end, body } each. */
+function substitutionsIn(text) {
+  const found = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "\\") i += 2;
+    else if ((text[i] === "$" && text[i + 1] === "(") || text[i] === "`") {
+      const { body, end } = substitution(text, i);
+      found.push({ start: i, end, body });
+      i = end;
+    } else i += 1;
+  }
+  return found;
 }
 
 /**
  * Splits shell source into simple commands. Each command has its argv, the heredoc bodies and
- * here-strings it reads (`inputs`), the operator that ended it (`next`, "|" within a pipeline),
- * and how many `(` or `$(` open just before it (`opens`) and `)` close just after it (`closes`);
- * the operator after a `)` ends the command that `)` closed. `substitutions` holds command
- * substitutions found inside double quotes, which run as well.
+ * here-strings it reads (`inputs`), the scripts of the command substitutions in its words
+ * (`substitutions`), which run first, the operator that ended it (`next`, "|" within a
+ * pipeline), and how many `(` open just before it (`opens`) and `)` close just after it
+ * (`closes`); the operator after a `)` ends the command that `)` closed. A substitution stays
+ * in its word unexpanded, as in `$(cat ref)`.
  */
 export function parseScript(source) {
   const commands = [];
-  const substitutions = [];
-  const fresh = () => ({ argv: [], inputs: [], opens: 0, closes: 0 });
+  const fresh = () => ({ argv: [], inputs: [], substitutions: [], opens: 0, closes: 0 });
   let current = fresh();
   let word;
   let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
@@ -82,7 +127,13 @@ export function parseScript(source) {
       commands.push({ ...current, next });
       current = fresh();
     } else if (commands.at(-1)?.next === ")") {
+      // Words after `)`, such as a redirection target, belong to the subshell it closed.
+      commands.at(-1).substitutions.push(...current.substitutions);
+      current.substitutions = [];
       commands.at(-1).next = next;
+    } else if (current.substitutions.length > 0) {
+      commands.push({ ...current, next });
+      current = fresh();
     }
   };
 
@@ -92,7 +143,7 @@ export function parseScript(source) {
     if (c === "\n") {
       endCommand("\n");
       i += 1;
-      for (const { delimiter, stripTabs, inputs } of heredocs) {
+      for (const { delimiter, stripTabs, inputs, substitutions } of heredocs) {
         const lines = [];
         while (i < source.length) {
           const newline = source.indexOf("\n", i);
@@ -103,6 +154,8 @@ export function parseScript(source) {
           lines.push(line);
         }
         inputs.push(lines.join("\n"));
+        // The shell expands substitutions in a heredoc whose delimiter is unquoted.
+        substitutions?.push(...substitutionsIn(lines.join("\n")).map(({ body }) => body));
       }
       heredocs = [];
     } else if (c === " " || c === "\t") {
@@ -122,17 +175,11 @@ export function parseScript(source) {
         if (source[j] === "\\" && j + 1 < source.length && '"\\$`\n'.includes(source[j + 1])) {
           if (source[j + 1] !== "\n") text += source[j + 1];
           j += 2;
-        } else if (source[j] === "$" && source[j + 1] === "(") {
-          const end = closeSubstitution(source, j + 2);
-          substitutions.push(source.slice(j + 2, end - 1));
+        } else if ((source[j] === "$" && source[j + 1] === "(") || source[j] === "`") {
+          const { body, end } = substitution(source, j);
+          current.substitutions.push(body);
           text += source.slice(j, end);
           j = end;
-        } else if (source[j] === "`") {
-          const close = source.indexOf("`", j + 1);
-          const end = close === -1 ? source.length : close;
-          substitutions.push(source.slice(j + 1, end));
-          text += source.slice(j, end + 1);
-          j = end + 1;
         } else {
           text += source[j];
           j += 1;
@@ -143,10 +190,11 @@ export function parseScript(source) {
     } else if (c === "\\") {
       if (source[i + 1] !== "\n") word = (word ?? "") + (source[i + 1] ?? "");
       i += 2;
-    } else if (c === "$" && source[i + 1] === "(") {
-      endCommand("$(");
-      current.opens += 1;
-      i += 2;
+    } else if ((c === "$" && source[i + 1] === "(") || c === "`") {
+      const { body, end } = substitution(source, i);
+      current.substitutions.push(body);
+      word = (word ?? "") + source.slice(i, end);
+      i = end;
     } else if (c === "|") {
       const operator = source[i + 1] === "|" || source[i + 1] === "&" ? c + source[i + 1] : c;
       endCommand(operator);
@@ -167,7 +215,7 @@ export function parseScript(source) {
       if (current.opens > 0) current.opens -= 1; // an empty `()`, as in a function definition
       else if (commands.length > 0) Object.assign(commands.at(-1), { closes: commands.at(-1).closes + 1, next: ")" });
       i += 1;
-    } else if (c === "`" || c === ";") {
+    } else if (c === ";") {
       endCommand(c);
       i += 1;
     } else if (c === "<" || c === ">") {
@@ -185,11 +233,13 @@ export function parseScript(source) {
         if (stripTabs) i += 1;
         while (source[i] === " " || source[i] === "\t") i += 1;
         let delimiter = "";
+        let quoted = false;
         while (i < source.length && !/[\s;&|()<>]/.test(source[i])) {
-          if (!"'\"\\".includes(source[i])) delimiter += source[i];
+          if ("'\"\\".includes(source[i])) quoted = true;
+          else delimiter += source[i];
           i += 1;
         }
-        heredocs.push({ delimiter, stripTabs, inputs: current.inputs });
+        heredocs.push({ delimiter, stripTabs, inputs: current.inputs, substitutions: quoted ? undefined : current.substitutions });
       } else {
         destination = operator === "<<<" ? "input" : "drop";
       }
@@ -199,7 +249,7 @@ export function parseScript(source) {
     }
   }
   endCommand(undefined);
-  return { commands, substitutions };
+  return { commands };
 }
 
 /** Shell source that runs exactly `words`, each single-quoted. */
@@ -363,22 +413,37 @@ function findScripts(words, dir) {
   return scripts;
 }
 
-/** What `echo` or `printf` prints, roughly, when its output is piped into a shell. */
-function printed(words) {
+/**
+ * What `echo` or `printf` prints, roughly, when its output is piped into a shell. A substitution
+ * in its words prints what its own echo and printf commands print; printf prints its arguments
+ * after its format, without the format's directives.
+ */
+function printed(words, depth = 0) {
   const name = basename(words[0]);
-  if (name !== "echo" && name !== "printf") return undefined;
-  let args = words.slice(1);
+  if ((name !== "echo" && name !== "printf") || depth > MAX_DEPTH) return undefined;
+  let args = words.slice(1).map((word) => {
+    let text = "";
+    let last = 0;
+    for (const { start, end, body } of substitutionsIn(word)) {
+      const inner = parseScript(body).commands.map(({ argv }) => {
+        const { words: run } = program(argv, undefined);
+        return run.length > 0 ? printed(run, depth + 1) : undefined;
+      });
+      text += word.slice(last, start) + inner.filter((line) => line !== undefined).join("\n");
+      last = end;
+    }
+    return text + word.slice(last);
+  });
   if (name === "echo") while (/^-[neE]+$/.test(args[0] ?? "")) args = args.slice(1);
+  if (name === "printf" && args.length > 1 && args[0].includes("%")) {
+    args = [...args.slice(1), args[0].replace(/%[-#0 +']*\d*(?:\.\d+)?[a-zA-Z%]/g, "")];
+  }
   return args.join(" ").replaceAll("\\n", "\n");
 }
 
 function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
-  const { commands, substitutions } = parseScript(source);
-  for (const inner of substitutions) {
-    const violation = inspect(inner, { dir: state.dir }, visit, depth + 1, tooDeep);
-    if (violation) return violation;
-  }
+  const { commands } = parseScript(source);
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
   const groups = [];
@@ -398,10 +463,11 @@ function inspect(source, state, visit, depth, tooDeep) {
     // A shell reading standard input runs the heredocs, here-strings and printed text piped to it.
     const fed = pipeline.length > 1 || pipeline[0].command.inputs.length > 0;
     const reader = fed ? pipeline.findIndex(({ run: { words, reads } }) => reads?.() === true || readsStdin(words)) : -1;
-    for (const [index, { command: { inputs }, run: { words, nested, local, dir, printed: text } }] of pipeline.entries()) {
+    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text } }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
-      // Scripts this command runs itself, and scripts the reading shell runs in its directory.
-      const scripts = [...nested.map((script) => [script, dir]), ...(local ?? [])];
+      // Its substitutions, which the current shell runs first, scripts this command runs itself,
+      // and scripts the reading shell runs in its directory.
+      const scripts = [...substitutions.map((script) => [script, state.dir]), ...nested.map((script) => [script, dir]), ...(local ?? [])];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir]));
       if (name === "eval") scripts.push([words.slice(1).join(" "), dir]);
       if (name === "find") scripts.push(...findScripts(words, dir));

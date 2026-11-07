@@ -172,12 +172,32 @@ describe("settings", () => {
     expect(settings.disableClaudeAiConnectors).toBeUndefined();
   });
 
+  // A `!`cmd`` line in a skill or custom slash command runs without PreToolUse hooks, so the
+  // guards never see it, and any repository a session opens can ship such a command.
+  test("skills and custom slash commands cannot run shell lines before the model reads them", () => {
+    expect(settings.disableSkillShellExecution).toBe(true);
+  });
+
   test.each(["guard-git-push.js", "guard-runtimes.js"])("the %s guard is registered for Bash PreToolUse", (script) => {
     const guard = settings.hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
       && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
     expect(guard).toHaveLength(1);
   });
+});
+
+// git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
+// .claude/settings.local.json and stages writes it cannot make in place in .claude/.cc-writes/.
+// It is checked in an empty repository, since this one's .gitignore also covers /.claude/.
+test.each([".claude/settings.local.json", ".claude/.cc-writes/file", "sub/.claude/.cc-writes/file"])("the global git ignore file excludes %s", (path) => {
+  const repo = mkdtempSync(join(tmpdir(), "git-ignore-"));
+  try {
+    expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
+    const result = spawnSync("git", ["-c", `core.excludesFile=${join(REPO, "git", "ignore")}`, "check-ignore", "--no-index", "-q", path], { cwd: repo });
+    expect(result.status).toBe(0);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("the root CLAUDE.md holds the repository instructions directly", () => {
