@@ -186,6 +186,20 @@ describe("settings", () => {
   });
 });
 
+// git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
+// .claude/settings.local.json and stages writes it cannot make in place in .claude/.cc-writes/.
+// It is checked in an empty repository, since this one's .gitignore also covers /.claude/.
+test.each([".claude/settings.local.json", ".claude/.cc-writes/file", "sub/.claude/.cc-writes/file"])("the global git ignore file excludes %s", (path) => {
+  const repo = mkdtempSync(join(tmpdir(), "git-ignore-"));
+  try {
+    expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
+    const result = spawnSync("git", ["-c", `core.excludesFile=${join(REPO, "git", "ignore")}`, "check-ignore", "--no-index", "-q", path], { cwd: repo });
+    expect(result.status).toBe(0);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(lstatSync(join(REPO, "CLAUDE.md")).isFile()).toBe(true);
   const instructions = read("CLAUDE.md");
