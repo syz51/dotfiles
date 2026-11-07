@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { REQUIRED } from "../factory/setups/cli.js";
 import { configuredEffort } from "./lib/live.js";
 
 const CLAUDE = join(import.meta.dir, "..");
@@ -402,7 +403,10 @@ describe("storage rule", () => {
 describe("feedback rule", () => {
   test("reports setup friction once through the feedback tool, then continues", () => {
     const rule = section("Feedback");
-    expect(rule).toMatch(/report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <stage> "<what happened>"` where the tool is missing, then continue with a workaround/);
+    expect(rule).toContain("report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <activity> '<what happened>'` where the tool is missing, then continue with a workaround");
+    // The board's activities, which have no verify.
+    expect(rule).toContain("(`explore`, `research`, `design`, `plan`, `build`, `review`, `operate` or `other`)");
+    expect(rule).toContain("Report it in your reply instead when filing fails; delegated children report it to their parent, which files it.");
     expect(rule).toMatch(/an id from `~\/\.config\/setups\.toml`, `other` when unsure/);
     expect(rule).toMatch(/triage routes it to the setup's owner, so don't follow it up/);
     expect(rule).toMatch(/not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture/);
@@ -410,12 +414,12 @@ describe("feedback rule", () => {
 
   test("the setups it names are in the registry", () => {
     const ids = Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id);
-    for (const id of ["board", "instructions", "agents", "skills", "hooks", "settings", "storage", "t3", "project", "other", "work-stages"]) expect(ids).toContain(id);
+    for (const id of [...REQUIRED, "work-stages"]) expect(ids).toContain(id);
   });
 
   test("Codex gets the same rule, and Feedback follows Storage in both", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Feedback\n${section("Feedback").trimEnd()}\n`);
-    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md"]) expect(read(path)).toMatch(/\n## Storage\n[\s\S]*?\n## Feedback\n/);
+    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md"]) expect(read(path)).toMatch(/\n## Storage\n(?:(?!\n## )[\s\S])*\n\n## Feedback\n/);
   });
 });
 
@@ -439,7 +443,8 @@ describe("work stages", () => {
     // The board's activities have no verify; Verify reports as review.
     expect(body).toMatch(/`review` for Verify/);
     expect(body).toMatch(/take precedence over this skill/);
-    expect(body).toMatch(/Feedback on this skill goes to `feedback` with `about` `work-stages`/);
+    expect(body).toMatch(/One track stays with one agent through every stage it needs/);
+    expect(body).toMatch(/## Feedback on this skill\n\nReport it with `feedback` and `about` `work-stages`\./);
     expect(tracked("claude/skills/work-stages/SKILL.md")).toBe(true);
   });
 });
