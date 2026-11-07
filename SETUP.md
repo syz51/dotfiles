@@ -182,7 +182,13 @@ Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
 Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
-`claude/hooks/shell.js`, and a guard that cannot load it fails open.
+`claude/hooks/shell.js`, and a guard that cannot load it fails open. The guards see
+only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
+`` !`command` `` line in a user, project or plugin skill or custom slash command is
+replaced with a placeholder instead of running unchecked before the model reads it.
+guard-git-push blocks a push whose refspec, remote or option name comes from a variable
+or command substitution, and checks a push without refspecs against
+`remote.<name>.push`.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.

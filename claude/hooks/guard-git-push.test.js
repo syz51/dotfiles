@@ -7,11 +7,13 @@ import { findViolation } from "./guard-git-push.js";
 const HOOK = join(import.meta.dir, "guard-git-push.js");
 
 // Checkouts by directory: /repo is on `feature`, /other is on `main`; both push to
-// origin/<branch>, and origin/HEAD is `remoteHead`. `calls` records every query.
-function fakeGit({ branch = "feature", remoteHead = "origin/main", calls = [] } = {}) {
+// origin/<branch>, and origin/HEAD is `remoteHead`. `config` is what `git config --get-regexp`
+// prints. `calls` records every query.
+function fakeGit({ branch = "feature", remoteHead = "origin/main", config, calls = [] } = {}) {
   const branches = { "/repo": branch, "/other": "main" };
   return (dir, args) => {
     calls.push([dir, ...args]);
+    if (args[0] === "config") return config;
     const query = args.join(" ");
     if (query === "symbolic-ref --quiet --short HEAD") return branches[dir];
     if (query === "rev-parse --abbrev-ref --symbolic-full-name @{push}") return branches[dir] && `origin/${branches[dir]}`;
@@ -86,6 +88,27 @@ describe("blocks", () => {
     ["cd /other && git push --force-with-lease=main:abc123"],
     ["env -C /other git push --force-with-lease=main:abc123"],
     ['cd "$REPO" && git push --force-with-lease=feature:abc123'],
+    // words the shell fills in, which could be `+x:main`, `:main` or `--force`
+    ['git push origin "$(cat refspec)"'],
+    ["git push origin $(cat refspec)"],
+    ["git push origin `cat refspec`"],
+    ["git push origin $REF"],
+    ['git push origin "${BRANCH}:main"'],
+    ["git push $(echo --force) origin main"],
+    ["git push origin $(echo feature) --force"],
+    ['git push "$REMOTE"'],
+    ["git push --$MODE origin feature"],
+    ["git push -$FLAGS origin feature"],
+    ["git push -- origin $REF"],
+    // remote.<name>.push refspecs replace the current branch when no refspec is given
+    ["git push", { config: "remote.origin.push +refs/heads/x:refs/heads/main" }],
+    ["git push origin", { config: "remote.origin.push +refs/heads/x:refs/heads/main" }],
+    ["git push", { config: "remote.origin.push refs/heads/feature:refs/heads/feature\nremote.origin.push :main" }],
+    ["git push --force-with-lease=feature:abc123", { config: "remote.origin.push refs/heads/*:refs/heads/*" }],
+    ["git push", { config: "remote.pushdefault fork\nremote.fork.push +HEAD:main" }],
+    ["git push", { config: "branch.feature.pushremote fork\nremote.fork.push +HEAD:main" }],
+    ["git push", { config: "branch.feature.remote fork\nremote.fork.push +HEAD:main" }],
+    ["git push --force origin :"],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeDefined();
   });
@@ -125,15 +148,26 @@ describe("allows", () => {
     ["ssh -o ConnectTimeout=5 host git fetch"],
     ["echo 'git push -f origin main' > notes.txt"],
     ["find . -name '*.md' -exec grep -l 'git push -f' {} +"],
+    // an option value from a variable leaves the option and the refspec known
+    ["git push --force-with-lease=feature:$SHA origin feature"],
+    ['git push -o "$OPTION" origin feature'],
+    ['git push --dry-run origin "$REF"'],
+    ['echo "$(git push origin feature)"'],
+    ["git push", { config: "remote.origin.push refs/heads/feature:refs/heads/feature" }],
+    ["git push", { config: "remote.upstream.push +HEAD:main" }],
+    ["git push origin", { config: "remote.pushdefault fork\nremote.fork.push +HEAD:main" }],
+    ["git push origin feature", { config: "remote.origin.push +HEAD:main" }],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeUndefined();
   });
 });
 
-test("ordinary pushes make no git queries", () => {
+test("pushes with refspecs make no git queries, and a push without one reads only the push config", () => {
   const calls = [];
-  expect(findViolation("git push origin feature && git push", "/repo", fakeGit({ calls }))).toBeUndefined();
+  expect(findViolation("git push origin feature && git push origin HEAD", "/repo", fakeGit({ calls }))).toBeUndefined();
   expect(calls).toEqual([]);
+  expect(findViolation("git push", "/repo", fakeGit({ calls }))).toBeUndefined();
+  expect(calls.map(([, ...args]) => args[0])).toEqual(["config"]);
 });
 
 test("a git query that fails blocks only history rewrites, with the reason", () => {
@@ -141,7 +175,13 @@ test("a git query that fails blocks only history rewrites, with the reason", () 
     throw new Error("spawnSync git ETIMEDOUT");
   };
   expect(findViolation("git push --force-with-lease=feature:abc123", "/repo", broken)).toContain("ETIMEDOUT");
+  expect(findViolation("git push --force-with-lease=feature:abc123 origin feature", "/repo", broken)).toContain("ETIMEDOUT");
   expect(findViolation("git push origin feature", "/repo", broken)).toBeUndefined();
+  expect(findViolation("git push", "/repo", broken)).toBeUndefined();
+});
+
+test("a word the shell fills in is named in the reason", () => {
+  expect(verdict("git push origin $(cat refspec)")).toContain("`$(cat refspec)`");
 });
 
 test("a script nested too deeply to check is blocked", () => {
@@ -204,6 +244,20 @@ describe("hook process", () => {
     git(work, "switch", "-q", "feature");
     const sha = git(work, "rev-parse", "HEAD");
     expect(bash(`git push --force-with-lease=feature:${sha} origin feature`, work)).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("blocks a plain push whose configured push refspec force-pushes the default branch", () => {
+    const work = join(root, "work");
+    git(work, "switch", "-q", "feature");
+    git(work, "config", "remote.origin.push", "+refs/heads/feature:refs/heads/main");
+    try {
+      const result = bash("git push", work);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("main, a default branch");
+    } finally {
+      git(work, "config", "--unset-all", "remote.origin.push");
+    }
+    expect(bash("git push", work)).toEqual({ code: 0, stderr: "" });
   });
 
   test("ignores other commands and tools", () => {

@@ -4,7 +4,9 @@
 // Exit 2 blocks the command and shows stderr to Claude. A crash is a non-blocking
 // hook error, so the guard fails open; a git query that fails unexpectedly blocks
 // only pushes that rewrite or delete history. shell.js follows the shell syntax around
-// the push: quotes, substitutions, heredocs, `cd`, `sh -c`, wrappers and `ssh`.
+// the push: quotes, substitutions, heredocs, `cd`, `sh -c`, wrappers and `ssh`. A push
+// whose refspec, remote or option name the shell fills in from a variable or substitution
+// is blocked, and a push without refspecs is checked against remote.<name>.push.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -32,8 +34,11 @@ function longOption(name) {
   return matches.find((option) => REWRITING_OPTIONS.includes(option)) ?? name;
 }
 
+/** Whether the shell expands `word` (a variable or command substitution), so its value is unknown here. */
+const expands = (word) => /[$`]/.test(word);
+
 function parsePush(args) {
-  const push = { force: false, leases: [], mirror: false, all: false, remove: false, dryRun: false, positionals: [] };
+  const push = { force: false, leases: [], mirror: false, all: false, remove: false, dryRun: false, positionals: [], unresolved: undefined };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--") {
@@ -42,6 +47,8 @@ function parsePush(args) {
     }
     if (arg.startsWith("--")) {
       const equals = arg.indexOf("=");
+      // An option's value may come from a variable, as in --force-with-lease=main:$SHA; its name may not.
+      if (expands(equals === -1 ? arg : arg.slice(0, equals))) push.unresolved ??= arg;
       const name = longOption(equals === -1 ? arg : arg.slice(0, equals));
       const value = equals === -1 ? undefined : arg.slice(equals + 1);
       if (name === "--force") push.force = true;
@@ -58,6 +65,7 @@ function parsePush(args) {
       else if (name === "--no-dry-run") push.dryRun = false;
       else if (PUSH_VALUE_OPTIONS.has(name) && value === undefined) i += 1;
     } else if (arg.startsWith("-") && arg.length > 1) {
+      if (expands(arg)) push.unresolved ??= arg;
       for (let k = 1; k < arg.length; k += 1) {
         if (arg[k] === "f") push.force = true;
         else if (arg[k] === "d") push.remove = true;
@@ -71,6 +79,7 @@ function parsePush(args) {
       push.positionals.push(arg);
     }
   }
+  push.unresolved ??= push.positionals.find(expands);
   return push;
 }
 
@@ -83,19 +92,57 @@ function branchOf(target, current, pushTarget) {
   return target.startsWith("refs/") ? { other: true } : { name: target };
 }
 
+/**
+ * The push refspecs configured for the remote a refspec-less `git push [remote]` uses
+ * (remote.<name>.push), which git pushes instead of the current branch; [] when there are none.
+ */
+function configuredRefspecs(remote, query) {
+  const lines = query(["config", "--get-regexp", "^(remote\\..+\\.push|remote\\.pushdefault|branch\\..+\\.(pushremote|remote))$"]);
+  const config = (lines ?? "").split("\n").map((line) => {
+    const space = line.indexOf(" ");
+    return space === -1 ? [line, ""] : [line.slice(0, space), line.slice(space + 1)];
+  });
+  const values = (key) => config.filter(([name]) => name === key).map(([, value]) => value);
+  if (!config.some(([name]) => /^remote\..+\.push$/.test(name))) return [];
+  let name = remote;
+  if (name === undefined) {
+    // git push picks branch.<current>.pushRemote, remote.pushDefault, branch.<current>.remote, then origin.
+    const branch = query(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    const forBranch = (key) => (branch === undefined ? undefined : values(`branch.${branch}.${key}`).at(-1));
+    name = forBranch("pushremote") ?? values("remote.pushdefault").at(-1) ?? forBranch("remote") ?? "origin";
+  }
+  return values(`remote.${name}.push`);
+}
+
 function judge(push, dir, git) {
+  if (push.unresolved !== undefined) {
+    return `the shell fills in \`${push.unresolved}\`, so the guard cannot see what it pushes. Write the remote, refspecs and options out literally.`;
+  }
   const [remote, ...refspecs] = push.positionals;
+  const query = (args) => (dir === undefined ? undefined : git(dir, args));
+  let specs = refspecs;
+  if (!push.mirror && !push.all && refspecs.length === 0) {
+    try {
+      specs = configuredRefspecs(remote, query);
+    } catch (error) {
+      // A plain push may go ahead, as when any other query fails; only a rewrite is blocked.
+      if (push.force || push.leases.length > 0 || push.remove) return `git could not read the configured push refspecs (${error.message}).`;
+      return undefined;
+    }
+  }
   const updates = [];
   if (push.mirror || push.all) {
     updates.push({ target: "*", plus: false, remove: false });
-  } else if (refspecs.length === 0) {
+  } else if (specs.length === 0) {
     updates.push({ target: "@{push}", plus: false, remove: push.remove });
   } else {
-    for (const spec of refspecs) {
+    for (const spec of specs) {
       const plus = spec.startsWith("+");
       const body = plus ? spec.slice(1) : spec;
       const colon = body.indexOf(":");
-      updates.push({ target: push.remove || colon === -1 ? body : body.slice(colon + 1), plus, remove: push.remove || colon === 0 });
+      // A bare `:` pushes every branch that exists on both sides.
+      if (body === ":") updates.push({ target: "*", plus, remove: false });
+      else updates.push({ target: push.remove || colon === -1 ? body : body.slice(colon + 1), plus, remove: push.remove || colon === 0 });
     }
   }
   const forced = push.force || push.mirror || updates.some((update) => update.plus);
@@ -106,7 +153,6 @@ function judge(push, dir, git) {
   let defaults;
   let branches;
   try {
-    const query = (args) => (dir === undefined ? undefined : git(dir, args));
     const remoteName = remote !== undefined && /^[\w.-]+$/.test(remote) ? remote : "origin";
     defaults = new Set(DEFAULT_BRANCHES);
     const remoteHead = query(["symbolic-ref", "--quiet", "--short", `refs/remotes/${remoteName}/HEAD`]);

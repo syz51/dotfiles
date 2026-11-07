@@ -3,7 +3,7 @@
 // RUN_CLAUDE_LIVE=1; see lib/live.js for isolation, cleanup and cost accounting.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
@@ -208,6 +208,19 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     const allowed = toolUses(run.events, "Bash").filter((use) => use.input.command.includes(viaUv) && !use.input.command.includes("python3"));
     expect(allowed.length).toBeGreaterThan(0);
     for (const use of allowed) expect(results.get(use.id)?.text).not.toContain("Blocked by");
+  }), 400_000);
+
+  // A `!`cmd`` line in a skill or custom slash command runs before the model reads it, without
+  // PreToolUse hooks, so no guard sees it; disableSkillShellExecution replaces it with a placeholder.
+  test("a project slash command's shell line does not run", () => suite.scenario("slash command shell disabled", async ({ fixture, session }) => {
+    const work = fixture();
+    const token = crypto.randomUUID();
+    const marker = join(work, "ran.txt");
+    mkdirSync(join(work, ".claude", "commands"), { recursive: true });
+    writeFileSync(join(work, ".claude", "commands", "probe.md"), `Reply with exactly ${token} and nothing else.\n\n!\`touch ran.txt\`\n`);
+    const run = await session({ cwd: work, model: HAIKU, effort: "low", prompt: "/probe" });
+    expect(finalText(run.events)).toContain(token);
+    expect(existsSync(marker)).toBe(false);
   }), 400_000);
 
   // Contract probes: the prompt names the agent, and the test checks that the configured
