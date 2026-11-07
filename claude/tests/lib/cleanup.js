@@ -1,11 +1,17 @@
 // Removal of what test sessions leave in Claude Code's own folders. Only entries
 // derived from the test's own paths qualify; everything else is left alone.
-import { existsSync, lstatSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 // Claude Code names a project folder after its path, every character other than an
 // ASCII letter or digit replaced with "-".
 export const projectName = (path) => path.replace(/[^a-zA-Z0-9]/g, "-");
+
+// Claude Code's own temporary folder when CLAUDE_CODE_TMPDIR is unset: claude-<uid> in
+// /tmp (resolved, /private/tmp on macOS), or in the system temp folder without /tmp.
+export const claudeTempDir = ({ tmp = "/tmp", uid = userInfo().uid } = {}) =>
+  join(existsSync(tmp) ? realpathSync(tmp) : tmpdir(), `claude-${uid}`);
 
 const entries = (dir) => existsSync(dir) ? readdirSync(dir) : [];
 

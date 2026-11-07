@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectName, removeSessionArtifacts } from "./cleanup.js";
+import { claudeTempDir, projectName, removeSessionArtifacts } from "./cleanup.js";
 
 let scratch;
 let projects;
@@ -20,6 +20,15 @@ const entry = (base, name, files = { "s.jsonl": "{}\n" }) => {
   mkdirSync(join(base, name), { recursive: true });
   for (const [file, content] of Object.entries(files)) writeFileSync(join(base, name, file), content);
 };
+
+test("claudeTempDir is claude-<uid> in the resolved /tmp, else in the system temp folder", () => {
+  const real = join(scratch, "real-tmp");
+  mkdirSync(real);
+  symlinkSync(real, join(scratch, "tmp-link"));
+  expect(claudeTempDir({ tmp: join(scratch, "tmp-link"), uid: 501 })).toBe(join(realpathSync(real), "claude-501"));
+  expect(claudeTempDir({ tmp: join(scratch, "missing"), uid: 7 })).toBe(join(tmpdir(), "claude-7"));
+  expect(claudeTempDir()).toMatch(/\/claude-\d+$/);
+});
 
 test("projectName replaces every non-alphanumeric character", () => {
   expect(projectName("/private/var/T/claude-live-a1B2c3/01_fix.x")).toBe("-private-var-T-claude-live-a1B2c3-01-fix-x");

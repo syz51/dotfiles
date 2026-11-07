@@ -1,9 +1,9 @@
 // Harness for the opt-in live suites: real `claude -p` sessions against this machine's
 // ~/.claude, each in a fixture folder under one temporary root per suite.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { removeSessionArtifacts } from "./cleanup.js";
+import { claudeTempDir, removeSessionArtifacts } from "./cleanup.js";
 import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
 import { childEnv, runProcess } from "./process.js";
@@ -29,8 +29,6 @@ const HOOKS = join(import.meta.dir, "hooks");
 
 export const HOME_CLAUDE = join(homedir(), ".claude");
 const PROJECTS = join(HOME_CLAUDE, "projects");
-// Claude Code's own temporary folder when CLAUDE_CODE_TMPDIR is unset.
-const CLAUDE_TMP = join(existsSync("/tmp") ? realpathSync("/tmp") : tmpdir(), `claude-${userInfo().uid}`);
 
 // Configuration a session must not change. Installed skills are compared through their
 // links, so a retargeted or edited skill fails the run.
@@ -221,7 +219,7 @@ export function liveSuite(name) {
 
     teardown() {
       try {
-        if (root) removeSessionArtifacts({ bases: [PROJECTS, CLAUDE_TMP], roots: [root], sessions: outside });
+        if (root) removeSessionArtifacts({ bases: [PROJECTS, claudeTempDir()], roots: [root], sessions: outside });
       } finally {
         if (root) rmSync(root, { recursive: true, force: true });
         if (ledger.runs.length) console.log(ledger.summary());
@@ -265,7 +263,7 @@ export function liveSuite(name) {
           if (report.status === "passed") throw error;
           console.error(`Report write failed for ${label}: ${error.message}`);
         } finally {
-          removeSessionArtifacts({ bases: [PROJECTS, CLAUDE_TMP], roots: [dir] });
+          removeSessionArtifacts({ bases: [PROJECTS, claudeTempDir()], roots: [dir] });
           rmSync(dir, { recursive: true, force: true });
         }
       }

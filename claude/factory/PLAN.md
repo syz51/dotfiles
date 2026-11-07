@@ -270,6 +270,13 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   - So `--agent` measures the role itself at the configuration under test, with a fixed
     prompt and cost that belongs to it. Whether a main session delegates well is a separate
     question for main-role cases.
+- [x] Lib cleanups (board task dotfiles-14): `runTask` no longer throws when a session runs
+  past its deadline; it returns the events streamed so far with `timedOut: true` and `ok:
+  false` (and still reads and deletes a kept transcript). The bench records it as a timed-out
+  model failure with the models seen so far; a proposer records `proposer-failed` with no
+  result subtype, which is retried next run, as the `error` it used to record was.
+  `claudeTempDir()` in `claude/tests/lib/cleanup.js` is now the one definition of Claude
+  Code's temporary folder, used by the live suites, the bench and the board bench.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 

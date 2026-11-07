@@ -114,7 +114,8 @@ function transcriptEfforts(file) {
 // readEffort lets the session save its transcript, the only place Claude Code records
 // the effort each request ran at (the stream does not), reads it and deletes it;
 // efforts then counts the main thread's messages per effort, or is null when no
-// transcript was found. Returns the stream whether or not the task succeeded.
+// transcript was found. Returns the stream whether or not the task succeeded; a session
+// past timeoutMs is killed and returns what it streamed, with timedOut set.
 export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
   permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false, readEffort = false,
@@ -143,7 +144,15 @@ export async function runTask({
         attemptArgv.push("--session-id", id);
         transcripts.push(join(projectsRoot(attemptEnv), projectName(realpathSync(cwd)), id));
       }
-      const result = await runProcess(attemptArgv, { cwd, env: attemptEnv, timeout, input: prompt });
+      let result;
+      try {
+        result = await runProcess(attemptArgv, { cwd, env: attemptEnv, timeout, input: prompt });
+      } catch (error) {
+        // Running out of time is the task's outcome, not a failed call: the stream so far.
+        if (!/^Process timeout/.test(error.message ?? "")) throw error;
+        const stdout = error.stdout ?? "";
+        return { result: { code: null, stdout, stderr: error.stderr ?? "", durationMs: timeout }, events: partialEvents(stdout), timedOut: true };
+      }
       return { result, events: eventsOf(result, "Task run") };
     }, timeoutMs);
   } finally {
@@ -164,12 +173,13 @@ export async function runTask({
       }
     }
   }
-  const { result, events, refused } = run;
+  const { result, events, refused, timedOut = false } = run;
   const final = resultEvent(events);
   return {
     events,
     ...(readEffort ? { efforts } : {}),
-    ok: completed(events),
+    ok: !timedOut && completed(events),
+    timedOut,
     finalText: typeof final?.result === "string" ? final.result : "",
     costUSD: (refused ? cost(refused.events) : 0) + (final?.total_cost_usd ?? 0),
     turns: final?.num_turns ?? null,
