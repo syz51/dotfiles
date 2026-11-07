@@ -284,7 +284,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     if (!(await boardFilesCapture())) {
       // The cursor stays, so these turns are judged once the CLI is updated (within
       // --max-age-hours).
-      const note = `${boardBin()} cannot file capture reports yet (its \`feedback\` lacks --source and --signature); nothing judged. Update it with agent-board's feedback endpoint (agent-board-23).`;
+      const note = `${boardBin()} cannot file capture reports yet (its \`feedback\` lacks --source); nothing judged. Update it with agent-board's feedback endpoint (agent-board-23).`;
       writeJsonAtomic(stateFile(), { ...state, lastRun: { at: new Date(now).toISOString(), judged: 0, filed: 0, errors: 0, costUSD: 0, note } });
       console.log(note);
       return 0;

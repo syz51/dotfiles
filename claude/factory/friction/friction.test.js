@@ -354,7 +354,7 @@ describe("friction run", () => {
     setEnv({ FAKE_BOARD_OLD: "1" });
     expect(await run(["run"], context(roots))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([0, 0]);
-    expect(console.log.mock.calls.flat().join("\n")).toContain("cannot file capture reports yet");
+    expect(console.log.mock.calls.flat().join("\n")).toContain("cannot file capture reports yet (its `feedback` lacks --source); nothing judged");
     const state = readJson(join(scratch, "state", "friction-state.json"));
     expect([state.cursor, state.lastRun.judged]).toEqual([undefined, 0]);
     expect(await run(["status"])).toBe(0);
