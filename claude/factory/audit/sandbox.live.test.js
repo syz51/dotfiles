@@ -6,19 +6,43 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { removeSessionArtifacts } from "../../tests/lib/cleanup.js";
+import { claudeTempDir, removeSessionArtifacts } from "../../tests/lib/cleanup.js";
 import { HAIKU, HOME_CLAUDE, LIVE } from "../../tests/lib/live.js";
+import { failureDirectory, writeReport } from "../../tests/lib/reports.js";
 import { bashRuns, toolResults, toolUses } from "../../tests/lib/stream.js";
 import { runTask } from "../lib/claude.js";
 import { readProfile, writeProfile } from "./sandbox.js";
 
 const TIMEOUT = 300_000;
-const CLAUDE_TMP = join(existsSync("/tmp") ? realpathSync("/tmp") : tmpdir(), `claude-${userInfo().uid}`);
 let root;
 let profiles;
 const costs = [];
+// The last session of each case, kept for the failure report.
+const lastRun = new Map();
+
+// Runs one case. A failed case keeps its session's report and full stream in
+// failureDirectory(), since the scratch folders go away and failures are rare.
+async function kept(label, body) {
+  try {
+    await body();
+  } catch (error) {
+    const run = lastRun.get(label);
+    try {
+      const dir = failureDirectory();
+      const name = `sandbox-${label}-${new Date().toISOString()}`;
+      writeReport(dir, name, {
+        case: label, error: String(error?.message ?? error), ok: run?.ok ?? null, code: run?.code ?? null,
+        costUSD: run?.costUSD ?? null, stderr: run?.stderr ?? "", bash: run ? bashRuns(run.events) : [], tools: run?.uses ?? [],
+      }, run ? run.events.map((event) => `${JSON.stringify(event)}\n`).join("") : undefined);
+      console.log(`[${label}] failed; its report and stream are in ${dir} (they hold the transcript: delete when done)`);
+    } catch (reportError) {
+      console.error(`[${label}] the failure report could not be written: ${reportError.message}`);
+    }
+    throw error;
+  }
+}
 
 // One session in a fresh folder under root with the profile written outside any folder
 // the sandbox can write to (a sandboxed command must not be able to loosen it).
@@ -29,6 +53,7 @@ async function session(label, { prompt, allowedDomains = [], tools, profile }) {
   const run = await runTask({ prompt, cwd, model: HAIKU, effort: "low", settings, tools, budgetUsd: 0.5, timeoutMs: TIMEOUT - 10_000 });
   costs.push({ label, cost: run.costUSD });
   const uses = toolUses(run.events);
+  lastRun.set(label, { ...run, uses });
   console.log(`[${label}] ok=${run.ok} cost=$${run.costUSD.toFixed(4)} exit=${run.code}`);
   for (const bash of bashRuns(run.events))
     console.log(`  Bash ok=${bash.ok}: ${bash.command}\n    -> ${bash.output.replace(/\s+/g, " ").slice(0, 300)}`);
@@ -50,7 +75,7 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
   });
   afterAll(() => {
     try {
-      removeSessionArtifacts({ bases: [join(HOME_CLAUDE, "projects"), CLAUDE_TMP], roots: [root] });
+      removeSessionArtifacts({ bases: [join(HOME_CLAUDE, "projects"), claudeTempDir()], roots: [root] });
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(profiles, { recursive: true, force: true });
@@ -59,7 +84,7 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
     }
   });
 
-  test("Bash writes inside the folder, not in $HOME, and reaches no host outside the allowlist", async () => {
+  test("Bash writes inside the folder, not in $HOME, and reaches no host outside the allowlist", () => kept("blocked", async () => {
     const outside = join(homedir(), `claude-sandbox-probe-${randomUUID()}.txt`);
     try {
       const run = await session("blocked", {
@@ -89,9 +114,9 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
     } finally {
       rmSync(outside, { force: true });
     }
-  }, TIMEOUT);
+  }), TIMEOUT);
 
-  test("a host the use allows is reachable", async () => {
+  test("a host the use allows is reachable", () => kept("allowed", async () => {
     const run = await session("allowed", {
       tools: ["Bash"],
       allowedDomains: ["github.com"],
@@ -105,7 +130,7 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
     const curl = runOf(bashRuns(run.events), "https://github.com");
     expect(curl.ok).toBe(true);
     expect(curl.output).toMatch(/\b(200|301|302)\b/);
-  }, TIMEOUT);
+  }), TIMEOUT);
 
   // The settings reference gives strictAllowlist's scope as user or managed; the sandboxing
   // page adds --settings. In bypassPermissions an unlisted host is allowed unless it is on,
@@ -113,7 +138,7 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
   // -k: inside the macOS sandbox, /usr/bin/curl cannot verify example.com's certificate
   // chain (exit 60, allowlisted or not), while github.com verifies; the proxy decision is
   // what this case checks.
-  test("without strictAllowlist, bypassPermissions lets a sandboxed command reach an unlisted host", async () => {
+  test("without strictAllowlist, bypassPermissions lets a sandboxed command reach an unlisted host", () => kept("not-strict", async () => {
     const profile = readProfile();
     profile.sandbox.network.strictAllowlist = false;
     const run = await session("not-strict", {
@@ -129,9 +154,9 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
     const curl = runOf(bashRuns(run.events), "https://example.com");
     expect(curl.ok).toBe(true);
     expect(curl.output).toMatch(/\b200\b/);
-  }, TIMEOUT);
+  }), TIMEOUT);
 
-  test("the Write tool, which the sandbox does not cover, cannot write outside the folder", async () => {
+  test("the Write tool, which the sandbox does not cover, cannot write outside the folder", () => kept("write-tool", async () => {
     const outside = join(homedir(), `claude-sandbox-probe-${randomUUID()}.txt`);
     try {
       const run = await session("write-tool", {
@@ -148,5 +173,5 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
     } finally {
       rmSync(outside, { force: true });
     }
-  }, TIMEOUT);
+  }), TIMEOUT);
 });

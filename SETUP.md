@@ -540,7 +540,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests
   the commit's SHA, in one background agent on the session's model in a worktree. A
   follow-up sent as soon as the first turn ends is answered while the review runs, and
   the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. The guard hooks block a force push to `main` and a bare
+  worktrees as they were. The guard hooks block a user-authorized leased force push to the branch the
+  remote's HEAD names as its default and a bare
   `python3`, while `uv run python` still runs.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
@@ -564,7 +565,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/factory/audit
 
 Set `CLAUDE_LIVE_REPORT_DIR` to a folder inside `$TMPDIR` to keep a JSON report and
 the raw stream of each scenario; the report lists each tool call with the directory it
-started in, which the stream lacks. Delete the folder when done: it holds transcripts.
+started in, which the stream lacks. The live sandbox check writes a failed case's report
+and stream there too, or, without the variable, to `$TMPDIR/claude-live-failures`, and
+prints the path. Delete these folders when done: they hold transcripts.
 
 With Explore's dependencies installed, its additional integration suite is:
 

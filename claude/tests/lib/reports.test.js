@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Ledger, reportDirectory, writeReport } from "./reports.js";
+import { failureDirectory, Ledger, reportDirectory, writeReport } from "./reports.js";
 
 let root;
 beforeEach(() => {
@@ -21,6 +21,13 @@ test("report folders stay inside the temp folder", () => {
   expect(() => reportDirectory(scratch, join(scratch, "link", "new"))).toThrow("Unsafe");
   expect(() => reportDirectory(scratch, join(scratch, "file", "new"))).toThrow("Unsafe");
   expect(reportDirectory(scratch, join(scratch, "a", "b"))).toBe(join(scratch, "a", "b"));
+});
+
+test("failures are kept in the report folder, else in claude-live-failures, inside the temp folder", () => {
+  const scratch = join(root, "scratch");
+  expect(failureDirectory({ CLAUDE_LIVE_REPORT_DIR: join(scratch, "reports") }, scratch)).toBe(join(scratch, "reports"));
+  expect(failureDirectory({}, scratch)).toBe(join(scratch, "claude-live-failures"));
+  expect(() => failureDirectory({ CLAUDE_LIVE_REPORT_DIR: join(root, "outside") }, scratch)).toThrow("must be inside");
 });
 
 test("reports are named after the scenario", () => {

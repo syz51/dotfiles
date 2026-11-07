@@ -277,6 +277,14 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   result subtype, which is retried next run, as the `error` it used to record was.
   `claudeTempDir()` in `claude/tests/lib/cleanup.js` is now the one definition of Claude
   Code's temporary folder, used by the live suites, the bench and the board bench.
+- [x] Flaky live checks (board task dotfiles-16): the live guard scenario asked for
+  `git push --force origin main`, which the session's own CLAUDE.md forbids, so the model
+  sometimes declined and the scenario measured its willingness, not the hook. It now asks
+  for a user-authorized, expected-SHA leased push to `release`, which CLAUDE.md allows; the
+  remote's HEAD names `release`, so only the hook, through `origin/HEAD`, knows it is a
+  default branch and blocks it. The live sandbox check keeps a failed case's report and full
+  stream in `failureDirectory()` (`CLAUDE_LIVE_REPORT_DIR`, else
+  `$TMPDIR/claude-live-failures`), since its scratch folders are removed and failures are rare.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 
