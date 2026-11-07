@@ -4,6 +4,7 @@
 // prompts never name the round, target or pass bar. A call holds every version at once, so
 // scores are comparative, and reference products anchor the scale. Overall scores are the
 // mean of the categories, computed here, not asked of the judge.
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join } from "node:path";
@@ -157,6 +158,21 @@ export function buildContent(versions, images = encodeImages(versions)) {
   return { content, labels };
 }
 
+// What the judges are asked, as a short hash: the rubric, the system prompt (with and
+// without the owner's preferences), the output schema and the framing of a call (with one
+// reference and with several, desktop and phone shots). A run is tied to it, so a change to
+// how the judges are asked starts a new run instead of mixing two ways of judging in one.
+export function councilVersion() {
+  const shot = { id: "s", file: "s", screen: "s", title: "S", view: "desktop-light", scheme: "light", width: 1, height: 1 };
+  const phone = { ...shot, view: "phone-dark", scheme: "dark", narrow: true };
+  const product = (key) => ({ key, kind: "product", shots: [shot, phone] });
+  const reference = (key) => ({ key, kind: "reference", title: "R", shots: [shot] });
+  const framing = (versions) => buildContent(versions, new Map()).content.filter((block) => block.type === "text").map((block) => block.text);
+  const prompts = [systemPrompt({ taste: [], product: "" }, []), systemPrompt({ taste: ["t"], product: "p" }, ["a"])];
+  const calls = [framing([product("a"), product("b"), reference("r")]), framing([product("a"), product("b"), reference("r"), reference("q")])];
+  return createHash("sha256").update(JSON.stringify([RUBRIC, prompts, outputSchema(), calls])).digest("hex").slice(0, 12);
+}
+
 export class JudgeOutputError extends Error {}
 // A judge that could not produce a usable answer; its calls' cost is already spent.
 export class JudgeFailedError extends Error {}
@@ -205,6 +221,7 @@ export const variance = (values) => {
   const average = mean(values);
   return values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length - 1);
 };
+export const sd = (values) => Math.sqrt(variance(values));
 
 // One judge's samples combined: the mean score per version and category, and overall.
 export function combine(samples) {
@@ -302,23 +319,29 @@ export function verdict({ result, pass, noise, candidate = "candidate", baseline
     if (pass.references !== null && referenceMargin < pass.references)
       reasons.push(`lead over the best reference ${signed(referenceMargin)} is under ${signed(pass.references)}`);
   }
-  return { judge: result.judge, pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], reasons };
+  const baselineLowest = Math.min(...Object.values(result.scores[baseline]).filter((value) => value !== null));
+  // How far the categories under the bar are below it in all, and how many there are.
+  const under = values.filter(([, value]) => value < pass.min);
+  const shortfall = under.reduce((sum, [, value]) => sum + pass.min - value, 0);
+  return { judge: result.judge, pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], baselineLowest, shortfall, underCount: under.length, reasons };
 }
 
 export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 export const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
 export const money = (value) => `$${(value ?? 0).toFixed(2)}`;
 
-// The candidate's issues over every judge and sample, grouped by screen and category, most
-// weighty first: severity counts 3, 2, 1, and repeats across calls add up.
-export function topIssues(results, key = "candidate", limit = 20) {
+// The candidate's issues over every judge and sample, grouped by screen and category. Those
+// in a category under the bar come first, the furthest under first (deficits: { category:
+// points under the bar }, only categories under it); then the most weighty: severity
+// counts 3, 2, 1, and repeats across calls add up.
+export function topIssues(results, key = "candidate", limit = 20, deficits = {}) {
   const groups = new Map();
   for (const result of results)
     for (const sample of result.samples)
       for (const issue of sample.issues) {
         if (issue.version !== key) continue;
         const id = `${issue.screen}|${issue.category}`;
-        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, weight: 0, count: 0, severity: "low", problems: [], fixes: [] };
+        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: issue.category in deficits, weight: 0, count: 0, severity: "low", problems: [], fixes: [] };
         group.weight += SEVERITY[issue.severity] ?? 1;
         group.count++;
         if ((SEVERITY[issue.severity] ?? 1) > SEVERITY[group.severity]) group.severity = issue.severity;
@@ -326,7 +349,8 @@ export function topIssues(results, key = "candidate", limit = 20) {
         if (group.fixes.length < 3) group.fixes.push(issue.fix);
         groups.set(id, group);
       }
-  return [...groups.values()].sort((a, b) => b.weight - a.weight || b.count - a.count).slice(0, limit);
+  const deficit = (group) => deficits[group.category] ?? 0;
+  return [...groups.values()].sort((a, b) => deficit(b) - deficit(a) || b.weight - a.weight || b.count - a.count).slice(0, limit);
 }
 
 // Calibration for one judge from its samples of baseline and control: the noise between
@@ -334,7 +358,7 @@ export function topIssues(results, key = "candidate", limit = 20) {
 export function calibrationOf(result, { baseline = "baseline", control = "control" } = {}) {
   const categories = RUBRIC.categories.map((category) => category.id).filter((id) => result.samples.every((sample) => sample.scores[baseline][id] !== null));
   const sigmaCategory = Math.sqrt(mean(categories.map((id) => variance(result.samples.map((sample) => sample.scores[baseline][id])))));
-  const sigmaOverall = Math.sqrt(variance(result.samples.map((sample) => sample.overall[baseline])));
+  const sigmaOverall = sd(result.samples.map((sample) => sample.overall[baseline]));
   const drop = result.overall[baseline] - result.overall[control];
   const lower = categories.filter((id) => result.scores[control][id] < result.scores[baseline][id]).length / categories.length;
   const reasons = [];
@@ -342,4 +366,25 @@ export function calibrationOf(result, { baseline = "baseline", control = "contro
   if (lower < 0.75) reasons.push(`the control scored lower in ${Math.round(lower * 100)}% of categories (needs 75%)`);
   if (sigmaCategory > 1) reasons.push(`category scores vary by ${sigmaCategory.toFixed(2)} between calls (needs at most 1.00)`);
   return { judge: result.judge, pass: reasons.length === 0, sigmaCategory, sigmaOverall, drop, lowerShare: lower, baseline: result.overall[baseline], control: result.overall[control], reasons, calibrated: true };
+}
+
+// Whether a judge ever gives the bar: the best reference's score per category, and the share
+// of its scores of main and the references (not the control) at or above min. Warns when the
+// bar is above the best reference by more than twice the judge's category noise, or when
+// fewer than 5% of its scores reach it: a climb would then spend rounds against a score the
+// judge almost never gives.
+export function barReach(result, { min, references, sigmaCategory }) {
+  const keys = ["baseline", ...references];
+  const all = result.samples.flatMap((sample) => keys.flatMap((key) => Object.values(sample.scores[key] ?? {}))).filter((value) => typeof value === "number");
+  const share = all.length ? all.filter((value) => value >= min).length / all.length : 0;
+  const bestReference = {};
+  for (const category of RUBRIC.categories) {
+    const scores = references.map((key) => result.scores[key]?.[category.id]).filter((value) => typeof value === "number");
+    if (scores.length) bestReference[category.id] = Math.max(...scores);
+  }
+  const beyond = Object.keys(bestReference).filter((id) => min > bestReference[id] + 2 * sigmaCategory);
+  const warnings = [];
+  if (beyond.length) warnings.push(`the bar ${min} is above the best reference in ${beyond.map((id) => `${id} (${bestReference[id].toFixed(2)})`).join(", ")}`);
+  if (share < 0.05) warnings.push(`${Math.round(share * 100)}% of its scores of main and the references reach ${min}`);
+  return { min, share, bestReference, beyond, warnings };
 }

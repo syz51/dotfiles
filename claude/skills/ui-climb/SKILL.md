@@ -68,11 +68,15 @@ relative to its folder. Start from:
   `capture`. `pass.references` (optional) also requires every category to beat the best
   reference by that margin; leave it out unless the owner asks for it.
 - Judges run in order and a round stops at the first that fails, so put the cheapest
-  first. Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800
-  and `phone` 390×844.
-- The run is tied to the configuration, the rubric and the owner's declined patterns in
-  `~/.claude/frontend-avoid.md`. Changing any of them needs `--new-run`, which captures
-  main and calibrates again; scores across runs do not compare.
+  first. Until a round has heard from every judge, rounds run them all, so you learn
+  whether they agree.
+  Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
+  `phone` 390×844.
+- The run is tied to the configuration, what the judges are asked (the factory's rubric
+  and prompts) and the owner's declined patterns in `~/.claude/frontend-avoid.md`.
+  Changing any of them needs `--new-run`, which captures main and calibrates again;
+  scores across runs do not compare. When a round refuses because the factory changed
+  under the run, start a new run and say why in a note.
 
 Run `$UI capture` and read the PNGs it lists. Every screen must show what its title says,
 in the right theme and width. Fix the configuration until it does.
@@ -85,6 +89,12 @@ most categories, or whose scores vary by more than a point between calls. Then t
 judge cannot steer the climb: use a stronger model or effort, or better screens, and
 calibrate again. Rounds refuse to run without a passing calibration.
 
+Calibration also prints a **bar reach** warning when a judge almost never gives the bar:
+the bar is above the best reference by more than twice its noise, or under 5% of its scores of
+main and the references reach it. Then put the warning in a note and ask the owner
+(`ask_user`) before round 1: go on as is, add a reference they rate at the bar, put a
+judge that uses the top of the scale first, or lower the bar.
+
 ## 3. Climb
 
 Repeat:
@@ -95,11 +105,18 @@ Repeat:
    table, the top issues, and the last line, which starts `score:`.
 3. Record the round on the task: `task_note` with the `score:` line as printed, then
    update your handoff.
-4. Stop when the round passes, when `$UI status` reports a plateau (two judged rounds
-   without gain beyond the judges' noise), when the run's budget is spent (exit 3), or
-   after 10 rounds. Say which in the last note.
-5. Otherwise fix what the round reported, starting with failed gates, then the issues
-   at the top of the list. Fix causes, not screenshots: shared tokens, components and
+4. Stop when the round passes, when the run's budget is spent (exit 3), after 10
+   rounds, or on a plateau: `$UI status` reports one when, over two judged rounds,
+   neither the lowest category nor (while it is under its bar) the gain over main moved
+   beyond the judges' noise. On a plateau with the bar more than 0.5 away and over half
+   the budget left, status says so: first make one structural round aimed at the lowest
+   category (a new type scale, layout system or component set, not more local fixes),
+   judge it with `$UI round --structural` and note what it changes, and stop when status
+   says that round did not move it either. Say why you stopped in the last note.
+5. Otherwise fix what the round reported: failed gates first, then the issues marked
+   `[under bar]` (in categories under the bar, furthest first), then the rest. When a
+   category under the bar has few issues, the round prints what the judges said of the
+   design; work from that. Fix causes, not screenshots: shared tokens, components and
    layout rules, so a change helps every screen. Look at the screenshots of the round
    (the output names the folder) before and after a change.
 
@@ -113,16 +130,25 @@ Rules:
   sideways scrolling are no worse than main's. Keep them that way.
 - Keep the product's behavior and copy unless the judges' issue is about them, and keep
   each round's change reviewable.
+- Act first on issues reported more than once (`×2` or more) or of high severity. Do not
+  undo an earlier round's fix for an issue reported once: leave it, and record the
+  conflict with both round numbers in a `note:` and in the PR's Left open.
+- Report what in the process costs you a round, such as judges reversing a fix, an issue
+  no change can satisfy, a bar that looks out of reach or a gate that misfires, with
+  `board feedback --about ui-climb`, citing the round files and fields. Then carry on.
 
 ## 4. Hand over
 
-1. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
+1. Unless the last round already ran every judge, run `$UI round --all-judges` on the
+   commit you hand over, so the owner sees every judge's score. Record its `score:` line.
+2. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
    Artifact when that tool is available, otherwise attach its path.
-2. Push the branch and open a PR with the climb's commits. Its body has the last `score:`
-   line, the rounds table from `$UI status`, what changed and why, and the report link.
-3. `ask_user` on the task: the result in one line, the PR and the report, with the
-   options Merge, Keep climbing (with notes), Discard. Set the task `blocked` until the
-   answer. A design change merges only on the owner's word.
+3. Push the branch and open a PR with the climb's commits. Its body has the last `score:`
+   line, the rounds table from `$UI status`, what changed and why, the conflicts left
+   open, and the report link.
+4. `ask_user` on the task: the result in one line with each judge's lowest score, the PR
+   and the report, with the options Merge, Keep climbing (with notes), Discard. Set the
+   task `blocked` until the answer. A design change merges only on the owner's word.
 
 ## Costs and failures
 
