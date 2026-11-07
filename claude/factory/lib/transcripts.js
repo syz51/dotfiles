@@ -77,7 +77,7 @@ export const isAgentBrief = (text) => AGENT_BRIEF.some((pattern) => pattern.test
 
 // A user prompt record's text, unless it is meta, a compact summary, a sidechain, a
 // prompt the host injected (promptSource "system"), only tool results, or an interrupt.
-function promptText(record) {
+export function promptText(record) {
   if (record.type !== "user" || record.isMeta || record.isCompactSummary || record.isSidechain) return null;
   if (record.promptSource === "system" || record.isVisibleInTranscriptOnly) return null;
   const content = record.message?.content;

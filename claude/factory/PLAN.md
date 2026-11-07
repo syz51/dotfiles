@@ -546,3 +546,10 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: Bench at 3+ trials per configuration: all 62 runs pass, so Haiku wins every
   case on cost. The agent files stay as they are until harder cases separate the models
   (dotfiles-26).
+- 2026-11-07: Setup registry and friction capture (dotfiles-32). `setups.toml` names 23 setups
+  and their owners for the feedback board's triage; `setups --check` validates it. `friction
+  run` judges turns that show friction and files each finding as capture feedback. On 2 days
+  of real sessions it read 856 turns in about a second and flagged 154; Haiku judged the top 8
+  for $0.014 and found 17 issues, mostly board length limits learned only by rejection and
+  guards blocking read-only commands. The same problem in different turns gets different
+  signatures, so triage merges those. Filing waits for agent-board-23's `feedback --source`.
