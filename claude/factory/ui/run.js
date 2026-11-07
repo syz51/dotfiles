@@ -16,7 +16,7 @@ export class RunError extends Error {}
 export const runsDir = (config) => dirname(statePath("ui", config.name, "runs", "run"));
 
 export function identity(config, avoid = avoidList()) {
-  return createHash("sha256").update(JSON.stringify([config.hash, RUBRIC.version, councilVersion(), avoid])).digest("hex").slice(0, 16);
+  return createHash("sha256").update(JSON.stringify([config.hash, councilVersion(), avoid])).digest("hex").slice(0, 16);
 }
 
 const stamp = (date = new Date()) => date.toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");

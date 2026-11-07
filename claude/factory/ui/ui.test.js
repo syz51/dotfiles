@@ -464,6 +464,7 @@ describe("rounds", () => {
     expect(scoreLine(judged(5, 0.2, { stage: "error", error: "claude-opus-5-5@high sample 2 failed twice: timed out\nmore" }), config))
       .toBe("score: round 5 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.20 vs main · error: claude-opus-5-5@high sample 2 failed twice: timed out · $1.23 · abcdef123456");
     expect(scoreLine(judged(6, 0.9, { calibrated: false }), config)).toBe("score: round 6 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · uncalibrated · $1.23 · abcdef123456");
+    expect(scoreLine(judged(7, 0.9, { structural: true }), config)).toBe("score: round 7 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · structural · $1.23 · abcdef123456");
   });
 
   test("a stray argument is a usage error, exit 2", async () => {
@@ -471,7 +472,7 @@ describe("rounds", () => {
   });
 
   test("a plateau is two judged rounds in which nothing the bar needs moved beyond the noise", () => {
-    const noise = { lowest: 0.1, gain: 0.25 };
+    const noise = () => ({ lowest: 0.1, gain: 0.25 });
     const at = (min, list) => plateau(list, { min, noise });
     expect(at(8.5, [judged(1, 0.2), judged(2, 0.9)]).plateau).toBe(false);
     expect(at(8.5, [judged(1, 0.2), { round: 2, stage: "gates", verdicts: [] }, judged(3, 0.3)]).judged).toBe(2);
@@ -488,17 +489,39 @@ describe("rounds", () => {
     expect(at(8.5, first)).toMatchObject({ plateau: true, metrics: { lowest: { before: 7.75, recent: 7.75 } } });
     expect(at(8.5, first).metrics.gain).toBeUndefined();
     // A latest round that clears both bars tracks nothing: no plateau.
-    expect(at(8, [judged(1, 0.9), judged(2, 0.9), judged(3, 0.9)]).plateau).toBe(false);
+    expect(at(8, [judged(1, 0.9), judged(2, 0.9), judged(3, 0.9)])).toMatchObject({ plateau: false, metrics: {} });
+    // Progress on one of two tied lowest categories shows in the total shortfall.
+    const tied = (round, lowest, shortfall) => ({ round, stage: "judges", verdicts: [{ judge: "s", pass: false, lowest, shortfall, underCount: 2, gain: 0.9, gainBar: 0.5, referenceMargin: null }] });
+    expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 2), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)])).toMatchObject({ plateau: false, metrics: { lowest: { moved: false }, shortfall: { before: 2, recent: 1.5, moved: true } } });
+    expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 1.5), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)]).plateau).toBe(true);
+  });
+
+  test("a plateau follows the judge that binds, not only the first", () => {
+    // The first judge clears the bar every round; the second fails it and never moves.
+    const pair = (round) => ({ round, stage: "judges", verdicts: [
+      { judge: "s", pass: true, lowest: 8.6, gain: 0.9, gainBar: 0.5, referenceMargin: null },
+      { judge: "o", pass: false, lowest: 8, gain: 0.9, gainBar: 0.5, referenceMargin: null },
+    ] });
+    const noises = [];
+    const result = plateau([pair(1), pair(2), pair(3), pair(4)], { min: 8.5, noise: (key) => (noises.push(key), { lowest: 0.1, gain: 0.25 }) });
+    expect(result).toMatchObject({ plateau: true, judge: "o", metrics: { lowest: { before: 8, recent: 8 } } });
+    expect(noises).toEqual(["o"]);
+    // With pass.references set, a lead over the references still under it is tracked too.
+    const lagging = (round, margin) => ({ round, stage: "judges", verdicts: [{ judge: "s", pass: false, lowest: 8.6, gain: 0.9, gainBar: 0.5, referenceMargin: margin }] });
+    expect(plateau([lagging(1, -0.5), lagging(2, -0.5), lagging(3, -0.2)], { min: 8.5, references: 0, noise: () => ({ lowest: 0.1, gain: 0.25 }) }))
+      .toMatchObject({ plateau: false, metrics: { references: { moved: true } } });
   });
 
   test("a climb's noise includes how much main's score moves between rounds", () => {
     const judge = { model: "claude-sonnet-5-5", effort: "medium", samples: 2 };
     const calibration = { sigmaOverall: 0.036, sigmaCategory: 0.1, calibrated: true };
-    expect(climbNoise(calibration, judge, [])).toMatchObject({ sigmaOverall: 0.036, sigmaLowest: 0.1 / Math.sqrt(2), calibrated: true });
+    expect(climbNoise(calibration, judge, [])).toMatchObject({ sigmaOverall: 0.036 / Math.sqrt(2), sigmaLowest: 0.1 / Math.sqrt(2), calibrated: true });
     const round = (baseline, baselineLowest) => ({ verdicts: [{ judge: "claude-sonnet-5-5@medium", baseline, baselineLowest }, { judge: "claude-opus-5-5@high", baseline: 1 }] });
     const noise = climbNoise(calibration, judge, [round(6.91, 6.5), round(7.0, 6.5), round(6.72, 6), round(6.91, 6.5)]);
     expect(noise.sigmaOverall).toBeCloseTo(0.118, 3);
     expect(noise.sigmaLowest).toBeCloseTo(0.25, 3);
+    // A verdict without main's score does not turn the noise into NaN.
+    expect(climbNoise(calibration, judge, [round(6.9, 6.5), round(undefined, undefined), round(7.1, 6.5)]).sigmaOverall).toBeCloseTo(0.1414, 3);
   });
 
   test("chart end labels never overlap", () => {
@@ -522,6 +545,12 @@ describe("rounds", () => {
     expect(html).not.toContain("</li><script>");
     expect(html).toContain("&lt;b&gt;bold&lt;/b&gt;");
     expect(html).toContain("<svg");
+    // Two judges configured, one verdict: the report says why.
+    expect(html).toContain("Round 1 stopped at the first judge that failed");
+    const partial = (extra) => renderReport({ config, run: { id: "r1", baseline: { rev: "origin/main", sha: "abcdef1234567890" } }, rounds: [{ ...judged(1, 0.3), ...extra, gates: { failures: [], totals: { candidate: checkTotals([]), baseline: checkTotals([]) } } }], calibration: null, spentUSD: 1, versions: {} });
+    expect(partial({ stage: "error" })).toContain("a judge could not finish its calls");
+    expect(partial({ stage: "budget" })).toContain("the budget ran out before every judge ran");
+    expect(partial({ skipped: ["claude-opus-5-5@high"] })).toContain("did not cover claude-opus-5-5@high");
   });
 });
 
@@ -737,16 +766,48 @@ button { font: inherit; padding: 8px 16px; }
       cwd: repo, timeout: 300_000,
       env: { ...env, FAKE_UI_RUNS: join(state, "ui", "pair", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 7.5, references: 8 }) },
     });
+    const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "pair.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
     const before = calls().length;
     expect((await round()).code).toBe(1);
     expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5"]);
     const second = await round();
     expect(second.code).toBe(1);
     expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]);
-    const status = await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "pair.json")], { cwd: repo, env, timeout: 60_000 });
-    expect(status.stdout).toContain("Main scored 7.00–7.00 over 2 judged rounds (claude-sonnet-5-5@medium; scores are comparative).");
-    expect(status.stdout).toContain("It was judged by 1 of 2 judges: run `ui round --all-judges` on the commit you hand over.");
-    expect(status.stdout).toContain("Latest judged round 2: lowest hierarchy 7.50, 0.50 under the bar 8;");
+    let text = await status();
+    expect(text).toContain("Main scored 7.00–7.00 over 2 judged rounds (claude-sonnet-5-5@medium; scores are comparative).");
+    expect(text).toContain("It was judged by 1 of 2 judges: run `ui round --all-judges` on the commit you hand over.");
+    expect(text).toContain("Latest judged round 2: lowest hierarchy 7.50, 0.50 under the bar 8;");
+    // Rounds that move nothing: a plateau. The bar is close, so no structural round is asked for.
+    expect((await round()).code).toBe(1);
+    text = await status();
+    expect(text).toContain("Plateau (claude-sonnet-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: lowest category best 7.50 vs 7.50 before");
+    expect(text).not.toContain("structural round");
+  }, 300_000);
+
+  test("a structural round is asked for once, far from the bar, and a judge the round's budget cannot cover is skipped", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("far.json", JSON.stringify({ ...config, name: "far", judges: [{ model: "claude-sonnet-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }], budgetUsd: { call: 0.5, round: 0.9, run: 20 } }));
+    write("web/home.html", page("This week", "<p>Far</p>"));
+    await commit("far");
+    const round = (...flags) => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", ...flags, "--config", join(repo, "far.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "far", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 6, references: 8 }) },
+    });
+    const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "far.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
+    // The first judge fails, and the second needs $1.00 of a $0.90 round: skipped, exit 1, not 3.
+    const first = await round();
+    expect(first.code).toBe(1);
+    expect(first.stdout).toContain("did not cover claude-opus-5-5@high, so they did not run");
+    for (let index = 0; index < 2; index++) expect((await round()).code).toBe(1);
+    let text = await status();
+    expect(text).toContain("The bar is 2.00 away with");
+    expect(text).toContain("judged with `ui round --structural`");
+    const structural = await round("--structural");
+    expect(structural.code).toBe(1);
+    expect(structural.stdout).toMatch(/score: round 4 fail · .* · structural · /);
+    text = await status();
+    expect(text).toContain("Structural round 4 did not move it either: stop the climb");
+    expect(text).not.toContain("The bar is 2.00 away");
   }, 300_000);
 
   test("stops before spending past the run's budget", async () => {

@@ -472,7 +472,7 @@ first climb is agent-board's web view (`agent-board-21`).
   alt text and sideways scrolling no worse than main's (`ui/checks.js`, run in the page).
 - Rounds judge a commit, extracted with `git archive` and set up fresh, against the
   run's fixed main commit. Judges run cheapest first and stop at the first failure,
-  except in a run's first judged round and the hand-over round, where every judge runs.
+  except until a round has heard from every judge, and in the hand-over round.
   Issues in categories under the bar are listed first. Budgets per call, round and run; a
   run is tied to its configuration, what the judges are asked (rubric and prompts, hashed)
   and `~/.claude/frontend-avoid.md`.

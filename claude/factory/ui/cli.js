@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { appendJsonl, readJson, writeJsonAtomic } from "../lib/state.js";
 import { CaptureError, resolveRev, runChecks, treeState } from "./capture.js";
 import { ConfigError, loadConfig } from "./config.js";
-import { barReach, calibrationOf, councilVersion, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, runJudge, signed, topIssues, variance, verdict } from "./council.js";
+import { barReach, calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, runJudge, sd, signed, topIssues, verdict } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { renderReport } from "./report.js";
 import {
@@ -24,9 +24,9 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js ui <subcommand> [options]
                judge: passes when every judge ranks the control clearly lower and its
                scores vary little between calls. Required before rounds.
   round        Gate and judge the committed candidate (HEAD) against main. Judges run in
-               order and stop at the first that fails, except in a run's first judged
-               round, where every judge runs. Exit 0 when every judge passes the bar, 1
-               when it fails, 3 when the budget ran out.
+               order and stop at the first that fails, except until a round of the run
+               has heard from every judge. Exit 0 when every judge passes the bar, 1 when
+               it fails, 3 when the budget ran out.
   status       Rounds so far, spending, and whether the climb has plateaued.
   report       Write the run's HTML report: scores per round, screenshots, issues.
 
@@ -37,6 +37,7 @@ Options
   --rev REV         capture: a commit instead of the working tree
   --samples N       calibrate: calls per judge (default 3, at least 2)
   --all-judges      round: run every judge even after one fails (do so on the round you hand over)
+  --structural      round: mark the round as a structural change (a new system, not local fixes)
   --allow-dirty     round: judge the working tree with uncommitted changes (recorded as dirty)
   --uncalibrated    round: run without a passing calibration, as a trial that never passes
   --checks          capture: run the configuration's checks too
@@ -54,6 +55,7 @@ const OPTIONS = {
   rev: { type: "string" },
   samples: { type: "string", default: "3" },
   "all-judges": { type: "boolean", default: false },
+  structural: { type: "boolean", default: false },
   "allow-dirty": { type: "boolean", default: false },
   uncalibrated: { type: "boolean", default: false },
   checks: { type: "boolean", default: false },
@@ -67,37 +69,39 @@ const short = (sha) => sha.slice(0, 12);
 const percent = (share) => (typeof share === "number" ? `${Math.round(share * 100)}%` : "–");
 const firstLine = (text) => text.split("\n")[0].replace(/:$/, "").slice(0, 120);
 
-// A judge's noise from its passing calibration; the defaults, flagged, otherwise.
-function noiseOf(run, judge) {
-  const entry = readJson(calibrationPath(run), null)?.judges?.[judgeKey(judge)];
+// A judge's noise from its passing calibration (the run's calibration.json); the defaults,
+// flagged, otherwise.
+function noiseOf(calibration, judge) {
+  const entry = calibration?.judges?.[judgeKey(judge)];
   return entry?.pass ? entry : DEFAULT_NOISE;
 }
 
-const sd = (values) => Math.sqrt(variance(values));
+// One judge's verdicts over the run's rounds, in order.
+const verdictsOf = (list, key) => list.flatMap((round) => round.verdicts?.filter((v) => v.judge === key) ?? []);
+const numbers = (values) => values.filter((value) => typeof value === "number");
 
-// A judge's noise in a climb. Scores are comparative, so main's score moves with the
-// candidate beside it, more than between calibration's repeat calls: the noise is the larger
-// of the calibrated one and the spread of main's scores over the run's judged rounds (list).
-// sigmaOverall is for the gain over main; sigmaLowest for the lowest category, a mean of the
-// judge's samples.
+// A judge's noise in a climb, for scores that are means of its samples. Scores are
+// comparative, so main's score moves with the candidate beside it, more than between
+// calibration's repeat calls: the noise is the larger of the calibrated one and the spread
+// of main's scores over the run's judged rounds (list). sigmaOverall is for the gain over
+// main; sigmaLowest for a category score.
 export function climbNoise(calibration, judge, list) {
-  const mains = list.flatMap((round) => round.verdicts?.filter((v) => v.judge === judgeKey(judge)) ?? []);
-  const lowests = mains.map((v) => v.baselineLowest).filter((value) => typeof value === "number");
+  const mains = verdictsOf(list, judgeKey(judge));
+  const root = Math.sqrt(judge.samples);
   return {
     ...calibration,
-    sigmaOverall: Math.max(calibration.sigmaOverall, sd(mains.map((v) => v.baseline))),
-    sigmaLowest: Math.max(calibration.sigmaCategory / Math.sqrt(judge.samples), sd(lowests)),
+    sigmaOverall: Math.max(calibration.sigmaOverall / root, sd(numbers(mains.map((v) => v.baseline)))),
+    sigmaLowest: Math.max(calibration.sigmaCategory / root, sd(numbers(mains.map((v) => v.baselineLowest)))),
   };
 }
 
-// Main's overall score from the first judge over the run's judged rounds: { low, high, rounds }.
+// Main's overall score from a judge over the run's judged rounds: { low, high, rounds }.
 function mainRange(list, judge) {
-  const scores = list.flatMap((round) => round.verdicts?.filter((v) => v.judge === judgeKey(judge)).map((v) => v.baseline) ?? []);
+  const scores = numbers(verdictsOf(list, judgeKey(judge)).map((v) => v.baseline));
   return scores.length ? { low: Math.min(...scores), high: Math.max(...scores), rounds: scores.length } : null;
 }
 
-function calibrated(config, run) {
-  const calibration = readJson(calibrationPath(run), null);
+function calibrated(config, calibration) {
   const missing = config.judges.filter((judge) => !calibration?.judges?.[judgeKey(judge)]?.pass);
   return { ok: missing.length === 0, missing };
 }
@@ -112,30 +116,44 @@ export function scoreLine(round, config) {
   if (round.stage === "budget") parts.push("budget spent");
   if (round.stage === "error") parts.push(`error: ${firstLine(round.error)}`);
   if (round.calibrated === false) parts.push("uncalibrated");
+  if (round.structural) parts.push("structural");
   parts.push(money(round.costUSD), `${short(round.sha)}${round.dirty ? "+dirty" : ""}`);
   return parts.join(" · ");
 }
 
-// The climb has plateaued when nothing the bar still needs moved in the first judge's last
-// two judged rounds: the best of them is no more than the noise above the best before them,
-// for the lowest category while it is under min, and for the gain over main while it is
-// under its bar. noise: { lowest, gain }.
-export function plateau(list, { min, noise }) {
-  const judged = list.filter((round) => round.verdicts?.length).map((round) => round.verdicts[0]);
-  if (judged.length < 3) return { plateau: false, judged: judged.length };
-  const latest = judged.at(-1);
-  const series = {
-    ...(latest.lowest < min ? { lowest: judged.map((v) => v.lowest) } : {}),
-    ...(latest.gain < latest.gainBar ? { gain: judged.map((v) => v.gain) } : {}),
-  };
+// The climb has plateaued when nothing the bar still needs moved in the binding judge's last
+// two judged rounds: the best of them is within the noise of the best before them. The
+// binding judge is the latest round's first failing judge. Its metrics are those still short
+// of their bar: the lowest category and the total shortfall under min (so progress on one of
+// several tied categories counts), the gain over main, and the lead over the best reference
+// when pass.references is set. noise(judge key) gives { lowest, gain }.
+export function plateau(list, { min, references = null, noise }) {
+  const judgedRounds = list.filter((round) => round.verdicts?.length);
+  const judged = judgedRounds.length;
+  if (judged < 3) return { plateau: false, judged, metrics: {} };
+  const latestRound = judgedRounds.at(-1);
+  const judge = (latestRound.verdicts.find((v) => !v.pass) ?? latestRound.verdicts[0]).judge;
+  const verdicts = verdictsOf(judgedRounds, judge);
+  if (verdicts.length < 3) return { plateau: false, judged, judge, metrics: {} };
+  const latest = verdicts.at(-1);
+  const sigma = noise(judge);
+  // name: [values, noise, lower is better]
+  const series = {};
+  if (latest.lowest < min) {
+    series.lowest = [verdicts.map((v) => v.lowest), sigma.lowest, false];
+    if (verdicts.every((v) => typeof v.shortfall === "number")) series.shortfall = [verdicts.map((v) => v.shortfall), sigma.lowest * Math.sqrt(latest.underCount), true];
+  }
+  if (latest.gain < latest.gainBar) series.gain = [verdicts.map((v) => v.gain), sigma.gain, false];
+  if (references !== null && latest.referenceMargin !== null && latest.referenceMargin < references) series.references = [verdicts.map((v) => v.referenceMargin), sigma.lowest, false];
   const metrics = {};
-  for (const [name, values] of Object.entries(series)) {
-    const before = Math.max(...values.slice(0, -2));
-    const recent = Math.max(...values.slice(-2));
-    metrics[name] = { before, recent, noise: noise[name], moved: recent > before + noise[name] };
+  for (const [name, [values, spread, lower]] of Object.entries(series)) {
+    const best = (items) => (lower ? Math.min(...items) : Math.max(...items));
+    const before = best(values.slice(0, -2));
+    const recent = best(values.slice(-2));
+    metrics[name] = { before, recent, noise: spread, moved: lower ? recent < before - spread : recent > before + spread };
   }
   const tracked = Object.values(metrics);
-  return { plateau: tracked.length > 0 && tracked.every((metric) => !metric.moved), judged: judged.length, metrics };
+  return { plateau: tracked.length > 0 && tracked.every((metric) => !metric.moved), judged, judge, metrics };
 }
 
 function printGates(gates, dir) {
@@ -251,7 +269,8 @@ async function roundCommand(config, values) {
   const run = await openRun(config, { id: values.run, fresh: values["new-run"] });
   const unlock = lockRun(run);
   try {
-    const calibration = calibrated(config, run);
+    const calibrationFile = readJson(calibrationPath(run), null);
+    const calibration = calibrated(config, calibrationFile);
     if (!calibration.ok && !values.uncalibrated)
       throw new RunError(`run ${run.id} has no passing calibration for ${calibration.missing.map(judgeKey).join(", ")}: run \`ui calibrate\` first (or --uncalibrated for a trial that should not count)`);
     const tree = await treeState(config.rootDir);
@@ -264,8 +283,9 @@ async function roundCommand(config, values) {
     }
     const previous = rounds(run);
     const number = previous.length + 1;
-    // The first judged round hears from every judge, so the climb knows whether they agree.
-    const everyJudge = values["all-judges"] || !previous.some((round) => round.verdicts?.length);
+    // Until a round has heard from every judge, rounds run them all, so the climb knows
+    // whether they agree.
+    const everyJudge = values["all-judges"] || !previous.some((round) => round.verdicts?.length === config.judges.length);
     const name = `round-${number}`;
     const { baseline } = await baselineVersions(config, run, { log });
     const references = await referenceVersions(config, run, { log });
@@ -275,7 +295,7 @@ async function roundCommand(config, values) {
       return { checks, shots: checks.ok ? await candidateShots(config, run, name, root) : [] };
     });
     const gates = evaluateGates({ checks, candidate: shots, baseline });
-    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, gates };
+    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, ...(values.structural ? { structural: true } : {}), gates };
     let result;
     if (!gates.ok) {
       result = { ...base, stage: "gates", pass: false, verdicts: [], costUSD: 0 };
@@ -287,10 +307,17 @@ async function roundCommand(config, values) {
       let cost = 0;
       let stage = "judges";
       let error = null;
-      for (const judge of config.judges) {
+      let skipped = [];
+      for (const [index, judge] of config.judges.entries()) {
         const need = judge.samples * config.budgetUsd.call;
-        if (cost + need > config.budgetUsd.round || spent(run) + need > config.budgetUsd.run) {
+        if (spent(run) + need > config.budgetUsd.run) {
           stage = "budget";
+          break;
+        }
+        if (cost + need > config.budgetUsd.round) {
+          // A round an earlier judge failed has its verdict: the round's cap only skips the rest.
+          if (verdicts.some((v) => !v.pass)) skipped = config.judges.slice(index).map(judgeKey);
+          else stage = "budget";
           break;
         }
         log(`Judging with ${judgeKey(judge)} (${judge.samples} calls)…`);
@@ -312,7 +339,7 @@ async function roundCommand(config, values) {
           break;
         }
         judged.push(outcome);
-        const noise = climbNoise(noiseOf(run, judge), judge, previous);
+        const noise = climbNoise(noiseOf(calibrationFile, judge), judge, previous);
         const v = verdict({ result: outcome, pass: config.pass, noise, references: referenceKeys });
         verdicts.push({ ...v, calibrated: noise.calibrated !== false, references: Object.fromEntries(referenceKeys.map((key) => [key, outcome.overall[key]])), baseline: outcome.overall.baseline, scores: outcome.scores });
         if (!v.pass && !everyJudge) break;
@@ -325,7 +352,7 @@ async function roundCommand(config, values) {
         for (const [category, score] of Object.entries(v.scores.candidate))
           if (score !== null && score < config.pass.min) deficits[category] = Math.max(deficits[category] ?? 0, config.pass.min - score);
       result = {
-        ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), underBar: deficits,
+        ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
         issues: topIssues(judged, "candidate", 20, deficits), samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
       };
     }
@@ -366,14 +393,17 @@ function printRound(result, config, run, json) {
       console.log(`   fix: ${issue.fixes[0]}`);
     });
   }
-  // A category under the bar that the judges named few issues in: what they said of the design.
-  const thin = Object.entries(result.underBar ?? {}).filter(([category]) => (result.issues ?? []).filter((issue) => issue.category === category).length < 2);
-  const summaries = (result.samples ?? []).flatMap((judge) => judge.samples.map((sample) => sample.summaries?.candidate).filter(Boolean));
+  // A category under the bar that fewer than two reports named: what the judges said of the
+  // design, a few of their summaries.
+  const reports = (category) => (result.issues ?? []).filter((issue) => issue.category === category).reduce((sum, issue) => sum + issue.count, 0);
+  const thin = Object.entries(result.underBar ?? {}).filter(([category]) => reports(category) < 2);
+  const summaries = [...new Set((result.samples ?? []).flatMap((judge) => judge.samples.map((sample) => sample.summaries?.candidate).filter(Boolean)))].slice(0, 4);
   if (thin.length && summaries.length) {
     console.log(`\nUnder the bar with few issues named: ${thin.map(([category, deficit]) => `${category} (${fixed(config.pass.min - deficit)})`).join(", ")}. What the judges said of this design:`);
     for (const summary of summaries) console.log(`- ${summary}`);
   }
   if (result.stage === "budget") console.log("\nThe budget ran out before every judge ran.");
+  if (result.skipped) console.log(`\nA judge failed, and the round's budget did not cover ${result.skipped.join(", ")}, so they did not run.`);
   if (result.stage === "error") console.log(`\nA judge could not finish, so the round has no verdict (its cost is counted): ${result.error}\nRun the round again.`);
   if (!result.calibrated) console.log("\nThis round ran without a passing calibration: it is a trial and does not pass.");
   console.log(`\nScreenshots: ${versionDir(run, `round-${result.round}`)}`);
@@ -382,22 +412,26 @@ function printRound(result, config, run, json) {
 }
 
 // What a plateau's metrics did, for the status line.
-const METRIC = { lowest: "lowest category", gain: "gain over main" };
+const METRIC = { lowest: "lowest category", shortfall: "total shortfall under the bar", gain: "gain over main", references: "lead over the best reference" };
 const describeMetrics = (metrics) => Object.entries(metrics).map(([name, m]) => `${METRIC[name]} best ${fixed(m.recent)} vs ${fixed(m.before)} before (noise ${fixed(m.noise)})`).join("; ");
 
 function statusCommand(config, values) {
   const run = existingRun(config, values);
   const list = rounds(run);
   const first = config.judges[0];
-  const noise = climbNoise(noiseOf(run, first), first, list);
   const latest = [...list].reverse().find((round) => round.verdicts?.length);
   const spentUSD = spent(run);
   const calibration = readJson(calibrationPath(run), null);
+  const noise = (key) => {
+    const judge = config.judges.find((item) => judgeKey(item) === key) ?? first;
+    const sigma = climbNoise(noiseOf(calibration, judge), judge, list);
+    return { lowest: sigma.sigmaLowest, gain: sigma.sigmaOverall };
+  };
   const status = {
-    run: run.id, baseline: run.baseline, council: councilVersion(), spentUSD, budgetUSD: config.budgetUsd.run,
+    run: run.id, baseline: run.baseline, council: run.council ?? null, spentUSD, budgetUSD: config.budgetUsd.run,
     budgetLeftShare: Math.max(0, 1 - spentUSD / config.budgetUsd.run),
-    calibrated: calibrated(config, run).ok, rounds: list.map((round) => ({ ...round, scoreLine: scoreLine(round, config) })),
-    plateau: plateau(list, { min: config.pass.min, noise: { lowest: noise.sigmaLowest, gain: noise.sigmaOverall } }),
+    calibrated: calibrated(config, calibration).ok, rounds: list.map((round) => ({ ...round, scoreLine: scoreLine(round, config) })),
+    plateau: plateau(list, { min: config.pass.min, references: config.pass.references, noise }),
     passed: list.some((round) => round.pass && !round.dirty && round.calibrated !== false),
     barGap: latest ? config.pass.min - latest.verdicts[0].lowest : null,
     lowestCategory: latest?.verdicts[0].lowestCategory ?? null,
@@ -408,7 +442,7 @@ function statusCommand(config, values) {
     console.log(JSON.stringify(status, null, 2));
     return 0;
   }
-  console.log(`Run ${run.id} · main ${short(run.baseline.sha)} · council ${status.council} · calibrated: ${status.calibrated ? "yes" : "no"} · spent ${money(spentUSD)} of ${money(status.budgetUSD)} (${percent(status.budgetLeftShare)} left)`);
+  console.log(`Run ${run.id} · main ${short(run.baseline.sha)} · council ${status.council ?? "–"} · calibrated: ${status.calibrated ? "yes" : "no"} · spent ${money(spentUSD)} of ${money(status.budgetUSD)} (${percent(status.budgetLeftShare)} left)`);
   for (const round of status.rounds) console.log(round.scoreLine);
   if (!list.length) console.log("No rounds yet.");
   if (status.main.rounds)
@@ -420,10 +454,12 @@ function statusCommand(config, values) {
       console.log(`It was judged by ${latest.verdicts.length} of ${config.judges.length} judges: run \`ui round --all-judges\` on the commit you hand over.`);
   }
   if (status.plateau.plateau) {
-    console.log(`Plateau: in the last two judged rounds nothing the bar needs moved beyond the noise: ${describeMetrics(status.plateau.metrics)}.`);
-    if (status.barGap > 0.5 && status.budgetLeftShare > 0.5)
-      console.log(`The bar is ${fixed(status.barGap)} away with ${percent(status.budgetLeftShare)} of the budget left: before stopping, make one structural round aimed at ${status.lowestCategory} (a new system for it, not more local fixes). Stop if that round does not move it either.`);
-  } else console.log(`No plateau (${status.plateau.judged} judged round${status.plateau.judged === 1 ? "" : "s"}${status.plateau.metrics ? `; ${describeMetrics(status.plateau.metrics)}` : ""}).`);
+    console.log(`Plateau (${status.plateau.judge}): in the last two judged rounds nothing the bar needs moved beyond the noise: ${describeMetrics(status.plateau.metrics)}.`);
+    const structural = list.filter((round) => round.verdicts?.length).slice(-2).find((round) => round.structural);
+    if (structural) console.log(`Structural round ${structural.round} did not move it either: stop the climb and say so in the last note.`);
+    else if (status.barGap > 0.5 && status.budgetLeftShare > 0.5)
+      console.log(`The bar is ${fixed(status.barGap)} away with ${percent(status.budgetLeftShare)} of the budget left: before stopping, make one structural round aimed at ${status.lowestCategory} (a new system for it, not more local fixes), judged with \`ui round --structural\`. Stop if that round does not move it either.`);
+  } else console.log(`No plateau (${status.plateau.judged} judged round${status.plateau.judged === 1 ? "" : "s"}${Object.keys(status.plateau.metrics).length ? `; ${describeMetrics(status.plateau.metrics)}` : ""}).`);
   return 0;
 }
 

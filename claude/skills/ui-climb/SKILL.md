@@ -68,7 +68,8 @@ relative to its folder. Start from:
   `capture`. `pass.references` (optional) also requires every category to beat the best
   reference by that margin; leave it out unless the owner asks for it.
 - Judges run in order and a round stops at the first that fails, so put the cheapest
-  first. A run's first judged round runs every judge, so you learn whether they agree.
+  first. Until a round has heard from every judge, rounds run them all, so you learn
+  whether they agree.
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
@@ -89,7 +90,7 @@ judge cannot steer the climb: use a stronger model or effort, or better screens,
 calibrate again. Rounds refuse to run without a passing calibration.
 
 Calibration also prints a **bar reach** warning when a judge almost never gives the bar:
-the bar is above the best reference by more than its noise, or under 5% of its scores of
+the bar is above the best reference by more than twice its noise, or under 5% of its scores of
 main and the references reach it. Then put the warning in a note and ask the owner
 (`ask_user`) before round 1: go on as is, add a reference they rate at the bar, put a
 judge that uses the top of the scale first, or lower the bar.
@@ -110,8 +111,8 @@ Repeat:
    beyond the judges' noise. On a plateau with the bar more than 0.5 away and over half
    the budget left, status says so: first make one structural round aimed at the lowest
    category (a new type scale, layout system or component set, not more local fixes),
-   noted as `structural:` with what it changes, and stop only if that round does not
-   move it either. Say why you stopped in the last note.
+   judge it with `$UI round --structural` and note what it changes, and stop when status
+   says that round did not move it either. Say why you stopped in the last note.
 5. Otherwise fix what the round reported: failed gates first, then the issues marked
    `[under bar]` (in categories under the bar, furthest first), then the rest. When a
    category under the bar has few issues, the round prints what the judges said of the

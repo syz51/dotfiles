@@ -11,8 +11,7 @@ import { extname, join } from "node:path";
 import { judge as callJudge } from "../lib/claude.js";
 import { IMAGE_TYPES } from "./config.js";
 
-const RUBRIC_TEXT = readFileSync(join(import.meta.dir, "rubric.json"), "utf8");
-export const RUBRIC = JSON.parse(RUBRIC_TEXT);
+export const RUBRIC = JSON.parse(readFileSync(join(import.meta.dir, "rubric.json"), "utf8"));
 export const AVOID_FILE = () => process.env.CLAUDE_FACTORY_AVOID || join(homedir(), ".claude", "frontend-avoid.md");
 const SEVERITY = { high: 3, medium: 2, low: 1 };
 // The API's limits on a request: 32 MB in all, with headroom here for the prompts and the
@@ -159,14 +158,19 @@ export function buildContent(versions, images = encodeImages(versions)) {
   return { content, labels };
 }
 
-// What the judges are asked, as a short hash: the rubric's text, the system prompt, the
-// output schema and the framing of a call. A run is tied to it, so a change to how the
-// judges are asked starts a new run instead of mixing two ways of judging in one.
+// What the judges are asked, as a short hash: the rubric, the system prompt (with and
+// without the owner's preferences), the output schema and the framing of a call (with one
+// reference and with several, desktop and phone shots). A run is tied to it, so a change to
+// how the judges are asked starts a new run instead of mixing two ways of judging in one.
 export function councilVersion() {
   const shot = { id: "s", file: "s", screen: "s", title: "S", view: "desktop-light", scheme: "light", width: 1, height: 1 };
-  const versions = [{ key: "a", kind: "product", shots: [shot] }, { key: "b", kind: "product", shots: [shot] }, { key: "r", kind: "reference", title: "R", shots: [shot] }];
-  const framing = buildContent(versions, new Map()).content.filter((block) => block.type === "text").map((block) => block.text);
-  return createHash("sha256").update(JSON.stringify([RUBRIC_TEXT, systemPrompt({ taste: [], product: "" }, []), outputSchema(), framing])).digest("hex").slice(0, 12);
+  const phone = { ...shot, view: "phone-dark", scheme: "dark", narrow: true };
+  const product = (key) => ({ key, kind: "product", shots: [shot, phone] });
+  const reference = (key) => ({ key, kind: "reference", title: "R", shots: [shot] });
+  const framing = (versions) => buildContent(versions, new Map()).content.filter((block) => block.type === "text").map((block) => block.text);
+  const prompts = [systemPrompt({ taste: [], product: "" }, []), systemPrompt({ taste: ["t"], product: "p" }, ["a"])];
+  const calls = [framing([product("a"), product("b"), reference("r")]), framing([product("a"), product("b"), reference("r"), reference("q")])];
+  return createHash("sha256").update(JSON.stringify([RUBRIC, prompts, outputSchema(), calls])).digest("hex").slice(0, 12);
 }
 
 export class JudgeOutputError extends Error {}
@@ -217,6 +221,7 @@ export const variance = (values) => {
   const average = mean(values);
   return values.reduce((sum, value) => sum + (value - average) ** 2, 0) / (values.length - 1);
 };
+export const sd = (values) => Math.sqrt(variance(values));
 
 // One judge's samples combined: the mean score per version and category, and overall.
 export function combine(samples) {
@@ -315,7 +320,10 @@ export function verdict({ result, pass, noise, candidate = "candidate", baseline
       reasons.push(`lead over the best reference ${signed(referenceMargin)} is under ${signed(pass.references)}`);
   }
   const baselineLowest = Math.min(...Object.values(result.scores[baseline]).filter((value) => value !== null));
-  return { judge: result.judge, pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], baselineLowest, reasons };
+  // How far the categories under the bar are below it in all, and how many there are.
+  const under = values.filter(([, value]) => value < pass.min);
+  const shortfall = under.reduce((sum, [, value]) => sum + pass.min - value, 0);
+  return { judge: result.judge, pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], baselineLowest, shortfall, underCount: under.length, reasons };
 }
 
 export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
@@ -324,8 +332,8 @@ export const money = (value) => `$${(value ?? 0).toFixed(2)}`;
 
 // The candidate's issues over every judge and sample, grouped by screen and category. Those
 // in a category under the bar come first, the furthest under first (deficits: { category:
-// points under the bar }); then the most weighty: severity counts 3, 2, 1, and repeats
-// across calls add up.
+// points under the bar }, only categories under it); then the most weighty: severity
+// counts 3, 2, 1, and repeats across calls add up.
 export function topIssues(results, key = "candidate", limit = 20, deficits = {}) {
   const groups = new Map();
   for (const result of results)
@@ -333,7 +341,7 @@ export function topIssues(results, key = "candidate", limit = 20, deficits = {})
       for (const issue of sample.issues) {
         if (issue.version !== key) continue;
         const id = `${issue.screen}|${issue.category}`;
-        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: (deficits[issue.category] ?? 0) > 0, weight: 0, count: 0, severity: "low", problems: [], fixes: [] };
+        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: issue.category in deficits, weight: 0, count: 0, severity: "low", problems: [], fixes: [] };
         group.weight += SEVERITY[issue.severity] ?? 1;
         group.count++;
         if ((SEVERITY[issue.severity] ?? 1) > SEVERITY[group.severity]) group.severity = issue.severity;
@@ -342,7 +350,7 @@ export function topIssues(results, key = "candidate", limit = 20, deficits = {})
         groups.set(id, group);
       }
   const deficit = (group) => deficits[group.category] ?? 0;
-  return [...groups.values()].sort((a, b) => Math.max(deficit(b), 0) - Math.max(deficit(a), 0) || b.weight - a.weight || b.count - a.count).slice(0, limit);
+  return [...groups.values()].sort((a, b) => deficit(b) - deficit(a) || b.weight - a.weight || b.count - a.count).slice(0, limit);
 }
 
 // Calibration for one judge from its samples of baseline and control: the noise between
@@ -350,7 +358,7 @@ export function topIssues(results, key = "candidate", limit = 20, deficits = {})
 export function calibrationOf(result, { baseline = "baseline", control = "control" } = {}) {
   const categories = RUBRIC.categories.map((category) => category.id).filter((id) => result.samples.every((sample) => sample.scores[baseline][id] !== null));
   const sigmaCategory = Math.sqrt(mean(categories.map((id) => variance(result.samples.map((sample) => sample.scores[baseline][id])))));
-  const sigmaOverall = Math.sqrt(variance(result.samples.map((sample) => sample.overall[baseline])));
+  const sigmaOverall = sd(result.samples.map((sample) => sample.overall[baseline]));
   const drop = result.overall[baseline] - result.overall[control];
   const lower = categories.filter((id) => result.scores[control][id] < result.scores[baseline][id]).length / categories.length;
   const reasons = [];

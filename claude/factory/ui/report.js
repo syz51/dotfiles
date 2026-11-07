@@ -115,6 +115,14 @@ ${Object.entries(calibration.judges).map(([key, item]) => `<tr><td>${escape(key)
 ${Object.entries(calibration.judges).filter(([, item]) => item.barReach?.warnings.length).map(([key, item]) => `<p><strong>Bar reach, ${escape(key)}:</strong> ${escape(item.barReach.warnings.join("; "))}.</p>`).join("\n")}`;
 }
 
+// Why a round has fewer verdicts than judges.
+function partialReason(round) {
+  if (round.stage === "error") return `In round ${round.round} a judge could not finish its calls, so the judges after it did not score it.`;
+  if (round.stage === "budget") return `In round ${round.round} the budget ran out before every judge ran.`;
+  if (round.skipped?.length) return `In round ${round.round} a judge failed and the round's budget did not cover ${round.skipped.join(", ")}.`;
+  return `Round ${round.round} stopped at the first judge that failed; the later judges did not score it.`;
+}
+
 // rounds are the full round records; versions maps a version name to its shot records.
 export function renderReport({ config, run, rounds, calibration, spentUSD, versions }) {
   const latest = rounds.at(-1);
@@ -202,7 +210,7 @@ th { font-weight: 600; font-size: 13px; }
 <div><dt>Latest gain over main</dt><dd>${judged ? signed(judged.verdicts[0].gain) : "–"}</dd></div>
 <div><dt>Spent</dt><dd>${money(spentUSD)} of ${money(config.budgetUsd.run)}</dd></div>
 </dl>
-${judged && judged.verdicts.length < config.judges.length ? `<p style="margin-top:12px"><span class="pill fail">${judged.verdicts.length} of ${config.judges.length} judges</span> Round ${judged.round} stopped at the first judge that failed; the later judges did not score it.</p>` : ""}
+${judged && judged.verdicts.length < config.judges.length ? `<p style="margin-top:12px"><span class="pill fail">${judged.verdicts.length} of ${config.judges.length} judges</span> ${escape(partialReason(judged))}</p>` : ""}
 <p class="muted" style="margin-top:12px">A round passes when every judge scores each category at least ${config.pass.min}, the overall at least ${config.pass.gain} above main (or twice the judge's noise, if larger)${config.pass.references === null ? "" : `, and each category ${signed(config.pass.references)} or more over the best reference`}. Judges see every version unlabeled and shuffled.</p>
 <h2>Score by round</h2>
 ${chart(rounds, config.pass.min)}
