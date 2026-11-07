@@ -395,6 +395,14 @@ describe("work board", () => {
     expect(section("Work board")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
   });
 
+  // The user reviews waiting work from lists and had to ask "explain number N" for each
+  // item whose body was written for agents (dotfiles-89).
+  test("an ask and a task waiting on the user open with a decision brief", () => {
+    const rule = "- Open each ask, and the body of each task that waits on my decision or action, with a brief in plain, short sentences: what it is, in one sentence; why it waits on me; the options, each with its consequence; your recommendation. Agent detail goes below the brief. Explain an item I ask about in the same structure, with a diagram only when it involves a flow across several parts.\n";
+    expect(section("Work board")).toContain(rule);
+    expect(read("codex/AGENTS.md")).toContain(rule);
+  });
+
   test("the scoring rubric counts filing as in scope and needing no approval", async () => {
     const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
     const question = (id) => rubric.dimensions.find((check) => check.id === id).question;
