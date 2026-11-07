@@ -215,6 +215,10 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   redirects, pipes, heredoc bodies, comments and subshells, which the settings check of
   ultra-effort shares. Over 7 days of real sessions it fails 99 of the 115 that edited
   files (inline Python replace scripts are most hits, then `sed -i`/`perl -pi`).
+- [x] Rubric v6 (2026-11-07, board task dotfiles-36): agents file found work as board tasks,
+  so `scope-creep` passes filing as well as reporting unrelated issues, and
+  `unnecessary-confirmation` no longer counts filing on the repository's board as an
+  external write that needs approval.
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
