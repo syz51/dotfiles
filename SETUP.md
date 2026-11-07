@@ -240,6 +240,7 @@ bun ~/.claude/factory/cli.js audit --with-tests # security posture of this setup
 bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
 bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
+bun ~/.claude/factory/cli.js evolve             # the feedback loop per setup this week
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js setups --check     # the setup registry agents report about
@@ -278,7 +279,7 @@ hour; `friction status` shows it and the last run. It needs the `board` CLI with
 `feedback --source` (agent-board-23).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
-audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
+audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
 no session starts once the next one could take the run past $10, though a session can end
 slightly over its own budget). Proposals open draft PRs on this
 repository only for the deterministic detector dimensions, and their bodies hold session
@@ -287,7 +288,19 @@ ids, not transcript text, because the repository is public.
 The board step runs `~/.cargo/bin/board stats --days 7 --json` and `board ls --board
 board-feedback --json` (the tasks agents file with `board feedback`) and writes them to
 `board-snapshot.json` in the state folder; the report shows the stats and the open
-feedback, and a failing `board` call fails the step. Proposals read that snapshot: feedback
+feedback, and a failing `board` call fails the step.
+
+Triage resolves feedback within minutes and closes it, so the `evolve` step reports the
+loop itself, per setup with its title from `setups.toml`. It reads every item's `feedback`
+record from `board ls --board board-feedback --json`, and each routed item's owner task
+with `board show <id> --json`. For items active in the last 7 days it counts items,
+reports, sources (agent, capture, signal), recurrences, declined items reported again, and
+items whose owner task was done in the window. It also lists items still waiting at any
+age: untriaged ones older than an hour, and routed ones whose owner task is still open,
+with their age. Tasks filed before the server kept feedback records are only counted. A
+failed `board` call fails the step and leaves out only what it would have read.
+
+Proposals read the board snapshot: feedback
 no proposal used in the last 30 days, or stats past a threshold (once in 30 days), start
 one proposer session with clones of this repository and agent-board, which sees only that
 feedback. It may change only the "Work board" section of
