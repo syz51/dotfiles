@@ -215,6 +215,10 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   redirects, pipes, heredoc bodies, comments and subshells, which the settings check of
   ultra-effort shares. Over 7 days of real sessions it fails 99 of the 115 that edited
   files (inline Python replace scripts are most hits, then `sed -i`/`perl -pi`).
+- [x] Rubric v6 (2026-11-07, board task dotfiles-36): agents file found work as board tasks,
+  so `scope-creep` passes filing as well as reporting unrelated issues, and
+  `unnecessary-confirmation` no longer counts filing on the repository's board as an
+  external write that needs approval.
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
@@ -570,6 +574,14 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: Bench at 3+ trials per configuration: all 62 runs pass, so Haiku wins every
   case on cost. The agent files stay as they are until harder cases separate the models
   (dotfiles-26).
+- 2026-11-07: Setup registry and friction capture (dotfiles-32). `setups.toml` names 23 setups
+  and their owners for the feedback board's triage; `setups --check` validates it. `friction
+  run` judges turns that show friction and files each finding as capture feedback. On 2 days
+  of real sessions it read 856 turns in about a second and flagged 154; Haiku judged the top 8
+  for $0.014 and found 17 issues, mostly board length limits learned only by rejection and
+  guards blocking read-only commands. Reports carry no signature of their own, so the board
+  merges the same problem from different turns by setup and title. Filing waits for
+  agent-board-23's `feedback --source`.
 - 2026-11-07: UI climbs (`ui/`, skill `ui-climb`). Offline suite with a real headless
   browser and a fake judge that sees only the prompt and image bytes; live smoke on
   agent-board's web view with Sonnet 5.5 and Opus 5.5 judges.

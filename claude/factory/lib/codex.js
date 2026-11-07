@@ -81,7 +81,7 @@ const BULKY = new Set(["compacted", "world_state"]);
 
 // A thread's records across its segments, with its own session_meta. Unless inherited is
 // set, the history a subagent copied from its parent is skipped.
-function readThread(thread, { inherited = false } = {}) {
+export function readThread(thread, { inherited = false } = {}) {
   const records = [];
   let malformed = 0;
   let meta = null;
@@ -118,14 +118,14 @@ function readThread(thread, { inherited = false } = {}) {
   return { records, malformed: malformed + (meta ? 0 : 1), meta: meta ?? {}, start };
 }
 
-const contentText = (content) => typeof content === "string"
+export const contentText = (content) => typeof content === "string"
   ? content
   : Array.isArray(content) ? content.map((block) => (typeof block?.text === "string" ? block.text : "")).filter(Boolean).join("\n") : "";
 
 // Tool outputs that mean the call itself failed: a script that threw, a call the harness
 // dropped, or a collaboration tool that refused. A command that exits non-zero inside a
 // script that completed does not count, as Codex reports it inside the output.
-const FAILED_OUTPUT = /^(?:Script failed\b|aborted before dispatch|collab (?:tool|spawn) failed\b)/;
+export const FAILED_OUTPUT = /^(?:Script failed\b|aborted before dispatch|collab (?:tool|spawn) failed\b)/;
 
 // OpenAI usage counts cached and cache-written tokens inside input_tokens.
 export function normalizeCodexUsage(usage = {}) {
@@ -136,7 +136,7 @@ export function normalizeCodexUsage(usage = {}) {
 
 // A person's prompt: a user message holding typed text, not injected AGENTS.md or
 // environment context. Rollouts without content kinds fall back to the text's shape.
-function promptText(payload) {
+export function promptText(payload) {
   if (payload?.type !== "message" || payload.role !== "user") return null;
   const kinds = payload.internal_chat_message_metadata_passthrough?.content_item_kinds;
   if (Array.isArray(kinds) ? !kinds.includes("user.text") : /^\s*(?:<|# AGENTS\.md)/.test(contentText(payload.content))) return null;

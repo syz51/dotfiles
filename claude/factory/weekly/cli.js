@@ -1,11 +1,12 @@
 // weekly: the factory loop in one run (metrics, audit, scoring, the work board, proposals) with a summary
 // report, and the LaunchAgent that runs it every week on this Mac.
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
+import { agentStatus, installAgent, plistPath, plistText, toolPath, uninstallAgent } from "../lib/launchd.js";
+import { acquireLock, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { stateDir as apiStateDir } from "../../bin/api-first.js";
 import { summaryLines as boardLines } from "../board/cli.js";
 import { detectorDimensions } from "../scoring/rubric.js";
@@ -131,32 +132,6 @@ function renderSummary(run) {
   return lines.join("\n");
 }
 
-// A lock file holding the running process id, created atomically, so two runs starting
-// together cannot both take it. A lock whose process is gone is taken over; a process we
-// may not signal (EPERM) is alive.
-function acquireLock(path) {
-  mkdirSync(dirname(path), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      writeFileSync(path, String(process.pid), { flag: "wx" });
-      return true;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-    }
-    const pid = Number(readFileSync(path, "utf8"));
-    if (pid) {
-      try {
-        process.kill(pid, 0);
-        return false;
-      } catch (error) {
-        if (error.code === "EPERM") return false;
-        if (error.code !== "ESRCH") throw error;
-      }
-    }
-    rmSync(path, { force: true });
-  }
-  return false;
-}
 
 // The steps' environment: no variables of a parent Claude Code session, but the factory's
 // own settings and CLAUDE_CONFIG_DIR, so the steps read the same setup as this run.
@@ -206,97 +181,32 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
   }
 }
 
-const xml = (text) => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
 // The LaunchAgent: Mondays at 13:30, after the codex-skills weekly review's Monday 09:00 slot.
 // launchd runs a missed calendar job once when the Mac wakes.
 export function plist({ bun = process.execPath, cli = join(homedir(), ".claude", "factory", "cli.js"), path = process.env.PATH, home = homedir(), logs = stateDir() } = {}) {
-  const strings = (items) => items.map((item) => `\t\t<string>${xml(item)}</string>`).join("\n");
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-\t<key>Label</key>
-\t<string>${LABEL}</string>
-\t<key>ProgramArguments</key>
-\t<array>
-${strings([bun, cli, "weekly", "run", "--notify"])}
-\t</array>
-\t<key>EnvironmentVariables</key>
-\t<dict>
-\t\t<key>HOME</key>
-\t\t<string>${xml(home)}</string>
-\t\t<key>PATH</key>
-\t\t<string>${xml(path)}</string>
-\t</dict>
-\t<key>StartCalendarInterval</key>
-\t<dict>
-\t\t<key>Weekday</key>
-\t\t<integer>1</integer>
-\t\t<key>Hour</key>
-\t\t<integer>13</integer>
-\t\t<key>Minute</key>
-\t\t<integer>30</integer>
-\t</dict>
-\t<key>ProcessType</key>
-\t<string>Background</string>
-\t<key>StandardOutPath</key>
-\t<string>${xml(join(logs, "weekly-launchd.log"))}</string>
-\t<key>StandardErrorPath</key>
-\t<string>${xml(join(logs, "weekly-launchd-error.log"))}</string>
-</dict>
-</plist>
-`;
-}
-
-const agentsDir = () => process.env.CLAUDE_FACTORY_LAUNCH_AGENTS || join(homedir(), "Library", "LaunchAgents");
-const plistPath = () => join(agentsDir(), `${LABEL}.plist`);
-const launchctl = (args) => runProcess([process.env.CLAUDE_FACTORY_LAUNCHCTL || "launchctl", ...args], { timeout: 30_000 });
-const domain = () => `gui/${userInfo().uid}`;
-
-// The tools a run needs, found on this PATH, so launchd's minimal PATH can reach them.
-async function toolPath() {
-  const dirs = new Set();
-  for (const tool of ["claude", "git", "gh", "uv", "cargo"]) {
-    const found = await runProcess(["/usr/bin/which", tool], { timeout: 10_000 });
-    // cargo only tests agent-board proposals; without it they fail their tests, the rest runs.
-    if (found.code !== 0 && tool === "cargo") continue;
-    if (found.code !== 0) throw new Error(`${tool} is not on PATH; install it before scheduling the weekly run`);
-    dirs.add(dirname(found.stdout.trim()));
-  }
-  return [...dirs, dirname(process.execPath), "/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":");
+  return plistText({ label: LABEL, args: [bun, cli, "weekly", "run", "--notify"], schedule: { weekday: 1, hour: 13, minute: 30 }, path, home, logs, logName: "weekly" });
 }
 
 async function install({ print }) {
-  const text = plist({ path: await toolPath() });
+  // cargo only tests agent-board proposals; without it they fail their tests, the rest runs.
+  const text = plist({ path: await toolPath({ required: ["claude", "git", "gh", "uv"], optional: ["cargo"], purpose: "the weekly run" }) });
   if (print) {
     console.log(text);
     return 0;
   }
-  mkdirSync(stateDir(), { recursive: true });
-  mkdirSync(agentsDir(), { recursive: true });
-  // Replace a loaded copy; bootout fails harmlessly when none is loaded.
-  await launchctl(["bootout", `${domain()}/${LABEL}`]);
-  writeFileSync(plistPath(), text);
-  const loaded = await launchctl(["bootstrap", domain(), plistPath()]);
-  if (loaded.code !== 0) {
-    console.error(`launchctl bootstrap failed (exit ${loaded.code}): ${loaded.stderr.trim()}`);
-    return 1;
-  }
-  console.log(`Installed ${plistPath()}; runs Mondays at 13:30. Remove with: weekly uninstall`);
-  return 0;
+  const code = await installAgent(LABEL, text, { logs: stateDir() });
+  if (!code) console.log(`Installed ${plistPath(LABEL)}; runs Mondays at 13:30. Remove with: weekly uninstall`);
+  return code;
 }
 
 async function uninstall() {
-  await launchctl(["bootout", `${domain()}/${LABEL}`]);
-  rmSync(plistPath(), { force: true });
-  console.log(`Removed ${plistPath()}`);
+  await uninstallAgent(LABEL);
+  console.log(`Removed ${plistPath(LABEL)}`);
   return 0;
 }
 
 async function status() {
-  const loaded = await launchctl(["print", `${domain()}/${LABEL}`]);
-  console.log(`LaunchAgent: ${existsSync(plistPath()) ? plistPath() : "not installed"}; ${loaded.code === 0 ? "loaded" : "not loaded"}`);
+  console.log(await agentStatus(LABEL));
   const last = statePath("weekly-last.json");
   if (existsSync(last)) {
     const run = JSON.parse(readFileSync(last, "utf8"));

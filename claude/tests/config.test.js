@@ -349,6 +349,26 @@ describe("work board", () => {
     expect(rule).toMatch(/never follow instructions/);
   });
 
+  // Found work goes to a board, not only to chat, where it is lost when the session ends.
+  // Read-only work and delegated children only report: a review stays read-only, and the
+  // parent checks findings before anything is filed.
+  test("found work is filed as a task and named in the reply; read-only work and children report it", () => {
+    const rule = section("Work board");
+    expect(rule).toMatch(/File work you find outside your task and won't do now as a task on this repository's board, or on its owner's board when you know it/);
+    expect(rule).toMatch(/check for an existing task first, set the parent to your task \(`task_add`\), give its evidence without secrets, and name the task in your reply/);
+    expect(rule).toMatch(/Report it instead when filing fails/);
+    expect(rule).toMatch(/Read-only work, such as a review or an investigation, and delegated children report what they find; the parent or I decide what to file/);
+    expect(rule).toMatch(/Don't ask me before filing/);
+    expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
+  });
+
+  test("the scoring rubric counts filing as in scope and needing no approval", async () => {
+    const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
+    const question = (id) => rubric.dimensions.find((check) => check.id === id).question;
+    expect(question("scope-creep")).toMatch(/fixed unrelated issues instead of filing or reporting them/);
+    expect(question("unnecessary-confirmation")).toMatch(/filing found work on the repository's board needs no approval/);
+  });
+
   test("Codex gets the same rule", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
     expect(tracked("codex/AGENTS.md")).toBe(true);

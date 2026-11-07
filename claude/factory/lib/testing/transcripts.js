@@ -63,6 +63,12 @@ export class Transcript {
     return this;
   }
 
+  // The Stop hooks' summary that ends a turn, or that makes it go on when prevented.
+  stop({ prevented = false } = {}) {
+    this.records.push(this.base({ type: "system", subtype: "stop_hook_summary", hookCount: 1, hookErrors: [], preventedContinuation: prevented }));
+    return this;
+  }
+
   meta(record) {
     this.records.push({ sessionId: this.sessionId, ...record });
     return this;
