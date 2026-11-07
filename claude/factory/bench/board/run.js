@@ -5,9 +5,9 @@
 // every run checks that Claude Code reported no API key.
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { removeSessionArtifacts } from "../../../tests/lib/cleanup.js";
+import { claudeTempDir, removeSessionArtifacts } from "../../../tests/lib/cleanup.js";
 import { userMessage } from "../../../tests/lib/conversation.js";
 import { childEnv, runProcess } from "../../../tests/lib/process.js";
 import { parseStream, partialEvents } from "../../../tests/lib/stream.js";
@@ -99,9 +99,6 @@ async function waitHealthy(port, server, timeoutMs = 15_000) {
   throw new Error(`board serve did not answer on port ${port} within ${timeoutMs} ms`);
 }
 
-// Claude Code's own temporary folder when CLAUDE_CODE_TMPDIR is unset.
-const claudeTmp = () => join(existsSync("/tmp") ? realpathSync("/tmp") : tmpdir(), `claude-${userInfo().uid}`);
-
 // A turn's result that says the session hit a usage limit: the run is void and the
 // matrix must stop.
 export const isLimit = (result) => result?.is_error === true
@@ -153,7 +150,7 @@ export function cleanLeftovers(dir = tmpdir()) {
   const roots = readdirSync(dir).filter((name) => name.startsWith(ROOT_PREFIX) && !name.startsWith(`${ROOT_PREFIX}tokens-`))
     .map((name) => realpathSync(join(dir, name)));
   for (const root of roots) spawnSync("pkill", ["-KILL", "-f", root]);
-  removeSessionArtifacts({ bases: [join(homedir(), ".claude", "projects"), claudeTmp()], roots });
+  removeSessionArtifacts({ bases: [join(homedir(), ".claude", "projects"), claudeTempDir()], roots });
   for (const root of roots) rmSync(root, { recursive: true, force: true });
   return roots;
 }
@@ -287,7 +284,7 @@ export async function runOne(cell, { model, effort, trial, runId, series, boardB
       // The server holds the database open in root; wait before removing it.
       await exited;
     }
-    removeSessionArtifacts({ bases: [join(homedir(), ".claude", "projects"), claudeTmp()], roots: [root], sessions: [{ cwd: repo, id: sessionId }] });
+    removeSessionArtifacts({ bases: [join(homedir(), ".claude", "projects"), claudeTempDir()], roots: [root], sessions: [{ cwd: repo, id: sessionId }] });
     rmSync(root, { recursive: true, force: true });
   }
 }

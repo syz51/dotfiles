@@ -514,6 +514,31 @@ describe("claude runner", () => {
     expect([run.ok, run.efforts]).toEqual([true, null]);
   });
 
+  test("runTask returns what a session streamed before its deadline, flagged timedOut", async () => {
+    const config = join(scratch, "config");
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    const project = join(config, "projects", projectName(realpathSync(cwd)));
+    // A session that saved its transcript, streamed its start and a message, then hung.
+    const script = join(scratch, "hang.js");
+    writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+      export default async ({ emit, option }) => {
+        mkdirSync(${JSON.stringify(project)}, { recursive: true });
+        writeFileSync(${JSON.stringify(project)} + "/" + option("--session-id") + ".jsonl", JSON.stringify({ type: "assistant", effort: "low", message: { id: "m1" } }) + "\\n");
+        emit({ type: "system", subtype: "init", model: "m", tools: [] });
+        emit({ type: "assistant", parent_tool_use_id: null, message: { id: "m1", model: "m", content: [] } });
+        await Bun.sleep(5000);
+      };`);
+    fake("script", { FAKE_CLAUDE_SCRIPT: script });
+    const run = await runTask({ prompt: "x", cwd, timeoutMs: 1000, readEffort: true, env: { CLAUDE_CONFIG_DIR: config } });
+    expect(run).toMatchObject({ timedOut: true, ok: false, code: null, costUSD: 0, finalText: "", efforts: { low: 1 } });
+    expect(run.events.map((event) => event.type)).toEqual(["system", "assistant"]);
+    expect(run.durationMs).toBe(1000);
+    expect(existsSync(project)).toBe(false);
+    // A session that finishes is not timedOut.
+    fake("task");
+    expect((await runTask({ prompt: "x", cwd })).timedOut).toBe(false);
+  });
+
   test("runTask fails with the exit status when there is no stream", async () => {
     fake("exit", { FAKE_CLAUDE_EXIT: "5" });
     await expect(runTask({ prompt: "x", cwd: scratch })).rejects.toThrow("exit 5");
