@@ -269,6 +269,19 @@ describe("hook process", () => {
     expect(result.stderr).toContain("main, a default branch");
   });
 
+  // Codex sends its exec_command calls as tool_name Bash with the command string and the
+  // call's workdir as cwd, plus fields Claude Code does not send.
+  test("blocks a force push to main in Codex-shaped input", () => {
+    const work = join(root, "work");
+    git(work, "switch", "-q", "feature");
+    const result = run(JSON.stringify({
+      session_id: "s", turn_id: "t", tool_use_id: "call_1", transcript_path: null, cwd: work, hook_event_name: "PreToolUse",
+      model: "gpt-5.5", permission_mode: "default", tool_name: "Bash", tool_input: { command: "git push --force origin main" },
+    }));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toStartWith("Blocked by the guard-git-push hook:");
+  });
+
   test("follows cd into another checkout", () => {
     git(join(root, "work"), "switch", "-q", "main");
     const result = bash(`cd ${join(root, "work")} && git push --force-with-lease=main:0000000`, root);

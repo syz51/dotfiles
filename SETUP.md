@@ -202,7 +202,9 @@ Codex expects its configuration under `~/.codex`; review your existing files
 before linking that location to `~/.config/codex`. Claude Code likewise needs
 its files at the location expected by your installation (normally `~/.claude`).
 Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
-`claude/hooks/shell.js`, and a guard that cannot load it fails open. The guards see
+`claude/hooks/shell.js`, and a guard that cannot load it fails open.
+`codex/hooks.json` runs the same guards on Codex shell calls, which Codex names `Bash` in
+hook input; they need `~/.claude/hooks` on the Mac that runs Codex. The guards see
 only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
 `` !`command` `` line in a user, project or plugin skill or custom slash command is
 replaced with a placeholder instead of running unchecked before the model reads it.
