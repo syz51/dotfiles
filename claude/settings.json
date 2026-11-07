@@ -43,7 +43,7 @@
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/freshen-base.js\"",
-            "timeout": 30
+            "timeout": 90
           }
         ]
       }

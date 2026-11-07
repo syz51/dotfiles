@@ -216,7 +216,9 @@ they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
 fast-forwards it when it is checked out, has no tracked changes and is strictly behind
 its remote, so the worktree does not start on stale code. It leaves any other branch
-alone, tells Claude when it fast-forwarded or why it did not, and never blocks the call.
+alone, tells Claude when it fast-forwarded or why it did not (including a failed fetch),
+and never blocks the call. Its fetch never prompts for credentials, and parallel calls
+take turns on a lock in the repository's git folder, so one fetches for all of them.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
