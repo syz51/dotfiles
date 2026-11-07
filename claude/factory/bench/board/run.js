@@ -30,8 +30,8 @@ export const isolatedEnv = (base, overrides = {}) => childEnv(
   Object.fromEntries(Object.entries(base).filter(([name]) => !INHERITED.test(name))), overrides);
 
 const HOOK_EVENTS = [
-  ["SessionStart", "startup|resume|clear|compact"], ["UserPromptSubmit"], ["PostToolUse", "*"],
-  ["Stop"], ["StopFailure", "rate_limit"], ["SessionEnd"], ["PreCompact", "manual|auto"],
+  ["SessionStart", "startup|resume|clear|compact"], ["UserPromptSubmit"], ["PreToolUse", "Bash"], ["PostToolUse", "*"],
+  ["PostToolUseFailure", "Bash"], ["Stop"], ["StopFailure", "rate_limit"], ["SessionEnd"], ["PreCompact", "manual|auto"],
 ];
 
 // --settings for a run: the live suites' install block and web denial, plus the board's

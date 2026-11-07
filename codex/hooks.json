@@ -9,6 +9,16 @@
             "command": "\"$HOME/.atuin/bin/atuin\" hook codex"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" pre-tool-use codex",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [

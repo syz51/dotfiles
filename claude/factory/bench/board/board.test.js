@@ -180,7 +180,10 @@ describe("run", () => {
     const settings = sessionSettings("/bin/board");
     expect(settings.permissions.deny).toEqual(["WebFetch", "WebSearch"]);
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("block-installs.js");
-    expect(Object.keys(settings.hooks).sort()).toEqual(["PostToolUse", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+    expect(Object.keys(settings.hooks).sort()).toEqual(["PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "SessionEnd", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+    // The board marks each shell call's start after the install block's own hook.
+    expect(settings.hooks.PreToolUse.at(-1)).toEqual({ matcher: "Bash", hooks: [{ type: "command", command: "\"/bin/board\" hook PreToolUse --runtime claude", timeout: 5 }] });
+    expect(settings.hooks.PostToolUseFailure).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: "\"/bin/board\" hook PostToolUseFailure --runtime claude", timeout: 5 }] }]);
     expect(settings.hooks.SessionStart[0]).toEqual({ matcher: "startup|resume|clear|compact", hooks: [{ type: "command", command: "\"/bin/board\" hook SessionStart --runtime claude", timeout: 5 }] });
     expect(mcpConfig("/bin/board", "claude:s1", { BOARD_HOME: "/h" }).mcpServers.board).toEqual({ command: "/bin/board", args: ["mcp", "--agent", "claude:s1"], env: { BOARD_HOME: "/h" } });
   });
