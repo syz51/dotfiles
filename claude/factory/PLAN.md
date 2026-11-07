@@ -383,6 +383,15 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
 - [x] codex-skills#2 merged (squash, e2222419).
 - [x] Merged #17 (7ada7e7) and #16 (d267080) on 2026-11-05; `~/.config` is on main, so the
   weekly LaunchAgent runs the merged code.
+- [x] Inherited host prompts of forks (board task dotfiles-17): no change. A fork's digest
+  shows the parent's prompts but not its host notices, so a fork of a session whose task
+  came by slash command would reach the judge without it. On 2026-11-07, over 30 days: 1
+  of 193 Claude Code sessions was a fork; the only slash command it inherited was
+  `/compact`, which carries no task, and its inherited prompts were present. The 2 Codex
+  forks of 203 sessions (`history_mode: paginated`) copy no parent history, so they have no
+  inherited prompts and no double count. Scoring judges Claude Code sessions only, so they
+  never reach the judge. If Codex is ever scored, read the parent's prompts from its
+  rollout up to `forked_from_ordinal_exclusive`.
 
 ### 6. Agent work board (`board/`)
 
