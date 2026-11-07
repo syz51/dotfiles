@@ -85,7 +85,7 @@ verify = ["bun test claude/factory/ui"]
 [[setup]]
 id = "work-stages"
 title = "Shared work stages"
-covers = ["the work-stages skill: explore, research, design, plan, build, verify"]
+covers = ["claude/skills/work-stages", "the work-stages skill: explore, research, design, plan, build, verify"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles; keep the instruction files' pointers in step"
