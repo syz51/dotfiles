@@ -1,0 +1,218 @@
+# Setups on both Macs and who owns each one. Agents file friction with
+# `board feedback --about <id>` (or the `feedback` MCP tool), using an id below; the
+# feedback board's triage routes each report to the owner named here. Check it with
+# `bun ~/.claude/factory/cli.js setups --check`.
+#
+# Fields: id (the `about` slug, [a-z0-9:_-], at most 40 characters), title, covers
+# (repository paths, which --check requires to exist, or a phrase with spaces naming
+# what it is), owner (repo, board, optional parent task; board "<project>" means the
+# board of the project the report came from), channel (board, or skill-notes for skills
+# that keep their own feedback capture), change (how a change is made and reviewed) and
+# verify (commands).
+
+[[setup]]
+id = "board"
+title = "Work board (agent-board)"
+covers = ["the board server, CLI, MCP tools, hooks and coordinator prompts", "claude/hooks/board-hook.sh"]
+owner = { repo = "github.com/syz51/agent-board", board = "agent-board" }
+channel = "board"
+change = "A PR on agent-board; deploy the server and reinstall `board` on both Macs"
+verify = ["cargo test --workspace --locked", "board status"]
+
+[[setup]]
+id = "instructions"
+title = "Agent instructions"
+covers = ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/frontend-avoid.md", "CLAUDE.md"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles keeping claude/CLAUDE.md and codex/AGENTS.md identical; the live suites when behavior changes"
+verify = ["bun test claude/tests/config.test.js"]
+
+[[setup]]
+id = "agents"
+title = "Claude Code subagents"
+covers = ["claude/agents"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; bench the model and effort with `factory bench` before changing them"
+verify = ["bun test claude/tests/config.test.js"]
+
+[[setup]]
+id = "hooks"
+title = "Claude Code and Codex hooks"
+covers = ["claude/hooks", "codex/hooks.json", "codex/trust-hooks.js"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests for the hook; the live suites when a guard changes"
+verify = ["bun test claude/hooks claude/tests/codex-trust-hooks.test.js"]
+
+[[setup]]
+id = "settings"
+title = "Claude Code and Codex settings"
+covers = ["claude/settings.json", "codex/config.example.toml", "codex/keybindings.json"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; `factory audit` for permission and sandbox changes"
+verify = ["bun test claude/tests/config.test.js", "bun ~/.claude/factory/cli.js audit"]
+
+[[setup]]
+id = "skills"
+title = "Agent skills (codex-skills)"
+covers = ["the skills installed from codex-skills: frontend-ui, typescript, rust, tauri and others"]
+owner = { repo = "codex-skills" }
+channel = "skill-notes"
+change = "Each skill records its own feedback in references/feedback.md; the codex-skills review and release workflow applies it"
+verify = ["the skill's own evaluation in codex-skills"]
+
+[[setup]]
+id = "headless-browser"
+title = "Headless browser skill"
+covers = ["claude/skills/headless-browser"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; screenshot a page with it after the change"
+verify = ["bun claude/skills/headless-browser/scripts/browse.ts --help"]
+
+[[setup]]
+id = "work-stages"
+title = "Shared work stages"
+covers = ["the work-stages skill: explore, research, design, plan, build, verify"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; keep the instruction files' pointers in step"
+verify = ["bun test claude/tests/config.test.js"]
+
+[[setup]]
+id = "factory"
+title = "Factory: metrics, scoring, proposals, bench, audit and friction capture"
+covers = ["claude/factory", "setups.toml"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests; record the change in claude/factory/PLAN.md's log"
+verify = ["bun test claude/factory", "bun ~/.claude/factory/cli.js setups --check"]
+
+[[setup]]
+id = "billing"
+title = "API-first billing for unattended runs"
+covers = ["claude/bin"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["bun test claude/tests/claude-api.test.js"]
+
+[[setup]]
+id = "live-tests"
+title = "Live and offline suites for the Claude Code configuration"
+covers = ["claude/tests"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; state the live suites' cost when they change"
+verify = ["bun test claude/tests"]
+
+[[setup]]
+id = "storage"
+title = "Shared storage (storagectl)"
+covers = ["storagectl and its destinations: cloud, sai, pro, air, svps"]
+owner = { repo = "github.com/syz51/vps", board = "vps", parent = "vps-44" }
+channel = "board"
+change = "A child task of vps-44 on the vps board"
+verify = ["storagectl dests"]
+
+[[setup]]
+id = "t3"
+title = "T3 Code and its thread cleanup routine"
+covers = ["t3code", "the T3 Code app's settings and orchestration tools"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B -m unittest discover -s t3code/tests"]
+
+[[setup]]
+id = "disk-alert"
+title = "Disk space alert"
+covers = ["disk-alert"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B -m unittest discover -s disk-alert/tests"]
+
+[[setup]]
+id = "shell"
+title = "Zsh startup"
+covers = ["shell"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B shell/test-startup-fixes.py"]
+
+[[setup]]
+id = "ghostty"
+title = "Ghostty terminal and TUIOS launcher"
+covers = ["ghostty"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B ghostty/test-tuios-launcher.py"]
+
+[[setup]]
+id = "tuios"
+title = "TUIOS and its dock"
+covers = ["tuios"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["uv run --no-project python -B -m unittest discover -s tuios/tests"]
+
+[[setup]]
+id = "tv-explore"
+title = "Television popup explorer"
+covers = ["explore"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["see explore/README.md"]
+
+[[setup]]
+id = "nvim"
+title = "Neovim"
+covers = ["nvim"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js"]
+
+[[setup]]
+id = "mpv"
+title = "mpv"
+covers = ["mpv"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles"
+verify = ["mpv --version"]
+
+[[setup]]
+id = "git"
+title = "Git settings and ignores"
+covers = ["git"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles"
+verify = ["git config --list --show-origin"]
+
+[[setup]]
+id = "project"
+title = "A project's own setup"
+covers = ["a project's own instructions, scripts, CI and tooling"]
+owner = { repo = "<project>", board = "<project>" }
+channel = "board"
+change = "A task on the board of the project the report came from"
+verify = ["the project's own checks"]
+
+[[setup]]
+id = "other"
+title = "Anything else, or not sure"
+covers = ["friction no other setup covers"]
+owner = { repo = "github.com/syz51/dotfiles", board = "board-feedback" }
+channel = "board"
+change = "Triage decides the owner, or adds a setup here"
+verify = ["bun ~/.claude/factory/cli.js setups --check"]

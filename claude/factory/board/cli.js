@@ -20,7 +20,7 @@ Collects the work board's stats and open feedback tasks for the weekly review.
   --help`;
 
 // CLAUDE_FACTORY_BOARD replaces the board CLI (tests use a fake).
-const boardBin = () => process.env.CLAUDE_FACTORY_BOARD || join(homedir(), ".cargo", "bin", "board");
+export const boardBin = () => process.env.CLAUDE_FACTORY_BOARD || join(homedir(), ".cargo", "bin", "board");
 // The board `board feedback` files on unless a device configures another.
 export const FEEDBACK_BOARD = "board-feedback";
 const CLOSED = new Set(["done", "dropped"]);
@@ -29,9 +29,9 @@ const LIST_LIMIT = 1000;
 const STAT_FIELDS = ["days", "tasks_created", "tasks_done", "claims_refused", "tasks_taken_stale", "lease_conflicts", "asks_created", "asks_answered", "done_without_check_evidence"];
 
 // One board call's JSON, or an error naming the call.
-async function call(args) {
+// what names the call in errors; the default, the whole command line, suits short calls.
+export async function call(args, { what = `board ${args.join(" ")}` } = {}) {
   const argv = [boardBin(), ...args];
-  const what = `board ${args.join(" ")}`;
   let result;
   try {
     result = await runProcess(argv, { env: childEnv(process.env), timeout: 60_000 });
