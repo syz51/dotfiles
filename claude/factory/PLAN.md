@@ -551,5 +551,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   run` judges turns that show friction and files each finding as capture feedback. On 2 days
   of real sessions it read 856 turns in about a second and flagged 154; Haiku judged the top 8
   for $0.014 and found 17 issues, mostly board length limits learned only by rejection and
-  guards blocking read-only commands. The same problem in different turns gets different
-  signatures, so triage merges those. Filing waits for agent-board-23's `feedback --source`.
+  guards blocking read-only commands. Reports carry no signature of their own, so the board
+  merges the same problem from different turns by setup and title. Filing waits for
+  agent-board-23's `feedback --source`.

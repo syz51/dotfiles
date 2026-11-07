@@ -36,7 +36,8 @@ const text = (value) => typeof value === "string" && value.trim() !== "";
 const texts = (value) => Array.isArray(value) && value.length > 0 && value.every(text);
 
 // Problems with one parsed registry, as messages naming the setup; [] when it is valid.
-export function problems(registry, { root = REPO_ROOT } = {}) {
+// paths false skips checking that covers paths exist, which only --check needs.
+export function problems(registry, { root = REPO_ROOT, paths = true } = {}) {
   const list = registry?.setup;
   if (!Array.isArray(list) || !list.length) return ["no [[setup]] entries"];
   const found = [];
@@ -56,7 +57,7 @@ export function problems(registry, { root = REPO_ROOT } = {}) {
     else
       for (const entry of setup.covers.filter(isPath))
         if (entry.startsWith("/") || entry.split("/").includes("..")) bad(`covers path ${entry} must stay inside the repository`);
-        else if (!existsSync(join(root, entry))) bad(`covers path ${entry} does not exist`);
+        else if (paths && !existsSync(join(root, entry))) bad(`covers path ${entry} does not exist`);
     const owner = setup?.owner;
     if (!owner || typeof owner !== "object" || Array.isArray(owner)) bad("owner must be a table with repo and board");
     else {
@@ -82,9 +83,9 @@ export function readRegistry(path = REGISTRY) {
 }
 
 // Valid setups, or an error listing every problem.
-export function loadSetups(path = REGISTRY, { root = REPO_ROOT } = {}) {
+export function loadSetups(path = REGISTRY, { root = REPO_ROOT, paths = true } = {}) {
   const registry = readRegistry(path);
-  const found = problems(registry, { root });
+  const found = problems(registry, { root, paths });
   if (found.length) throw new Error(`${path} is invalid:\n- ${found.join("\n- ")}`);
   return registry.setup;
 }

@@ -7,14 +7,23 @@ import { basename } from "node:path";
 import { contentText, FAILED_OUTPUT, promptText as codexPrompt, readThread } from "../lib/codex.js";
 import { promptText, readRecords, textOf } from "../lib/transcripts.js";
 
-const OUTPUT = 600;
+const OUTPUT = 800;
 const clip = (text, max) => {
   const value = String(text ?? "");
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
 };
+// A failed call's output keeps its start and its end, where the error usually is.
+const ends = (text, max = OUTPUT) => {
+  const value = String(text ?? "");
+  if (value.length <= max) return value;
+  const head = Math.floor(max * 0.35);
+  return `${value.slice(0, head)}\n[... ${value.length - max} characters omitted ...]\n${value.slice(value.length - (max - head))}`;
+};
 
-// texts, calls and hooks by kind, and events holding all of them in order.
-const newTurn = (index, at, prompt) => ({ index, start: at, end: at, prompt, texts: [], calls: [], hooks: [], events: [] });
+// texts, calls and hooks by kind, and events holding all of them in order. complete says
+// whether the turn has ended: the next prompt started, Claude Code's Stop hooks let it end,
+// or Codex marked it complete or aborted.
+const newTurn = (index, at, prompt) => ({ index, start: at, end: at, prompt, texts: [], calls: [], hooks: [], events: [], complete: false });
 const addText = (turn, text) => {
   turn.texts.push(text);
   turn.events.push({ text });
@@ -39,12 +48,17 @@ export function claudeTurns(file) {
   for (const record of own) {
     const prompt = promptText(record);
     if (prompt !== null) {
+      if (turn) turn.complete = true;
       turn = newTurn(turns.length + 1, record.timestamp ?? null, prompt);
       turns.push(turn);
       continue;
     }
     if (!turn) continue;
     if (record.timestamp) turn.end = record.timestamp;
+    // The Stop hooks' summary ends the turn unless a hook made the agent go on; any later
+    // work reopens it.
+    if (record.type === "system" && record.subtype === "stop_hook_summary") turn.complete = record.preventedContinuation !== true;
+    else if (record.type === "assistant" || record.type === "user") turn.complete = false;
     const content = record.message?.content;
     if (record.type === "assistant" && Array.isArray(content))
       for (const block of content) {
@@ -60,7 +74,7 @@ export function claudeTurns(file) {
         if (block?.type === "tool_result" && calls.has(block.tool_use_id)) {
           const call = calls.get(block.tool_use_id);
           call.ok = block.is_error !== true;
-          call.output = clip(textOf(block.content), OUTPUT);
+          call.output = ends(textOf(block.content));
         }
     } else if (record.type === "attachment" && /^hook_(?:blocking|non_blocking)_error$/.test(record.attachment?.type ?? "")) {
       const hook = record.attachment;
@@ -74,8 +88,6 @@ export function claudeTurns(file) {
   };
 }
 
-// A Codex call failed when the call itself did, or the command it ran exited non-zero.
-const codexFailed = (output) => FAILED_OUTPUT.test(output) || /"exit_code":\s*[1-9]|\bexit(?:ed with)? code:? [1-9]/i.test(output);
 
 // Turns of one Codex thread (from lib/codex.js rolloutThreads): { sessionId, cwd, turns },
 // or null for a subagent thread. A turn runs from task_started to task_complete or
@@ -90,7 +102,7 @@ export function codexTurns(thread) {
     if ((record.ordinal ?? Infinity) < start) continue;
     const payload = record.payload ?? {};
     if (record.type === "event_msg" && payload.type === "task_started") {
-      turn = { ...newTurn(turns.length + 1, record.timestamp ?? null, ""), complete: false };
+      turn = newTurn(turns.length + 1, record.timestamp ?? null, "");
       turns.push(turn);
       continue;
     }
@@ -117,8 +129,10 @@ export function codexTurns(thread) {
       const call = calls.get(payload.call_id);
       if (call) {
         const output = contentText(payload.output);
-        call.ok = !codexFailed(output);
-        call.output = clip(output, OUTPUT);
+        // As in lib/codex.js: a command exiting non-zero inside a script that completed
+        // is the script's business, not a failed call.
+        call.ok = !FAILED_OUTPUT.test(output);
+        call.output = ends(output);
       }
     } else if (payload.type === "message") {
       const prompt = codexPrompt(payload);
@@ -132,15 +146,28 @@ export function codexTurns(thread) {
   return { sessionId: thread.id, cwd: meta.cwd ?? null, turns };
 }
 
+// What a call runs in a shell: Claude Code's Bash command, a Codex shell command or
+// exec_command, or a Codex custom tool's script. Other inputs, such as a Bash call's
+// description or an edit's text, only mention commands.
+export const commandText = (call) => {
+  const input = call.input ?? {};
+  return [input.command, input.cmd, input.input].flat().filter((part) => typeof part === "string").join(" ");
+};
+
 // A call that filed feedback: the board's MCP tool, or `board feedback` run in a shell.
 const FEEDBACK_TOOL = /(?:^|__|\.)feedback$/;
 const FEEDBACK_COMMAND = /\bboard\s+feedback\b/;
-export const filedFeedback = (turn) => turn.calls.some((call) => FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(JSON.stringify(call.input)));
+export const filedFeedback = (turn) => turn.calls.some((call) => FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(commandText(call)));
 
 const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^board$/;
-// `board <command>` in a shell command, matched in the call's JSON-encoded input.
 const BOARD_COMMAND = /(?:^|[\s;&|(/"'])board\s+[a-z]/;
-const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(JSON.stringify(call.input));
+const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(commandText(call));
+
+// The program a shell call runs first, to tell a retry from the next step.
+const program = (call) => commandText(call).trim().split(/\s+/)[0]?.split("/").pop() ?? "";
+// A search or comparison that found nothing exits 1 without output: an answer, not a failure.
+const SEARCHES = new Set(["rg", "grep", "ugrep", "test", "[", "diff", "cmp"]);
+const quietMiss = (call) => SEARCHES.has(program(call)) && /^\s*(?:Exit code 1\s*)?$/.test(call.output);
 
 // Words that say the setup got in the way, in English and Chinese.
 export const PHRASES = [
@@ -150,16 +177,19 @@ export const PHRASES = [
 ];
 
 // The friction signals of a turn, and a score to rank turns by. A retry is a failed call
-// followed by another call of the same tool.
+// followed by another call of the same tool running the same program. Phrases count in the
+// agent's own text, not in the prompt it was given.
 export function signals(turn) {
-  const failed = turn.calls.filter((call) => call.ok === false);
+  const failedAt = (call) => call.ok === false && !quietMiss(call);
+  const failed = turn.calls.filter(failedAt);
   let retries = 0;
   turn.calls.forEach((call, index) => {
-    if (call.ok === false && turn.calls[index + 1]?.name === call.name) retries++;
+    const next = turn.calls[index + 1];
+    if (failedAt(call) && next?.name === call.name && program(next) === program(call)) retries++;
   });
   const hookBlocks = turn.hooks.length + failed.filter((call) => /\bhook\b/i.test(call.output)).length;
   const boardErrors = failed.filter(isBoard).length;
-  const phrases = [turn.prompt, ...turn.texts].reduce((count, text) => count + PHRASES.filter((pattern) => pattern.test(text)).length, 0);
+  const phrases = turn.texts.reduce((count, text) => count + PHRASES.filter((pattern) => pattern.test(text)).length, 0);
   const score = 3 * boardErrors + 2 * hookBlocks + Math.min(failed.length, 5) + 2 * Math.min(retries, 3) + Math.min(phrases, 3);
   return { toolErrors: failed.length, boardErrors, hookBlocks, retries, phrases, score };
 }
@@ -193,5 +223,7 @@ export function digest(turn, { maxChars = 12_000 } = {}) {
   let text = render(() => true);
   if (text.length > maxChars) text = render((index) => [index - 1, index, index + 1].some((near) => events[near]?.key));
   if (text.length > maxChars) text = render((index) => events[index].key);
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 40)}\n[... rest of the turn omitted ...]`;
+  if (text.length > maxChars) text = `${text.slice(0, maxChars - 40)}\n[... rest of the turn omitted ...]`;
+  // The judge reads the turn between <turn> tags; a tag inside it cannot close them.
+  return text.replace(/<\s*\/?\s*turn\b[^>]*>/gi, "[turn tag]");
 }

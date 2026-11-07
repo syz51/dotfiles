@@ -76,6 +76,12 @@ verify = ["y"]
     expect(problems(registry, { root: scratch })).toEqual([]);
     registry.setup[0].covers.push("gone");
     expect(problems(registry, { root: scratch })).toEqual([`${REQUIRED[0]}: covers path gone does not exist`]);
+    // A run reading the registry checks the schema only; whether paths exist is --check's.
+    expect(problems(registry, { root: scratch, paths: false })).toEqual([]);
+    const file = join(scratch, "setups.toml");
+    writeFileSync(file, registry.setup.map((entry) => `[[setup]]\n${Object.entries(entry).map(([key, value]) => `${key} = ${JSON.stringify(value).replace(/"(\w+)":/g, "$1 = ").replace(/^\{/, "{ ").replace(/\}$/, " }")}`).join("\n")}\n`).join("\n"));
+    expect(loadSetups(file, { root: scratch, paths: false })).toHaveLength(REQUIRED.length);
+    expect(() => loadSetups(file, { root: scratch })).toThrow("covers path gone does not exist");
     expect([isPath("claude/factory"), isPath("the board server")]).toEqual([true, false]);
   });
 

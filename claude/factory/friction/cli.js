@@ -23,6 +23,10 @@ const HOUR = 3_600_000;
 // Judge failures after which a turn is left alone: one may be bad luck, a second is the
 // same turn failing the same way.
 const MAX_JUDGE_ERRORS = 2;
+// Failed filings after which a finding is left alone, as the board keeps rejecting it.
+const MAX_FILE_ERRORS = 3;
+// The board agent capture reports file as: launchd's environment names no session.
+export const AGENT = "claude:factory-friction";
 const TITLE = 72;
 const DETAIL = 400;
 const ERROR_LINE = 160;
@@ -31,7 +35,9 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js friction <run|install|uninsta
 
   run        Scan turns completed since the last run, judge the ones showing friction
              and file each finding as board feedback
-    --quiet-minutes N    a turn counts as completed once quiet this long (default 15)
+    --quiet-minutes N    how long a completed turn waits before it is read (default 15)
+    --stale-hours N      a turn that never marked its end counts as ended after this
+                         long without activity (default 6)
     --since-hours N      how far back the first run looks (default 24)
     --max-age-hours N    never look further back than this (default 48)
     --min-score N        friction score a turn needs to be judged (default 4)
@@ -49,7 +55,9 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js friction <run|install|uninsta
 const stateFile = () => statePath("friction-state.json");
 export const recordsFile = () => statePath("friction.jsonl");
 const keyOf = (harness, sessionId, turn) => `${harness}:${sessionId}:${turn}`;
-export const signatureOf = (sessionId, turn, n) => `capture:${sessionId}:${turn}:${n}`;
+// A finding's own key, so a filing is made once. The board merges reports by its own
+// signature (setup and title), so the same friction seen in many turns is one item.
+export const filingOf = (sessionId, turn, n) => `capture:${sessionId}:${turn}:${n}`;
 const usd = (value) => `$${value.toFixed(2)}`;
 const line = (text, max) => {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -61,14 +69,20 @@ const line = (text, max) => {
 // folder. Its judge calls save no session at all.
 export const skippedCwd = (cwd, state = stateDir()) => isAutomation(cwd) || (cwd !== null && (cwd === state || cwd.startsWith(`${state}/`)));
 
-// Completed turns of both harnesses that ended in (from, to], with their session.
-export function completedTurns({ from, to, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot() }) {
+// Completed turns of both harnesses that ended in (from, to], with their session. A turn
+// in that window that has not ended is held: holdAt is the earliest such end, before which
+// the cursor stays until the turn ends or goes stale (no activity since staleBefore).
+export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot() }) {
   const found = [];
   const skipped = { automation: 0, feedback: 0 };
+  let holdAt = Infinity;
   const take = (harness, session, turn) => {
     const end = Date.parse(turn.end);
     if (!(end > from && end <= to)) return;
-    if (harness === "codex" && !turn.complete) return;
+    if (!turn.complete && end > staleBefore) {
+      holdAt = Math.min(holdAt, end);
+      return;
+    }
     if (filedFeedback(turn)) {
       skipped.feedback++;
       return;
@@ -88,21 +102,23 @@ export function completedTurns({ from, to, claudeRoot = projectsRoot(), codexRoo
     if (skippedCwd(session.cwd)) skipped.automation++;
     else for (const turn of session.turns) take("codex", session, turn);
   }
-  return { turns: found, skipped };
+  return { turns: found, skipped, holdAt };
 }
 
 // What the records say about each turn: judged (with its findings), failed judge calls,
-// and the signatures already filed.
+// the findings already filed and the failed filings of each.
 export function recordState(records) {
   const judged = new Map();
   const errors = new Map();
   const filed = new Set();
+  const fileErrors = new Map();
   for (const record of records) {
     if (record.kind === "judged") judged.set(record.key, record);
     else if (record.kind === "error") errors.set(record.key, (errors.get(record.key) ?? 0) + 1);
-    else if (record.kind === "filed") filed.add(record.signature);
+    else if (record.kind === "filed") filed.add(record.filing);
+    else if (record.kind === "file-error") fileErrors.set(record.filing, (fileErrors.get(record.filing) ?? 0) + 1);
   }
-  return { judged, errors, filed };
+  return { judged, errors, filed, fileErrors };
 }
 
 // The judge's instructions, the same for every turn of a run so they stay cached.
@@ -166,28 +182,35 @@ export function checkFindings(output, ids) {
 }
 
 // The feedback text: the title line, what happened, at most one error line, and where it
-// was seen.
-export const feedbackText = (finding, { harness, sessionId, turn }) => [
-  finding.title, "", ...(finding.detail ? [finding.detail, ""] : []), ...(finding.error ? [`Error: ${finding.error}`, ""] : []),
-  `Captured from ${harness === "codex" ? "Codex" : "Claude Code"} session ${sessionId}, turn ${turn}.`,
-].join("\n");
+// was seen, with the project folder so triage can find a project's own board.
+export const feedbackText = (finding, { harness, sessionId, turn, cwd }) => {
+  const home = homedir();
+  const where = cwd ? ` in ${cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd}` : "";
+  return [
+    finding.title, "", ...(finding.detail ? [finding.detail, ""] : []), ...(finding.error ? [`Error: ${finding.error}`, ""] : []),
+    `Captured from ${harness === "codex" ? "Codex" : "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
+  ].join("\n");
+};
 
 // Whether the board CLI files capture reports: `board feedback --source` came with the
-// feedback endpoint (agent-board-23). An older CLI rejects the flags, so nothing is judged
+// feedback endpoint (agent-board-23). An older CLI rejects the flag, so nothing is judged
 // that could not be filed.
 async function boardFilesCapture() {
   const help = await runProcess([boardBin(), "feedback", "--help"], { env: childEnv(process.env), timeout: 30_000 });
-  return help.code === 0 && /--source\b/.test(help.stdout) && /--signature\b/.test(help.stdout);
+  return help.code === 0 && /--source\b/.test(help.stdout);
 }
 
 async function file(record, finding, n, filed) {
-  const signature = signatureOf(record.sessionId, record.turn, n);
-  if (filed.has(signature)) return null;
-  const result = await boardCall(["feedback", "--source", "capture", "--about", finding.about, "--activity", finding.activity, "--signature", signature, "--json", "--", feedbackText(finding, record)]);
-  if (typeof result?.task !== "string") throw new Error("board feedback: expected {task, duplicate, reports}");
-  const entry = { kind: "filed", key: record.key, signature, about: finding.about, task: result.task, duplicate: result.duplicate === true, reports: result.reports ?? null, at: new Date().toISOString() };
+  const filing = filingOf(record.sessionId, record.turn, n);
+  if (filed.has(filing)) return null;
+  const result = await boardCall(["--agent", AGENT, "feedback", "--source", "capture", "--about", finding.about, "--activity", finding.activity, "--json", "--", feedbackText(finding, record)],
+    { what: `board feedback for ${filing}` });
+  // The board answers with the item the report was filed on or added to.
+  const task = result?.task?.id;
+  if (typeof task !== "string") throw new Error("board feedback: expected {task: {id}, duplicate, reports}");
+  const entry = { kind: "filed", key: record.key, filing, about: finding.about, task, duplicate: result.duplicate === true, reports: result.reports ?? null, at: new Date().toISOString() };
   appendJsonl(recordsFile(), entry);
-  filed.add(signature);
+  filed.add(filing);
   return entry;
 }
 
@@ -197,6 +220,7 @@ function parseOptions(argv) {
     strict: true,
     options: {
       "quiet-minutes": { type: "string", default: "15" },
+      "stale-hours": { type: "string", default: "6" },
       "since-hours": { type: "string", default: "24" },
       "max-age-hours": { type: "string", default: "48" },
       "min-score": { type: "string", default: "4" },
@@ -217,7 +241,7 @@ function parseOptions(argv) {
   };
   return {
     help: values.help, print: values.print, dryRun: values["dry-run"], model: values.model, effort: values.effort,
-    quietMinutes: number("quiet-minutes"), sinceHours: number("since-hours"), maxAgeHours: number("max-age-hours"),
+    quietMinutes: number("quiet-minutes"), staleHours: number("stale-hours"), sinceHours: number("since-hours"), maxAgeHours: number("max-age-hours"),
     minScore: number("min-score"), maxTurns: number("max-turns"), budgetUsd: number("budget-usd"), maxTotalUsd: number("max-total-usd"),
   };
 }
@@ -229,22 +253,26 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     return 3;
   }
   try {
-    const setups = loadSetups();
+    // Whether covers paths exist is --check's concern (CI); a run needs the ids and schema.
+    const setups = loadSetups(undefined, { paths: false });
     const ids = new Set(setups.map((setup) => setup.id));
     const state = readJson(stateFile(), {});
     const to = now - options.quietMinutes * 60_000;
-    const from = Math.max(state.cursor ? Date.parse(state.cursor) : now - options.sinceHours * HOUR, now - options.maxAgeHours * HOUR);
+    const oldest = now - options.maxAgeHours * HOUR;
+    const from = Math.max(state.cursor ? Date.parse(state.cursor) : now - options.sinceHours * HOUR, oldest);
     const records = readJsonl(recordsFile());
     const known = recordState(records);
-    const { turns, skipped } = completedTurns({ from, to, claudeRoot, codexRoot });
+    const { turns, skipped, holdAt } = completedTurns({ from, to, staleBefore: now - options.staleHours * HOUR, claudeRoot, codexRoot });
     const candidates = turns
       .filter((entry) => !known.judged.has(entry.key) && (known.errors.get(entry.key) ?? 0) < MAX_JUDGE_ERRORS)
       .map((entry) => ({ ...entry, signals: signals(entry.turn) }))
       .filter((entry) => entry.signals.score >= options.minScore)
       .sort((a, b) => b.signals.score - a.signals.score || Date.parse(a.turn.end) - Date.parse(b.turn.end));
-    // Findings judged earlier whose filing failed, as when the board was unreachable.
-    const pending = [...known.judged.values()].flatMap((record) => record.findings.map((finding, index) => ({ record, finding, n: index + 1 })))
-      .filter(({ record, n }) => !known.filed.has(signatureOf(record.sessionId, record.turn, n)));
+    // Findings judged earlier whose filing failed, as when the board was unreachable, until
+    // they have failed MAX_FILE_ERRORS times or their turn is older than --max-age-hours.
+    const pending = [...known.judged.values()].filter((record) => Date.parse(record.endedAt) > oldest)
+      .flatMap((record) => record.findings.map((finding, index) => ({ record, finding, n: index + 1, filing: filingOf(record.sessionId, record.turn, index + 1) })))
+      .filter(({ filing }) => !known.filed.has(filing) && (known.fileErrors.get(filing) ?? 0) < MAX_FILE_ERRORS);
     console.log(`${turns.length} completed turns since ${new Date(from).toISOString()} (skipped ${skipped.automation} automation sessions, ${skipped.feedback} turns that filed feedback); ${candidates.length} show friction; judging up to ${options.maxTurns} with ${options.model}.`);
     if (options.dryRun) {
       for (const entry of candidates.slice(0, options.maxTurns))
@@ -272,52 +300,57 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
         if (entry) filed.push(entry);
       } catch (error) {
         errors++;
-        console.error(`Filing ${signatureOf(record.sessionId, record.turn, n)} failed: ${error.message}`);
+        const filing = filingOf(record.sessionId, record.turn, n);
+        appendJsonl(recordsFile(), { kind: "file-error", key: record.key, filing, error: line(error.message, 300), at: new Date(now).toISOString() });
+        console.error(`Filing ${filing} failed: ${line(error.message, 300)}`);
       }
     };
     for (const { record, finding, n } of pending) await fileOne(record, finding, n);
 
     const system = judgeSystem(setups);
     const schema = judgeSchema(setups);
-    // The earliest turn left unjudged keeps the cursor before it, so the next run sees it.
-    let resumeAt = to;
+    // The earliest turn left unjudged, or not yet ended, keeps the cursor before it, so the
+    // next run sees it.
+    let resumeAt = Math.min(to, holdAt - 1);
     for (const [index, entry] of candidates.entries()) {
       if (index >= options.maxTurns || spent + options.budgetUsd > options.maxTotalUsd) {
         resumeAt = Math.min(resumeAt, Date.parse(entry.turn.end) - 1);
         continue;
       }
-      const base = { key: entry.key, harness: entry.harness, sessionId: entry.sessionId, turn: entry.turn.index, endedAt: entry.turn.end, signals: entry.signals, model: options.model, at: new Date(now).toISOString() };
+      const base = { key: entry.key, harness: entry.harness, sessionId: entry.sessionId, cwd: entry.cwd, turn: entry.turn.index, endedAt: entry.turn.end, signals: entry.signals, model: options.model, at: new Date(now).toISOString() };
       // A failed turn is tried again next run, until it has failed MAX_JUDGE_ERRORS times.
       const failed = (costUSD, error) => {
         errors++;
         appendJsonl(recordsFile(), { kind: "error", ...base, costUSD, error });
         if ((known.errors.get(entry.key) ?? 0) + 1 < MAX_JUDGE_ERRORS) resumeAt = Math.min(resumeAt, Date.parse(entry.turn.end) - 1);
       };
+      let answer;
       try {
-        const { output, costUSD } = await judge({ prompt: `# Turn\n\n<turn>\n${digest(entry.turn)}\n</turn>`, system, schema, model: options.model, effort: options.effort, budgetUsd: options.budgetUsd });
-        spent += costUSD;
-        let findings;
-        try {
-          findings = checkFindings(output, ids);
-        } catch (error) {
-          failed(costUSD, error.message);
-          continue;
-        }
-        const record = { kind: "judged", ...base, costUSD, findings };
-        appendJsonl(recordsFile(), record);
-        judgedCount++;
-        for (const [n, finding] of findings.entries()) await fileOne(record, finding, n + 1);
+        answer = await judge({ prompt: `# Turn\n\n<turn>\n${digest(entry.turn)}\n</turn>`, system, schema, model: options.model, effort: options.effort, budgetUsd: options.budgetUsd });
       } catch (error) {
         // A call that never said what it cost may have spent its whole budget.
         const costUSD = error.costUSD ?? options.budgetUsd;
         spent += costUSD;
         failed(costUSD, error.message);
+        continue;
       }
+      spent += answer.costUSD;
+      let findings;
+      try {
+        findings = checkFindings(answer.output, ids);
+      } catch (error) {
+        failed(answer.costUSD, error.message);
+        continue;
+      }
+      const record = { kind: "judged", ...base, costUSD: answer.costUSD, findings };
+      appendJsonl(recordsFile(), record);
+      judgedCount++;
+      for (const [n, finding] of findings.entries()) await fileOne(record, finding, n + 1);
     }
     writeJsonAtomic(stateFile(), { cursor: new Date(Math.max(from, resumeAt)).toISOString(), lastRun: { at: new Date(now).toISOString(), judged: judgedCount, filed: filed.length, errors, costUSD: spent } });
     const duplicates = filed.filter((entry) => entry.duplicate).length;
     console.log(`Judged ${judgedCount} turns for ${usd(spent)}; filed ${filed.length} findings${duplicates ? ` (${duplicates} added to existing items)` : ""}${errors ? `; ${errors} errors` : ""}.`);
-    for (const entry of filed) console.log(`  ${entry.task} about ${entry.about} (${entry.signature})`);
+    for (const entry of filed) console.log(`  ${entry.task} about ${entry.about} (${entry.filing})`);
     if (!filed.length && !errors) console.log(candidates.length ? "The judge found no setup friction in the turns it read." : "No turn showed enough friction to judge.");
     console.log(`Records: ${recordsFile()}`);
     return errors ? 1 : 0;
@@ -339,7 +372,8 @@ async function status() {
 }
 
 export async function run(argv, context) {
-  const [command, ...rest] = argv;
+  // `friction --help` asks for the usage; any other leading option needs a command first.
+  const [command, ...rest] = argv[0]?.startsWith("-") ? [undefined, ...argv] : argv;
   let options;
   try {
     options = parseOptions(rest);

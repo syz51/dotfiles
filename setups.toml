@@ -164,7 +164,7 @@ change = "A PR on dotfiles with tests"
 verify = ["uv run --no-project python -B -m unittest discover -s tuios/tests"]
 
 [[setup]]
-id = "explore"
+id = "tv-explore"
 title = "Television popup explorer"
 covers = ["explore"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }

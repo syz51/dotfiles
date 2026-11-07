@@ -259,18 +259,23 @@ reports with it. `setups --check` validates the schema and ids and checks that t
 repository paths in `covers` exist; add an entry when you add a component.
 
 Most friction never gets reported, so `friction run` looks for it. It reads the main
-sessions of Claude Code and Codex turns completed since its last run (quiet for 15
-minutes, at most 48 hours back), skipping automation, the factory's own runs and turns
-that already called `feedback` or `board feedback`. Turns with board or other tool errors,
-hook blocks, retries or phrases such as "workaround", "not relevant" or "不得不" score
+sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
+back), skipping automation, the factory's own runs and turns that ran the `feedback` tool
+or `board feedback`. A turn has ended at the next prompt, when Claude Code's Stop hooks let
+it end or Codex marks it complete; one with no such mark counts as ended after 6 hours
+without activity, and until then holds the cursor. Turns with board or other failed calls
+(a search that found nothing does not count), hook blocks, retries of the same program, or
+phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
 points; up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
-$0.05 per call, $0.30 per run). Each finding is filed once with
-`board feedback --source capture --about <id> --activity <stage> --signature
-capture:<session>:<turn>:<n>`, in a few factual lines quoting at most one error line.
-Records stay in `friction.jsonl` and the cursor in `friction-state.json` in the state
-folder; a filing that fails is retried next run without judging again. `friction install`
-loads a LaunchAgent that runs it every hour; `friction status` shows it and the last run.
-It needs the `board` CLI with `feedback --about` (agent-board-23).
+$0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
+agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
+factual lines quoting at most one error line and naming the session, turn and project
+folder. The board merges reports with the same setup and title, so the same friction seen
+in many turns is one item. Records stay in `friction.jsonl` and the cursor in
+`friction-state.json` in the state folder; a filing that fails is retried next run without
+judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
+hour; `friction status` shows it and the last run. It needs the `board` CLI with
+`feedback --source` (agent-board-23).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
