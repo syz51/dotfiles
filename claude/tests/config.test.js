@@ -479,6 +479,9 @@ describe("work stages", () => {
     expect(body).toMatch(/`review` for Verify/);
     expect(body).toMatch(/take precedence over this skill/);
     expect(body).toMatch(/One track stays with one agent through every stage it needs/);
+    // The same split as the Work board section: subagents report, read-only threads file.
+    expect(body).toMatch(/Subagents put their findings, decisions, open questions and work found outside their track in their report; the parent records them on the board\. Read-only work in its own thread, such as a review or an investigation, records them itself\./);
+    expect(body).toMatch(/Before `task_done`, and before ending a turn, file what is still to do as the Work board section says\./);
     expect(body).toMatch(/## Feedback on this skill\n\nReport it with `feedback` and `about` `work-stages`\./);
     expect(tracked("claude/skills/work-stages/SKILL.md")).toBe(true);
   });

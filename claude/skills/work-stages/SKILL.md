@@ -27,7 +27,8 @@ Codex and runtimes without these agents do the stage themselves.
 ## Across stages
 
 - Keep the handoff current.
-- Read-only work, such as a review or an investigation, and delegated children put their findings, decisions and open questions in their report; the parent records them on the board.
+- Subagents put their findings, decisions, open questions and work found outside their track in their report; the parent records them on the board. Read-only work in its own thread, such as a review or an investigation, records them itself.
+- Before `task_done`, and before ending a turn, file what is still to do as the Work board section says.
 - Report friction with `feedback` and continue. Its `activity` is the stage in lowercase (`explore`, `research`, `design`, `plan` or `build`), `review` for Verify, or `operate` when running a service.
 - The rules in `CLAUDE.md` or `AGENTS.md` (delegation, work board, review, safeguards) take precedence over this skill.
 
