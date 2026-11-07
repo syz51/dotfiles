@@ -59,14 +59,14 @@ export function observedModels(events) {
 const claudeTmp = () => join(existsSync("/tmp") ? realpathSync("/tmp") : tmpdir(), `claude-${userInfo().uid}`);
 
 // Runs one configuration of a case and returns its results record. Infrastructure
-// failures (no stream, API errors, the wrong model) are marked infra, so reports leave
+// failures (no stream, API errors, the wrong model or effort) are marked infra, so reports leave
 // them out; fixture errors throw.
 export async function runOne(benchCase, { model, effort, trial, runId, batch, cliVersion: version = null, agentsDir = AGENTS_DIR }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), `claude-bench-${benchCase.id}-`)));
   const workspace = join(root, "workspace");
   const at = new Date().toISOString();
   const record = {
-    runId, batch, caseId: benchCase.id, role: benchCase.role, model, modelObserved: null, effort, trial,
+    runId, batch, caseId: benchCase.id, role: benchCase.role, model, modelObserved: null, effort, effortObserved: null, trial,
     pass: false, oracleExit: null, oracleOutput: "", costUSD: null, durationMs: null, turns: null,
     error: null, infra: false, at, cliVersion: version,
   };
@@ -81,9 +81,10 @@ export async function runOne(benchCase, { model, effort, trial, runId, batch, cl
     let task;
     try {
       // --model and --effort as well as the override: with --agent, Claude Code takes the
-      // agent's model but not its effort for the main session.
+      // agent's model but not its effort for the main session. The effort each request
+      // ran at is read from the session's transcript, which runTask then deletes.
       task = await runTask({
-        prompt: benchCase.prompt, cwd: workspace, model, effort, agent, settings,
+        prompt: benchCase.prompt, cwd: workspace, model, effort, agent, settings, readEffort: true,
         budgetUsd: benchCase.budgetUsd, timeoutMs: benchCase.timeoutMs,
         env: { ...OFFLINE, CLAUDE_CODE_TMPDIR: root, TMPDIR: root },
       });
@@ -109,6 +110,15 @@ export async function runOne(benchCase, { model, effort, trial, runId, batch, cl
           : final.subtype === "success" ? `an error result: ${String(final.result ?? "").slice(0, 200)}` : final.subtype;
         record.error = `session ended with ${detail}${final?.api_error_status ? ` (HTTP ${final.api_error_status})` : ""}`;
         record.infra = !final || !!final.api_error_status || final.subtype === "success";
+      }
+      const efforts = Object.entries(task.efforts ?? {}).sort((a, b) => b[1] - a[1]).map(([name]) => name);
+      record.effortObserved = efforts.join(",") || null;
+      if (efforts.length && (efforts.length > 1 || efforts[0] !== effort)) {
+        record.error = `requested effort ${effort} but the session ran ${efforts.join(", ")}`;
+        record.infra = true;
+      } else if (!efforts.length && task.ok) {
+        record.error = "the session's transcript recorded no effort, so the requested effort is unverified";
+        record.infra = true;
       }
       // A dated model ID (requested-YYYYMMDD) is the requested model.
       if (models.length && (models.length > 1 || (models[0] !== model && !models[0].startsWith(`${model}-`)))) {
