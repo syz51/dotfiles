@@ -9,6 +9,7 @@ const COMMANDS = {
   audit: ["./audit/cli.js", "Audit the security posture of this setup"],
   board: ["./board/cli.js", "Collect the work board's stats and feedback for the weekly review"],
   weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
+  ui: ["./ui/cli.js", "Hill-climb a web UI's design: captures, gates, a Claude judge council, reports"],
 };
 
 function usage() {

@@ -365,7 +365,18 @@ describe("claude runner", () => {
     expect(JSON.parse(call.args[call.args.indexOf("--json-schema") + 1])).toEqual(schema);
     expect(call.args).not.toContain("--system-prompt-file");
     expect(call.args).not.toContain("--append-system-prompt-file");
+    expect(call.args).not.toContain("--input-format");
     expect(existsSync(call.cwd)).toBe(false);
+  });
+
+  test("judge sends content blocks, such as images, as one stream-json user message", async () => {
+    fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
+    const content = [{ type: "text", text: "Design 1" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } }];
+    expect((await judge({ content, schema, model: "m" })).output).toEqual({ verdict: "pass" });
+    const [call] = calls();
+    expect(call.args[call.args.indexOf("--input-format") + 1]).toBe("stream-json");
+    expect(call.stdin.endsWith("\n")).toBe(true);
+    expect(call.stdin.trim().split("\n").map((line) => JSON.parse(line))).toEqual([{ type: "user", message: { role: "user", content } }]);
   });
 
   test("judge's shared instructions replace the default system prompt, where Claude Code caches them", async () => {
@@ -376,6 +387,7 @@ describe("claude runner", () => {
     // The file lives in the judge's own folder, removed with it.
     expect(call.args[call.args.indexOf("--system-prompt-file") + 1].endsWith("/judge-system.md")).toBe(true);
     expect(call.args).not.toContain("--append-system-prompt-file");
+    expect(call.args).not.toContain("--input-format");
     expect(call.stdin).toBe("one session");
     expect(existsSync(call.cwd)).toBe(false);
   });

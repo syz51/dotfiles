@@ -243,7 +243,15 @@ bun ~/.claude/factory/cli.js board              # the work board's week: stats, 
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
+bun ~/.claude/factory/cli.js ui round           # judge a UI design round (ui-climb skill)
 ```
+
+`ui` hill-climbs a web UI's design: it captures configured screens of the committed
+candidate, main and public reference products with the headless-browser skill (run its
+`setup.sh` first), gates them on the project's checks and page checks, and has Claude
+judges score the screenshots blind against a rubric. The `ui-climb` skill describes the
+configuration and the procedure; every judge call is bounded by the configuration's
+per-call, per-round and per-run budgets.
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board and proposals ($3 per proposer session;
