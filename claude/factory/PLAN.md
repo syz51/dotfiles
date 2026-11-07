@@ -523,17 +523,20 @@ Review docs on code.claude.com, read 2026-11-07.
   - 88 background reviews ran in 37 of 272 sessions, all xhigh on Opus 5.5.
   - Inner review agents cost $416.49 (median $2.33). With wrappers, reviews took 11.7%
     of $3,763.
-  - The median review returned 15 findings, the cap. 3 of 151 returned none.
+  - The median review returned 15 findings, the cap. 3 of 151 returned none. These counts
+    are estimates parsed from free-text replies. A sample of about 12 triage replies
+    accepted 12-15 of 15 findings. dotfiles-100 checks both against recorded outcomes.
   - No review recorded its outcomes as typed data.
   - Sessions with many reviews reviewed distinct commits, not one change in a loop.
 - Decision (user, 2026-11-07, ask #37): a circuit breaker. Agents keep merging, and PRs to
   high-impact paths wait for the user while the revert rate of reviewed PRs is above a
   limit. The limit, window, reset rule and paths stay in one config file the user can
   change at any time.
-- Tasks: dotfiles-100 (outcome records, accepted), dotfiles-102 (path tiers and
-  skipped-review detector, accepted), dotfiles-107 (the breaker), and proposals
-  dotfiles-101 (level bench), 103 (review briefs), 104 (weekly review of main) and 105
-  (fixes for recurring finding classes).
+- Tasks, all p1 and accepted: dotfiles-100 (outcome records), 101 (level bench), 102
+  (path tiers and skipped-review detector), 103 (review briefs), 104 (weekly review of
+  main), 105 (fixes for recurring finding classes) and 107 (the breaker). The board holds
+  their current state. Their instruction changes go to `claude/CLAUDE.md`, and
+  `codex/AGENTS.md` follows only what dotfiles-109 keeps of Codex.
 
 ## Deferred: daily review on sai
 
