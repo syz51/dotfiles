@@ -186,9 +186,11 @@ Link the whole `claude/hooks` directory, not single scripts: the Bash guards imp
 only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
 `` !`command` `` line in a user, project or plugin skill or custom slash command is
 replaced with a placeholder instead of running unchecked before the model reads it.
-guard-git-push blocks a push whose refspec, remote or option name comes from a variable
-or command substitution, and checks a push without refspecs against
-`remote.<name>.push`.
+guard-git-push blocks a push whose subcommand, refspec, remote or option name comes from
+a variable, command substitution or brace expansion, and one that sets push
+configuration with `git -c` or an earlier `git config`. It checks a push without
+refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
+cannot see git aliases or `GIT_CONFIG_*` variables.
 Do not replace an existing tool home without backing up its local data.
 
 The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.

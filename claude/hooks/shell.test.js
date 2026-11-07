@@ -25,6 +25,30 @@ test("parseScript keeps an unquoted substitution in its word, with the words aft
   expect(parsed[0].substitutions).toEqual(["b \")\" 'c)' $(d)", "e f"]);
 });
 
+test("a case pattern's ) does not close a substitution", () => {
+  const { commands: parsed } = parseScript("a $(case x in (y) b;; x) c;; esac) d");
+  expect(parsed.map((command) => command.argv)).toEqual([["a", "$(case x in (y) b;; x) c;; esac)", "d"]]);
+  expect(parsed[0].substitutions).toEqual(["case x in (y) b;; x) c;; esac"]);
+});
+
+test("an unquoted heredoc runs its substitutions; a quoted one does not", () => {
+  expect(parseScript("cat <<EOF\n$(a) `b`\nEOF").commands[0].substitutions).toEqual(["a", "b"]);
+  expect(parseScript("cat <<'EOF'\n$(a)\nEOF").commands[0].substitutions).toEqual([]);
+});
+
+test("a substitution in a redirection after ) belongs to the subshell, which stays in its pipeline", () => {
+  const { commands: parsed } = parseScript("(a) 2>$(b) | c");
+  expect(parsed.map(({ argv, substitutions, next }) => [argv.join(" "), substitutions, next])).toEqual([["a", ["b"], "|"], ["c", [], undefined]]);
+});
+
+test("text a substitution prints, echoed into a shell, runs", () => {
+  const ran = (source) => commands(source).map(([words]) => words);
+  expect(ran("echo $(echo make a) | sh")).toContain("make a");
+  expect(ran("echo `printf 'make b'` | sh")).toContain("make b");
+  expect(ran("printf '%s\\n' 'make c' | sh")).toContain("make c");
+  expect(ran("echo $(echo make d) | grep make")).not.toContain("make d");
+});
+
 test("substitutions run in the directory of the command they belong to", () => {
   expect(commands("cd sub && make $(pwd) all")).toEqual([["pwd", "/repo/sub"], ["make $(pwd) all", "/repo/sub"]]);
   expect(commands("out=`make`; cd x; ls")).toEqual([["make", "/repo"], ["ls", "/repo/x"]]);

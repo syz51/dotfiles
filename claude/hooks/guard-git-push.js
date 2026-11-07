@@ -5,8 +5,10 @@
 // hook error, so the guard fails open; a git query that fails unexpectedly blocks
 // only pushes that rewrite or delete history. shell.js follows the shell syntax around
 // the push: quotes, substitutions, heredocs, `cd`, `sh -c`, wrappers and `ssh`. A push
-// whose refspec, remote or option name the shell fills in from a variable or substitution
-// is blocked, and a push without refspecs is checked against remote.<name>.push.
+// whose subcommand, refspec, remote or option name the shell fills in is blocked, as is one
+// given push configuration by `-c` or an earlier `git config`; a push without refspecs is
+// checked against its remote's push and mirror configuration. Aliases and GIT_CONFIG_*
+// variables are not seen.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
@@ -34,11 +36,18 @@ function longOption(name) {
   return matches.find((option) => REWRITING_OPTIONS.includes(option)) ?? name;
 }
 
-/** Whether the shell expands `word` (a variable or command substitution), so its value is unknown here. */
-const expands = (word) => /[$`]/.test(word);
+/**
+ * Whether the shell fills in part of `word` from a variable, a command substitution or a brace
+ * expansion, so its value is unknown here. shell.js drops quoting, so a quoted `$` counts too.
+ */
+const expands = (word) => /[$`]|\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(word);
+// Configuration that decides what a push without refspecs sends, and to which remote.
+const PUSH_CONFIG = "^(remote\\..+\\.(push|mirror)|remote\\.pushdefault|branch\\..+\\.(pushremote|remote))$";
+const isPushConfig = (key) => new RegExp(PUSH_CONFIG, "i").test(key);
+const isTrue = (value) => /^(?:true|yes|on|1|)$/i.test(value);
 
 function parsePush(args) {
-  const push = { force: false, leases: [], mirror: false, all: false, remove: false, dryRun: false, positionals: [], unresolved: undefined };
+  const push = { force: false, leases: [], mirror: false, all: false, tags: false, remove: false, dryRun: false, repo: undefined, positionals: [], unresolved: undefined };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === "--") {
@@ -63,9 +72,16 @@ function parsePush(args) {
       else if (name === "--no-delete") push.remove = false;
       else if (name === "--dry-run") push.dryRun = true;
       else if (name === "--no-dry-run") push.dryRun = false;
-      else if (PUSH_VALUE_OPTIONS.has(name) && value === undefined) i += 1;
+      else if (name === "--tags") push.tags = true;
+      else if (name === "--no-tags") push.tags = false;
+      else if (name === "--repo") {
+        // --repo names the remote, as the first positional does.
+        push.repo = value ?? args[++i];
+        if (push.repo !== undefined && expands(push.repo)) push.unresolved ??= arg;
+      } else if (PUSH_VALUE_OPTIONS.has(name) && value === undefined) i += 1;
     } else if (arg.startsWith("-") && arg.length > 1) {
-      if (expands(arg)) push.unresolved ??= arg;
+      // Letters up to -o, whose value is the rest of the word, are options.
+      if (expands(arg.slice(0, arg.indexOf("o") === -1 ? arg.length : arg.indexOf("o") + 1))) push.unresolved ??= arg;
       for (let k = 1; k < arg.length; k += 1) {
         if (arg[k] === "f") push.force = true;
         else if (arg[k] === "d") push.remove = true;
@@ -85,53 +101,63 @@ function parsePush(args) {
 
 /** The branch a refspec destination names: { all }, { name }, { other } for tags and other refs, or { unknown }. */
 function branchOf(target, current, pushTarget) {
+  if (target.startsWith("refs/") && !target.startsWith("refs/heads/")) return { other: true };
   if (target.includes("*")) return { all: true };
   if (target === "@{push}") return pushTarget();
   if (target === "HEAD" || target === "@") return current();
-  if (target.startsWith("refs/heads/")) return { name: target.slice("refs/heads/".length) };
-  return target.startsWith("refs/") ? { other: true } : { name: target };
+  return { name: target.startsWith("refs/heads/") ? target.slice("refs/heads/".length) : target };
 }
 
 /**
- * The push refspecs configured for the remote a refspec-less `git push [remote]` uses
- * (remote.<name>.push), which git pushes instead of the current branch; [] when there are none.
+ * What a `git push [remote]` without refspecs uses from the configuration: the remote it pushes
+ * to (`remote`), that remote's push refspecs (`specs`, which git pushes instead of the current
+ * branch) and whether it mirrors (`mirror`).
  */
-function configuredRefspecs(remote, query) {
-  const lines = query(["config", "--get-regexp", "^(remote\\..+\\.push|remote\\.pushdefault|branch\\..+\\.(pushremote|remote))$"]);
+function pushConfig(remote, query, branch) {
+  const lines = query(["config", "--get-regexp", PUSH_CONFIG]);
   const config = (lines ?? "").split("\n").map((line) => {
     const space = line.indexOf(" ");
     return space === -1 ? [line, ""] : [line.slice(0, space), line.slice(space + 1)];
   });
-  const values = (key) => config.filter(([name]) => name === key).map(([, value]) => value);
-  if (!config.some(([name]) => /^remote\..+\.push$/.test(name))) return [];
+  const value = (key) => config.findLast(([name]) => name === key)?.[1];
   let name = remote;
-  if (name === undefined) {
+  if (name === undefined && lines !== undefined) {
     // git push picks branch.<current>.pushRemote, remote.pushDefault, branch.<current>.remote, then origin.
-    const branch = query(["symbolic-ref", "--quiet", "--short", "HEAD"]);
-    const forBranch = (key) => (branch === undefined ? undefined : values(`branch.${branch}.${key}`).at(-1));
-    name = forBranch("pushremote") ?? values("remote.pushdefault").at(-1) ?? forBranch("remote") ?? "origin";
+    const forBranch = (key) => (branch() === undefined ? undefined : value(`branch.${branch()}.${key}`));
+    name = forBranch("pushremote") ?? value("remote.pushdefault") ?? forBranch("remote");
   }
-  return values(`remote.${name}.push`);
+  name ??= "origin";
+  const mirror = value(`remote.${name}.mirror`);
+  return { remote: name, specs: config.filter(([key]) => key === `remote.${name}.push`).map(([, spec]) => spec), mirror: mirror !== undefined && isTrue(mirror) };
 }
 
-function judge(push, dir, git) {
+function judge(push, dir, git, configChanged) {
   if (push.unresolved !== undefined) {
     return `the shell fills in \`${push.unresolved}\`, so the guard cannot see what it pushes. Write the remote, refspecs and options out literally.`;
   }
-  const [remote, ...refspecs] = push.positionals;
+  let [remote, ...refspecs] = push.positionals;
+  remote ??= push.repo;
   const query = (args) => (dir === undefined ? undefined : git(dir, args));
+  let head;
+  const branch = () => (head ??= { name: query(["symbolic-ref", "--quiet", "--short", "HEAD"]) }).name;
   let specs = refspecs;
-  if (!push.mirror && !push.all && refspecs.length === 0) {
+  let mirror = push.mirror;
+  if (push.tags && refspecs.length === 0) {
+    specs = ["refs/tags/*"]; // --tags is a refspec, so git reads no push configuration
+  } else if (!push.mirror && !push.all && refspecs.length === 0) {
+    if (configChanged) return "an earlier command changes the push configuration, which the guard reads before anything runs. Push with an explicit refspec.";
     try {
-      specs = configuredRefspecs(remote, query);
+      const config = pushConfig(remote, query, branch);
+      ({ remote, specs } = config);
+      mirror = config.mirror;
     } catch (error) {
       // A plain push may go ahead, as when any other query fails; only a rewrite is blocked.
-      if (push.force || push.leases.length > 0 || push.remove) return `git could not read the configured push refspecs (${error.message}).`;
+      if (push.force || push.leases.length > 0 || push.remove) return `git could not read the push configuration (${error.message}).`;
       return undefined;
     }
   }
   const updates = [];
-  if (push.mirror || push.all) {
+  if (mirror || push.all) {
     updates.push({ target: "*", plus: false, remove: false });
   } else if (specs.length === 0) {
     updates.push({ target: "@{push}", plus: false, remove: push.remove });
@@ -145,7 +171,7 @@ function judge(push, dir, git) {
       else updates.push({ target: push.remove || colon === -1 ? body : body.slice(colon + 1), plus, remove: push.remove || colon === 0 });
     }
   }
-  const forced = push.force || push.mirror || updates.some((update) => update.plus);
+  const forced = push.force || mirror || updates.some((update) => update.plus);
   const rewriting = forced || push.leases.length > 0;
   const risky = updates.filter((update) => rewriting || update.remove);
   if (risky.length === 0) return undefined;
@@ -157,10 +183,7 @@ function judge(push, dir, git) {
     defaults = new Set(DEFAULT_BRANCHES);
     const remoteHead = query(["symbolic-ref", "--quiet", "--short", `refs/remotes/${remoteName}/HEAD`]);
     if (remoteHead?.startsWith(`${remoteName}/`)) defaults.add(remoteHead.slice(remoteName.length + 1));
-    const current = () => {
-      const name = query(["symbolic-ref", "--quiet", "--short", "HEAD"]);
-      return name === undefined ? { unknown: true } : { name };
-    };
+    const current = () => (branch() === undefined ? { unknown: true } : { name: branch() });
     const pushTarget = () => {
       const target = query(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{push}"]);
       return target?.includes("/") ? { name: target.slice(target.indexOf("/") + 1) } : current();
@@ -187,26 +210,40 @@ function judge(push, dir, git) {
   return undefined;
 }
 
-function gitPush(words, dir, git) {
+/** `state.configChanged` records a `git config` earlier in the same command that sets push configuration. */
+function gitPush(words, dir, git, state) {
   let i = 1;
+  let pushConfigOption;
   while (i < words.length && words[i].startsWith("-")) {
     if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
+    // `-c key=value` and `--config-env key=VAR` set configuration for this one command.
+    const setting = words[i] === "-c" || words[i] === "--config-env" ? words[i + 1] : /^--config-env=(.*)$/s.exec(words[i])?.[1];
+    if (setting !== undefined && (expands(setting) || isPushConfig(setting.split("=")[0]))) pushConfigOption ??= setting;
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
+  if (words[i] === "config" && words.slice(i + 1).some(isPushConfig)) state.configChanged = true;
+  const fail = (reason) => `\`${words.join(" ")}\`: ${reason}`;
+  if (words[i] !== undefined && expands(words[i])) return fail(`the shell fills in the git subcommand \`${words[i]}\`, so the guard cannot see whether it pushes.`);
   if (words[i] !== "push") return undefined;
+  if (pushConfigOption !== undefined) return fail(`\`${pushConfigOption}\` sets push configuration the guard does not read. Push with an explicit refspec and no -c.`);
   const push = parsePush(words.slice(i + 1));
-  if (push.dryRun) return undefined;
-  const reason = judge(push, dir, git);
-  return reason && `\`${words.join(" ")}\`: ${reason}`;
+  // A word the shell fills in could turn the dry run off, as --no-dry-run does.
+  if (push.dryRun && push.unresolved === undefined) return undefined;
+  const reason = judge(push, dir, git, state.configChanged);
+  return reason && fail(reason);
 }
 
 /**
  * Returns why `command` must not run, or undefined when it may. `git(dir, args)` returns trimmed
  * stdout, undefined when git reports that the ref, upstream, or branch does not exist, and throws
- * when git could not answer. A script nested too deeply to check is blocked.
+ * when git could not answer. A script nested too deeply to check is blocked. A command whose name
+ * the shell fills in, as in `$GIT push`, is checked as git when a later word is `push`.
  */
 export function findViolation(command, cwd, git) {
-  return visitCommands(command, cwd, (words, dir) => (basename(words[0]) === "git" ? gitPush(words, dir, git) : undefined), TOO_DEEP);
+  const state = { configChanged: false };
+  return visitCommands(command, cwd, (words, dir) => (basename(words[0]) === "git" || (expands(words[0]) && words.includes("push"))
+    ? gitPush(words, dir, git, state)
+    : undefined), TOO_DEEP);
 }
 
 function runGit(dir, args) {

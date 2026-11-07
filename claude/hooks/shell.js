@@ -43,9 +43,14 @@ function closeQuote(source, start, quote, escapes) {
   return Math.min(i, source.length);
 }
 
+/** Whether the reserved word `name` starts at `i`: at a word boundary and followed by one. */
+const reserved = (source, i, name) => source.startsWith(name, i)
+  && (i === 0 || /[\s;&|(]/.test(source[i - 1]))
+  && (i + name.length === source.length || /[\s;&|)]/.test(source[i + name.length]));
+
 /**
  * The command substitution `$(…)` or `` `…` `` starting at `start`: its script (`body`) and the
- * index just past it (`end`).
+ * index just past it (`end`). Inside `case … esac`, a pattern's `)` does not close it.
  */
 function substitution(source, start) {
   if (source[start] === "`") {
@@ -53,19 +58,43 @@ function substitution(source, start) {
     return { body: source.slice(start + 1, close), end: close + 1 };
   }
   let depth = 1;
+  let cases = 0;
   let i = start + 2;
   while (i < source.length) {
     const c = source[i];
     if (c === "\\") i += 2;
     else if (c === "'" || c === '"') i = closeQuote(source, i, c, c === '"') + 1;
-    else if (c === "(") {
+    else if (reserved(source, i, "case")) {
+      cases += 1;
+      i += 4;
+    } else if (reserved(source, i, "esac")) {
+      cases = Math.max(0, cases - 1);
+      i += 4;
+    } else if (c === "(") {
       depth += 1;
       i += 1;
+    } else if (c === ")" && depth === 1 && cases > 0) {
+      i += 1; // a case pattern
     } else if (c === ")" && (depth -= 1) === 0) {
       return { body: source.slice(start + 2, i), end: i + 1 };
     } else i += 1;
   }
   return { body: source.slice(start + 2), end: source.length };
+}
+
+/** The `$(…)` and `` `…` `` substitutions in text the shell expands outside quotes, such as a heredoc body: { start, end, body } each. */
+function substitutionsIn(text) {
+  const found = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === "\\") i += 2;
+    else if ((text[i] === "$" && text[i + 1] === "(") || text[i] === "`") {
+      const { body, end } = substitution(text, i);
+      found.push({ start: i, end, body });
+      i = end;
+    } else i += 1;
+  }
+  return found;
 }
 
 /**
@@ -94,11 +123,17 @@ export function parseScript(source) {
   const endCommand = (next) => {
     endWord();
     destination = "argv";
-    if (current.argv.length > 0 || current.inputs.length > 0 || current.substitutions.length > 0) {
+    if (current.argv.length > 0 || current.inputs.length > 0) {
       commands.push({ ...current, next });
       current = fresh();
     } else if (commands.at(-1)?.next === ")") {
+      // Words after `)`, such as a redirection target, belong to the subshell it closed.
+      commands.at(-1).substitutions.push(...current.substitutions);
+      current.substitutions = [];
       commands.at(-1).next = next;
+    } else if (current.substitutions.length > 0) {
+      commands.push({ ...current, next });
+      current = fresh();
     }
   };
 
@@ -108,7 +143,7 @@ export function parseScript(source) {
     if (c === "\n") {
       endCommand("\n");
       i += 1;
-      for (const { delimiter, stripTabs, inputs } of heredocs) {
+      for (const { delimiter, stripTabs, inputs, substitutions } of heredocs) {
         const lines = [];
         while (i < source.length) {
           const newline = source.indexOf("\n", i);
@@ -119,6 +154,8 @@ export function parseScript(source) {
           lines.push(line);
         }
         inputs.push(lines.join("\n"));
+        // The shell expands substitutions in a heredoc whose delimiter is unquoted.
+        substitutions?.push(...substitutionsIn(lines.join("\n")).map(({ body }) => body));
       }
       heredocs = [];
     } else if (c === " " || c === "\t") {
@@ -196,11 +233,13 @@ export function parseScript(source) {
         if (stripTabs) i += 1;
         while (source[i] === " " || source[i] === "\t") i += 1;
         let delimiter = "";
+        let quoted = false;
         while (i < source.length && !/[\s;&|()<>]/.test(source[i])) {
-          if (!"'\"\\".includes(source[i])) delimiter += source[i];
+          if ("'\"\\".includes(source[i])) quoted = true;
+          else delimiter += source[i];
           i += 1;
         }
-        heredocs.push({ delimiter, stripTabs, inputs: current.inputs });
+        heredocs.push({ delimiter, stripTabs, inputs: current.inputs, substitutions: quoted ? undefined : current.substitutions });
       } else {
         destination = operator === "<<<" ? "input" : "drop";
       }
@@ -374,12 +413,31 @@ function findScripts(words, dir) {
   return scripts;
 }
 
-/** What `echo` or `printf` prints, roughly, when its output is piped into a shell. */
-function printed(words) {
+/**
+ * What `echo` or `printf` prints, roughly, when its output is piped into a shell. A substitution
+ * in its words prints what its own echo and printf commands print; printf prints its arguments
+ * after its format, without the format's directives.
+ */
+function printed(words, depth = 0) {
   const name = basename(words[0]);
-  if (name !== "echo" && name !== "printf") return undefined;
-  let args = words.slice(1);
+  if ((name !== "echo" && name !== "printf") || depth > MAX_DEPTH) return undefined;
+  let args = words.slice(1).map((word) => {
+    let text = "";
+    let last = 0;
+    for (const { start, end, body } of substitutionsIn(word)) {
+      const inner = parseScript(body).commands.map(({ argv }) => {
+        const { words: run } = program(argv, undefined);
+        return run.length > 0 ? printed(run, depth + 1) : undefined;
+      });
+      text += word.slice(last, start) + inner.filter((line) => line !== undefined).join("\n");
+      last = end;
+    }
+    return text + word.slice(last);
+  });
   if (name === "echo") while (/^-[neE]+$/.test(args[0] ?? "")) args = args.slice(1);
+  if (name === "printf" && args.length > 1 && args[0].includes("%")) {
+    args = [...args.slice(1), args[0].replace(/%[-#0 +']*\d*(?:\.\d+)?[a-zA-Z%]/g, "")];
+  }
   return args.join(" ").replaceAll("\\n", "\n");
 }
 

@@ -109,6 +109,36 @@ describe("blocks", () => {
     ["git push", { config: "branch.feature.pushremote fork\nremote.fork.push +HEAD:main" }],
     ["git push", { config: "branch.feature.remote fork\nremote.fork.push +HEAD:main" }],
     ["git push --force origin :"],
+    // brace expansion, a filled-in word after --dry-run, and a filled-in command name or subcommand
+    ["git push origin {--force,main}"],
+    ["git push origin feature{,:main}"],
+    ["git push --dry-run $(echo --no-dry-run) --force origin main"],
+    ["git push -n $X --force origin main"],
+    ['git push --dry-run origin "$REF"'],
+    ["git $(echo push) --force origin main"],
+    ['git "$SUB" -f origin main'],
+    ["sudo $(which git) push -f origin main"],
+    ["$GIT push -f origin main"],
+    // push configuration from -c, --config-env, or an earlier command
+    ["git -c remote.origin.push=+HEAD:main push"],
+    ["git -c Remote.origin.Mirror=true push"],
+    ["git --config-env=remote.origin.push=REFSPEC push"],
+    ["git -c $SETTING push origin feature"],
+    ["git config remote.origin.push +HEAD:main; git push"],
+    ["git config --add remote.origin.mirror true && git push origin"],
+    // remote.<name>.mirror, --repo, and the push remote's own default branch
+    ["git push", { config: "remote.origin.mirror true" }],
+    ["git push --repo=fork", { config: "remote.fork.push +HEAD:main" }],
+    ["git push --repo fork", { config: "remote.fork.push +HEAD:main" }],
+    ['git push --repo="$R"'],
+    ["git push --force-with-lease=develop:abc123", { config: "remote.pushdefault fork\nremote.fork.push HEAD:develop", remoteHead: "fork/develop" }],
+    // text echoed through a substitution into a shell, a case pattern inside $( ), a heredoc
+    ["echo $(echo git push -f origin main) | sh"],
+    ["printf '%s ' $(echo git push -f origin main) | sh"],
+    ["echo $(case x in x) git push -f origin main;; esac)"],
+    ['(echo git push -f origin main) 2>"$HOME/$(echo err)" | sh'],
+    ["cat <<EOF\n$(git push -f origin main)\nEOF"],
+    ["cat <<EOF\n`git push -f origin main`\nEOF"],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeDefined();
   });
@@ -151,8 +181,14 @@ describe("allows", () => {
     // an option value from a variable leaves the option and the refspec known
     ["git push --force-with-lease=feature:$SHA origin feature"],
     ['git push -o "$OPTION" origin feature'],
-    ['git push --dry-run origin "$REF"'],
+    ["git push -o$OPTION origin feature"],
     ['echo "$(git push origin feature)"'],
+    ["cat <<'EOF'\n$(git push -f origin main)\nEOF"],
+    ["git -c user.name=me push origin feature"],
+    ["git config user.name me; git push"],
+    ["git push --tags --force-with-lease=v1:abc123", { config: "remote.origin.push refs/heads/*:refs/heads/*" }],
+    ["git push --repo=fork", { config: "remote.origin.push +HEAD:main" }],
+    ["$EDITOR push.txt"],
     ["git push", { config: "remote.origin.push refs/heads/feature:refs/heads/feature" }],
     ["git push", { config: "remote.upstream.push +HEAD:main" }],
     ["git push origin", { config: "remote.pushdefault fork\nremote.fork.push +HEAD:main" }],
@@ -258,6 +294,16 @@ describe("hook process", () => {
       git(work, "config", "--unset-all", "remote.origin.push");
     }
     expect(bash("git push", work)).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("blocks a plain push to a remote configured to mirror", () => {
+    const work = join(root, "work");
+    git(work, "config", "remote.origin.mirror", "true");
+    try {
+      expect(bash("git push", work).stderr).toContain("every branch, including the default branch");
+    } finally {
+      git(work, "config", "--unset", "remote.origin.mirror");
+    }
   });
 
   test("ignores other commands and tools", () => {
