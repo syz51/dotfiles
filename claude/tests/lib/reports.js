@@ -1,6 +1,13 @@
 // Run reports and cost accounting for live sessions.
 import { lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+
+// Where a live check keeps the evidence of a failed case: CLAUDE_LIVE_REPORT_DIR when set,
+// else claude-live-failures in the temp folder, so a rare failure is kept even when no one
+// asked for reports. It holds transcripts; delete it when done.
+export const failureDirectory = (env = process.env, root = tmpdir()) =>
+  reportDirectory(root, env.CLAUDE_LIVE_REPORT_DIR || join(root, "claude-live-failures"));
 
 // Creates target as a folder strictly inside root and returns its real path. Rejects a
 // target outside root, root itself, and any existing component that is a symlink or not
