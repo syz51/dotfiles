@@ -170,6 +170,10 @@ describe("turns", () => {
     // description.
     expect(filedFeedback({ calls: [{ name: "Edit", input: { file_path: "SETUP.md", new_string: "agents name with `board feedback --about <id>`" } }] })).toBe(false);
     expect(filedFeedback({ calls: [{ name: "Bash", input: { command: "git status", description: "Check before board feedback" } }] })).toBe(false);
+    // A filing that failed filed nothing; a retry that worked did.
+    const rejected = { name: "Bash", ok: false, input: { command: "board feedback --about hooks --activity build 'x'" }, output: "error: unexpected argument '--about'" };
+    expect(filedFeedback({ calls: [rejected, { name: "mcp__board__feedback", ok: false, input: {} }] })).toBe(false);
+    expect(filedFeedback({ calls: [rejected, { ...rejected, ok: true }] })).toBe(true);
   });
 
   test("only the agent's own friction phrases count, in English and Chinese", () => {

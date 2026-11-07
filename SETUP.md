@@ -221,7 +221,18 @@ and never blocks the call. Its fetch never prompts for credentials, and parallel
 take turns on a lock in the repository's git folder, so one fetches for all of them.
 Do not replace an existing tool home without backing up its local data.
 
-The skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
+Two skills live here: `headless-browser`, and `work-stages`, which the Workflow sections
+of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at, for Claude Code and
+Codex alike. Claude Code finds both through `~/.claude/skills` when `~/.claude` links to
+`~/.config/claude`; otherwise link each skill into `~/.claude/skills`. Link `work-stages`
+for Codex too, after checking that nothing is at the target:
+
+```sh
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+ln -s ~/.config/claude/skills/work-stages "${CODEX_HOME:-$HOME/.codex}/skills/work-stages"
+```
+
+The other skills named in `claude/CLAUDE.md` are maintained separately from dotfiles.
 Install the needed skills and their references from
 [syz51/skills](https://github.com/syz51/skills#install-skills), for example with
 `bunx skills add syz51/skills`, selecting the agents you use. Claude Code
@@ -607,7 +618,8 @@ in CI:
   the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
   which the installed `frontend-ui` skill tells sessions to read rather than
   `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback
-  proposals append to.
+  proposals append to. It also pins the Feedback rule and the `work-stages` skill in
+  both instruction files, and that the setups they name are registered.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
   evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
   runner and leftover processes, two-message conversations, session cleanup, reports and language detection.
