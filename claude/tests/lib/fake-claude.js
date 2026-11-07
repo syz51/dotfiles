@@ -120,7 +120,8 @@ if (mode.startsWith("review-")) {
   // A conversation over stream-json input: each turn's events go out when the turn ends,
   // and the session exits once stdin ends. review-background hands the review to a
   // background agent and answers the follow-up while it runs; review-late does the same
-  // but answers only after the review; review-foreground runs the review itself. As in
+  // but answers only after the review; review-foreground runs the review itself;
+  // review-unrecorded never records the outcomes through ReportFindings. As in
   // Claude Code, agents run in the background without a flag, and stdin ending while the
   // review still runs stops it.
   const lines = (async function* () {
@@ -140,6 +141,11 @@ if (mode.startsWith("review-")) {
   };
   const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
   const findings = "canEdit now lets anyone who is not the owner edit: `!==` should be `===`.";
+  // The outcomes, once decided: read-only, so the real finding is skipped.
+  const record = () => {
+    if (mode === "review-unrecorded") return;
+    tool("ReportFindings", { findings: [{ file: "auth/access.js", line: 3, summary: "canEdit lets anyone who is not the owner edit", failure_scenario: "a non-owner edits a document", category: "correctness", outcome: "skipped" }] }, () => ({ text: "Reported." }));
+  };
   await nextMessage();
   if (mode === "review-foreground") {
     tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }));
@@ -168,9 +174,13 @@ if (mode.startsWith("review-")) {
       // The review takes a moment; stdin closing meanwhile stops it.
       const closed = await Promise.race([nextMessage().then((message) => message === null), Bun.sleep(300).then(() => false)]);
       finish(closed ? "stopped" : "completed");
+      if (!closed) record();
       turn(closed ? "The review was stopped." : findings);
       if (closed) process.exit(0);
-    } else turn(findings);
+    } else {
+      record();
+      turn(findings);
+    }
   }
   while (await nextMessage() !== null);
   process.exit(0);

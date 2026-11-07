@@ -569,6 +569,16 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/rerun the affected checks instead of reviewing again/);
   });
 
+  // factory metrics reads these records to measure review noise (dotfiles-100).
+  test("Review records each finding's outcome through ReportFindings", () => {
+    const review = section("Review");
+    expect(review).toMatch(/Once you have decided on every finding, record the outcomes: call `ReportFindings` once with every finding, its category and its outcome/);
+    expect(review).toMatch(/`fixed` for one you fixed, `no_change_needed` for one that is wrong or intentional, and `skipped` for a real one you filed or did not apply/);
+    expect(review).toMatch(/Report the result in your reply as well/);
+    // The outcome names are the ones factory metrics counts.
+    expect(read("claude/factory/metrics/reviews.js")).toContain('export const OUTCOMES = ["fixed", "no_change_needed", "skipped"];');
+  });
+
   // A review run in the main thread is cut off when a message arrives mid-review; in the
   // background the thread stays free and the review finishes.
   test("Review runs in one background agent, pinned to the commit, while this thread keeps answering", () => {

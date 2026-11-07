@@ -161,6 +161,7 @@ describe("background review", () => {
   for (const [mode, message] of [
     ["review-foreground", "the review was not one background agent"],
     ["review-late", "the follow-up was answered only after the review ended"],
+    ["review-unrecorded", "the session did not record the outcomes once through ReportFindings"],
   ])
     test(mode, async () => {
       const run = await runLive("live.test.js", name, mode);

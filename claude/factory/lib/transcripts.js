@@ -175,6 +175,9 @@ export function mostCommon(values) {
 // The key with the highest count ({ key: count }), the first on a tie; null when empty.
 export const topKey = (counts) => Object.entries(counts).reduce((best, entry) => (best && best[1] >= entry[1] ? best : entry), null)?.[0] ?? null;
 
+// A tool call that runs the /code-review skill.
+export const isCodeReview = (call) => call.name === "Skill" && call.input?.skill === "code-review";
+
 function parseSubagents(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort().map((name) => {
@@ -196,6 +199,11 @@ function parseSubagents(dir) {
       agentType: meta.agentType ?? null,
       description: meta.description ?? null,
       toolUseId: meta.toolUseId ?? null,
+      // The agent that started this one, such as the agent whose skill ran forked; its id
+      // without the file's "agent-" prefix.
+      parentAgentId: meta.parentAgentId ?? null,
+      // The /code-review runs this agent started: the Skill call's arguments.
+      codeReviews: summary.toolCalls.filter(isCodeReview).map((call) => ({ at: call.at, args: String(call.input.args ?? "") })),
       model: topKey(summary.models),
       effort: topKey(summary.efforts),
       usage: summary.usage,
