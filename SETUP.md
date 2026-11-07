@@ -39,6 +39,26 @@ Macs. If both Macs have new commits, commit any unfinished work, fetch with
 Resolve any conflicts and run the verification checks below before pushing.
 The other Mac can then update with the fast-forward command above.
 
+The `com.syz51.config-sync` LaunchAgent does that update every 30 minutes on each Mac,
+so a merge reaches both within the hour. `config-sync/config_sync.py check` fetches
+`origin/main` and fast-forwards the checkout only when it is on `main` with no tracked
+changes and no commits of its own; it never stashes, resets or merges. Otherwise it
+leaves the checkout as it is and files one Feedback report about `config-sync` per
+distinct set of problems: off `main`, tracked changes, diverged, a fast-forward that
+failed (an untracked file in the way, say), a fetch failing for over 24 hours, or an
+instruction link (`~/.claude`, Codex's `AGENTS.md`) that is a copy or missing. It uses
+plain `board feedback` where the installed CLI lacks `--about`, and a macOS notification
+when the board is unreachable. State is in `~/.local/state/config-sync/state.json`, each
+pull or report adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
+Install it on each Mac and check it:
+
+```sh
+uv run --no-project --python 3.11 python -B ~/.config/config-sync/config_sync.py install
+uv run --no-project --python 3.11 python -B ~/.config/config-sync/config_sync.py status
+```
+
+`install --dry-run` prints the plist, and `uninstall` unloads and removes it.
+
 Keep credentials and machine-specific settings in ignored local files, including
 `ghostty/config.local` and `codex/config.toml`; Git does not synchronize them.
 Installed applications and the separately built TUIOS fork also need to be
@@ -567,6 +587,7 @@ uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s config-sync/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and
