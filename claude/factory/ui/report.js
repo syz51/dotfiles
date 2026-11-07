@@ -79,7 +79,7 @@ function categoryTable(round) {
 
 function issuesList(round) {
   if (!round?.issues?.length) return `<p class="muted">No issues recorded for this round.</p>`;
-  return `<ol class="issues">${round.issues.map((issue) => `<li><p><strong>${escape(issue.screen)}</strong> · ${escape(issue.category)} · <span class="sev ${escape(issue.severity)}">${escape(issue.severity)}</span> · reported ${issue.count}×</p>
+  return `<ol class="issues">${round.issues.map((issue) => `<li><p>${issue.underBar ? `<span class="pill fail">under bar</span> ` : ""}<strong>${escape(issue.screen)}</strong> · ${escape(issue.category)} · <span class="sev ${escape(issue.severity)}">${escape(issue.severity)}</span> · reported ${issue.count}×</p>
 <p>${escape(issue.problems[0])}</p><p class="muted">Fix: ${escape(issue.fixes[0])}</p></li>`).join("\n")}</ol>`;
 }
 
@@ -111,7 +111,8 @@ function calibrationBlock(calibration) {
   if (!calibration) return `<p class="muted">Not calibrated yet.</p>`;
   return `<div class="scroll"><table><thead><tr><th>Judge</th><th class="num">Main</th><th class="num">Control</th><th class="num">Drop</th><th class="num">Lower in</th><th class="num">σ category</th><th class="num">σ overall</th><th>Result</th></tr></thead><tbody>
 ${Object.entries(calibration.judges).map(([key, item]) => `<tr><td>${escape(key)}</td><td class="num">${fixed(item.baseline)}</td><td class="num">${fixed(item.control)}</td><td class="num">${fixed(item.drop)}</td><td class="num">${typeof item.lowerShare === "number" ? `${Math.round(item.lowerShare * 100)}%` : "–"}</td><td class="num">${fixed(item.sigmaCategory)}</td><td class="num">${fixed(item.sigmaOverall)}</td><td>${item.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">fail</span> ${escape(item.reasons.join("; "))}`}</td></tr>`).join("\n")}</tbody></table></div>
-<p class="muted">${calibration.samples} calls per judge, ${money(calibration.costUSD)}, ${escape(calibration.at)}.</p>`;
+<p class="muted">${calibration.samples} calls per judge, ${money(calibration.costUSD)}, ${escape(calibration.at)}.</p>
+${Object.entries(calibration.judges).filter(([, item]) => item.barReach?.warnings.length).map(([key, item]) => `<p><strong>Bar reach, ${escape(key)}:</strong> ${escape(item.barReach.warnings.join("; "))}.</p>`).join("\n")}`;
 }
 
 // rounds are the full round records; versions maps a version name to its shot records.
@@ -193,7 +194,7 @@ th { font-weight: 600; font-size: 13px; }
 <body>
 <main>
 <h1>UI climb: ${escape(config.name)}</h1>
-<p class="muted">Run ${escape(run.id)} · main <code>${escape(run.baseline.sha.slice(0, 12))}</code> (${escape(run.baseline.rev)}) · rubric v${RUBRIC.version}</p>
+<p class="muted">Run ${escape(run.id)} · main <code>${escape(run.baseline.sha.slice(0, 12))}</code> (${escape(run.baseline.rev)}) · rubric v${RUBRIC.version}${run.council ? ` · council <code>${escape(run.council)}</code>` : ""}</p>
 <dl class="summary">
 <div><dt>Status</dt><dd>${escape(status)}</dd></div>
 <div><dt>Rounds</dt><dd>${rounds.length}</dd></div>
@@ -201,6 +202,7 @@ th { font-weight: 600; font-size: 13px; }
 <div><dt>Latest gain over main</dt><dd>${judged ? signed(judged.verdicts[0].gain) : "–"}</dd></div>
 <div><dt>Spent</dt><dd>${money(spentUSD)} of ${money(config.budgetUsd.run)}</dd></div>
 </dl>
+${judged && judged.verdicts.length < config.judges.length ? `<p style="margin-top:12px"><span class="pill fail">${judged.verdicts.length} of ${config.judges.length} judges</span> Round ${judged.round} stopped at the first judge that failed; the later judges did not score it.</p>` : ""}
 <p class="muted" style="margin-top:12px">A round passes when every judge scores each category at least ${config.pass.min}, the overall at least ${config.pass.gain} above main (or twice the judge's noise, if larger)${config.pass.references === null ? "" : `, and each category ${signed(config.pass.references)} or more over the best reference`}. Judges see every version unlabeled and shuffled.</p>
 <h2>Score by round</h2>
 ${chart(rounds, config.pass.min)}

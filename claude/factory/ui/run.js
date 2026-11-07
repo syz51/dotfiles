@@ -1,21 +1,22 @@
 // A climb run: the state folder of one configuration's climb, its spending ledger, and the
 // captured versions (main, the control, the references, each round's candidate). A run is
-// tied to its configuration, the rubric and the owner's preferences; changing any of them
-// starts a new run, so scores within a run stay comparable.
+// tied to its configuration, what the judges are asked (the rubric and the prompts) and the
+// owner's preferences; changing any of them starts a new run, so scores within a run stay
+// comparable.
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { appendJsonl, readJson, readJsonl, statePath, writeJsonAtomic } from "../lib/state.js";
 import { captureServed, CaptureError, captureShots, prepareRevision, resolveRev, runSetup, withServer } from "./capture.js";
 import { productShots, referenceShots } from "./config.js";
-import { avoidList, RUBRIC } from "./council.js";
+import { avoidList, councilVersion, RUBRIC } from "./council.js";
 
 export class RunError extends Error {}
 
 export const runsDir = (config) => dirname(statePath("ui", config.name, "runs", "run"));
 
 export function identity(config, avoid = avoidList()) {
-  return createHash("sha256").update(JSON.stringify([config.hash, RUBRIC.version, avoid])).digest("hex").slice(0, 16);
+  return createHash("sha256").update(JSON.stringify([config.hash, RUBRIC.version, councilVersion(), avoid])).digest("hex").slice(0, 16);
 }
 
 const stamp = (date = new Date()) => date.toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-");
@@ -36,11 +37,11 @@ export async function openRun(config, { id, fresh = false, avoid = avoidList() }
   const found = fresh && !id ? null : findRun(config, id);
   if (found) {
     if (found.identity !== key)
-      throw new RunError(`run ${found.id} was started with a different configuration, rubric or preferences; scores across them do not compare. Pass --new-run to start a new run (its main branch is captured and its judges calibrated again).`);
+      throw new RunError(`run ${found.id} was started with a different configuration, judges' rubric or prompts, or preferences; scores across them do not compare. Pass --new-run to start a new run (its main branch is captured and its judges calibrated again).`);
     return found;
   }
   const sha = await resolveRev(config.rootDir, config.baseline);
-  const run = { id: stamp(), identity: key, created: new Date().toISOString(), config: config.file, baseline: { rev: config.baseline, sha }, rubric: RUBRIC.version };
+  const run = { id: stamp(), identity: key, created: new Date().toISOString(), config: config.file, baseline: { rev: config.baseline, sha }, rubric: RUBRIC.version, council: councilVersion() };
   const dir = join(runsDir(config), run.id);
   if (existsSync(join(dir, "run.json"))) throw new RunError(`run ${run.id} already exists; wait a second and try again`);
   writeJsonAtomic(join(dir, "run.json"), run);

@@ -464,16 +464,23 @@ first climb is agent-board's web view (`agent-board-21`).
   which or that a climb runs. Overall scores are computed, not asked for.
 - Calibration before any round: a degraded control (main plus injected CSS) must score a
   point lower and lower in most categories, and repeated calls must agree within a point.
-  The measured noise raises the gain a round needs (twice the overall σ).
+  The measured noise raises the gain a round needs (twice the overall σ). Scores are
+  comparative, so in a climb the noise is also at least the spread of main's score over
+  the run's rounds. Calibration warns when a judge almost never gives the bar.
 - Deterministic gates first, at no model cost: the project's checks, no new page errors,
   console errors or failed requests per shot, and contrast, accessible names, tap targets,
   alt text and sideways scrolling no worse than main's (`ui/checks.js`, run in the page).
 - Rounds judge a commit, extracted with `git archive` and set up fresh, against the
-  run's fixed main commit. Judges run cheapest first and stop at the first failure.
-  Budgets per call, round and run; a run is tied to its configuration, the rubric and
-  `~/.claude/frontend-avoid.md`.
-- Board integration: one `score:` note per round; stop on pass, plateau (two judged rounds
-  without gain beyond the noise) or budget; the owner decides the merge through an ask.
+  run's fixed main commit. Judges run cheapest first and stop at the first failure,
+  except in a run's first judged round and the hand-over round, where every judge runs.
+  Issues in categories under the bar are listed first. Budgets per call, round and run; a
+  run is tied to its configuration, what the judges are asked (rubric and prompts, hashed)
+  and `~/.claude/frontend-avoid.md`.
+- Board integration: one `score:` note per round; stop on pass, budget or plateau (two
+  judged rounds in which neither the lowest category nor a gain still under its bar moved
+  beyond the noise), after one structural round when the bar is far and budget is left;
+  friction goes to `board feedback --about ui-climb`; the owner decides the merge through
+  an ask.
 
 ## Deferred: daily review on sai
 
@@ -590,3 +597,10 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: UI climbs (`ui/`, skill `ui-climb`). Offline suite with a real headless
   browser and a fake judge that sees only the prompt and image bytes; live smoke on
   agent-board's web view with Sonnet 5.5 and Opus 5.5 judges.
+- 2026-11-07: First climb (agent-board-21): 6 rounds, Sonnet lowest 7.25 → 7.75 against a
+  bar of 8.5, $2.94 of $60, stopped on plateau; PR agent-board#26. Its review
+  (agent-board-54) found the gain over main partly contrast (main 8.04 in calibration,
+  6.72-7.00 beside candidates), a plateau measured on gain while the lowest category bound,
+  issues that never pointed at typography, a bar of 9 Sonnet gives in 6 of 372 scores,
+  Opus never scoring a candidate, prompts outside the run's identity, and climb friction
+  never reaching feedback. dotfiles-52..58 fix those in the command and the skill.
