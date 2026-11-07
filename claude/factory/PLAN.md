@@ -582,6 +582,11 @@ coordination). This file keeps the goal, evidence, decisions and log.
   guards blocking read-only commands. Reports carry no signature of their own, so the board
   merges the same problem from different turns by setup and title. Filing waits for
   agent-board-23's `feedback --source`.
+- 2026-11-07: The weekly run gained an `evolve` step (dotfiles-33): per setup, the feedback
+  that came in, what waits for triage or an owner task, and what got fixed, recurred or kept
+  coming after a decline. Open feedback stopped being the signal once triage closes items in
+  minutes. On the real board all 3 items predate the server's feedback records, so the
+  report has nothing to count until agent-board-23 is deployed.
 - 2026-11-07: UI climbs (`ui/`, skill `ui-climb`). Offline suite with a real headless
   browser and a fake judge that sees only the prompt and image bytes; live smoke on
   agent-board's web view with Sonnet 5.5 and Opus 5.5 judges.
