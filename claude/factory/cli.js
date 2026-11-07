@@ -11,6 +11,7 @@ const COMMANDS = {
   setups: ["./setups/cli.js", "List and check the setup registry agents report friction about"],
   friction: ["./friction/cli.js", "File friction found in recent sessions as board feedback, and schedule it hourly"],
   weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
+  ui: ["./ui/cli.js", "Hill-climb a web UI's design: captures, gates, a Claude judge council, reports"],
 };
 
 function usage() {

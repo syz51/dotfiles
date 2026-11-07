@@ -451,6 +451,30 @@ progress without reading transcripts. Its record is `board/PLAN.md`; its tasks a
 - [x] Built (github.com/syz51/agent-board) and deployed; this plan's open items moved onto
   the `dotfiles` work board on 2026-11-07.
 
+### 7. UI design climbs (`ui/`)
+
+Hill-climb a web UI's design with Claude judges (the "frontend factory" idea from Theo's
+"Agents Sucked At UI (Until Today)", built with Claude models only; task `dotfiles-31`).
+The `ui-climb` skill (`claude/skills/ui-climb/`) is the procedure an agent follows; the
+first climb is agent-board's web view (`agent-board-21`).
+
+- Judges score screenshots, never code, against a fixed rubric (`ui/rubric.json`, eight
+  categories with anchors). Each call holds main, the candidate and public reference
+  products, labeled "Design N" in an order shuffled per call; prompts never say which is
+  which or that a climb runs. Overall scores are computed, not asked for.
+- Calibration before any round: a degraded control (main plus injected CSS) must score a
+  point lower and lower in most categories, and repeated calls must agree within a point.
+  The measured noise raises the gain a round needs (twice the overall σ).
+- Deterministic gates first, at no model cost: the project's checks, no new page errors,
+  console errors or failed requests per shot, and contrast, accessible names, tap targets,
+  alt text and sideways scrolling no worse than main's (`ui/checks.js`, run in the page).
+- Rounds judge a commit, extracted with `git archive` and set up fresh, against the
+  run's fixed main commit. Judges run cheapest first and stop at the first failure.
+  Budgets per call, round and run; a run is tied to its configuration, the rubric and
+  `~/.claude/frontend-avoid.md`.
+- Board integration: one `score:` note per round; stop on pass, plateau (two judged rounds
+  without gain beyond the noise) or budget; the owner decides the merge through an ask.
+
 ## Deferred: daily review on sai
 
 The user asked whether the daily codex-skills review could run on `sai` (the user's
@@ -558,3 +582,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   guards blocking read-only commands. Reports carry no signature of their own, so the board
   merges the same problem from different turns by setup and title. Filing waits for
   agent-board-23's `feedback --source`.
+- 2026-11-07: UI climbs (`ui/`, skill `ui-climb`). Offline suite with a real headless
+  browser and a fake judge that sees only the prompt and image bytes; live smoke on
+  agent-board's web view with Sonnet 5.5 and Opus 5.5 judges.
