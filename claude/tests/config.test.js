@@ -166,6 +166,14 @@ describe("settings", () => {
     expect(settings.worktree).toEqual({ baseRef: "head" });
   });
 
+  // "head" never looks at origin, so a default branch that never pulled hands out old code
+  // (board-feedback-14); the hook fast-forwards it first when that is safe.
+  test("a hook freshens the default branch before a worktree is cut from it", () => {
+    const groups = settings.hooks.PreToolUse.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/freshen-base.js")));
+    expect(groups.map((group) => group.matcher)).toEqual(["^(EnterWorktree|Agent|Task)$"]);
+    expect(tracked("claude/hooks/freshen-base.js")).toBe(true);
+  });
+
   // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
   // signs in only on claude.ai, so it loads only through claude.ai connectors.
   test("claude.ai connectors load, so the Gmail connector is available", () => {
@@ -380,6 +388,12 @@ describe("work board", () => {
     for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/List work you found .*, for the parent to file\.$/m);
   });
 
+  // Asks sent the user to look up what memory, the board or a repository already held,
+  // and different threads asked the same question.
+  test("an ask comes after searching and carries what was found", () => {
+    expect(section("Work board")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
+  });
+
   test("the scoring rubric counts filing as in scope and needing no approval", async () => {
     const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
     const question = (id) => rubric.dimensions.find((check) => check.id === id).question;
@@ -519,10 +533,16 @@ describe("rules the live suites test", () => {
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
   // refusals; plain one-command calls pass its checks the first time.
-  test("Workflow says how to run git in a worktree-isolated session", () => {
+  // The guard also refuses commands that are not git (sed -i with heredocs, cd to computed
+  // paths, CLI text naming git, terraform with a variable path): feedback items 9, 13, 24.
+  test("Workflow says which forms pass the guard in a worktree-isolated session", () => {
     const workflow = section("Workflow");
-    expect(workflow).toMatch(/worktree-isolated session/);
-    expect(workflow).toMatch(/give each git command its own Bash call with literal paths/);
+    expect(workflow).toMatch(/In a worktree-isolated session, Claude Code refuses any Bash command, not only git, that it cannot verify stays in the worktree/);
+    expect(workflow).toMatch(/Give each git command its own Bash call; use literal program paths and directories, without loops, variables, `\$\(…\)` or `cd` to a computed path/);
+    expect(workflow).toMatch(/edit files with the Edit and Write tools, not `sed -i` or heredocs/);
+    expect(workflow).toMatch(/pass long text that may mention git through MCP tools \(such as `task_add`\) or a file, not as a command-line argument or ssh script/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
+    // Codex has no such guard, so its instructions leave the rule out.
+    expect(read("codex/AGENTS.md")).not.toMatch(/worktree-isolated/);
   });
 });
