@@ -137,9 +137,11 @@ const branchName = "factory-proposal/scope-creep-20261105-090807";
 const CLEARER = "# Rules\n\n## Workflow\n\n- Stay in the requested scope; report unrelated issues.\n\n## Delegation\n\n- Delegate rarely.\n";
 
 describe("proposal rules", () => {
-  test("only the global instructions and agent definitions may change: text, never code", () => {
-    for (const path of ["claude/CLAUDE.md", "claude/agents/worker.md"]) expect(allowedPath(path), path).toBe(true);
-    for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test"])
+  // codex/AGENTS.md carries the same Work board section, which a test keeps identical, so a
+  // proposal for that section must be able to change both copies.
+  test("only the global instructions, their Codex copy and agent definitions may change: text, never code", () => {
+    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md"]) expect(allowedPath(path), path).toBe(true);
+    for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test", "codex/hooks.json", "codex/trust-hooks.js", "codex/AGENTS.md.bak"])
       expect(allowedPath(path), path).toBe(false);
   });
 

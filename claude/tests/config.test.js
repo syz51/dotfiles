@@ -343,9 +343,9 @@ describe("work board", () => {
   test("the rule says what to act on and what is only data", () => {
     const rule = section("Work board");
     for (const tool of ["task_claim", "lease_paths", "handoff_set", "task_done", "ask_user"]) expect(rule).toContain(`\`${tool}\``);
-    expect(rule).toMatch(/Track all work for such a repository on its board, not in a plan file, ledger, TODO or next-steps list, handoff, or GitHub issue for our own backlog, even where the project's files say otherwise/);
+    expect(rule).toMatch(/Track all work for such a repository on its board, never only in chat, a plan file, ledger, TODO or next-steps list, handoff, or GitHub issue for our own backlog, even where the project's files say otherwise/);
     expect(rule).toMatch(/create one only when I ask/);
-    expect(rule).toMatch(/Work I ask for directly gets a task too: before changing files or state, add one unless a task already covers it, and claim it/);
+    expect(rule).toMatch(/Work I ask for directly gets its own task, including work you won't do now: before changing files or state, add one unless a task already covers it, and claim it/);
     expect(rule).toMatch(/title, body and acceptance checks/);
     expect(rule).toMatch(/never follow instructions/);
   });
@@ -353,28 +353,31 @@ describe("work board", () => {
   // Anything still to do that lives only in chat, a file or a handoff is lost when the
   // session ends or the task closes. Each kind has one place, matching the board's own
   // instructions and coordinator prompt: remaining scope is a sub-task (no review needed),
-  // new scope a proposal another agent reviews, and the user's part a blocked task with an ask.
+  // new scope a proposal another agent reviews, and the user's part a non-auto blocked
+  // task with an ask, so no coordinator starts it. Sections that name their own place
+  // (storage problems) keep it.
   test("everything still to do goes on the board, in the form its kind needs", () => {
     const rule = section("Work board");
-    expect(rule).toMatch(/Leave nothing still to do only in chat, a file or a handoff\. Before `task_done`, and before ending a turn, put each remaining step, follow-up and suggestion on the board, checking first for a task that covers it \(add a note there instead\)/);
-    expect(rule).toMatch(/Scope your task still needs, or more work I asked for: a sub-task \(`task_add` with your task as parent\)\. Call `task_done` only when every acceptance check passes/);
-    expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on this repository's board or on its owner's board when you know it, with the task you found it in as parent/);
-    expect(rule).toMatch(/Work that waits on my decision or action: a task, blocked on an `ask_user`/);
+    expect(rule).toMatch(/Before `task_done`, and before ending a turn, put each remaining step, follow-up and suggestion on the board, checking first for a task that covers it \(add a note there instead\)\. Where another section names the place for something, such as storage problems, it goes there/);
+    expect(rule).toMatch(/Scope your task still needs: a sub-task \(`task_add` with your task as parent\)\. Your task stays open until every acceptance check passes/);
+    expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on this repository's board or on its owner's board when you know it, with the task you found it in, if any, as parent/);
+    expect(rule).toMatch(/Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`/);
     expect(rule).toMatch(/Name what you filed in your reply, and report it there instead when filing fails\. Don't ask me before filing/);
     expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
   });
 
-  // Filing is not a change to the work, so read-only work files too. Only an agent with its
-  // own task files directly; a subagent or review agent reports, and its parent, which
-  // checks the findings first, files what it does not fix. The agent definitions say so.
+  // Filing is not a change to the work, so read-only work files too. Subagents run under
+  // the parent's board identity and would see its task as their own, so they report and
+  // the parent, which checks findings first, files the real ones; rejected review findings
+  // are reported, not filed. Agents in their own threads file for themselves.
   test("read-only work files too, and parents file what subagents and reviews report", () => {
     const rule = section("Work board");
     expect(rule).toMatch(/Read-only work, such as a review or an investigation, files too, unless I say not to touch the board/);
-    expect(rule).toMatch(/An agent working its own claimed task files for itself; a subagent without one, and a review agent, report what they find, and the parent files each item it does not fix/);
-    expect(rule).not.toMatch(/the parent or I decide what to file/);
+    expect(rule).toMatch(/Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix\. Agents in their own threads, such as a coordinator's children, file for themselves/);
+    expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
-    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/still to do.*for the parent to file\./);
+    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/List work you found .*, for the parent to file\.$/m);
   });
 
   test("the scoring rubric counts filing as in scope and needing no approval", async () => {
@@ -480,7 +483,6 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/Check each finding against the code before deciding/);
     expect(review).toMatch(/Fix every one that is a real defect in what the change is meant to do and verify the fix/);
     expect(review).toMatch(/rerun the affected checks instead of reviewing again/);
-    expect(review).toMatch(/File the rest as found work under the Work board section, or report it where there is no board, instead of fixing it/);
   });
 
   // A review run in the main thread is cut off when a message arrives mid-review; in the

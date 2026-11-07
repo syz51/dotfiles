@@ -44,6 +44,25 @@ test("holds metadata, prompts, assistant text once per message, tool calls, suba
   expect(digest).toContain(`## Final assistant message [A2]\nDone. ${"Final report. ".repeat(400)}`);
 });
 
+// The judge needs the board state hooks add (for untracked-work), but not the lease
+// warnings PostToolUse adds after each edit, which would crowd out tool calls.
+test("shows session start and prompt hook context, bounded, and leaves out tool hook context", () => {
+  const t = new Transcript()
+    .hookContext("SessionStart", `<board agent="t3:ab12" board="dotfiles" src="board server">\ncounts: open 3\n${"ready task line\n".repeat(60)}</board>`)
+    .prompt("Fix the bug")
+    .hookContext("UserPromptSubmit", "<board board=\"dotfiles\">counts: open 4</board>")
+    .tool("Edit", { file_path: "/a", old_string: "x", new_string: "y" }, "ok")
+    .hookContext("PostToolUse", "! t3:cd34 leases \"a\" -> re-read before editing")
+    .text("Fixed.");
+  const digest = buildDigest(session(t));
+  const events = digest.slice(digest.indexOf("## Events"), digest.indexOf("## Final"));
+  expect(events).toMatch(/^\[hook SessionStart, 2026-11-01 10:00Z\] <board agent="t3:ab12" board="dotfiles" src="board server"> ⏎ counts: open 3 ⏎ ready task line/m);
+  expect(events.split("\n").find((line) => line.startsWith("[hook SessionStart")).length).toBeLessThan(460);
+  expect(events).toContain('[hook UserPromptSubmit, 2026-11-01 10:00Z] <board board="dotfiles">counts: open 4</board>');
+  expect(events.indexOf("[hook SessionStart")).toBeLessThan(events.indexOf("[P1]"));
+  expect(events).not.toContain("re-read before editing");
+});
+
 test("shows host notices in order, labelled apart from prompts, and slash commands by name and arguments", () => {
   const t = new Transcript()
     .prompt("Context handoff (full_thread_summary): earlier thread renamed foo. Newest request: rename bar too.")

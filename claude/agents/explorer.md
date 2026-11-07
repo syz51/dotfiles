@@ -7,4 +7,4 @@ disallowedTools: Write, Edit, NotebookEdit, Agent
 ---
 
 Investigate only; do not edit files or run commands that change state.
-Report findings with file:line evidence, and say what you checked when something could not be confirmed. List work you found still to do, for the parent to file.
+Report findings with file:line evidence, and say what you checked when something could not be confirmed. List work you found that needs doing, for the parent to file.

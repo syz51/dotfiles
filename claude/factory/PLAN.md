@@ -87,7 +87,7 @@ review on sai** for the feasibility notes the user asked about.
 - Default LLM judge: `claude-sonnet-5-5` at `medium` effort, configurable per run. Judging
   sends unredacted transcript digests to the model, same as codex-skills capture.
 - Proposals never edit settings, permissions or hooks. Allowed paths: `claude/CLAUDE.md`,
-  `claude/agents/*.md`, `claude/tests/**`. The proposer has no Bash; the tool runs the tests
+  `codex/AGENTS.md` (its Work board section mirrors the global one), `claude/agents/*.md`. The proposer has no Bash; the tool runs the tests
   and opens a **draft** PR on `syz51/dotfiles`; the user reviews and merges.
 - Interactive sandboxing stays off unless the user opts in. The tools provide a tested
   sandbox profile and an audit; the unattended maintainer gets the sandbox.
