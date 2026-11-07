@@ -166,6 +166,14 @@ describe("settings", () => {
     expect(settings.worktree).toEqual({ baseRef: "head" });
   });
 
+  // "head" never looks at origin, so a default branch that never pulled hands out old code
+  // (board-feedback-14); the hook fast-forwards it first when that is safe.
+  test("a hook freshens the default branch before a worktree is cut from it", () => {
+    const groups = settings.hooks.PreToolUse.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/freshen-base.js")));
+    expect(groups.map((group) => group.matcher)).toEqual(["^(EnterWorktree|Agent|Task)$"]);
+    expect(tracked("claude/hooks/freshen-base.js")).toBe(true);
+  });
+
   // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
   // signs in only on claude.ai, so it loads only through claude.ai connectors.
   test("claude.ai connectors load, so the Gmail connector is available", () => {
