@@ -3,6 +3,7 @@
 ## Workflow
 
 - Shape non-trivial work in the stages of the `work-stages` skill (explore, research, design, plan, build, verify), skipping those it does not need.
+- To continue a branch that another worktree has checked out, which git refuses to check out twice, work on a local branch started from `origin/<branch>` and push to `<branch>`; brief a child that continues one the same way.
 
 ## Work board
 

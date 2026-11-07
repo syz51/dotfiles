@@ -578,6 +578,14 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise/);
   });
 
+  // git checks a branch out in one worktree at a time, so a brief that said to check out a
+  // branch another thread's worktree held failed (board-feedback-40).
+  test("both instruction files continue a held branch from origin, for agents and their briefs", () => {
+    const rule = "- To continue a branch that another worktree has checked out, which git refuses to check out twice, work on a local branch started from `origin/<branch>` and push to `<branch>`; brief a child that continues one the same way.";
+    expect(section("Workflow")).toContain(rule);
+    expect(read("codex/AGENTS.md").match(/\n## Workflow\n((?:(?!\n## )[\s\S])*)/)[1]).toContain(rule);
+  });
+
   test("Workflow keeps the Chinese meaning rule and its exceptions", () => {
     const workflow = section("Workflow");
     expect(workflow).toMatch(/followed by its Chinese meaning/);
