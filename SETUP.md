@@ -470,11 +470,15 @@ notification and ends the episode. The state is in
 While space is low, each check first removes the scratch folders of idle Claude Code
 sessions, `/private/tmp/claude-<uid>/<project>/<session id>`, where Rust `target/`
 folders and other build output pile up. A folder qualifies only when nothing in it, in
-its transcript or in its subagent transcripts has changed for 24 hours, and no running
-process names the session or works inside the folder; when the process list cannot be
-read, nothing is removed. The alert says what was freed, and `events.jsonl` gets a
-`swept` line listing the folders. `sweep --dry-run` lists what would go now, whatever
-the free space, `sweep` removes it, and `--no-sweep` turns the sweep off for a run.
+its transcript or in its subagent transcripts has changed for 24 hours, Claude Code's
+registry of running sessions (`~/.claude/sessions`) does not list it, and no running
+process names the session or works inside the folder. Anything that cannot be read
+keeps the folder, and a sweep that fails still lets the alert go out. The alert says
+what was freed, or a notification does when the sweep alone brings space back, and
+`events.jsonl` gets a `swept` line listing the folders. `sweep --dry-run` lists
+what would go now, whatever the free space, `sweep` removes it and logs it, and
+`--no-sweep` turns the sweep off for a run. A simulated reading (`check --free-gb`)
+never sweeps.
 
 Install it on each Mac from the main checkout, which the plist points to, and send a
 test alert through both channels:

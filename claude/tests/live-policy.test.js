@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { mayInvoke, successfulCheck } from "./lib/command.js";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { HOME_CLAUDE, LIVE, liveSuite } from "./lib/live.js";
-import { childEnv, processesUnder, runProcess } from "./lib/process.js";
+import { childEnv, runProcess, stopLeftovers } from "./lib/process.js";
 import { agentSpawns, backgroundAtAnswer, finalText, mainBashPrinted } from "./lib/stream.js";
 import { chineseLines, hasKana, singleChineseLine } from "./lib/text.js";
 
@@ -166,15 +166,15 @@ describe.skipIf(!LIVE)("live policy", () => {
     test.concurrent(scenario.name, () => suite.scenario(scenario.name, async ({ fixture, session }) => {
       const work = fixture(scenario.files);
       const before = snapshot(work);
-      const run = await session({ cwd: work, prompt: scenario.prompt, stopAtAnswer: scenario.stopAtAnswer });
-      // Nothing the session started may outlive it; any leftover is stopped, then fails the test.
-      const left = processesUnder(work);
-      for (const { pid } of left)
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // Already gone.
-        }
+      // Nothing the session started may outlive it. Leftovers are stopped even when the
+      // session fails, before the scenario removes the fixture, and then fail the test.
+      let run;
+      let left;
+      try {
+        run = await session({ cwd: work, prompt: scenario.prompt, stopAtAnswer: scenario.stopAtAnswer });
+      } finally {
+        left = await stopLeftovers(work);
+      }
       expect(left, "processes left running in the fixture").toEqual([]);
       if (scenario.stopAtAnswer)
         expect(backgroundAtAnswer(run.events), "background tasks still running at the answer").toEqual([]);

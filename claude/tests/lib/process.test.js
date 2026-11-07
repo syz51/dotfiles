@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { childEnv, processesUnder, runProcess } from "./process.js";
+import { childEnv, processesUnder, runProcess, stopLeftovers } from "./process.js";
 
 const bun = process.execPath;
 
@@ -146,6 +146,23 @@ test("processesUnder finds a process working in a folder or naming it, and nothi
   }
   await Bun.sleep(200);
   expect(processesUnder(root)).toEqual([]);
+});
+
+test("stopLeftovers waits for exiting processes and kills the rest", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "process-leftovers-")));
+  try {
+    const exiting = spawn(bun, ["-e", "setTimeout(()=>{},300)"], { cwd: root, stdio: "ignore" });
+    const lingering = spawn(bun, ["-e", "setInterval(()=>{},1000)"], { cwd: root, stdio: "ignore" });
+    const exited = new Promise((resolve) => lingering.on("exit", (_code, signal) => resolve(signal)));
+    await Bun.sleep(150);
+    const left = await stopLeftovers(root, { graceMs: 1000 });
+    expect(left.map((found) => found.pid)).toEqual([lingering.pid]);
+    expect(await exited).toBe("SIGKILL");
+    expect(exiting.exitCode).toBe(0);
+    expect(await stopLeftovers(root, { graceMs: 0 })).toEqual([]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("stdout and stderr share one output bound", async () => {

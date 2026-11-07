@@ -59,6 +59,22 @@ export function processesUnder(dir) {
   return [...pids].filter((id) => commands.has(id)).map((id) => ({ pid: id, command: commands.get(id) }));
 }
 
+// Processes still under dir once graceMs has passed (see processesUnder), each then
+// killed: what a session left behind, given its own children time to finish exiting.
+// Returns them as found. A process gone by the time it is signalled is skipped.
+export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100 } = {}) {
+  let left = processesUnder(dir);
+  for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir))
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  for (const { pid } of left)
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+  return left;
+}
+
 // Runs argv in its own process group. Resolves with the exit status and UTF-8 output;
 // rejects on a spawn error, on the deadline or when stdout and stderr together exceed
 // maxBytes, killing every descendant and the whole group, so processes in nested groups
