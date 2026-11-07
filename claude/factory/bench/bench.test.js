@@ -143,10 +143,23 @@ describe("cases", () => {
     expect(loadCases(join(scratch, "none"))).toEqual([]);
   });
 
-  test("the seed cases load", () => {
+  test("the seed cases load, with every role covered", () => {
     const cases = loadCases();
-    expect(cases.filter((benchCase) => benchCase.role === "explorer").length).toBeGreaterThanOrEqual(1);
-    expect(cases.filter((benchCase) => benchCase.role === "worker").length).toBeGreaterThanOrEqual(2);
+    const count = (role) => cases.filter((benchCase) => benchCase.role === role).length;
+    expect(count("explorer")).toBeGreaterThanOrEqual(2);
+    expect(count("worker")).toBeGreaterThanOrEqual(2);
+    expect(count("solver")).toBeGreaterThanOrEqual(1);
+    expect(count("main")).toBeGreaterThanOrEqual(1);
+  });
+
+  // An overlay's tests import code that exists only in the case's fixture, so the root
+  // bunfig.toml keeps `bun test` from discovering them in this checkout.
+  test("the root bunfig ignores every bun test file in a case overlay", () => {
+    const root = join(import.meta.dir, "..", "..", "..");
+    const patterns = [...readFileSync(join(root, "bunfig.toml"), "utf8").matchAll(/"([^"]+)"/g)].map((match) => new Bun.Glob(match[1]));
+    const overlayTests = [...new Bun.Glob("claude/factory/bench/cases/*/overlay/**/*.test.{js,ts}").scanSync(root)];
+    expect(overlayTests.length).toBeGreaterThan(0);
+    for (const path of overlayTests) expect(patterns.some((glob) => glob.match(path)), path).toBe(true);
   });
 
   test("files fixtures copy the folder, and the overlay replaces and adds files", () => {
@@ -209,6 +222,23 @@ describe("oracle", () => {
     const slow = await runOracle({ command: "echo started; sleep 5", timeoutMs: 200 }, scratch, answer);
     expect(slow).toMatchObject({ exit: null, timedOut: true });
     expect(slow.output).toContain("timed out after 200 ms");
+  });
+
+  // A case that judges the final answer may keep reference/answer.md, right at its pinned
+  // commit, and reference/parent-answer.md, right at the commit before it: the oracle must
+  // pass the first and fail the second, so it checks what the pinned commit changed.
+  test("answer oracles pass their reference answer and fail the parent's and an empty one", async () => {
+    const referenced = loadCases().filter((benchCase) => existsSync(join(benchCase.dir, "reference", "answer.md")));
+    expect(referenced.map((benchCase) => benchCase.id)).toContain("explorer-board-hooks-off");
+    const empty = join(scratch, "empty.md");
+    writeFileSync(empty, "");
+    for (const benchCase of referenced) {
+      const check = (file) => runOracle(benchCase.oracle, scratch, file).then((run) => run.exit);
+      expect(await check(join(benchCase.dir, "reference", "answer.md")), benchCase.id).toBe(0);
+      expect(await check(empty), benchCase.id).not.toBe(0);
+      const parent = join(benchCase.dir, "reference", "parent-answer.md");
+      if (existsSync(parent)) expect(await check(parent), benchCase.id).not.toBe(0);
+    }
   });
 
   test("restores the overlay before running, so edited tests do not count", async () => {
