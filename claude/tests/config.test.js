@@ -355,6 +355,20 @@ describe("work board", () => {
   });
 });
 
+describe("storage rule", () => {
+  test("names every destination, the entry command and where problems go", () => {
+    const rule = section("Storage");
+    for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
+    expect(rule).toContain("`storagectl dests`");
+    expect(rule).toMatch(/root login shells/);
+    expect(rule).toContain("child task of `vps-44` on the `vps` board");
+  });
+
+  test("Codex gets the same rule", () => {
+    expect(read("codex/AGENTS.md")).toContain(`## Storage\n${section("Storage").trimEnd()}\n`);
+  });
+});
+
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {
