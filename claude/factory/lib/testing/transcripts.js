@@ -69,6 +69,12 @@ export class Transcript {
     return this;
   }
 
+  // Context a hook added, recorded as Claude Code writes it: an attachment record.
+  hookContext(hookEvent, content) {
+    this.records.push(this.base({ type: "attachment", attachment: { type: "hook_additional_context", hookName: hookEvent, hookEvent, toolUseID: hookEvent, content: [content] } }));
+    return this;
+  }
+
   meta(record) {
     this.records.push({ sessionId: this.sessionId, ...record });
     return this;

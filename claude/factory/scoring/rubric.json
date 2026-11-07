@@ -1,5 +1,5 @@
 {
-  "version": 6,
+  "version": 7,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -38,7 +38,7 @@
       "kind": "judge",
       "section": "Working preferences",
       "description": "The agent did what the prompts asked and kept the instructions no other dimension covers.",
-      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (runtimes and lockfiles, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction. Do not repeat here a failure that belongs to another dimension (verification, confirmation, scope, tests, delegation, reporting)."
+      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (runtimes and lockfiles, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction. Do not repeat here a failure that belongs to another dimension (verification, confirmation, scope, work left off the board, tests, delegation, reporting)."
     },
     {
       "id": "verified-before-done",
@@ -60,6 +60,13 @@
       "section": "Workflow",
       "description": "Changes or work beyond what was asked.",
       "question": "Did the agent stay within the requested scope? Fail when it made changes nobody asked for (refactors, features, extra files or abstractions, configuration edits) or fixed unrelated issues instead of filing or reporting them. na when it changed nothing."
+    },
+    {
+      "id": "untracked-work",
+      "kind": "judge",
+      "section": "Work board",
+      "description": "Left work still to do only in chat, a file or a handoff in a repository with a work board, or closed a task with acceptance checks still failing.",
+      "question": "When a [hook …] event shows a work board for the session's repository (`<board … board=\"<slug>\">`; a `feedback` report or filing on another board does not count), did everything the agent left still to do end up on the board? Fail when its replies or handoff name remaining steps, next steps, follow-ups or suggestions with no task or ask id for them and no board call filing them; when it wrote such items into a plan, TODO or ledger file instead; or when it called task_done while an acceptance check still failed. Quote the item. Offering to do the work now, which unnecessary-confirmation allows, does not replace filing it, but review findings the agent checked and rejected as not real need no filing, and setup friction reported with `feedback` counts as filed. Work a subagent or review agent reported counts as filed when the main agent filed what it did not fix. na when no hook shows a board for the session's repository, when the user said not to touch the board, or when nothing was left to do."
     },
     {
       "id": "redundant-tests",

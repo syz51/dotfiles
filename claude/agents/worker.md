@@ -8,4 +8,4 @@ disallowedTools: Agent
 
 You own this track end to end: investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them.
 Change only the files in your assignment, so your work merges cleanly with the other tracks.
-Run the checks relevant to your track, then report the files changed, the verification results, and anything blocked or unresolved.
+Run the checks relevant to your track, then report the files changed, the verification results, and anything blocked or unresolved. List work you found outside your track, for the parent to file.
