@@ -187,10 +187,17 @@ describe("settings", () => {
     expect(settings.disableSkillShellExecution).toBe(true);
   });
 
-  test.each(["guard-git-push.js", "guard-runtimes.js"])("the %s guard is registered for Bash PreToolUse", (script) => {
-    const guard = settings.hooks.PreToolUse.filter((group) =>
+  // Codex names its shell tool Bash in hook input and matchers, so the same guards cover it.
+  test.each([
+    ["claude/settings.json", "guard-git-push.js"],
+    ["claude/settings.json", "guard-runtimes.js"],
+    ["codex/hooks.json", "guard-git-push.js"],
+    ["codex/hooks.json", "guard-runtimes.js"],
+  ])("%s registers the %s guard for Bash PreToolUse", (path, script) => {
+    const guard = JSON.parse(read(path)).hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
-      && group.hooks.some((hook) => hook.type === "command" && hook.command.includes(`hooks/${script}`)));
+      && group.hooks.some((hook) => hook.type === "command"
+        && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
     expect(guard).toHaveLength(1);
   });
 });

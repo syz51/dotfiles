@@ -149,6 +149,19 @@ describe("hook process", () => {
     expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `python3 check.py` runs python3 directly.");
   });
 
+  // Codex sends its exec_command calls as tool_name Bash with the command string and the
+  // call's workdir as cwd, plus fields Claude Code does not send.
+  test("blocks a bare runtime in Codex-shaped input", () => {
+    const codex = (command) => run(JSON.stringify({
+      session_id: "s", turn_id: "t", tool_use_id: "call_1", transcript_path: null, cwd: "/tmp", hook_event_name: "PreToolUse",
+      model: "gpt-5.5", permission_mode: "default", tool_name: "Bash", tool_input: { command },
+    }));
+    const result = codex("python3 -c 1");
+    expect(result.code).toBe(2);
+    expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `python3 -c 1` runs python3 directly.");
+    expect(codex("uv run python -c 1")).toEqual({ code: 0, stderr: "" });
+  });
+
   test("allows uv run and other tools", () => {
     expect(bash("uv run python check.py")).toEqual({ code: 0, stderr: "" });
     expect(run(JSON.stringify({ tool_name: "Read", tool_input: { file_path: "/x" } }))).toEqual({ code: 0, stderr: "" });

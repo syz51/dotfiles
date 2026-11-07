@@ -7,6 +7,14 @@
           {
             "type": "command",
             "command": "\"$HOME/.atuin/bin/atuin\" hook codex"
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-git-push.js\""
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-runtimes.js\""
           }
         ]
       },
