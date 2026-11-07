@@ -336,6 +336,16 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
     task dotfiles-26 adds cases where models differ and runs the configured efforts first.
   - Judge calibration stays with dotfiles-7: the bench runs agent roles, while the judge
     runs in scoring with its own system prompt, so its calibration set belongs there.
+- Report style (`bench style`, dotfiles-88): 8 report cases from real sessions, sanitized,
+  each with notes and 7–11 facts. Opus at high effort writes the report without tools;
+  Sonnet judges which facts it kept. The candidate gets the rule in a project `CLAUDE.md`.
+  The rule is adopted when it loses at most 1 in 20 more facts than the control and its
+  sentences are shorter.
+  - Result (5 trials, 80 runs, $2.99, batch 20261107T084130430Z-3c7c3241): control kept
+    343/350 facts (2.0% loss), 12.4 words per sentence, 2.2% of sentences over 25 words.
+    The candidate kept 347/350 (0.9% loss), 8.3 words per sentence, none over 25.
+  - Adopted in `claude/CLAUDE.md` Workflow. `codex/AGENTS.md` is unchanged: Codex needs
+    its own bench run.
 
 ### 4. Security (`audit/` here; codex-skills changes after coordination)
 
@@ -608,3 +618,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   issues that never pointed at typography, a bar of 9 Sonnet gives in 6 of 372 scores,
   Opus never scoring a candidate, prompts outside the run's identity, and climb friction
   never reaching feedback. dotfiles-52..58 fix those in the command and the skill.
+- 2026-11-07: Report-style bench (dotfiles-88) run: 80 runs, $2.99. The Simple Technical
+  English rule kept 347/350 facts against the control's 343/350, at 8.3 words per sentence
+  against 12.4. Adopted in `claude/CLAUDE.md`; Codex left for its own run.
