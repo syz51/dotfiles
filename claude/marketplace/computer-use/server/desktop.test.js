@@ -1,0 +1,282 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createDesktop, fitScreenshot, handle, parseKey, SERVER_NAME, sensitiveReason, toGlobal, TOOLS } from "./desktop.js";
+
+// A Retina laptop as the main display and a 1080p display to its left, one point above.
+const RETINA = { index: 0, id: 1, main: true, x: 0, y: 0, width: 1470, height: 956, pixelWidth: 2940, pixelHeight: 1912, scale: 2 };
+const SIDE = { index: 1, id: 2, main: false, x: -1920, y: -1, width: 1920, height: 1080, pixelWidth: 1920, pixelHeight: 1080, scale: 1 };
+
+const SAFARI = { name: "Safari", bundleId: "com.apple.Safari", category: "public.app-category.productivity" };
+const NOTES = { name: "Notes", bundleId: "com.apple.Notes" };
+const BANK = { name: "Chase", bundleId: "com.chase.sig.Chase", category: "public.app-category.finance" };
+
+describe("screenshots and coordinates", () => {
+  test("screenshots fit 1568 px and about 1.15 megapixels", () => {
+    expect(fitScreenshot(2940, 1912)).toEqual({ width: 1330, height: 865 });
+    expect(fitScreenshot(1920, 1080)).toEqual({ width: 1430, height: 804 });
+    expect(fitScreenshot(800, 600)).toEqual({ width: 800, height: 600 });
+  });
+
+  test("a point in a Retina screenshot maps to display points", () => {
+    const shot = { ...fitScreenshot(RETINA.pixelWidth, RETINA.pixelHeight), display: RETINA };
+    expect(toGlobal(RETINA, shot, 665, 432.5)).toEqual({ x: 735, y: 478 });
+    expect(toGlobal(RETINA, shot, 0, 0)).toEqual({ x: 0, y: 0 });
+  });
+
+  test("a point on the second display includes its origin", () => {
+    const shot = { ...fitScreenshot(SIDE.pixelWidth, SIDE.pixelHeight), display: SIDE };
+    expect(toGlobal(SIDE, shot, 715, 402)).toEqual({ x: -960, y: 539 });
+  });
+
+  test("a point outside the screenshot is refused", () => {
+    const shot = { width: 100, height: 50 };
+    expect(() => toGlobal(RETINA, shot, 100, 10)).toThrow("outside the 100x50 screenshot");
+    expect(() => toGlobal(RETINA, shot, -1, 10)).toThrow();
+    expect(() => toGlobal(RETINA, shot, Number.NaN, 10)).toThrow();
+  });
+});
+
+describe("keys", () => {
+  test.each([
+    ["Return", 36, ""],
+    ["enter", 36, ""],
+    ["cmd+t", 17, "cmd"],
+    ["Cmd+Shift+T", 17, "cmd,shift"],
+    ["ctrl+alt+Delete", 117, "ctrl,alt"],
+    ["shift+Tab", 48, "shift"],
+    ["Escape", 53, ""],
+    ["Page Down", 121, ""],
+    ["F5", 96, ""],
+  ])("%s", (combo, code, modifiers) => {
+    expect(parseKey(combo)).toEqual({ code, modifiers });
+  });
+
+  test("unknown keys and modifiers are refused", () => {
+    expect(() => parseKey("cmd+banana")).toThrow('Unknown key "banana"');
+    expect(() => parseKey("hyper+a")).toThrow('Unknown modifier "hyper"');
+  });
+});
+
+describe("sensitive apps", () => {
+  test.each([
+    [BANK, "finance"],
+    [{ name: "Health", bundleId: "com.apple.Health" }, "health"],
+    [{ name: "MyChart", bundleId: "org.epic.mychart" }, "mychart"],
+    [{ name: "Tax Portal", bundleId: "gov.irs.portal" }, "gov"],
+    [{ name: "1Password", bundleId: "com.1password.1password" }, "1password"],
+    [{ name: "Passwords", bundleId: "com.apple.Passwords" }, "passwords"],
+    [{ name: "Keychain Access", bundleId: "com.apple.keychainaccess" }, "keychain"],
+    [{ name: "Doctor Notes", category: "public.app-category.medical" }, "medical"],
+    [{ name: "desktop-helper", bundleId: "" }, "stop panel"],
+  ])("%o is refused", (app, word) => {
+    expect(sensitiveReason(app)).toContain(word);
+  });
+
+  test.each([[SAFARI], [NOTES], [{ name: "Otherwise", bundleId: "com.example.otherwise" }], [{ name: "TextEdit", bundleId: "com.apple.TextEdit" }]])(
+    "%o is allowed", (app) => {
+      expect(sensitiveReason(app)).toBeUndefined();
+    });
+});
+
+describe("session", () => {
+  let stateDir;
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "desktop-mcp-"));
+  });
+  afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
+
+  // A fake Mac: apps by name, the app under each point, the frontmost app, and a log of the
+  // helper calls that change something.
+  function fakeMac({ under = () => SAFARI, front = SAFARI, allow = true, pid = 100, alive = () => true } = {}) {
+    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK };
+    const mac = { actions: [], dialogs: [], overlays: [] };
+    mac.desktop = createDesktop({
+      stateDir, pid, alive,
+      helper(args) {
+        switch (args[0]) {
+          case "displays": return [RETINA, SIDE];
+          case "app-info": return apps[args[1]] ?? null;
+          case "app-at": return under({ x: Number(args[1]), y: Number(args[2]) });
+          case "frontmost": return front;
+          case "screenshot": return { path: args[4] };
+          default:
+            mac.actions.push(args);
+            return { ok: true };
+        }
+      },
+      async dialog(text) {
+        mac.dialogs.push(text);
+        return allow;
+      },
+      startOverlay(label, onExit) {
+        const overlay = { label, onExit, stopped: false, stop() { overlay.stopped = true; } };
+        mac.overlays.push(overlay);
+        return overlay;
+      },
+      open: (app) => mac.actions.push(["open", app.bundleId]),
+      readImage: () => "aW1n",
+    });
+    mac.call = async (name, args) => {
+      const result = await mac.desktop.call(name, args);
+      return { error: result.isError === true, text: result.content.filter((c) => c.type === "text").map((c) => c.text).join("\n"), result };
+    };
+    return mac;
+  }
+
+  test("nothing is controlled before request_access", async () => {
+    const mac = fakeMac();
+    expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+    expect((await mac.call("type", { text: "hi" })).text).toBe("Call request_access first.");
+    expect(mac.actions).toEqual([]);
+  });
+
+  test("approval shows a dialog for the asked apps, refuses a bank app, and starts the stop panel", async () => {
+    const mac = fakeMac();
+    const result = await mac.call("request_access", { apps: ["Safari", "Chase", "Nope"], reason: "Check the page title." });
+    expect(result.text).toContain("Refused: Chase: it is a finance app.");
+    expect(result.text).toContain("Not found: Nope.");
+    expect(result.text).toContain("Approved: Safari.");
+    expect(mac.dialogs).toHaveLength(1);
+    expect(mac.dialogs[0]).toContain("Claude wants to control: Safari.");
+    expect(mac.dialogs[0]).not.toContain("Chase");
+    expect(mac.overlays).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 100 });
+  });
+
+  test("a denied dialog approves nothing and frees the lock", async () => {
+    const mac = fakeMac({ allow: false });
+    expect((await mac.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("The user denied: Safari.");
+    expect(mac.overlays).toHaveLength(0);
+    expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+  });
+
+  test("a click maps screenshot pixels to the display and lands in an approved app", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    const shot = await mac.call("screenshot", {});
+    expect(shot.result.content[0]).toEqual({ type: "image", data: "aW1n", mimeType: "image/jpeg" });
+    expect(shot.text).toContain("Display 0 of 2, 1330x865 px");
+    expect((await mac.call("click", { x: 665, y: 432.5 })).text).toBe("Clicked in Safari.");
+    expect(mac.actions).toEqual([["click", "735", "478", "left", "1", ""]]);
+  });
+
+  test("a click on the second display uses that screenshot", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect((await mac.call("click", { x: 1, y: 1 })).text).toBe("Take a screenshot first.");
+    await mac.call("screenshot", { display: 1 });
+    await mac.call("click", { x: 715, y: 402, count: 2, modifiers: ["command"] });
+    expect(mac.actions).toEqual([["click", "-960", "539", "left", "2", "cmd"]]);
+    expect((await mac.call("click", { x: 1, y: 1, display: 0 })).text).toBe("Take a screenshot of display 0 first.");
+  });
+
+  test("a click on an unapproved or sensitive app is refused", async () => {
+    let under = SAFARI;
+    const mac = fakeMac({ under: () => under });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    under = NOTES;
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Notes (under the pointer) is not approved. Call request_access with it first.");
+    under = BANK;
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Chase is refused: it is a finance app.");
+    under = null;
+    expect((await mac.call("scroll", { x: 10, y: 10, direction: "down" })).text).toBe("No app found under the pointer; nothing was done.");
+    expect(mac.actions).toEqual([]);
+  });
+
+  test("keys and typing go only to an approved frontmost app", async () => {
+    const mac = fakeMac({ front: NOTES });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect((await mac.call("key", { combo: "cmd+t" })).error).toBe(true);
+    expect((await mac.call("type", { text: "secret" })).error).toBe(true);
+    await mac.call("request_access", { apps: ["Notes"], reason: "r" });
+    expect((await mac.call("key", { combo: "cmd+t" })).text).toBe("Pressed cmd+t in Notes.");
+    expect(mac.actions).toEqual([["key", "17", "cmd"]]);
+    expect(mac.overlays).toHaveLength(1);
+  });
+
+  test("a drag checks both ends", async () => {
+    const mac = fakeMac({ under: (p) => (p.x > 500 ? NOTES : SAFARI) });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    expect((await mac.call("drag", { from_x: 10, from_y: 10, to_x: 1000, to_y: 10 })).text).toContain("Notes (under the pointer) is not approved");
+    expect(mac.actions).toEqual([]);
+  });
+
+  test("open_app opens only approved apps", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect((await mac.call("open_app", { app: "Notes" })).error).toBe(true);
+    expect((await mac.call("open_app", { app: "Safari" })).text).toBe("Opened Safari.");
+    expect(mac.actions).toEqual([["open", "com.apple.Safari"]]);
+  });
+
+  test("the stop panel ends the session at once", async () => {
+    const mac = fakeMac();
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    mac.overlays[0].onExit(0);
+    expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("The user stopped computer use. Ask the user before calling request_access again.");
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Call request_access first.");
+    expect(mac.actions).toEqual([]);
+    // Asking again shows a new dialog; nothing stays approved from before.
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect(mac.dialogs).toHaveLength(2);
+    expect(mac.overlays).toHaveLength(2);
+  });
+
+  test("a second session cannot take control while the first holds it", async () => {
+    const first = fakeMac({ pid: 100 });
+    const second = fakeMac({ pid: 200 });
+    await first.call("request_access", { apps: ["Safari"], reason: "r" });
+    const refused = await second.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect(refused.text).toBe("Another session (pid 100) is controlling this computer. Try again after it releases.");
+    expect(second.dialogs).toHaveLength(0);
+    expect((await first.call("release", {})).text).toContain("Released");
+    expect(first.overlays[0].stopped).toBe(true);
+    expect((await second.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
+  });
+
+  test("a lock left by a dead session is taken over", async () => {
+    const first = fakeMac({ pid: 100 });
+    await first.call("request_access", { apps: ["Safari"], reason: "r" });
+    const second = fakeMac({ pid: 200, alive: (pid) => pid !== 100 });
+    expect((await second.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
+    expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 200 });
+  });
+});
+
+describe("MCP protocol", () => {
+  const desktop = { call: async (name) => ({ content: [{ type: "text", text: name }] }) };
+
+  test("the server is not named computer-use", async () => {
+    const response = await handle(desktop, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+    expect(SERVER_NAME).toBe("desktop");
+    expect(response.result.serverInfo.name).toBe("desktop");
+    expect(response.result.protocolVersion).toBe("2025-06-18");
+    expect(response.result.capabilities).toEqual({ tools: {} });
+  });
+
+  test("it lists the tools and calls them", async () => {
+    const list = await handle(desktop, { jsonrpc: "2.0", id: 2, method: "tools/list" });
+    expect(list.result.tools.map((tool) => tool.name)).toEqual(TOOLS.map((tool) => tool.name));
+    expect(list.result.tools.map((tool) => tool.name)).toContain("request_access");
+    const call = await handle(desktop, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "screenshot", arguments: {} } });
+    expect(call.result.content[0].text).toBe("screenshot");
+  });
+
+  test("a helper failure becomes a tool error, not a crash", async () => {
+    const broken = { call: async () => { throw new Error("boom"); } };
+    const call = await handle(broken, { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "click", arguments: {} } });
+    expect(call.result).toEqual({ content: [{ type: "text", text: "The desktop helper failed: boom" }], isError: true });
+  });
+
+  test("notifications get no answer and unknown methods an error", async () => {
+    expect(await handle(desktop, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
+    expect((await handle(desktop, { jsonrpc: "2.0", id: 5, method: "resources/list" })).error.code).toBe(-32601);
+  });
+});

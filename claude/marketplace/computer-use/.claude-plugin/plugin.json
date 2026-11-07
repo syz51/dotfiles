@@ -1,0 +1,5 @@
+{
+  "name": "computer-use",
+  "version": "0.1.0",
+  "description": "Screenshots, mouse and keyboard on this Mac through the desktop MCP server, with per-app approval, a sensitive-app block, one session at a time and a stop panel."
+}
