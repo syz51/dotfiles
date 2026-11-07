@@ -36,6 +36,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "^(EnterWorktree|Agent|Task)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/freshen-base.js\"",
+            "timeout": 90
+          }
+        ]
       }
     ],
     "PostToolUse": [
