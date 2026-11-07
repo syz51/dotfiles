@@ -218,9 +218,18 @@ change = "A PR on dotfiles"
 verify = ["git config --list --show-origin"]
 
 [[setup]]
+id = "ci"
+title = "A repository's CI and merge rules"
+covers = ["a repository's GitHub Actions workflows, required checks, branch protection, merge queue and auto-merge rules"]
+owner = { repo = "<project>", board = "<project>" }
+channel = "board"
+change = "A PR on the repository the report came from, tracked on its board"
+verify = ["gh pr checks <pr>", "gh api repos/<owner>/<repo>/branches/<branch>/protection"]
+
+[[setup]]
 id = "project"
 title = "A project's own setup"
-covers = ["a project's own instructions, scripts, CI and tooling"]
+covers = ["a project's own instructions, scripts and tooling, apart from CI (`ci`)"]
 owner = { repo = "<project>", board = "<project>" }
 channel = "board"
 change = "A task on the board of the project the report came from"
