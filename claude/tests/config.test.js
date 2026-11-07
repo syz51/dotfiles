@@ -362,6 +362,12 @@ describe("work board", () => {
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
   });
 
+  // Asks sent the user to look up what memory, the board or a repository already held,
+  // and different threads asked the same question.
+  test("an ask comes after searching and carries what was found", () => {
+    expect(section("Work board")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
+  });
+
   test("the scoring rubric counts filing as in scope and needing no approval", async () => {
     const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
     const question = (id) => rubric.dimensions.find((check) => check.id === id).question;
