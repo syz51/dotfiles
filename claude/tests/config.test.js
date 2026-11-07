@@ -631,3 +631,39 @@ describe("rules the live suites test", () => {
     expect(read("codex/AGENTS.md")).not.toMatch(/worktree-isolated/);
   });
 });
+
+// The computer-use plugin (SETUP.md "Computer use"). Claude Code reserves the MCP server name
+// computer-use and keeps it off in every project, so the plugin's server has another name.
+describe("computer-use plugin", () => {
+  const marketplace = JSON.parse(read(".claude-plugin/marketplace.json"));
+  const settings = JSON.parse(read("claude/settings.json"));
+
+  test("the dotfiles marketplace at the repo root lists it from its folder", () => {
+    expect(marketplace.name).toBe("dotfiles");
+    const entry = marketplace.plugins.find((plugin) => plugin.name === "computer-use");
+    expect(entry.source).toBe("./claude/marketplace/computer-use");
+    const manifest = JSON.parse(read("claude/marketplace/computer-use/.claude-plugin/plugin.json"));
+    expect(manifest.name).toBe("computer-use");
+    // Without a version Claude Code versions the plugin by commit, so each change reinstalls it.
+    expect(manifest.version).toBeUndefined();
+    expect(entry.version).toBeUndefined();
+  });
+
+  // Declared in the tracked settings, so no install command writes a machine path into them.
+  test("the tracked settings fetch the marketplace from GitHub and enable the plugin", () => {
+    const source = settings.extraKnownMarketplaces.dotfiles.source;
+    expect(source).toEqual({ source: "github", repo: "syz51/dotfiles", sparsePaths: [".claude-plugin", "claude/marketplace"] });
+    expect(settings.enabledPlugins["computer-use@dotfiles"]).toBe(true);
+  });
+
+  test("its only MCP server is desktop, run by bun from the plugin", () => {
+    const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
+    expect(Object.keys(servers)).toEqual(["desktop"]);
+    expect(servers.desktop).toEqual({ command: "${HOME}/.bun/bin/bun", args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"] });
+  });
+
+  test("its tests run in the verification suites and CI", () => {
+    expect(read("SETUP.md")).toMatch(/^bun test .* claude\/marketplace$/m);
+    expect(read(".github/workflows/checks.yml")).toMatch(/^\s+bun test .* claude\/marketplace$/m);
+  });
+});

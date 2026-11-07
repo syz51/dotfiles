@@ -56,6 +56,15 @@ change = "A PR on dotfiles; `factory audit` for permission and sandbox changes"
 verify = ["bun test claude/tests/config.test.js", "bun ~/.claude/factory/cli.js audit"]
 
 [[setup]]
+id = "computer-use"
+title = "Computer-use plugin (desktop MCP server)"
+covers = [".claude-plugin", "claude/marketplace"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests for the safeguard; a live check in a T3 Code session when the helper changes"
+verify = ["bun test claude/marketplace"]
+
+[[setup]]
 id = "skills"
 title = "Agent skills (codex-skills)"
 covers = ["the skills installed from codex-skills: frontend-ui, typescript, rust, tauri and others"]

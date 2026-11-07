@@ -160,7 +160,18 @@
       }
     ]
   },
-  "enabledPlugins": {},
+  "extraKnownMarketplaces": {
+    "dotfiles": {
+      "source": {
+        "source": "github",
+        "repo": "syz51/dotfiles",
+        "sparsePaths": [".claude-plugin", "claude/marketplace"]
+      }
+    }
+  },
+  "enabledPlugins": {
+    "computer-use@dotfiles": true
+  },
   "sandbox": {
     "enabled": false
   },

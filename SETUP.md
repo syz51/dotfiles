@@ -477,6 +477,45 @@ for any other script that starts `claude -p` or `codex exec` from inside a threa
 such a session inherits the thread's identity and would otherwise report as that
 thread.
 
+## Computer use
+
+Claude Code's built-in computer use runs only in interactive sessions, so it is off here.
+T3 Code drives Claude Code through the Agent SDK. The `computer-use` plugin in
+`claude/marketplace` gives those sessions screenshots, mouse and keyboard instead. Its MCP
+server is named `desktop`, because Claude Code reserves the name `computer-use`.
+
+`claude/settings.json` declares the `dotfiles` marketplace (`.claude-plugin/marketplace.json`
+on GitHub) and enables the plugin, so there is nothing to install. Claude Code clones the
+marketplace at session start and installs the plugin from `main`. The plugin has no fixed
+version, so Claude Code keys it by commit and installs each new commit; run
+`claude plugin marketplace update dotfiles` to fetch one at once.
+
+On first use the server compiles `server/helper.swift` with `xcrun swiftc` into
+`~/.local/state/desktop-mcp`, again after the source changes. macOS asks the app that
+started Claude Code (T3 Code) for Screen Recording and Accessibility; grant both in
+System Settings > Privacy & Security.
+
+The server keeps these safeguards:
+
+- The model calls `request_access` with app names. You allow or deny them in a dialog.
+- Each click, drag, scroll or pointer move checks the app under the pointer. Keys and
+  typing check the app with keyboard focus (Accessibility). An app that is not approved
+  is refused.
+- Finance, medical and health apps (by App Store category) are always refused. So are
+  apps whose name or bundle id names a bank, health, government, password manager or
+  authenticator.
+- One session holds `~/.local/state/desktop-mcp/session.json` at a time. Another
+  session's `request_access` is refused until the first releases or exits. Each action
+  checks that its session still holds the lock.
+- A panel at the bottom right of the main display shows while a session holds access.
+  Its Stop button or the Esc key ends the session and drops every approval. The panel
+  writes a stop file that the helper checks before each event, so Stop also cuts off an
+  action in progress and the actions already queued.
+
+Screenshots fit 1568 px on the long edge and about 1.15 megapixels. The model gives
+coordinates in the pixels of the latest screenshot of a display; the server maps them to
+display points, so Retina scaling and displays left of or above the main one work.
+
 ## T3 Code thread cleanup
 
 T3 Code settles only the thread you settle, not its subagent children, so they stay
@@ -604,7 +643,7 @@ the real state.
 From the repository root, run the focused local suites:
 
 ```sh
-bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory
+bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
