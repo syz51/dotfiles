@@ -1,5 +1,5 @@
 // `evolve`: how the feedback loop moved, per setup. Triage resolves feedback items within
-// minutes (routed, duplicate, forwarded or declined) and closes them, so open feedback no
+// minutes (routed, duplicate, forwarded, declined or fixed) and closes them, so open feedback no
 // longer shows the loop's health; this reads every item's `feedback` record from the
 // feedback board, and each routed item's owner task, and reports per setup what came in,
 // what waits for triage or for its owner, and what got fixed or came back.
@@ -73,7 +73,8 @@ async function owners(ids, errors) {
 
 // The report for tasks on the feedback board, given their routed owners' states.
 // Window counts (items, reports, sources, recurrences, declined items reported again, fixed)
-// cover items active in the last `days`; untriaged and routed-open items count at any age,
+// cover items active in the last `days`; fixed counts routed items whose owner task was done
+// in the window and items resolved `fixed` (fixed directly) in the window; untriaged and routed-open items count at any age,
 // since they are what still waits.
 export function report(tasks, ownerStates, { days, now = Date.now(), setups = [] }) {
   const since = now - days * DAY;
@@ -96,6 +97,8 @@ export function report(tasks, ownerStates, { days, now = Date.now(), setups = []
     const lastReported = time(feedback.last_reported_at);
     const active = Math.max(time(task.created_at) || 0, lastReported, resolution ? time(resolution.at) : 0) >= since;
     const entry = row(feedback.about);
+    // Fixed by the triager directly: it counts as fixed when resolved in the window.
+    if (resolution?.kind === "fixed" && time(resolution.at) >= since) entry.fixed += 1;
     if (active) {
       entry.items += 1;
       entry.reports += feedback.reports;
