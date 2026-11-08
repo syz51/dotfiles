@@ -373,8 +373,6 @@ parent task), its channel (`skill-notes` for codex-skills skills, which record t
 feedback), how a change is made and how to verify it. The feedback board's triage routes
 reports with it. `setups --check` validates the schema and ids and checks that the
 repository paths in `covers` exist; add an entry when you add a component.
-`claude/factory/setups/setups.test.js` fails when a tracked top-level directory or a
-`claude/skills` directory lies outside every setup's paths, except `.github` and `LICENSES`.
 
 Most friction never gets reported, so `friction run` looks for it. It reads the main
 sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
