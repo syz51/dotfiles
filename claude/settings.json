@@ -191,15 +191,15 @@
     "artifact-capabilities": "name-only",
     "artifact-diagramming": "name-only",
     "workflow-authoring": "name-only",
+    "init": "name-only",
+    "loop": "name-only",
+    "run": "name-only",
+    "schedule": "name-only",
+    "security-review": "name-only",
+    "simplify": "name-only",
+    "update-config": "name-only",
     "fewer-permission-prompts": "user-invocable-only",
-    "init": "user-invocable-only",
-    "keybindings-help": "user-invocable-only",
-    "loop": "user-invocable-only",
-    "run": "user-invocable-only",
-    "schedule": "user-invocable-only",
-    "security-review": "user-invocable-only",
-    "simplify": "user-invocable-only",
-    "update-config": "user-invocable-only"
+    "keybindings-help": "user-invocable-only"
   },
   "sandbox": {
     "enabled": false

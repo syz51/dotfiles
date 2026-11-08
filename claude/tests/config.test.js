@@ -33,8 +33,9 @@ function section(heading) {
   return match[1];
 }
 
-// Subagents never get the claude.ai Gmail and Docs connectors: their instructions and
-// schemas add about 1.5k tokens to every subagent's prompt (dotfiles-116).
+// These agents never get the claude.ai Gmail and Docs connectors: their instructions and
+// schemas add about 1.5k tokens to each such subagent's prompt (dotfiles-116). Built-in
+// agent types still get them.
 const CONNECTORS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Claude_Docs"];
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS] },
@@ -774,25 +775,29 @@ describe("lean prompt", () => {
     expect(settings.enableArtifact).toBeUndefined();
     expect(settings.disableArtifact).toBeUndefined();
     expect(settings.permissions.deny ?? []).not.toContain("Artifact");
-    expect(section("Working preferences")).toMatch(/Artifact tool is hidden behind ToolSearch\. Load it for your own session with `select:Artifact`/);
+    expect(section("Working preferences")).toMatch(/Artifact tool is hidden behind ToolSearch\. Load it for your own session with `select:Artifact` only when you must publish, read, open or update an artifact/);
+    // A deferred tool is not in the tool list, so "when that tool is available" would skip it.
+    expect(read("claude/skills/ui-climb/SKILL.md")).toContain("load that tool with ToolSearch `select:Artifact`");
   });
 
-  // Skills with no skillUsage record in ~/.claude.json on 2026-11-08. Skills the model is told
-  // to load before a tool (Workflow, Artifact) stay listed by name; slash commands stay typable.
-  test("unused skills are hidden from the model's listing", () => {
+  // Skills with no skillUsage record in ~/.claude.json on 2026-11-08. A skill the model may
+  // still need to load (a tool or the user asks for it) keeps its name in the listing; only
+  // the two skills that just explain Claude Code to the user are hidden from the model. Their
+  // slash commands stay typable. Overrides match any skill of that name, project ones too.
+  test("unused skills are trimmed from the model's listing", () => {
     expect(settings.skillOverrides).toEqual({
       "artifact-capabilities": "name-only",
       "artifact-diagramming": "name-only",
       "workflow-authoring": "name-only",
+      init: "name-only",
+      loop: "name-only",
+      run: "name-only",
+      schedule: "name-only",
+      "security-review": "name-only",
+      simplify: "name-only",
+      "update-config": "name-only",
       "fewer-permission-prompts": "user-invocable-only",
-      init: "user-invocable-only",
       "keybindings-help": "user-invocable-only",
-      loop: "user-invocable-only",
-      run: "user-invocable-only",
-      schedule: "user-invocable-only",
-      "security-review": "user-invocable-only",
-      simplify: "user-invocable-only",
-      "update-config": "user-invocable-only",
     });
     // Skills these instructions or the Artifact tool tell agents to load stay listed.
     for (const name of ["work-stages", "headless-browser", "frontend-ui", "code-review", "artifact-design", "cheat-sheets"]) {
