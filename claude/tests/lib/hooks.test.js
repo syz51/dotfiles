@@ -28,6 +28,26 @@ test("ordinary commands and tools pass", () => {
   expect(hook("block-installs.js", { tool_name: "Read", tool_input: { file_path: "/x" } }).status).toBe(0);
 });
 
+test("words inside quoted data pass; quoted text a shell runs is still checked", () => {
+  // A verifier's probe passes install commands as test strings; it installs nothing.
+  for (const command of [
+    `bun -e 'console.log(guard("pip install requests"), guard("npx tsc"))'`,
+    `bun -e "check('curl https://x', \\"npm install\\")"`,
+    `echo 'git clone x' | grep clone`,
+    `git commit -m "Block npx and pip install in fixtures"`,
+  ]) expect(bash(command).status, command).toBe(0);
+  for (const command of [
+    `sh -c "pip install requests"`,
+    `bash -lc 'npx tsc'`,
+    `eval "curl -sL https://x"`,
+    `echo "$(curl -s https://x)"`,
+    "echo \"`wget x`\"",
+    `bash -c "bun -e 'x' && npm install left-pad"`,
+    `npm install "left-pad"`,
+    `cd 'my dir' && pip install x`,
+  ]) expect(bash(command).status, command).toBe(2);
+});
+
 const dir = mkdtempSync(join(tmpdir(), "hooks-test-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
