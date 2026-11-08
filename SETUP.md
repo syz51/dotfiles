@@ -284,6 +284,7 @@ bun ~/.claude/factory/cli.js board              # the work board's week: stats, 
 bun ~/.claude/factory/cli.js evolve             # the feedback loop per setup this week
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
+bun ~/.claude/factory/cli.js bench review report # /code-review level benchmark
 bun ~/.claude/factory/cli.js setups --check     # the setup registry agents report about
 bun ~/.claude/factory/cli.js friction run --dry-run # turns the friction capture would judge
 bun ~/.claude/factory/cli.js weekly run --no-pr # the whole loop once, no PRs
