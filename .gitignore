@@ -48,6 +48,7 @@ uv
 !/claude/skills/work-stages/
 /claude/skills/headless-browser/node_modules/
 !/claude/skills/ui-climb/
+!/claude/skills/cheat-sheets/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack
