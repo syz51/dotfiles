@@ -6,29 +6,49 @@ approval policy and the one-time macOS grants.
 
 ## Approval policy
 
-`policy.json` decides how `request_access` approves apps:
+The policy decides how `request_access` approves apps:
 
 - `{"approval": "auto"}` (the default): the server approves the apps the model names at
   once. No dialog appears, so no one needs to be at the Mac.
 - `{"approval": "dialog"}`: the server shows an Allow/Deny dialog for each request. The
   dialog gives up, and so denies, after 120 seconds.
 
-`.mcp.json` sets `DESKTOP_MCP_POLICY` to the copy in the dotfiles checkout,
-`~/.config/claude/marketplace/computer-use/policy.json`. Edit that file to switch modes.
-The server reads it at each `request_access`, so the change takes effect at once, also in
-running sessions. When that file is missing, the plugin's own `policy.json` applies. With
-no file at all, the server uses `dialog`. A file that is not valid JSON or has another
-`approval` value makes `request_access` fail; the server never guesses a mode.
+The server reads the first of these files that exists:
+
+1. `policy.json` in the server's state folder, `~/.local/state/desktop-mcp/policy.json` by
+   default (`$DESKTOP_MCP_STATE`, or `$XDG_STATE_HOME/desktop-mcp`, when set). No checkout
+   tracks this file, so a branch switch or an agent's commit does not change it.
+   `DESKTOP_MCP_POLICY` names another file instead.
+2. The plugin's own `policy.json`, which sets `auto`.
+
+To switch to the dialog, write `{"approval": "dialog"}` to the first file. Delete it to go
+back to the plugin's default. The server reads the policy at each `request_access`, so the
+change takes effect at once, also in running sessions. With no file at all, the server uses
+`dialog`. A file that cannot be read, is not valid JSON or has another `approval` value
+makes `request_access` fail; the server never guesses a mode.
 
 These safeguards stay in both modes:
 
 - Only the apps the model names are approved. Every action checks the app under the
   pointer or with keyboard focus against that list.
 - Banking, healthcare, government and password apps are always refused.
+- Apps that reach past Claude Code's permission rules and hooks always need the dialog:
+  terminals (Terminal, iTerm, Ghostty, Warp, Alacritty, kitty, WezTerm), agent apps (T3
+  Code, Claude), System Settings, Script Editor, Shortcuts, Automator, Activity Monitor,
+  Keychain Access and Installer. `DIALOG_APPS` in `server/desktop.js` lists them by name
+  and bundle id.
 - One session at a time holds the lock.
-- The stop panel shows during a session. Its Stop button or Esc ends the session.
-- After you press Stop, the next `request_access` in that session shows the dialog, even
-  in `auto` mode. Once you allow apps in that dialog, the policy applies again.
+- The stop panel shows during a session and names the approved apps. Its Stop button or
+  Esc ends the session.
+- After you press Stop, `request_access` shows the dialog in every session, also after a
+  server restart, even in `auto` mode. The server records the Stop in `user-stopped` in
+  the state folder. Once you allow apps in a dialog, it removes that file and the policy
+  applies again. A panel that crashes or is killed ends the session, but does not count
+  as a Stop.
+- Each approval adds a JSON line to `approvals.log` in the state folder: the time, the
+  apps, the model's reason, and `mode` `auto` or `dialog`.
+
+The `request_access` reply says whether a dialog was shown and why.
 
 ## macOS grants (one time)
 
@@ -48,8 +68,11 @@ To check the grants, run the newest built helper with `permissions` from a T3 Co
 terminal. Both values should be `true`:
 
 ```sh
-"$(ls -t ~/.local/state/desktop-mcp/desktop-helper-* | head -1)" permissions
+state="${DESKTOP_MCP_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/desktop-mcp}"
+"$(ls -t "$state"/desktop-helper-* | grep -v '\.tmp$' | head -1)" permissions
 ```
+
+The `grep` skips a build still in progress, which ends in `.tmp`.
 
 ## Locked screen
 

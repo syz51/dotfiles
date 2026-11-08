@@ -2,10 +2,7 @@
   "mcpServers": {
     "desktop": {
       "command": "${HOME}/.bun/bin/bun",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"],
-      "env": {
-        "DESKTOP_MCP_POLICY": "${HOME}/.config/claude/marketplace/computer-use/policy.json"
-      }
+      "args": ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"]
     }
   }
 }

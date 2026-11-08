@@ -789,14 +789,14 @@ describe("computer-use plugin", () => {
     expect(settings.enabledPlugins["computer-use@dotfiles"]).toBe(true);
   });
 
-  // The approval policy comes from the dotfiles checkout, which the user can edit at any time.
-  test("its only MCP server is desktop, run by bun from the plugin with the checkout's policy", () => {
+  // No policy path from a checkout: agents edit tracked files and branch switches reset them.
+  // The user's policy lives in the server's untracked state folder; the plugin's is the fallback.
+  test("its only MCP server is desktop, run by bun from the plugin, with the auto policy bundled", () => {
     const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
     expect(Object.keys(servers)).toEqual(["desktop"]);
     expect(servers.desktop).toEqual({
       command: "${HOME}/.bun/bin/bun",
       args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"],
-      env: { DESKTOP_MCP_POLICY: "${HOME}/.config/claude/marketplace/computer-use/policy.json" },
     });
     expect(JSON.parse(read("claude/marketplace/computer-use/policy.json"))).toEqual({ approval: "auto" });
   });
