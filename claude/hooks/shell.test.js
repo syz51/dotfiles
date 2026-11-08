@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { parseScript, visitCommands } from "./shell.js";
+import { ghSubcommands, parseScript, visitCommands } from "./shell.js";
 
 /** Every command `source` runs, with the directory it runs in. */
 function commands(source, cwd = "/repo") {
@@ -159,4 +159,76 @@ test("a script nested too deeply returns tooDeep, or nothing by default", () => 
   expect(visitCommands(source, "/repo", blockMake)).toBeUndefined();
   expect(visitCommands(source, "/repo", blockMake, "too deep")).toBe("too deep");
   expect(visitCommands("bash -c make", "/repo", blockMake)).toBe("blocked");
+});
+
+test("a cd in a subshell, a background job or a pipeline does not move later commands", () => {
+  expect(commands("(cd x && make); ls")).toEqual([["make", "/repo/x"], ["ls", "/repo"]]);
+  expect(commands("(cd x; (cd y; make); ls); pwd")).toEqual([["make", "/repo/x/y"], ["ls", "/repo/x"], ["pwd", "/repo"]]);
+  expect(commands("cd x | cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+  expect(commands("cd x & ls")).toEqual([["ls", "/repo"]]);
+  expect(commands("cd x |& cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+  expect(commands("(cd x) | cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+});
+
+test("a cd in a pipeline's last part moves later commands, as zsh runs that part in the current shell", () => {
+  expect(commands("ls | cd x; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | cat | cd x && make")).toEqual([["ls", "/repo"], ["cat", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | { cd x; }; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | pushd x; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  // a ( … ) subshell still ends its cd, and a background pipeline runs in a subshell
+  expect(commands("ls | (cd x); make")).toEqual([["ls", "/repo"], ["make", "/repo"]]);
+  expect(commands("ls | cd x & make")).toEqual([["ls", "/repo"], ["make", "/repo"]]);
+});
+
+test("a { …; } group that a | or & follows runs in a subshell; one at a pipeline's end does not", () => {
+  expect(commands("{ cd x; } | cat; make")).toEqual([["cat", "/repo"], ["make", "/repo"]]);
+  expect(commands("{ cd x; make; } & ls")).toEqual([["make", "/repo/x"], ["ls", "/repo"]]);
+  expect(commands("{ cd x; }; make")).toEqual([["make", "/repo/x"]]);
+  expect(commands("cat | { cd x; }; make")).toEqual([["cat", "/repo"], ["make", "/repo/x"]]);
+  // zsh backgrounds only the last pipeline of an and-or list, so this cd stays
+  expect(commands("cd x && true & make")).toEqual([["true", "/repo/x"], ["make", "/repo/x"]]);
+});
+
+test("popd in a background job or an earlier pipeline part leaves the directory known", () => {
+  expect(commands("popd | cat; make")).toEqual([["cat", "/repo"], ["make", "/repo"]]);
+  expect(commands("popd & make")).toEqual([["make", "/repo"]]);
+  expect(commands("popd; make")).toEqual([["make", undefined]]);
+  expect(commands("ls | popd; make")).toEqual([["ls", "/repo"], ["make", undefined]]);
+});
+
+test("a substitution runs where its command starts, also in a piped ( … ) subshell", () => {
+  expect(commands("(cd x; echo \"$(make)\") | cat")).toEqual([["make", "/repo/x"], ["echo $(make)", "/repo/x"], ["cat", "/repo"]]);
+  expect(commands("(cd x; y=$(make)) | cat; ls")).toEqual([["make", "/repo/x"], ["cat", "/repo"], ["ls", "/repo"]]);
+});
+
+test("the ) that ends a case pattern does not end a subshell", () => {
+  // the pattern's words are dropped; `case a in` and `esac` reach the visitor as words
+  expect(commands("(case a in a) cd x;; esac; make); ls")).toEqual(
+    [["case a in", "/repo"], ["esac", "/repo/x"], ["make", "/repo/x"], ["ls", "/repo"]]);
+  expect(commands("(cd x; case a in (a|b) true;; *) ls;; esac; make); pwd")).toEqual(
+    [["case a in", "/repo/x"], ["true", "/repo/x"], ["ls", "/repo/x"], ["esac", "/repo/x"], ["make", "/repo/x"], ["pwd", "/repo"]]);
+  expect(commands("case a in\n  a) cd x ;;\nesac\nmake")).toEqual([["case a in", "/repo"], ["esac", "/repo/x"], ["make", "/repo/x"]]);
+  expect(commands("(case a in a) cd x;; esac); ls")).toEqual([["case a in", "/repo"], ["esac", "/repo/x"], ["ls", "/repo"]]);
+  expect(commands("case a in a|b) cd x;; esac; ls")).toEqual([["case a in", "/repo"], ["esac", "/repo/x"], ["ls", "/repo/x"]]);
+  // a subshell inside a case item still ends with its )
+  expect(commands("case a in a) (cd x); make;; esac")).toEqual([["case a in", "/repo"], ["make", "/repo"], ["esac", "/repo"]]);
+});
+
+test("zsh's noglob and nocorrect run the command after them", () => {
+  expect(commands("noglob nocorrect make")).toEqual([["make", "/repo"]]);
+});
+
+test("visit learns that xargs appends arguments", () => {
+  const seen = [];
+  visitCommands("echo 1 | xargs make; make", "/repo", (words, dir, { appended }) => {
+    seen.push([words.join(" "), appended]);
+  });
+  expect(seen).toEqual([["echo 1", false], ["make", true], ["make", false]]);
+});
+
+test("ghSubcommands skips options and reports -R and others before the subcommand", () => {
+  expect(ghSubcommands(["gh", "pr", "merge", "12"], 2)).toEqual({ path: ["pr", "merge"], next: 3, repo: undefined, other: undefined });
+  expect(ghSubcommands(["gh", "-R", "o/r", "pr", "--repo=a/b", "merge", "-R", "x/y"], 2)).toEqual({ path: ["pr", "merge"], next: 6, repo: "a/b", other: undefined });
+  expect(ghSubcommands(["gh", "-Ro/r", "pr", "merge"], 2).repo).toBe("o/r");
+  expect(ghSubcommands(["gh", "-b", "x", "pr", "merge"], 2)).toEqual({ path: ["x", "pr"], next: 4, repo: undefined, other: "-b" });
 });
