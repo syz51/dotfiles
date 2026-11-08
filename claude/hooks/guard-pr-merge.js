@@ -10,14 +10,16 @@
 // follows the shell syntax around the command, so `cd`, `sh -c`, wrappers, substitutions and
 // `ssh` are seen; any merge argument the shell fills in, arguments xargs adds, options before
 // `merge` other than -R, a command that sets GH_HOST, and one that sets GH_REPO without a literal
-// -R are refused. It fails closed: a gh query that fails or times out, an unknown merge option
-// and a crash all block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
+// -R are refused. The hook runs once before the whole command, so a merge in a command that also
+// runs `git push`, in any order, is refused: the push could move the head after the check. It
+// fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { expands, ghSubcommands, visitCommands } from "./shell.js";
+import { expands, ghSubcommands, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const TOO_DEEP = "it nests shell commands too deeply to check.";
 // `gh pr merge --help`: options without a value, and options that take one, by long name.
@@ -203,6 +205,11 @@ function ghCommand(words, dir, query, state) {
   if (subcommand !== undefined && expands(subcommand)) return fail(`the shell fills in the gh pr subcommand \`${subcommand}\`, so the guard cannot see whether it merges.`);
   if (subcommand !== "merge") return undefined;
   if (repo !== undefined && expands(repo)) return fail(`the shell fills in the repository \`${repo}\`. Write it out literally.`);
+  if (state.pushes) {
+    return fail("the same command also runs `git push`. The guard checks the pull request once, before the whole command runs, "
+      + "so it would read the old head's checks and merge the new head. Push in one Bash call, wait for the new head's checks to pass, "
+      + "then merge in a separate call.");
+  }
   try {
     const reason = judgeMerge(parseMerge(words.slice(next), repo), dir, query, state);
     return reason && fail(reason);
@@ -220,7 +227,16 @@ function ghCommand(words, dir, query, state) {
 export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } = {}) {
   const query = makeQuery(run, Date.now() + budgetMs);
   // gh reads GH_REPO and GH_HOST from the environment; the guard does not track their values.
-  const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command) };
+  const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command), pushes: false };
+  // A git push anywhere in the command, or a git subcommand the shell fills in, may move the
+  // head between this check and the merge.
+  visitCommands(command, cwd, (words) => {
+    if (basename(words[0]).toLowerCase() !== "git" && !expands(words[0])) return undefined;
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-")) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
+    if (words[i] === "push" || (words[i] !== undefined && expands(words[i]))) env.pushes = true;
+    return undefined;
+  });
   return visitCommands(command, cwd, (words, dir, { appended }) => {
     // macOS volumes ignore case, so GH and Gh run gh too.
     const name = basename(words[0]).toLowerCase();

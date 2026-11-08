@@ -243,7 +243,9 @@ once, so the guard checks it as a direct merge. It also refuses `gh api` calls t
 `pulls/<n>/merge` and the `mergePullRequest` and `enablePullRequestAutoMerge` mutations. It
 refuses any merge argument or subcommand that the shell fills in, arguments that `xargs`
 adds, options other than `-R` before the subcommand, `GH_HOST` set in the command, and
-`GH_REPO` set without `-R`. It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
+`GH_REPO` set without `-R`. It runs once before the whole command, so it refuses a merge in a
+command that also runs `git push`: merge in a separate call once the new head's checks pass.
+It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
 crash blocks the merge. The queries add about 0.7 seconds to each merge, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot
 see gh aliases, scripts, an endpoint held wholly in a variable, a query read from a file,

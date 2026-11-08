@@ -166,8 +166,18 @@ test("a cd in a subshell, a background job or a pipeline does not move later com
   expect(commands("(cd x; (cd y; make); ls); pwd")).toEqual([["make", "/repo/x/y"], ["ls", "/repo/x"], ["pwd", "/repo"]]);
   expect(commands("cd x | cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
   expect(commands("cd x & ls")).toEqual([["ls", "/repo"]]);
-  // zsh runs a pipeline's last part in the current shell and bash does not, so it is unknown
-  expect(commands("ls | cd x; make")).toEqual([["ls", "/repo"], ["make", undefined]]);
+  expect(commands("cd x |& cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+  expect(commands("(cd x) | cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+});
+
+test("a cd in a pipeline's last part moves later commands, as zsh runs that part in the current shell", () => {
+  expect(commands("ls | cd x; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | cat | cd x && make")).toEqual([["ls", "/repo"], ["cat", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | { cd x; }; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  expect(commands("ls | pushd x; make")).toEqual([["ls", "/repo"], ["make", "/repo/x"]]);
+  // a ( … ) subshell still ends its cd, and a background pipeline runs in a subshell
+  expect(commands("ls | (cd x); make")).toEqual([["ls", "/repo"], ["make", "/repo"]]);
+  expect(commands("ls | cd x & make")).toEqual([["ls", "/repo"], ["make", "/repo"]]);
 });
 
 test("visit learns that xargs appends arguments", () => {

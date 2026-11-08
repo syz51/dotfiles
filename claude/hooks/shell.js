@@ -508,8 +508,9 @@ function inspect(source, state, visit, depth, tooDeep) {
     // A shell reading standard input runs the heredocs, here-strings and printed text piped to it.
     const fed = pipeline.length > 1 || pipeline[0].command.inputs.length > 0;
     const reader = fed ? pipeline.findIndex(({ run: { words, reads } }) => reads?.() === true || readsStdin(words)) : -1;
-    // A background job and every part of a pipeline but the last run in a subshell; bash runs
-    // the last part in one too, zsh in the current shell, so its directory becomes unknown.
+    // A background job and every part of a pipeline but the last run in a subshell, so a `cd`
+    // there moves nothing after it. zsh, the shell Claude Code runs commands in, runs the last
+    // part in the current shell, so a `cd` there moves later commands; bash would not.
     const background = pipeline.at(-1).command.next === "&";
     for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text, appended } }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
@@ -529,7 +530,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
         if (background || index < pipeline.length - 1) continue;
-        if (pipeline.length > 1 || name === "popd") state.dir = undefined;
+        if (name === "popd") state.dir = undefined;
         else state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
         const violation = visit(words, dir, { appended: appended === true });

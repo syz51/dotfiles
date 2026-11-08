@@ -79,9 +79,15 @@ describe("refuses", () => {
     ["gh pr merge 12 --subject \"$(date)\"", {}, "the shell fills in"],
     // xargs appends the selector, which the guard cannot see
     ["echo 13 | xargs gh pr merge --squash", {}, "xargs adds arguments"],
-    // a cd that ran in a subshell, pipeline or background job leaves the directory as it was;
-    // zsh runs a pipeline's last part in the current shell, bash does not
-    ["ls | cd /other; gh pr merge 13", {}, "cannot tell which directory"],
+    // a push in the same command moves the head after the guard reads its checks, in any order
+    ["git push && gh pr merge 12", {}, "also runs `git push`"],
+    ["git push -u origin feature; gh pr merge 12 --squash", {}, "also runs `git push`"],
+    ["gh pr merge 12 && git push", {}, "also runs `git push`"],
+    ["git -C /repo push & gh pr merge 12", {}, "also runs `git push`"],
+    ["bash -c 'git push' && gh pr merge 12", {}, "also runs `git push`"],
+    ["GIT push && gh pr merge 12", {}, "also runs `git push`"],
+    ["$GIT push && gh pr merge 12", {}, "also runs `git push`"],
+    ["git $SUB && gh pr merge 12", {}, "also runs `git push`"],
     // an option the guard does not know could take a value and hide the selector
     ["gh pr merge --new-option 12", {}, "does not know the option"],
     ["gh pr merge -x 12", {}, "does not know the option"],
@@ -166,6 +172,10 @@ describe("allows", () => {
     ["gh api repos/o/r/merges", {}],
     ["git merge --ff-only origin/main", {}],
     ["echo gh pr merge 12", { view: { isDraft: true } }],
+    // a push with no merge in the same command, or a merge after a fetch or pull
+    ["git push && gh pr view 12", {}],
+    ["git fetch && git pull --ff-only && gh pr merge 12", {}],
+    ["echo git push && gh pr merge 12", {}],
   ])("%s", (command, options) => {
     expect(verdict(command, options)).toBeUndefined();
   });
@@ -211,6 +221,9 @@ describe("resolves the pull request", () => {
     expect(query("cd /other && gh pr merge 12").dir).toBe("/other");
     expect(query("(cd /other && ls); gh pr merge 13").dir).toBe("/repo");
     expect(query("cd /other | cat; gh pr merge 13").dir).toBe("/repo");
+    // zsh runs a pipeline's last part in the current shell, so its cd moves later commands
+    expect(query("ls | cd /other; gh pr merge 13").dir).toBe("/other");
+    expect(query("ls | (cd /other); gh pr merge 13").dir).toBe("/repo");
     expect(query("cd /other & gh pr merge 13").dir).toBe("/repo");
     expect(query("(cd /other; gh pr merge 13)").dir).toBe("/other");
   });
