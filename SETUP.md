@@ -725,7 +725,9 @@ in CI:
   the main session runs itself, a follow-up answered only after the background review,
   and a review whose outcomes are never recorded. Outcomes recorded before the review
   ends, a real finding recorded as no change needed, and a finding without a category
-  also fail.
+  also fail. When `~/.claude` links to another checkout, the three location checks
+  are skipped with one notice and the other tests still run; from the linked checkout
+  they run without it.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
@@ -740,6 +742,21 @@ costs about $5.80 and takes about 10 minutes, so run it once before merge:
 ```sh
 RUN_CLAUDE_LIVE=1 bun test claude/tests
 ```
+
+The sessions always load the installed `~/.claude`, which links to the installed
+checkout's `claude/` folder, not the checkout the tests run from. The test code, its
+fixtures and its assertions come from the checkout the tests run from.
+
+- From the installed checkout, the live suites test its configuration. Run the full
+  set there, after merge and config-sync, to live-test a change to `claude/CLAUDE.md`,
+  agents, skills, hooks or settings.
+- From a worktree, the suite prints one notice before any session. The notice names
+  the installed checkout and says that config changes are live-tested only after merge
+  and config-sync. The three location checks in `live.test.js` (`~/.claude` resolves
+  to this checkout, and both checks of a session in `nvim/`) are skipped.
+- A worktree run is still useful for a change to the suites' own code, such as
+  `claude/tests/lib/live.js`, a scenario or its fixtures: run the scenarios that
+  change touches against the installed configuration.
 
 While a change is in progress, run only the suite files and scenarios it affects. `-t`
 matches a scenario's name:
