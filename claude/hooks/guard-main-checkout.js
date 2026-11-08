@@ -7,9 +7,12 @@
 // merge, rebase, pull, stash, bisect and gh pr checkout. Their read-only, continue and abort
 // forms, file restores, fast-forward-only merges and pulls (see fastForwardOnly), a switch to
 // the default branch with no tracked changes, every command in a linked worktree and every
-// repository in a temporary directory still run. The user can allow them for one repository with
-// `git config claude.mainCheckout allow`, which the guard refuses to let a session run, or
-// run the command themselves. This is a guardrail against mistakes, not a security
+// repository in a temporary directory still run. When the user asked for the change in that
+// checkout, the agent runs that one git command with `-c claude.mainCheckout=allow`, which
+// the guard lets through; the block message says so, so agents never hand the command back
+// to the user. The user can allow every such command for one repository with
+// `git config claude.mainCheckout allow`, which the guard refuses to let a session run.
+// This is a guardrail against mistakes, not a security
 // boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
 // the command and shows stderr to Claude. The guard fails open: on a crash, on a script
 // nested too deeply, and when it cannot tell the repository.
@@ -20,6 +23,8 @@ import { basename, join, resolve, sep } from "node:path";
 import { changeDirectory, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const OVERRIDE_KEY = "claude.maincheckout"; // git config keys ignore case
+// `git -c claude.mainCheckout=allow <command>`: the user asked for this one change here.
+const USER_ASKED = `${OVERRIDE_KEY}=allow`;
 // Forms that finish, end or inspect an operation in progress rather than start one.
 const SAFE_FORMS = {
   merge: ["--abort", "--quit", "--continue"],
@@ -165,7 +170,8 @@ function mainCheckoutReason(dir, git, tempRoots, hint) {
   if (git(dir, ["config", "--get", OVERRIDE_KEY])?.toLowerCase() === "allow") return undefined;
   return `it changes the branch of ${top}, a main checkout other threads share. `
     + `Move into your own worktree first (EnterWorktree in Claude Code, a worktree thread in T3) and run it there.${hint} `
-    + "If the user asked for it here, they can run it themselves or allow it for this repository with `git config claude.mainCheckout allow`. "
+    + "If the user asked for this change in this checkout, run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...` "
+    + "(for `gh pr checkout`, fetch the pull request's branch and switch to it that way); never ask the user to run it. "
     + "Do not run it from a script to get past this guard.";
 }
 
@@ -188,16 +194,19 @@ function gitCommand(words, dir, git, tempRoots) {
   let i = 1;
   let unknownRepo = false;
   let configured = false;
+  let userAsked = false;
   while (i < words.length && words[i].startsWith("-")) {
     if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
     if (/^--(?:git-dir|work-tree)(?:=|$)/.test(words[i])) unknownRepo = true;
     // `-c merge.autostash=true` and the like can turn a fast-forward into something else.
     if (words[i] === "-c" || /^--config-env(?:=|$)/.test(words[i])) configured = true;
+    if (words[i] === "-c" && words[i + 1]?.toLowerCase() === USER_ASKED) userAsked = true;
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const [subcommand, ...args] = words.slice(i);
   if (subcommand === "config" && setsOverride(args))
     return "claude.mainCheckout is the user's switch for the guard-main-checkout hook. Only the user sets it.";
+  if (userAsked) return undefined;
   const configuredFastForward = configured && ["merge", "pull"].includes(subcommand) && fastForwardOnly(args);
   if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) return undefined;
   const reason = mainCheckoutReason(dir, git, tempRoots, HINTS[subcommand] ?? "");

@@ -709,9 +709,11 @@ describe("rules the live suites test", () => {
   // Threads that start in a repository's main checkout share it; one that switched or reset
   // it moved the branch under the others (dotfiles-164). guard-main-checkout.js enforces the
   // git part. Fast-forwards and a clean switch back to the default branch lose nothing, and
-  // the user wants agents to run them without a second step (dotfiles-235).
+  // the user wants agents to run them without a second step (dotfiles-235). A change the user
+  // asked for in that checkout runs with the guard's per-command option; the user does not
+  // want such commands handed back to them (dotfiles-263).
   test("Workflow moves work out of a shared main checkout", () => {
-    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories\./);
+    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories; when I asked for that change in that checkout, run the git command yourself as `git -c claude\.mainCheckout=allow <subcommand> \.\.\.`, never hand it back to me\./);
   });
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its

@@ -131,6 +131,11 @@ describe("in a main checkout it blocks", () => {
     ["eval eval git switch feature"],
     ["/usr/bin/git switch feature"],
     ["git -c core.pager=cat -P switch feature"],
+    // only `-c claude.mainCheckout=allow` on the git command itself lets it through
+    ["git -c claude.mainCheckout=deny switch feature"],
+    ["git -c claude.mainCheckout switch feature"],
+    ["git -c claude.mainCheckout=allow status && git switch feature"],
+    ["git switch feature -c claude.mainCheckout=allow"],
   ])("%s", (...row) => {
     expect(verdict(...row)).toContain("a main checkout other threads share");
   });
@@ -139,7 +144,9 @@ describe("in a main checkout it blocks", () => {
     const reason = verdict("git switch feature", "/main/sub");
     expect(reason).toStartWith("`git switch feature`: it changes the branch of /main, a main checkout");
     expect(reason).toContain("Move into your own worktree first");
-    expect(reason).toContain("`git config claude.mainCheckout allow`");
+    expect(reason).toContain("If the user asked for this change in this checkout, run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...`");
+    expect(reason).toContain("never ask the user to run it");
+    expect(reason).not.toContain("they can run it themselves");
     expect(reason).toContain("Do not run it from a script to get past this guard.");
     expect(reason).toContain("A switch to the default branch may run here when no tracked file has changes.");
     expect(reason).not.toContain("git restore");
@@ -236,6 +243,16 @@ describe("it allows", () => {
   ])("%s in a linked worktree, an allowed repository or a temporary one", (...row) => {
     expect(verdict(...row)).toBeUndefined();
   });
+
+  test.each([
+    ["git -c claude.mainCheckout=allow switch --track origin/fork"],
+    ["git -c Claude.MainCheckout=Allow checkout -b feature"],
+    ["git -c core.pager=cat -c claude.mainCheckout=allow reset --hard origin/main"],
+    ["git -C /main -c claude.mainCheckout=allow rebase origin/main", "/elsewhere"],
+    ["cd /main && git -c claude.mainCheckout=allow stash", "/elsewhere"],
+  ])("%s: a change the user asked for in this checkout", (...row) => {
+    expect(verdict(...row)).toBeUndefined();
+  });
 });
 
 describe("the override", () => {
@@ -248,6 +265,7 @@ describe("the override", () => {
     ["git config --unset claude.mainCheckout"],
     ["git -C /linked config claude.mainCheckout allow"],
     ["git config claude.mainCheckout allow", "/not-a-repo"],
+    ["git -c claude.mainCheckout=allow config claude.mainCheckout allow"],
   ])("only the user sets it: %s", (...row) => {
     expect(verdict(...row)).toContain("claude.mainCheckout is the user's switch for the guard-main-checkout hook");
   });
@@ -330,6 +348,11 @@ describe("hook process", () => {
     } finally {
       git(main, "config", "--unset", "claude.mainCheckout");
     }
+  });
+
+  test("allows one branch change the user asked for, marked on the git command", () => {
+    expect(run("git -c claude.mainCheckout=allow reset --hard", main)).toEqual({ code: 0, stderr: "" });
+    expect(run("git reset --hard", main).code).toBe(2);
   });
 
   test("allows branch changes in a repository under its temporary directory", () => {
