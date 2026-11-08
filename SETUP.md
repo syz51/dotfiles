@@ -309,6 +309,18 @@ share of correctness, security and reliability findings. A PR counts as reviewed
 session that linked it ran a review. The section compares the revert rate of reviewed
 and unreviewed merged PRs.
 
+[`claude/factory/scoring/high-impact.toml`](claude/factory/scoring/high-impact.toml)
+lists the high-impact paths of each repository with a work board. A default list covers
+CI workflows, hooks and guards, settings, installers and deployment, Terraform, Vault,
+migrations and auth, minus docs and tests. Each repository can add its own paths. The
+Review rule treats a change to a listed path as high-impact. The `review-skipped`
+detector fails a session that pushed or merged such a change with no `/code-review`
+started since the first edit. It finds each edited file's repository through the board
+client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
+as `~/.claude`, and skips files git ignores. A push settles only the edits of the
+repository its folder belongs to. List changes apply to sessions scored afterwards; bump
+the rubric version to rescore past ones.
+
 ### Setup registry and friction capture
 
 [`setups.toml`](setups.toml) lists every setup on both Macs, from the board, instructions,

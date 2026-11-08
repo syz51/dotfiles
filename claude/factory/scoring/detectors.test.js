@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, runDetectors, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
+import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
+import { boardCheckouts, gitIgnored, HIGH_IMPACT_FILE, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
 const cleanup = [];
 afterEach(() => {
@@ -378,6 +379,7 @@ test("runDetectors reads the main session and its subagents from the transcript 
     "force-push": "fail",
     "ultra-effort": "pass",
     "shell-file-edit": "fail",
+    "review-skipped": "na",
   });
   expect(results["force-push"].hits[0].agent).toBe("agent-a1");
   expect(results["shell-file-edit"].hits[0]).toMatchObject({ agent: "agent-a1", files: ["README.md"] });
@@ -412,4 +414,149 @@ test("a fork's inherited compact summaries, system prompts and injected text nev
   cleanup.push(root);
   const [session] = loadSessions({ root });
   expect(runDetectors(session)["ultra-effort"].verdict).toBe("fail");
+});
+
+describe("review-skipped", () => {
+  const checkouts = [
+    { repo: "github.com/o/app", root: "/w/app" },
+    { repo: "github.com/o/app-docs", root: "/w/app/docs" },
+    { repo: "github.com/o/lib", root: "/w/lib" },
+    { repo: "github.com/o/home", root: join(homedir(), "no-such-checkout-x1") },
+  ].sort((a, b) => b.root.length - a.root.length);
+  const matcher = highImpactMatcher({ default: [".github/workflows/**", "**/hooks/**"], repos: { "github.com/o/app": ["src/auth.rs"] } });
+  const detect = (calls, options, ignored = () => false) => reviewSkipped(actions(calls, options), { matcher, checkouts, ignored });
+  const edit = (file, extra) => call("Edit", { file_path: file, old_string: "a", new_string: "b" }, extra);
+  const review = (extra) => call("Skill", { skill: "code-review", args: "xhigh origin/main...abc1234" }, extra);
+  const typed = (name) => ({ name, args: "xhigh", at: call("Noop", {}).at });
+
+  test("fails a push of a high-impact edit with no review", () => {
+    const result = detect([edit("/w/app/hooks/pre.sh"), edit("/w/app/src/auth.rs"), edit("/w/app/README.md"), bash("git push origin feature")]);
+    expect(result.verdict).toBe("fail");
+    expect(result.hits[0].files).toEqual(["o/app:hooks/pre.sh", "o/app:src/auth.rs"]);
+    expect(result.hits[0].evidence).toContain("git push origin feature");
+  });
+
+  test("passes a review after the first edit, with fixes after it", () => {
+    expect(detect([edit("/w/app/hooks/pre.sh"), review({ agent: "agent-r1" }), edit("/w/app/hooks/pre.sh"), bash("git push -u origin feature")]).verdict).toBe("pass");
+    // A review typed as a slash command, or a plugin's code-review skill, counts too.
+    for (const name of ["/code-review", "/review", "/tools:code-review"]) {
+      const [first, command] = [edit("/w/app/hooks/pre.sh"), typed(name)];
+      expect(detect([first, bash("git push")], { commands: [command] }).verdict, name).toBe("pass");
+    }
+    expect(detect([edit("/w/app/hooks/pre.sh"), call("Skill", { skill: "tools:code-review" }), bash("git push")]).verdict).toBe("pass");
+  });
+
+  test("a review before the edits, or one refused, does not count", () => {
+    expect(detect([review(), edit("/w/app/hooks/pre.sh"), bash("git push")]).verdict).toBe("fail");
+    expect(detect([edit("/w/app/hooks/pre.sh"), review({ ok: false }), bash("git push")]).verdict).toBe("fail");
+  });
+
+  test("each push settles the edits before it; later fixes to reviewed files need no review", () => {
+    const result = detect([edit("/w/app/hooks/a.sh"), review(), bash("git push"), edit("/w/app/hooks/b.sh"), bash("gh pr merge 12 --merge --auto")]);
+    expect(result.verdict).toBe("fail");
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0].files).toEqual(["o/app:hooks/b.sh"]);
+    expect(detect([edit("/w/app/hooks/a.sh"), review(), bash("git push"), edit("/w/app/hooks/a.sh"), bash("git push")]).verdict).toBe("pass");
+  });
+
+  test("a push settles only its own repository's edits when its folder is known", () => {
+    const calls = [edit("/w/app/hooks/a.sh"), edit("/w/lib/hooks/b.sh"), bash("git -C /w/lib push"), review(), bash("git push", { cwd: "/w/app" })];
+    const result = detect(calls);
+    expect(result.hits.map((found) => found.files)).toEqual([["o/lib:hooks/b.sh"]]);
+    // From the call's folder; a push from an unknown folder settles every repository.
+    expect(detect([edit("/w/app/hooks/a.sh"), bash("git push", { cwd: "/w/lib" }), review(), bash("git push", { cwd: "/w/app" })]).verdict).toBe("pass");
+    expect(detect([edit("/w/app/hooks/a.sh"), bash("cd sub && git push", { cwd: "/w/lib" })]).verdict).toBe("fail");
+    expect(detect([edit("/w/app/hooks/a.sh"), bash("git push", { cwd: "/elsewhere" })]).verdict).toBe("na");
+  });
+
+  test("only real pushes and merges count", () => {
+    for (const command of ['rg -n "gh pr merge" /w/app', 'git commit -m "then gh pr merge it"', "git push origin --delete old", "git push origin :old", "git push --tags", "git push -n"])
+      expect(detect([edit("/w/app/hooks/a.sh"), bash(command), review(), bash("git push")]).verdict, command).toBe("pass");
+    // A failed command whose push came before the part that failed still pushed.
+    expect(detect([edit("/w/app/hooks/a.sh"), bash("git push -u origin f && gh pr create --fill", { ok: false })]).verdict).toBe("fail");
+    expect(detect([edit("/w/app/hooks/a.sh"), bash("git push", { ok: false })]).verdict).toBe("na");
+  });
+
+  test("finds edits in worktrees, subagents and Bash commands", () => {
+    for (const file of ["/w/app/.claude/worktrees/fix/.github/workflows/ci.yml", "/u/.t3/worktrees/app/t3-1a2b/src/auth.rs", "/u/.t3/worktrees/app/t3-1/.claude/worktrees/a/src/auth.rs"])
+      expect(detect([edit(file, { agent: "agent-w1" }), bash("git push")]).verdict, file).toBe("fail");
+    expect(detect([bash("sed -i '' 's/a/b/' /w/app/hooks/pre.sh"), bash("git push")]).verdict).toBe("fail");
+    // A failed command made its edits before the part that failed.
+    expect(detect([bash("sed -i '' 's/a/b/' /w/app/hooks/pre.sh && bun test", { ok: false }), bash("git push")]).verdict).toBe("fail");
+    // Home-relative paths, and relative ones from the call's folder unless it changed.
+    expect(detect([bash("sed -i '' 's/a/b/' ~/no-such-checkout-x1/hooks/x.sh"), bash("git push")]).verdict).toBe("fail");
+    expect(detect([bash("sed -i '' 's/a/b/' hooks/x.sh", { cwd: "/w/app" }), bash("git push")]).verdict).toBe("fail");
+    expect(detect([bash("cd /tmp && sed -i '' 's/a/b/' hooks/x.sh", { cwd: "/w/app" }), bash("git push")]).verdict).toBe("na");
+    // The nested checkout's own list applies: its hooks folder, not the parent's auth file.
+    expect(detect([edit("/w/app/docs/src/auth.rs"), bash("git push")]).verdict).toBe("na");
+    expect(detect([edit("/w/app/docs/hooks/x.sh"), bash("git push")]).hits[0].files).toEqual(["o/app-docs:hooks/x.sh"]);
+  });
+
+  test("is na without a pushed high-impact edit", () => {
+    expect(detect([edit("/w/app/README.md"), bash("git push")]).verdict).toBe("na");
+    expect(detect([edit("/w/app/hooks/pre.sh")]).verdict).toBe("na");
+    expect(detect([edit("/elsewhere/hooks/pre.sh"), bash("git push")]).verdict).toBe("na");
+    expect(detect([edit("/w/app/hooks/pre.sh"), bash("git push --dry-run origin feature")]).verdict).toBe("na");
+    expect(detect([edit("/w/app/hooks/pre.sh", { ok: false }), bash("git push")]).verdict).toBe("na");
+    // Files git ignores are never pushed.
+    expect(detect([edit("/w/app/hooks/local.sh"), bash("git push")], {}, ({ path }) => path === "hooks/local.sh").verdict).toBe("na");
+  });
+
+  test("docs and tests in a default folder are ignored, unless the repository lists them", () => {
+    const lists = { default: ["**/hooks/**"], ignore: ["**/*.md", "**/*.test.*"], repos: { "github.com/o/app": ["hooks/README.md"] } };
+    const check = highImpactMatcher(lists);
+    expect(check({ repo: "github.com/o/app", path: "hooks/guard.js" })).toBe(true);
+    expect(check({ repo: "github.com/o/app", path: "hooks/guard.test.js" })).toBe(false);
+    expect(check({ repo: "github.com/o/web", path: "hooks/README.md" })).toBe(false);
+    expect(check({ repo: "github.com/o/app", path: "hooks/README.md" })).toBe(true);
+  });
+
+  test("locate maps checkouts and both kinds of worktree, and nothing else", () => {
+    const app = { repo: "github.com/o/app", root: "/w/app" };
+    const docs = { repo: "github.com/o/app-docs", root: "/w/app/docs" };
+    expect(locate("/w/app/src/main.rs", checkouts)).toEqual({ ...app, path: "src/main.rs" });
+    expect(locate("/w/app/docs/index.md", checkouts)).toEqual({ ...docs, path: "index.md" });
+    expect(locate("/w/app/.claude/worktrees/x/src/main.rs", checkouts)).toEqual({ ...app, path: "src/main.rs" });
+    expect(locate("/u/.t3/worktrees/docs/t3-1/index.md", checkouts)).toEqual({ ...docs, path: "index.md" });
+    expect(locate("/u/.t3/worktrees/app/t3-1/.claude/worktrees/a/src/main.rs", checkouts)).toEqual({ ...app, path: "src/main.rs" });
+    expect(locate("/w/application/x", checkouts)).toBeNull();
+    expect(locate("/u/.t3/worktrees/other/t3-1/x", checkouts)).toBeNull();
+  });
+
+  test("resolves symbolic links, and asks git which files it ignores", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "review-skipped-")));
+    cleanup.push(dir);
+    const repo = join(dir, "repo");
+    mkdirSync(join(repo, "claude", "hooks"), { recursive: true });
+    symlinkSync(join(repo, "claude"), join(dir, "link"));
+    expect(realFile(join(dir, "link", "hooks", "new", "x.sh"))).toBe(join(repo, "claude", "hooks", "new", "x.sh"));
+    expect(realFile("/w/app/x")).toBe("/w/app/x");
+
+    expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+    writeFileSync(join(repo, ".gitignore"), "/claude/hooks/local.sh\n");
+    expect(gitIgnored({ root: repo, path: "claude/hooks/local.sh" })).toBe(true);
+    expect(gitIgnored({ root: repo, path: "claude/hooks/guard.sh" })).toBe(false);
+    expect(gitIgnored({ root: join(dir, "gone"), path: "x" })).toBe(false);
+
+    const own = [{ repo: "github.com/o/repo", root: repo }];
+    const result = reviewSkipped(actions([edit(join(dir, "link", "hooks", "guard.sh")), edit(join(dir, "link", "hooks", "local.sh")), bash("git push")]), { matcher, checkouts: own, ignored: gitIgnored });
+    expect(result.hits[0].files).toEqual(["o/repo:claude/hooks/guard.sh"]);
+  });
+
+  test("reads the board's checkouts and checks the lists", () => {
+    const home = mkdtempSync(join(tmpdir(), "board-home-"));
+    cleanup.push(home);
+    writeFileSync(join(home, "config.toml"), 'server = "https://board"\n\n[projects]\n"github.com/O/App" = "/w/app/"\n"github.com/o/app-docs" = "/w/app/docs"\n');
+    expect(boardCheckouts({ BOARD_HOME: home })).toEqual([
+      { repo: "github.com/o/app-docs", root: "/w/app/docs" },
+      { repo: "github.com/o/app", root: "/w/app" },
+    ]);
+    expect(boardCheckouts({ BOARD_HOME: join(home, "missing") })).toEqual([]);
+
+    const lists = loadHighImpact(HIGH_IMPACT_FILE);
+    expect(lists.default).toContain(".github/workflows/**");
+    expect(lists.repos["github.com/syz51/dotfiles"]).toContain("claude/CLAUDE.md");
+    writeFileSync(join(home, "bad.toml"), 'default = ["a"]\n[repos."x"]\npaths = "b"\n');
+    expect(() => loadHighImpact(join(home, "bad.toml"))).toThrow('repos."x".paths must be a list of globs');
+  });
 });

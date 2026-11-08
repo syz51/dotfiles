@@ -5,10 +5,12 @@
 // the rule is about. They are heuristics over literal command text: a command built at
 // run time, or a message body read from a file, is invisible to them.
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { mayInvoke } from "../../tests/lib/command.js";
 import { readFilesWithDeadline } from "../lib/probe.js";
-import { readRecords, TEMP_DIRS } from "../lib/transcripts.js";
+import { isCodeReview, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
+import { boardCheckouts, gitIgnored, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
 const EVIDENCE = 300;
 const clip = (text, max = EVIDENCE) => {
@@ -54,7 +56,7 @@ export function sessionActions(session, records = sessionRecords(session)) {
         for (const block of content)
           if (block?.type === "tool_use" && !seen.has(block.id)) {
             seen.add(block.id);
-            calls.push({ id: block.id, name: block.name, input: block.input ?? {}, at: record.timestamp ?? null, gitBranch: record.gitBranch ?? null, agent, ok: results.get(block.id) ?? null });
+            calls.push({ id: block.id, name: block.name, input: block.input ?? {}, at: record.timestamp ?? null, gitBranch: record.gitBranch ?? null, cwd: record.cwd ?? null, agent, ok: results.get(block.id) ?? null });
           }
       } else if (agent === null && record.type === "user" && !record.isSidechain && typeof content === "string") {
         const name = COMMAND.exec(content)?.[1];
@@ -298,18 +300,30 @@ function unwrap(list, depth) {
 const GIT_GLOBAL_WITH_VALUE = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
 const PUSH_WITH_VALUE = new Set(["-o", "--push-option", "--repo", "--receive-pack", "--exec"]);
 
-// Arguments of each `git push` in a command.
-export function gitPushes(command) {
-  const pushes = [];
-  for (const words of simpleCommands(command)) {
+// Each push and merge in a command, in order: { kind: "push", args, dir } for a
+// `git push` (dir: its last -C, or null) and { kind: "merge" } for `gh pr merge`.
+// moved: whether a cd or pushd came before it; last: whether it is the final command.
+function pushCommands(command) {
+  const all = simpleCommands(command);
+  const found = [];
+  let moved = false;
+  all.forEach((words, index) => {
     let i = words.findIndex((word) => !/^\w+=/.test(word));
-    if (i < 0 || basename(words[i]) !== "git") continue;
-    i++;
-    while (i < words.length && words[i].startsWith("-")) i += GIT_GLOBAL_WITH_VALUE.has(words[i]) ? 2 : 1;
-    if (words[i] === "push") pushes.push(words.slice(i + 1));
-  }
-  return pushes;
+    if (i < 0) return;
+    const program = basename(words[i]);
+    const at = { moved, last: index === all.length - 1 };
+    if (program === "cd" || program === "pushd") moved = true;
+    else if (program === "gh" && words[i + 1] === "pr" && words[i + 2] === "merge") found.push({ kind: "merge", ...at });
+    if (program !== "git") return;
+    let dir = null;
+    for (i++; i < words.length && words[i].startsWith("-"); i += GIT_GLOBAL_WITH_VALUE.has(words[i]) ? 2 : 1) if (words[i] === "-C") dir = words[i + 1] ?? null;
+    if (words[i] === "push") found.push({ kind: "push", args: words.slice(i + 1), dir, ...at });
+  });
+  return found;
 }
+
+// Arguments of each `git push` in a command.
+export const gitPushes = (command) => pushCommands(command).filter((found) => found.kind === "push").map((found) => found.args);
 
 const PROTECTED = new Set(["main", "master"]);
 
@@ -604,12 +618,113 @@ export function shellFileEdit(actions) {
   return verdictOf(actions.calls.some((call) => EDIT_TOOLS.has(call.name)), hits);
 }
 
+// This device's high-impact lists, board checkouts and git ignore rules, read once per
+// process.
+let reviewContext = null;
+const defaultReviewContext = () => (reviewContext ??= { matcher: highImpactMatcher(loadHighImpact()), checkouts: boardCheckouts(), ignored: gitIgnored });
+
+// A push that sends commits: not a dry run, a branch delete or a tags-only push.
+function sendsCommits(args) {
+  if (args.some((arg) => ["--dry-run", "-n", "--delete", "-d"].includes(arg))) return false;
+  const positional = args.filter((arg, i) => !arg.startsWith("-") && !PUSH_WITH_VALUE.has(args[i - 1]));
+  const refspecs = positional.slice(1);
+  if (refspecs.length && refspecs.every((ref) => ref.startsWith(":"))) return false;
+  return !(args.includes("--tags") && !refspecs.length);
+}
+
+// An absolute path from a path a command names: ~ is the home folder, and a relative
+// path is taken from the call's folder unless the command changed folder first.
+function absolute(path, cwd, moved) {
+  if (typeof path !== "string" || !path) return null;
+  if (path === "~" || path.startsWith("~/")) return join(homedir(), path.slice(2));
+  if (path.startsWith("/")) return path;
+  return cwd && !moved ? join(cwd, path) : null;
+}
+
+const REVIEW_SKILL = /^(?:[\w.-]+:)?code-review$/;
+const REVIEW_COMMAND = /^\/(?:[\w.-]+:)?(?:code-)?review$/;
+const isReview = (call) => isCodeReview(call) || (call.name === "Skill" && REVIEW_SKILL.test(String(call.input.skill)) && call.ok !== false);
+
+// Pushes and merges of high-impact changes with no /code-review: a session edited a
+// file on its repository's high-impact list (high-impact.toml), then pushed or merged
+// with no review started since the first such edit. Edits after the review, such as
+// fixes for its findings, need no second one, and neither do later fixes to files a
+// reviewed push sent. A push settles the edits of the repository its folder belongs to,
+// or every repository's when the folder is unknown; a review counts for every
+// repository. Edits by subagents count, through Bash too; files git ignores do not.
+// Deletes, moves and patches are not seen. na when the session pushed no high-impact edit.
+export function reviewSkipped(actions, context) {
+  const events = [];
+  for (const call of actions.calls) {
+    if (call.name !== "Bash" || typeof call.input.command !== "string") continue;
+    for (const found of pushCommands(call.input.command)) {
+      // A failed command's last part may be the push that failed.
+      if (found.kind === "push" && !sendsCommits(found.args)) continue;
+      if (call.ok === false && found.last) continue;
+      const dir = found.kind === "push" && found.dir ? absolute(found.dir, call.cwd, found.moved) : found.moved ? null : call.cwd;
+      events.push({ kind: "push", at: call.at, call, dir });
+    }
+  }
+  if (!events.length) return verdictOf(false, []);
+
+  const { matcher, checkouts, ignored } = context ?? defaultReviewContext();
+  const repoOf = (dir) => locate(realFile(join(dir, "_")), checkouts)?.repo ?? "";
+  for (const event of events) event.repo = event.dir ? repoOf(event.dir) : null;
+  for (const call of actions.calls) {
+    let files = [];
+    if (EDIT_TOOLS.has(call.name)) {
+      if (call.ok !== false) files = [call.input.file_path ?? call.input.notebook_path];
+    } else if (call.name === "Bash" && typeof call.input.command === "string") {
+      // A failed command may still have made its edits before the part that failed.
+      const moved = simpleCommands(call.input.command).some((words) => ["cd", "pushd"].includes(basename(words[0] ?? "")));
+      files = shellEdits(call.input.command).map((edit) => absolute(edit.file, call.cwd, moved));
+    }
+    const located = files.filter(Boolean).map((file) => locate(realFile(file), checkouts)).filter((file) => file && matcher(file) && !ignored(file));
+    if (located.length) events.push({ kind: "edit", at: call.at, located });
+    if (isReview(call)) events.push({ kind: "review", at: call.at });
+  }
+  for (const command of actions.commands) if (REVIEW_COMMAND.test(command.name)) events.push({ kind: "review", at: command.at });
+  const order = { edit: 0, review: 1, push: 2 };
+  events.sort((a, b) => {
+    const [x, y] = [a.at ?? "", b.at ?? ""];
+    return x < y ? -1 : x > y ? 1 : order[a.kind] - order[b.kind];
+  });
+
+  const hits = [];
+  const pending = new Map();
+  const covered = new Set();
+  let reviewed = false;
+  let applies = false;
+  for (const event of events) {
+    if (event.kind === "edit") {
+      for (const file of event.located) {
+        const key = `${file.repo}\0${file.path}`;
+        if (!covered.has(key)) pending.set(key, file);
+      }
+    } else if (event.kind === "review") reviewed ||= pending.size > 0;
+    else {
+      const settled = [...pending].filter(([, file]) => event.repo === null || file.repo === event.repo);
+      if (!settled.length) continue;
+      applies = true;
+      if (reviewed) for (const [key] of settled) covered.add(key);
+      else {
+        const files = [...new Set(settled.map(([, { repo, path }]) => `${repo.replace(/^github\.com\//, "")}:${path}`))];
+        hits.push(hit(event.call, `pushed ${files.join(", ")} with no /code-review: ${event.call.input.command}`, { files }));
+      }
+      for (const [key] of settled) pending.delete(key);
+      reviewed &&= pending.size > 0;
+    }
+  }
+  return verdictOf(applies, hits);
+}
+
 export const DETECTORS = {
   "package-runner": packageRunner,
   "ai-attribution": aiAttribution,
   "force-push": forcePush,
   "ultra-effort": ultraEffort,
   "shell-file-edit": shellFileEdit,
+  "review-skipped": (actions) => reviewSkipped(actions),
 };
 
 // Every detector's result for a session: { [id]: { verdict, hits } }.

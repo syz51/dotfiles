@@ -223,6 +223,18 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   the Work board rule that nothing still to do stays only in chat, a file or a handoff:
   fails remaining or next steps named without a task or ask id, work written into plan
   or ledger files, and `task_done` with a failing acceptance check; na without a board.
+- [x] Rubric v8 (2026-11-08, board task dotfiles-102): `review-skipped` detector for the
+  Review rule. `scoring/high-impact.toml` lists high-impact path globs: a default list
+  (CI workflows, hooks and guards, settings, installers and deployment, Terraform, Vault,
+  migrations, auth) minus docs and tests, plus each board repository's own paths. A
+  session fails when it pushed or merged an edit on its repository's list with no
+  /code-review started since the first such edit. Files map to repositories through the
+  board client's `[projects]` checkouts and their Claude Code and T3 worktrees, with
+  symbolic links resolved and git-ignored files skipped; a push settles its own
+  repository's edits. Over 30 days to 2026-11-08 it fails 39 of 298 sessions (88 pushes;
+  14 pass, 245 na); agent-board has the most flagged files, then dotfiles, email-agent
+  and vps. Deletes, moves and patches are not seen. The Review rule now says a listed
+  path is always high-impact.
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
