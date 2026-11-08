@@ -514,6 +514,22 @@ describe("work stages", () => {
   });
 });
 
+// Without its own id, an agent may report a skill's guidance problem as `skills`, which
+// routes to codex-skills, the wrong owner.
+describe("in-repo skills' feedback channels", () => {
+  const SKILLS = ["cheat-sheets", "headless-browser", "ui-climb"];
+
+  test.each(SKILLS)("%s ends with a feedback section naming its registered setup id", (id) => {
+    expect(Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id)).toContain(id);
+    const { meta, body } = frontmatter(`claude/skills/${id}/SKILL.md`);
+    expect(meta.name).toBe(id);
+    const feedback = body.slice(body.lastIndexOf("\n## ") + 1);
+    expect(feedback).toMatch(new RegExp(`^## Feedback on this skill\\n\\nReport it with \`feedback\` and \`about\` \`${id}\`\\.`));
+    expect(feedback).toContain(`\`${id}\` and the dotfiles tasks they were routed to`);
+    expect(tracked(`claude/skills/${id}/SKILL.md`)).toBe(true);
+  });
+});
+
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {

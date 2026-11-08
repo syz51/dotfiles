@@ -61,3 +61,9 @@ they are this tool's installation, not task files.
   user elsewhere with an explicit path.
 - Pages served by a dev server need it running first. Start it in the
   background, and stop it afterwards if you started it.
+
+## Feedback on this skill
+
+Report it with `feedback` and `about` `headless-browser`. To review that feedback, read the
+feedback board's items about `headless-browser` and the dotfiles tasks they were routed to,
+then change this file and its pins in `claude/tests/config.test.js` through a dotfiles PR.
