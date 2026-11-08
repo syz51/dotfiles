@@ -126,4 +126,5 @@ jobs:
           uv run --offline --no-project --python 3.13 python -B shell/test-startup-fixes.py -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s t3code/tests -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s disk-alert/tests -v
+          uv run --offline --no-project --python 3.13 python -B -m unittest discover -s cargo/tests -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s config-sync/tests -v
