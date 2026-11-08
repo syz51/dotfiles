@@ -571,6 +571,13 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/rerun the affected checks instead of reviewing again/);
   });
 
+  // The change's paths set the tier, and the review-skipped detector reads the same file
+  // (dotfiles-102).
+  test("Review names the high-impact path lists the detector reads", () => {
+    const review = section("Review");
+    expect(review).toMatch(/A change to a path that `~\/\.claude\/factory\/scoring\/high-impact\.toml` lists for its repository is always high-impact/);
+  });
+
   // factory metrics reads these records to measure review noise (dotfiles-100).
   test("Review records each finding's outcome through ReportFindings", () => {
     const review = section("Review");

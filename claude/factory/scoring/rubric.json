@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -32,6 +32,12 @@
       "kind": "detector",
       "section": "Workflow",
       "description": "Bash edited a file the Edit or Write tool should have: `sed -i`, `perl -pi` or `ruby -i`, echo, printf or a heredoc written into a file by redirect or `tee`, or an inline script that writes files. Temporary folders and devices do not count; na when the session edited no files."
+    },
+    {
+      "id": "review-skipped",
+      "kind": "detector",
+      "section": "Review",
+      "description": "A `git push` or `gh pr merge` carried edits to a path on the repository's high-impact list (claude/factory/scoring/high-impact.toml) with no /code-review started since the first such edit. Fixes after the review need no second one; na when the session pushed no high-impact edit."
     },
     {
       "id": "followed-instructions",

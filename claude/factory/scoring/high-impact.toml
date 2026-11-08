@@ -1,0 +1,70 @@
+# High-impact paths for each repository with a work board. A pushed or merged change
+# that touches one needs a /code-review first (claude/CLAUDE.md, Review); the
+# review-skipped detector flags sessions that pushed such a change without one.
+#
+# Globs match paths relative to the repository root (Bun.Glob syntax). `default`
+# applies to every board repository, minus `ignore`: docs and tests inside a
+# high-impact folder. A repository's `[repos."<repo>"] paths` add to it and always
+# count; a repository without an entry gets the default list. Tune the lists here at
+# any time. A change applies to sessions scored afterwards; to rescore past sessions,
+# bump the version in rubric.json. The repository is public, so name only paths, never
+# hosts, logins or private contents.
+
+default = [
+  # CI and automation that runs with credentials.
+  ".github/workflows/**",
+  ".github/actions/**",
+  # Hooks, guards, settings and permissions.
+  "**/hooks/**",
+  "**/*guard*",
+  "**/settings.json",
+  "**/settings.local.json",
+  "**/permissions*",
+  # Installers, services and deployment.
+  "**/install.*",
+  "**/install/**",
+  "**/*.plist",
+  "**/Dockerfile",
+  "**/docker-compose*.y*ml",
+  "**/compose*.y*ml",
+  "**/deploy/**",
+  # Infrastructure, secrets policy and schema changes.
+  "**/*.tf",
+  "**/*.tfvars",
+  "**/terraform/**",
+  "**/vault/**",
+  "**/migrations/**",
+  # Authentication.
+  "**/auth/**",
+  "**/auth.*",
+]
+
+ignore = [
+  "**/*.md",
+  "**/tests/**",
+  "**/test/**",
+  "**/*.test.*",
+  "**/*_test.*",
+  "**/test_*",
+  "**/evidence/**",
+]
+
+[repos."github.com/syz51/agent-board"]
+paths = [
+  "crates/board-proto/src/api.rs",
+  "crates/board-server/src/api.rs",
+  "crates/board-server/src/web.rs",
+  "crates/board/src/hook.rs",
+  "crates/board/src/daemon.rs",
+  "docs/API.md",
+]
+
+[repos."github.com/syz51/dotfiles"]
+paths = [
+  "claude/CLAUDE.md",
+  "claude/agents/**",
+  "claude/marketplace/**",
+  "setups.toml",
+  "config-sync/**",
+  "claude/factory/scoring/high-impact.toml",
+]

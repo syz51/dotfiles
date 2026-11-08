@@ -60,7 +60,7 @@ const calls = () => readFileSync(join(scratch, "log.jsonl"), "utf8").trim().spli
 describe("steps", () => {
   test("proposals are limited to detector dimensions; --no-pr makes them a dry run", () => {
     const propose = steps().find(([name]) => name === "propose")[1];
-    expect(propose.filter((arg, i) => propose[i - 1] === "--dimension").sort()).toEqual(["ai-attribution", "force-push", "package-runner", "shell-file-edit", "ultra-effort"]);
+    expect(propose.filter((arg, i) => propose[i - 1] === "--dimension").sort()).toEqual(["ai-attribution", "force-push", "package-runner", "review-skipped", "shell-file-edit", "ultra-effort"]);
     expect(propose).not.toContain("--dry-run");
     expect(steps({ pr: false }).find(([name]) => name === "propose")[1]).toContain("--dry-run");
     // The board step writes the snapshot that the proposals read.
