@@ -17,7 +17,8 @@
 //   task          a success result with text FAKE_CLAUDE_TEXT; when FAKE_CLAUDE_WRITE is
 //                 set to "path=content", writes that file in the working folder first
 //   script        runs the module at FAKE_CLAUDE_SCRIPT with { args, cwd, stdin, emit }
-// FAKE_CLAUDE_COST sets total_cost_usd (default 0.01). With --session-id and without
+// FAKE_CLAUDE_COST sets total_cost_usd (default 0.01). The init and result events carry
+// the session id: --session-id, else a random one. With --session-id and without
 // --no-session-persistence, the session's assistant messages are saved as Claude Code
 // saves them, under CLAUDE_CONFIG_DIR/projects (tests pass a scratch one); each
 // main-thread message records FAKE_CLAUDE_EFFORT or else the --effort value.
@@ -45,7 +46,7 @@ const model = option("--model") ?? "claude-opus-5-5";
 const sessionId = option("--session-id") || randomUUID();
 const emitted = [];
 const emit = (event) => {
-  if (event.type === "system" && event.subtype === "init") event = { session_id: sessionId, ...event };
+  if ((event.type === "system" && event.subtype === "init") || event.type === "result") event = { session_id: sessionId, ...event };
   emitted.push(event);
   console.log(JSON.stringify(event));
 };
