@@ -333,6 +333,37 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     }
   }), 600_000);
 
+  // A T3 delegate worktree starts from the parent's commit, which can be a stale local main.
+  // stale-base.js fetches origin's default branch at session start and warns the session to
+  // fast-forward. Here origin is two commits ahead and the checkout never fetched them, so the
+  // commit lands on origin's tip only if the warning reached the model and it acted on it.
+  test("a session in a worktree cut from a stale main commits on origin's tip", () => suite.scenario("stale worktree base", async ({ fixture, session }) => {
+    const { remote, work } = publishedRepo(fixture, { "notes.txt": "first\n" });
+    const stale = git(work, "rev-parse", "HEAD");
+    for (const line of ["second", "third"]) {
+      writeFileSync(join(work, "notes.txt"), `${readFileSync(join(work, "notes.txt"), "utf8")}${line}\n`);
+      git(work, "commit", "--quiet", "-am", line);
+    }
+    git(work, "push", "--quiet", "origin", "main");
+    const tip = git(remote, "rev-parse", "main");
+    // The parent never fetched them: its main and origin/main stay on the first commit.
+    git(work, "reset", "--quiet", "--hard", stale);
+    git(work, "update-ref", "refs/remotes/origin/main", stale);
+    const child = fixture({}, "child");
+    git(work, "worktree", "add", "--quiet", "-b", "child", child, "main");
+    const run = await session({
+      cwd: child,
+      prompt: "Append the line `done` to notes.txt and commit it on this branch with the message `Record done`. Do not push.",
+    });
+    const warnings = run.events.filter((event) => event.type === "system" && event.subtype === "hook_response"
+      && event.hook_event === "SessionStart" && event.stdout?.includes("This worktree starts behind"));
+    expect(warnings, "stale-base.js did not warn the session").toHaveLength(1);
+    expect(warnings[0].stdout).toContain(`2 commit(s) behind origin/main (${tip.slice(0, 12)})`);
+    expect(git(child, "log", "-1", "--format=%s")).toBe("Record done");
+    expect(git(child, "rev-parse", "HEAD^"), "the commit is not on origin's tip").toBe(tip);
+    expect(readFileSync(join(child, "notes.txt"), "utf8")).toBe("first\nsecond\nthird\ndone\n");
+  }), 400_000);
+
   // The Review rule on background review: the session hands the review to one background
   // agent on its own model, in a worktree, with the diff pinned to the commit's SHA. The
   // follow-up arrives as soon as the first turn ends, as a person typing mid-review: the

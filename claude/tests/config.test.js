@@ -124,6 +124,14 @@ describe("global instructions", () => {
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
     expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
+
+  // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
+  // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
+  // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
+  // T3 tools.
+  test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
+    expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
+  });
 });
 
 describe("settings", () => {
