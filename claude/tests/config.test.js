@@ -176,6 +176,15 @@ describe("settings", () => {
     expect(tracked("claude/hooks/freshen-base.js")).toBe(true);
   });
 
+  // T3's delegate_task and `claude --worktree` cut worktrees without a tool call, so
+  // freshen-base never runs for them (board-feedback-392); the session is warned at start.
+  test("a session that starts in a worktree behind origin's default branch is warned", () => {
+    const groups = settings.hooks.SessionStart.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/stale-base.js")));
+    expect(groups.map((group) => group.matcher)).toEqual(["startup"]);
+    expect(groups[0].hooks[0].timeout).toBeLessThanOrEqual(10);
+    expect(tracked("claude/hooks/stale-base.js")).toBe(true);
+  });
+
   // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
   // signs in only on claude.ai, so it loads only through claude.ai connectors.
   test("claude.ai connectors load, so the Gmail connector is available", () => {

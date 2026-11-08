@@ -249,6 +249,12 @@ its remote, so the worktree does not start on stale code. It leaves any other br
 alone, tells Claude when it fast-forwarded or why it did not (including a failed fetch),
 and never blocks the call. Its fetch never prompts for credentials, and parallel calls
 take turns on a lock in the repository's git folder, so one fetches for all of them.
+Worktrees cut without a tool call, such as T3's `delegate_task` worktrees and
+`claude --worktree` sessions, get a check at session start instead.
+`claude/hooks/stale-base.js` fetches origin's default branch with a 4-second limit. It
+warns Claude to fast-forward when HEAD has no commits of its own and is behind that
+branch. It never changes the worktree. It stays quiet in a main checkout, on a branch
+with its own commits, and offline. It adds about 1 second to a worktree session's start.
 Do not replace an existing tool home without backing up its local data.
 
 Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
