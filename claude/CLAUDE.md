@@ -75,6 +75,7 @@
 ## Basic safeguards
 
 - Destructive actions, production changes, and external writes or communications require authorization. Ask if it has not already been granted; `sudo` alone is not destructive.
+- You are authorized to merge your own pull requests in my repositories without asking, once the required checks pass, the Review section's findings are handled and the branch is current with its base; to make it current, merge the base into it and push, or turn on auto-merge. Use the repository's usual merge method, and never bypass branch protection. Then do the after-merge steps the pull request documents on this machine. Ask first when the merge deploys to production or the pull request belongs to someone else.
 - Preserve unrelated work and existing safeguards. Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change.
 - Do not expose secrets or commit credentials.
 - Preserve pushed history unless I authorize rewriting it. When authorized, use an explicit expected-SHA `--force-with-lease`; never force-push a default branch or someone else's branch.

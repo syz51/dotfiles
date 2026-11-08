@@ -417,6 +417,16 @@ describe("work board", () => {
     for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/List work you found .*, for the parent to file\.$/m);
   });
 
+  // Agents stopped at "ask the user to merge" on ready pull requests. On 2026-11-08 the
+  // user gave standing permission to merge them, within these conditions.
+  test("agents merge their own ready pull requests without asking", () => {
+    const rule = section("Basic safeguards");
+    expect(rule).toMatch(/You are authorized to merge your own pull requests in my repositories without asking, once the required checks pass, the Review section's findings are handled and the branch is current with its base/);
+    expect(rule).toMatch(/never bypass branch protection/);
+    expect(rule).toMatch(/Then do the after-merge steps the pull request documents on this machine/);
+    expect(rule).toMatch(/Ask first when the merge deploys to production or the pull request belongs to someone else/);
+  });
+
   // Asks sent the user to look up what memory, the board or a repository already held,
   // and different threads asked the same question.
   test("an ask comes after searching and carries what was found", () => {
