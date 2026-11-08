@@ -106,7 +106,8 @@ const covers = (outer, inner) => outer.x <= inner.x && outer.y <= inner.y
  *   localized name, when the hit-test reaches another app through it. The window that then
  *   decides must belong to the app the hit-test found, or no app is chosen.
  * Every other window decides, including the Dock's tiles, menus and Mission Control, a failed
- * hit-test, and screencaptureui, whose buttons take the click.
+ * hit-test, and screencaptureui, whose buttons take the click. A deciding window of a process
+ * with no running app is refused with a ToolError.
  */
 export function chooseApp({ windows, hitPid, dockLevel, displays, frontmost, finder }) {
   let passedDock = false;
@@ -117,7 +118,9 @@ export function chooseApp({ windows, hitPid, dockLevel, displays, frontmost, fin
       if (window.name === "Menubar") return decide(window, frontmost);
       continue;
     }
-    if (!window.app) continue;
+    // Refused here, never sent to check(): appKey falls back to the name, which a process
+    // chooses, so a window named like an approved app would pass the approval lookup.
+    if (!window.app) throw new ToolError(`A window of ${window.owner || "an unnamed process"} (pid ${window.pid ?? "unknown"}) is at the point, and it is not an app; nothing was done.`);
     if (window.app.bundleId === DOCK && window.layer === dockLevel
       && displays.some((display) => covers(window.bounds, display))
       && Number.isInteger(hitPid) && hitPid !== window.pid) {

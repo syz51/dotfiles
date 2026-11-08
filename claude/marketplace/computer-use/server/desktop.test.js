@@ -130,8 +130,6 @@ describe("the app under the pointer", () => {
   test("past the Dock's layer, the deciding window must belong to the app the hit-test found", () => {
     // The hit-test found an app whose window is not in the list, or is one the loop passes over.
     expect(chooseApp(scene([dockLayer(), helium], 77))).toBeNull();
-    const appless = { owner: "SomeService", name: "", layer: 0, alpha: 1, bounds: { x: 0, y: 30, width: 400, height: 300 }, pid: 77, app: null };
-    expect(chooseApp(scene([dockLayer(), appless, helium], 77))).toBeNull();
     // The bare desktop past the Dock's layer is Finder's only when the hit-test says so.
     expect(chooseApp(scene([dockLayer()], FINDER.pid))).toBe(FINDER);
     expect(chooseApp(scene([dockLayer()], HELIUM.pid))).toBeNull();
@@ -156,6 +154,21 @@ describe("the app under the pointer", () => {
     expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000 }), helium], HELIUM.pid))).toBe(SCREENCAPTURE);
     expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000, alpha: 0.2 }), helium], HELIUM.pid))).toBe(SCREENCAPTURE);
     expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000, alpha: 0 }), helium], HELIUM.pid))).toBe(HELIUM);
+  });
+
+  // A visible window of a process with no running app, such as a service panel.
+  const appless = (overrides = {}) =>
+    ({ owner: "SomeService", name: "", layer: 0, alpha: 1, bounds: { x: 0, y: 30, width: 400, height: 300 }, pid: 77, app: null, ...overrides });
+
+  test("a visible window of a process that is not an app is refused, naming its owner and pid", () => {
+    const refusal = "A window of SomeService (pid 77) is at the point, and it is not an app; nothing was done.";
+    expect(() => chooseApp(scene([appless(), helium], HELIUM.pid))).toThrow(refusal);
+    // Past the Dock's layer too, whatever the hit-test found.
+    expect(() => chooseApp(scene([dockLayer(), appless(), helium], 77))).toThrow(refusal);
+    expect(() => chooseApp(scene([dockLayer(), appless(), helium], HELIUM.pid))).toThrow(refusal);
+    expect(() => chooseApp(scene([appless({ owner: "", pid: null })]))).toThrow("A window of an unnamed process (pid unknown)");
+    // An invisible one is passed over.
+    expect(chooseApp(scene([appless({ alpha: 0 }), helium]))).toBe(HELIUM);
   });
 
   test("the menu bar is the frontmost app's and the bare desktop is Finder's", () => {
@@ -275,6 +288,20 @@ describe("session", () => {
     expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Chase is refused: it is a finance app.");
     under = null;
     expect((await mac.call("scroll", { x: 10, y: 10, direction: "down" })).text).toBe("No app found under the pointer; nothing was done.");
+    expect(mac.actions).toEqual([]);
+  });
+
+  test("a window that is not an app is refused even when its owner is named like an approved app", async () => {
+    let owner;
+    const impostor = () => ({ owner, name: "", layer: 0, alpha: 1, bounds: { x: 0, y: 0, width: 400, height: 300 }, pid: 66, app: null });
+    const mac = fakeMac({ under: () => scene([impostor(), win(SAFARI)]) });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    await mac.call("screenshot", {});
+    for (owner of ["Safari", "com.apple.Safari", "safari"]) {
+      const result = await mac.call("click", { x: 10, y: 10 });
+      expect(result.error).toBe(true);
+      expect(result.text).toBe(`A window of ${owner} (pid 66) is at the point, and it is not an app; nothing was done.`);
+    }
     expect(mac.actions).toEqual([]);
   });
 
