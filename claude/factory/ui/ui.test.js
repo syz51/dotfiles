@@ -501,6 +501,10 @@ describe("rounds", () => {
     const tied = (round, lowest, shortfall) => ({ round, stage: "judges", verdicts: [{ judge: "s", pass: false, lowest, shortfall, underCount: 2, gain: 0.9, gainBar: 0.5, referenceMargin: null }] });
     expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 2), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)])).toMatchObject({ plateau: false, metrics: { lowest: { moved: false }, shortfall: { before: 2, recent: 1.5, moved: true } } });
     expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 1.5), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)]).plateau).toBe(true);
+    // movedAt: the latest round that beat every earlier one by more than the noise.
+    expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 1.5), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)]).movedAt).toBe(2);
+    expect(at(8.5, [low(1, 0.2, 7), low(2, 0.3, 7.5), { round: 3, stage: "gates", verdicts: [] }, low(4, 0.35, 7.55), low(5, 0.4, 7.5), low(6, 0.4, 7.5)]).movedAt).toBe(2);
+    expect(at(8.5, [low(1, 0.2, 7.5), low(2, 0.3, 7.5), low(3, 0.35, 7.5)]).movedAt).toBeNull();
   });
 
   test("a plateau follows the judge that binds, not only the first", () => {
@@ -815,6 +819,42 @@ button { font: inherit; padding: 8px 16px; }
     text = await status();
     expect(text).toContain("Structural round 4 did not move it either: stop the climb");
     expect(text).not.toContain("The bar is 2.00 away");
+    // Three judged rounds later nothing has moved since: the stop advice holds.
+    for (let index = 0; index < 3; index++) expect((await round()).code).toBe(1);
+    text = await status();
+    expect(text).toContain("Structural round 4 did not move it either: stop the climb");
+    expect(text).not.toContain("The bar is 2.00 away");
+    expect(text).not.toContain("Calibration warned");
+  }, 300_000);
+
+  test("a structural round that moved a metric earns a new one at the next plateau", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("moved.json", JSON.stringify({ ...config, name: "moved", judges: [{ model: "claude-sonnet-5-5", samples: 1 }], pass: { ...config.pass, min: 8 } }));
+    write("web/home.html", page("This week", "<p>Moved</p>"));
+    await commit("moved");
+    const runs = join(state, "ui", "moved", "runs");
+    const round = (candidate, ...flags) => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", ...flags, "--config", join(repo, "moved.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: runs, FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate, references: 8 }) },
+    });
+    const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "moved.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
+    for (let index = 0; index < 3; index++) expect((await round(6)).code).toBe(1);
+    expect(await status()).toContain("The bar is 2.00 away with");
+    // The structural round lifts the lowest category from 6 to 7; two more rounds stay there.
+    expect((await round(7, "--structural")).code).toBe(1);
+    for (let index = 0; index < 2; index++) expect((await round(7)).code).toBe(1);
+    let text = await status();
+    expect(text).toContain("Plateau (claude-sonnet-5-5@medium)");
+    expect(text).toContain("The bar is 1.00 away with");
+    expect(text).not.toContain("Structural round 4");
+    // A second structural round that moves nothing stops the climb, with the calibration's bar-reach warning.
+    expect((await round(7, "--structural")).code).toBe(1);
+    const [runId] = readdirSync(runs);
+    writeFileSync(join(runs, runId, "calibration.json"), JSON.stringify({ judges: { "claude-sonnet-5-5@medium": { pass: false, barReach: { warnings: ["the bar 8 is above the best reference in hierarchy (7.00)"] } } } }));
+    text = await status();
+    expect(text).toContain("Structural round 7 did not move it either: stop the climb");
+    expect(text).toContain("Calibration warned that the bar 8 may be out of the judges' range: say so in that note too.\n- claude-sonnet-5-5@medium: the bar 8 is above the best reference in hierarchy (7.00).");
+    expect(text).not.toContain("The bar is 1.00 away");
   }, 300_000);
 
   test("stops before spending past the run's budget", async () => {
