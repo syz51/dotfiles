@@ -26,9 +26,9 @@ Runs the detectors on every eligible session and the judge on a sample of them.
                       every named session is judged, whatever --sample says
   --retry-errors      judge sessions whose judge call already failed twice for this
                       transcript and rubric
-  --model MODEL       judge model (default claude-sonnet-5-5)
+  --model MODEL       judge model (default claude-opus-5-5)
   --effort LEVEL      judge effort (default medium)
-  --budget-usd N      budget per judge call (default 0.40)
+  --budget-usd N      budget per judge call (default 0.80)
   --max-total-usd N   stop before total judge spending could exceed this (default 4)
   --dry-run           print what would be scored and the digest sizes; call nothing
   --help`;
@@ -182,9 +182,9 @@ function parseOptions(argv) {
       sample: { type: "string", default: "8" },
       days: { type: "string", default: "14" },
       session: { type: "string", multiple: true, default: [] },
-      model: { type: "string", default: "claude-sonnet-5-5" },
+      model: { type: "string", default: "claude-opus-5-5" },
       effort: { type: "string", default: "medium" },
-      "budget-usd": { type: "string", default: "0.40" },
+      "budget-usd": { type: "string", default: "0.80" },
       "max-total-usd": { type: "string", default: "4" },
       "retry-errors": { type: "boolean", default: false },
       "dry-run": { type: "boolean", default: false },

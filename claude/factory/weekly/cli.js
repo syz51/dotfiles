@@ -30,7 +30,7 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall
   run        Run metrics, audit, scoring, the board review, the feedback loop report,
              the review of main and proposals once and write a summary
     --no-pr            Dry-run proposals (no push, no PR) and file no review findings
-    --score-usd N      Total judge budget for scoring (default 3)
+    --score-usd N      Total judge budget for scoring (default 4)
     --sample N         Sessions to judge (default 8)
     --notify           Post a macOS notification when done
   install    Write and load the LaunchAgent (Mondays 13:30 local time)
@@ -40,7 +40,7 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall
 
 // The steps of one run: [name, argv for cli.js, how to read its result]. The board step
 // writes the snapshot the proposals read.
-export function steps({ pr = true, scoreUsd = "3", sample = "8", boardSnapshot = join(stateDir(), "board-snapshot.json") } = {}) {
+export function steps({ pr = true, scoreUsd = "4", sample = "8", boardSnapshot = join(stateDir(), "board-snapshot.json") } = {}) {
   const detectors = detectorDimensions().flatMap((dimension) => ["--dimension", dimension.id]);
   return [
     ["metrics", ["metrics", "--days", "7", "--json"], "json"],
@@ -235,7 +235,7 @@ export async function run(argv) {
       strict: true,
       options: {
         "no-pr": { type: "boolean", default: false },
-        "score-usd": { type: "string", default: "3" },
+        "score-usd": { type: "string", default: "4" },
         sample: { type: "string", default: "8" },
         notify: { type: "boolean", default: false },
         print: { type: "boolean", default: false },
