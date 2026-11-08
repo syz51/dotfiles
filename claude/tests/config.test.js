@@ -789,6 +789,13 @@ describe("computer-use plugin", () => {
     expect(settings.enabledPlugins["computer-use@dotfiles"]).toBe(true);
   });
 
+  // GitHub marketplaces do not auto-update by default, so installed plugins stayed at old
+  // commits after merges (dotfiles-281). This makes Claude Code refresh the marketplace and
+  // update its installed plugins on its own.
+  test("the tracked settings auto-update the dotfiles marketplace", () => {
+    expect(settings.extraKnownMarketplaces.dotfiles.autoUpdate).toBe(true);
+  });
+
   test("its only MCP server is desktop, run by bun from the plugin", () => {
     const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
     expect(Object.keys(servers)).toEqual(["desktop"]);
