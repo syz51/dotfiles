@@ -7,8 +7,8 @@ import { findViolation } from "./guard-git-push.js";
 const HOOK = join(import.meta.dir, "guard-git-push.js");
 
 // Checkouts by directory: /repo is on `feature`, /other is on `main`; both push to
-// origin/<branch>, and origin/HEAD is `remoteHead`. `config` is what `git config --get-regexp`
-// prints. `calls` records every query.
+// origin/<branch>, and origin/HEAD is `remoteHead`, or `remoteHead[dir]` when it is an object.
+// `config` is what `git config --get-regexp` prints. `calls` records every query.
 function fakeGit({ branch = "feature", remoteHead = "origin/main", config, calls = [] } = {}) {
   const branches = { "/repo": branch, "/other": "main" };
   return (dir, args) => {
@@ -17,7 +17,7 @@ function fakeGit({ branch = "feature", remoteHead = "origin/main", config, calls
     const query = args.join(" ");
     if (query === "symbolic-ref --quiet --short HEAD") return branches[dir];
     if (query === "rev-parse --abbrev-ref --symbolic-full-name @{push}") return branches[dir] && `origin/${branches[dir]}`;
-    if (query.startsWith("symbolic-ref --quiet --short refs/remotes/")) return remoteHead;
+    if (query.startsWith("symbolic-ref --quiet --short refs/remotes/")) return remoteHead !== null && typeof remoteHead === "object" ? remoteHead[dir] : remoteHead;
     return undefined;
   };
 }
@@ -214,6 +214,28 @@ test("a git query that fails blocks only history rewrites, with the reason", () 
   expect(findViolation("git push --force-with-lease=feature:abc123 origin feature", "/repo", broken)).toContain("ETIMEDOUT");
   expect(findViolation("git push origin feature", "/repo", broken)).toBeUndefined();
   expect(findViolation("git push", "/repo", broken)).toBeUndefined();
+});
+
+describe("a cd in a subshell, a background job or an earlier pipeline part moves no later push", () => {
+  const push = "git push --force-with-lease=trunk:abc origin trunk";
+  const trunkIn = (dir, calls) => fakeGit({ remoteHead: { [dir]: "origin/trunk" }, calls });
+
+  test.each([[`(cd /tmp); ${push}`], [`cd /tmp & ${push}`], [`cd /tmp | true; ${push}`]])(
+    "%s is checked in the session's directory",
+    (command) => {
+      expect(findViolation(command, "/repo", trunkIn("/repo"))).toContain("trunk");
+      expect(findViolation(command, "/repo", trunkIn("/tmp"))).toBeUndefined();
+    },
+  );
+
+  // zsh runs a pipeline's last part in the current shell, so its cd moves later commands
+  test.each([[`(cd /tmp; ${push})`], [`true | cd /tmp; ${push}`]])("%s is checked in /tmp", (command) => {
+    const calls = [];
+    expect(findViolation(command, "/repo", trunkIn("/repo", calls))).toBeUndefined();
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every(([dir]) => dir === "/tmp")).toBe(true);
+    expect(findViolation(command, "/repo", trunkIn("/tmp"))).toContain("trunk");
+  });
 });
 
 test("a word the shell fills in is named in the reason", () => {
