@@ -16,6 +16,27 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+// Tracked top-level directories that no setup owns on purpose.
+const UNOWNED = new Set([
+  ".github", // CI workflows: friction with them goes to the `ci` setup, which covers it by phrase.
+  "LICENSES", // License texts, not a tool an agent uses.
+]);
+
+// Components that no setup's path covers. A component is a tracked top-level directory, or
+// a directory under claude/skills, since each skill there is its own setup. A top-level
+// directory counts as covered when a covers path is it or lies inside it, because setups
+// split claude/ and codex/ by part; a skill needs a covers path that is it or contains it.
+function uncovered(tracked, setups) {
+  const paths = setups.flatMap((entry) => entry.covers.filter(isPath)).map((entry) => entry.replace(/\/+$/, ""));
+  const within = (path, dir) => path === dir || path.startsWith(`${dir}/`);
+  const tops = new Set(tracked.filter((file) => file.includes("/")).map((file) => file.split("/")[0]));
+  const skills = new Set(tracked.filter((file) => /^claude\/skills\/[^/]+\//.test(file)).map((file) => file.split("/").slice(0, 3).join("/")));
+  return [
+    ...[...tops].filter((dir) => !UNOWNED.has(dir) && !paths.some((path) => within(path, dir))),
+    ...[...skills].filter((dir) => !paths.some((path) => within(dir, path))),
+  ].sort();
+}
+
 const setup = (id, extra = {}) => ({ id, title: `The ${id}`, covers: ["a phrase with spaces"], owner: { repo: "github.com/o/r", board: "dotfiles" }, channel: "board", change: "A PR", verify: ["true"], ...extra });
 const valid = () => ({ setup: REQUIRED.map((id) => setup(id)) });
 
@@ -36,6 +57,28 @@ describe("setups", () => {
       channel: "board",
       verify: expect.arrayContaining(["bun test claude/tests/cheatsheets.test.js"]),
     });
+  });
+
+  test("every tracked top-level directory and claude/skills directory has a setup", () => {
+    const root = join(import.meta.dir, "..", "..", "..");
+    const listed = Bun.spawnSync(["git", "ls-files", "-z"], { cwd: root });
+    expect(listed.exitCode).toBe(0);
+    const tracked = listed.stdout.toString().split("\0").filter(Boolean);
+    expect(tracked).toContain("claude/skills/work-stages/SKILL.md");
+    expect(uncovered(tracked, loadSetups())).toEqual([]);
+  });
+
+  test("coverage: a new skill or top-level directory without a setup is reported", () => {
+    const setups = [setup("factory", { covers: ["claude/factory", "a phrase"] }), setup("cheat", { covers: ["claude/skills/cheat-sheets/"] }), setup("whole", { covers: ["tool"] })];
+    const tracked = ["README.md", ".github/workflows/ci.yml", "LICENSES/MIT.txt", "claude/factory/cli.js", "claude/skills/cheat-sheets/SKILL.md", "tool/a/b.sh"];
+    expect(uncovered(tracked, setups)).toEqual([]);
+    // A skill is not covered by a setup covering only a file inside it, nor by a sibling.
+    setups.push(setup("part", { covers: ["claude/skills/new-skill/scripts"] }));
+    expect(uncovered([...tracked, "claude/skills/new-skill/SKILL.md", "claude/skills/cheat-sheets-two/SKILL.md", "fresh/x"], setups))
+      .toEqual(["claude/skills/cheat-sheets-two", "claude/skills/new-skill", "fresh"]);
+    // A setup covering claude/skills covers every skill; files at the top level are not components.
+    setups.push(setup("all", { covers: ["claude/skills"] }));
+    expect(uncovered([...tracked, "claude/skills/new-skill/SKILL.md", "claude/skills/README.md"], setups)).toEqual([]);
   });
 
   test("--check exits 1 on a broken registry and names each problem", async () => {
