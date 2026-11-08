@@ -124,6 +124,14 @@ describe("global instructions", () => {
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
     expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
+
+  // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
+  // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
+  // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
+  // T3 tools.
+  test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
+    expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
+  });
 });
 
 describe("settings", () => {
@@ -511,6 +519,22 @@ describe("work stages", () => {
     expect(body).toMatch(/Before `task_done`, and before ending a turn, file what is still to do as the Work board section says\./);
     expect(body).toMatch(/## Feedback on this skill\n\nReport it with `feedback` and `about` `work-stages`\./);
     expect(tracked("claude/skills/work-stages/SKILL.md")).toBe(true);
+  });
+});
+
+// Without its own id, an agent may report a skill's guidance problem as `skills`, which
+// routes to codex-skills, the wrong owner.
+describe("in-repo skills' feedback channels", () => {
+  const SKILLS = ["cheat-sheets", "headless-browser", "ui-climb"];
+
+  test.each(SKILLS)("%s ends with a feedback section naming its registered setup id", (id) => {
+    expect(Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id)).toContain(id);
+    const { meta, body } = frontmatter(`claude/skills/${id}/SKILL.md`);
+    expect(meta.name).toBe(id);
+    const feedback = body.slice(body.lastIndexOf("\n## ") + 1);
+    expect(feedback).toMatch(new RegExp(`^## Feedback on this skill\\n\\nReport it with \`feedback\` and \`about\` \`${id}\`\\.`));
+    expect(feedback).toContain(`\`${id}\` and the dotfiles tasks they were routed to`);
+    expect(tracked(`claude/skills/${id}/SKILL.md`)).toBe(true);
   });
 });
 
