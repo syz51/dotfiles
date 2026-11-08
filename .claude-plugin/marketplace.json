@@ -6,6 +6,11 @@
       "name": "computer-use",
       "source": "./claude/marketplace/computer-use",
       "description": "Screenshots, mouse and keyboard on this Mac through the desktop MCP server, with per-app approval, a sensitive-app block, one session at a time and a stop panel."
+    },
+    {
+      "name": "lean-prompt",
+      "source": "./claude/marketplace/lean-prompt",
+      "description": "Keeps the Artifact tool's long schema out of every session's fixed prompt: the tool waits behind ToolSearch until a session loads it."
     }
   ]
 }
