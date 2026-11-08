@@ -53,12 +53,14 @@ restore, a fetch failing for over 24 hours, or an instruction link (`~/.claude`,
 `AGENTS.md`) that is a copy or missing. It uses plain `board feedback` where the
 installed CLI lacks `--about`, and a macOS notification when the board is unreachable.
 A live suite run fails when `~/.claude` changes under it. So each live suite holds a lock
-from setup to teardown: `~/.local/state/config-sync/locks/live-suite-<pid>.lock`, holding
-its PID. While a lock's process is alive, a check skips everything: the pull, the
-`settings.json` restore (which rewrites a file the run guards) and the link checks. It
-logs the skip, and the next check after the run does all of them. A lock with a dead PID,
-text that is not a PID, or an age over 3 hours (a reused PID) is stale and ignored, so a
-killed run does not stop pulls.
+from setup to teardown, renewed before each session:
+`~/.local/state/config-sync/locks/live-suite-<pid>-<suite>.lock`, holding its PID. While a
+lock's process is alive, a check skips everything: the pull, the `settings.json` restore
+(which rewrites a file the run guards) and the link checks. It looks again after the
+fetch, which can take minutes. It logs the skip, and the next check after the run does
+all of them. A lock that cannot be read, with text that is not a PID, a dead PID, or an
+age over 3 hours (a reused PID) is stale, and the check removes it, so a killed run does
+not stop pulls.
 State is in `~/.local/state/config-sync/state.json`, each pull, restore, report or skip
 adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
 Install it on each Mac and check it:
@@ -878,9 +880,9 @@ in CI:
   ends, a real finding recorded as no change needed, and a finding without a category
   also fail. When `~/.claude` links to another checkout, the three location checks
   are skipped with one notice and the other tests still run; from the linked checkout
-  they run without it. Each suite holds config-sync's lock during its session and removes
-  it at teardown, also after a failed session. Suites in one process share one lock file
-  until the last one ends.
+  they run without it. Each suite holds its own config-sync lock during its session,
+  renews it when held again, and removes only its own at teardown, also after a failed
+  session.
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.
@@ -889,8 +891,9 @@ in CI:
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
 package installs and web access, and removes its folders and session entries
-afterwards. Each suite holds config-sync's lock until teardown ends, so config-sync does
-not fast-forward the installed checkout under the run. A session's background task can outlive it and write to the root, its
+afterwards. Each suite, including the factory's sandbox suite, holds a config-sync lock
+until teardown ends, so config-sync does not fast-forward the installed checkout under
+the run. A session's background task can outlive it and write to the root, its
 `TMPDIR`. So teardown first waits up to 60 seconds (`CLAUDE_LIVE_SETTLE_MS`) for every
 process the sessions started to exit, then removes the root. Processes still running
 then are killed, and the suite fails with the root's path. Every session passes an explicit `--model` and `--effort`. Behavioral

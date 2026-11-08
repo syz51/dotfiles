@@ -2,7 +2,7 @@
 // lib/fake-claude.js in a synthetic HOME and checks that failures fail, a clean run
 // passes, and cleanup removes the sessions' own entries but nothing else.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configuredEffort, holdConfigSync, toolDirectories } from "./lib/live.js";
@@ -89,30 +89,35 @@ const output = (run) => run.stdout + run.stderr;
 describe("config-sync lock", () => {
   const locks = () => join(home, ".local", "state", "config-sync", "locks");
 
-  test("holds one file per process with its PID, written whole, until released", () => {
-    const releaseA = holdConfigSync(locks(), 111);
-    const releaseB = holdConfigSync(locks(), 222);
-    expect(readdirSync(locks()).sort()).toEqual(["live-suite-111.lock", "live-suite-222.lock"]);
-    expect(readFileSync(join(locks(), "live-suite-111.lock"), "utf8")).toBe("111\n");
+  test("holds one file per suite and process with its PID, renewed when held again, until released", () => {
+    const dir = locks();
+    const releaseA = holdConfigSync("a", { dir, pid: 111 });
+    const releaseB = holdConfigSync("b", { dir, pid: 111 });
+    const releaseOther = holdConfigSync("a", { dir, pid: 222 });
+    expect(readdirSync(dir).sort()).toEqual(["live-suite-111-a.lock", "live-suite-111-b.lock", "live-suite-222-a.lock"]);
+    expect(readFileSync(join(dir, "live-suite-111-a.lock"), "utf8")).toBe("111\n");
+    const lockA = join(dir, "live-suite-111-a.lock");
+    utimesSync(lockA, new Date(0), new Date(0));
+    holdConfigSync("a", { dir, pid: 111 });
+    expect(statSync(lockA).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
     releaseA();
     releaseA();
-    expect(readdirSync(locks())).toEqual(["live-suite-222.lock"]);
+    expect(readdirSync(dir).sort()).toEqual(["live-suite-111-b.lock", "live-suite-222-a.lock"]);
     releaseB();
-    expect(readdirSync(locks())).toEqual([]);
+    releaseOther();
+    expect(readdirSync(dir)).toEqual([]);
   });
 
-  test("suites in one process share the lock until the last one ends", async () => {
+  test("a suite's teardown releases only its own lock", async () => {
     const script = join(root, "suites.js");
     writeFileSync(script, `
       import { readdirSync } from "node:fs";
       import { liveSuite } from ${JSON.stringify(join(TESTS, "lib", "live.js"))};
-      const locks = () => readdirSync(${JSON.stringify(locks())});
+      const locks = () => readdirSync(${JSON.stringify(locks())}).sort();
       const [a, b] = [liveSuite("a"), liveSuite("b")];
       const seen = [];
       a.setup(); b.setup(); seen.push(locks());
       await a.teardown(); seen.push(locks());
-      await b.teardown(); seen.push(locks());
-      b.setup(); seen.push(locks());
       await b.teardown(); seen.push(locks());
       console.log(JSON.stringify({ pid: process.pid, seen }));
     `);
@@ -120,8 +125,7 @@ describe("config-sync lock", () => {
     const run = await runProcess([process.execPath, script], { cwd: root, env, timeout: 20_000 });
     expect(run.code, output(run)).toBe(0);
     const { pid, seen } = JSON.parse(run.stdout.trim().split("\n").at(-1));
-    const held = [`live-suite-${pid}.lock`];
-    expect(seen).toEqual([held, held, [], held, []]);
+    expect(seen).toEqual([[`live-suite-${pid}-a.lock`, `live-suite-${pid}-b.lock`], [`live-suite-${pid}-b.lock`], []]);
   }, 30_000);
 
   for (const [mode, passes] of [["python-clean", true], ["exit7", false]])
@@ -132,8 +136,8 @@ describe("config-sync lock", () => {
       const held = Object.entries(JSON.parse(readFileSync(seen, "utf8")));
       expect(held).toHaveLength(1);
       const [name, text] = held[0];
-      expect(name).toMatch(/^live-suite-\d+\.lock$/);
-      expect(name).toBe(`live-suite-${text.trim()}.lock`);
+      expect(name).toBe(`live-suite-${text.trim()}-policy.lock`);
+      expect(text).toMatch(/^\d+\n$/);
       expect(readdirSync(locks())).toEqual([]);
     }, 30_000);
 });

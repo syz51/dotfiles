@@ -86,7 +86,9 @@ class Sandbox(unittest.TestCase):
         return git(self.upstream, "rev-parse", "HEAD")
 
     def check(self, runner, now=NOW, board="board"):
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        """Runs a check; what it printed is in self.stdout and self.stderr."""
+        self.stdout, self.stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
             return sync.check(self.repo, self.state, runner, board, now, "mac")
 
     def head(self):
@@ -431,24 +433,35 @@ class LockTests(Sandbox):
         child.wait()
         return child.pid
 
-    def check_output(self, runner):
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-            sync.check(self.repo, self.state, runner, "board", NOW, "mac")
-        return out.getvalue()
-
     def test_a_held_lock_skips_the_pull_and_logs_why(self):
         before = self.head()
         self.advance()
         self.lock(f"{os.getpid()}\n")
         runner = Runner()
-        out = self.check_output(runner)
+        self.check(runner)
         self.assertEqual(self.head(), before)
-        self.assertIn(f"skipped: a live suite run holds live-suite-1.lock (pid {os.getpid()})", out)
+        self.assertIn(f"skipped: a live suite run holds live-suite-1.lock (pid {os.getpid()})", self.stdout.getvalue())
         event = json.loads((self.state / "events.jsonl").read_text())
         self.assertEqual(event["locks"], [f"live-suite-1.lock (pid {os.getpid()})"])
         self.assertNotIn("pulled", event)
         self.assertEqual(self.state_json()["last_check"], NOW.isoformat())
+
+    def test_a_lock_taken_during_the_fetch_skips_the_rest(self):
+        before = self.head()
+        self.advance()
+        test = self
+
+        class LockingRunner(Runner):
+            def __call__(self, args):
+                result = super().__call__(args)
+                if "fetch" in args:
+                    test.lock(f"{os.getpid()}\n")
+                return result
+
+        self.check(LockingRunner())
+        self.assertEqual(self.head(), before)
+        self.assertIn("skipped: a live suite run holds", self.stdout.getvalue())
+        self.assertIsNone(self.state_json()["head"])
 
     def test_a_held_lock_leaves_a_reformat_and_reported_problems_alone(self):
         settings = self.repo / "claude" / "settings.json"
@@ -462,10 +475,16 @@ class LockTests(Sandbox):
         self.check(Runner())
         reported = self.state_json()["reported"]
         settings.write_text('{"b": 2,\n  "a": 1}\n')
-        self.lock(f"{os.getpid()}\n")
+        lock = self.lock(f"{os.getpid()}\n")
         runner = Runner()
         self.check(runner)
         self.assertEqual(settings.read_text(), '{"b": 2,\n  "a": 1}\n')
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state_json()["reported"], reported)
+        # Released: the next check restores the reformat and does not file the same problems again.
+        lock.unlink()
+        self.check(runner)
+        self.assertEqual(settings.read_text(), '{"a": 1, "b": 2}\n')
         self.assertEqual(runner.calls, [])
         self.assertEqual(self.state_json()["reported"], reported)
 
@@ -477,7 +496,14 @@ class LockTests(Sandbox):
         self.check(Runner())
         self.assertEqual(self.head(), target)
 
-    def test_stale_locks_do_not_stop_the_pull(self):
+    def test_a_lock_folder_entry_that_cannot_be_read_is_stale(self):
+        (self.state / "locks" / "folder.lock").mkdir(parents=True)
+        target = self.advance()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+        self.assertIn("could not remove the stale lock", self.stderr.getvalue())
+
+    def test_stale_locks_do_not_stop_the_pull_and_are_removed(self):
         for name, text, age in [
             ("dead", f"{self.dead_pid()}\n", timedelta(minutes=1)),
             ("unparsable", "not a pid\n", timedelta(minutes=1)),
@@ -492,7 +518,7 @@ class LockTests(Sandbox):
                 target = self.advance(name)
                 self.check(Runner())
                 self.assertEqual(self.head(), target)
-                lock.unlink()
+                self.assertFalse(lock.exists())
 
     def test_other_files_in_the_locks_folder_are_not_locks(self):
         self.lock(f"{os.getpid()}\n", ".live-suite-1.tmp")
