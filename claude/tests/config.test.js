@@ -227,6 +227,14 @@ describe("settings", () => {
     expect(new RegExp(groups[0].matcher).test("mcp__board__ask_user")).toBe(true);
     for (const tool of ["Bash", "mcp__board__task_add", "AskUserQuestion"]) expect(new RegExp(groups[0].matcher).test(tool)).toBe(false);
   });
+
+  // guard-asks reads its policy at run time, so a missing or broken file would let every ask through.
+  test("the ask gate's policy file is tracked and valid", () => {
+    expect(tracked("claude/hooks/ask-policy.json")).toBe(true);
+    const policy = JSON.parse(read("claude/hooks/ask-policy.json"));
+    expect(Object.keys(policy.reasons).length).toBeGreaterThan(0);
+    for (const name of policy.action_reasons) expect(Object.keys(policy.reasons)).toContain(name);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in

@@ -246,8 +246,8 @@ open when it cannot tell the repository, such as with `--git-dir` or a directory
 in a variable, and for scripts nested too deeply to parse.
 guard-asks (Claude Code only) checks each board `ask_user` call against
 `claude/hooks/ask-policy.json`, the reasons the Autonomy section of `claude/CLAUDE.md` lets
-agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-me` and
-`security`. An ask
+agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-me`,
+`security` and `intent`. An ask
 must name one as `Reason: <name>`, and an `action` ask, which hands the user a step, must
 name `only-me`. Otherwise the hook refuses the ask and lists what the agent should do
 instead. Edit the JSON file to change the reasons. The `board ask` CLI is not checked.

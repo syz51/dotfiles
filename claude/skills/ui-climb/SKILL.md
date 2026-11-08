@@ -101,7 +101,7 @@ main and the references reach it. With references, it also prints a suggested `p
 that leads the best reference in every category (`pass.references`, at least 0.25 or the
 judges' noise) with `pass.min` at about the best reference's level, both from the
 calibration's own scores. Then put the warning and the suggestion in a note and ask the
-owner (`ask_user`) before round 1, with these options in this order:
+owner (`ask_user`, `Reason: design`) before round 1, with these options in this order:
 
 1. Lead the references: use the suggested `pass` (recommended; judges give it, and it is
    the real goal of beating products of the same kind). Start it with `--new-run`.
@@ -164,7 +164,7 @@ Rules:
 3. Push the branch and open a PR with the climb's commits. Its body has the last `score:`
    line, the rounds table from `$UI status`, what changed and why, the conflicts left
    open, and the report link.
-4. `ask_user` on the task: the result in one line with each judge's lowest score, the PR
+4. `ask_user` on the task (`Reason: design`): the result in one line with each judge's lowest score, the PR
    and the report, with the options Merge, Keep climbing (with notes), Discard. Set the
    task `blocked` until the answer. A design change merges only on the owner's word.
 
