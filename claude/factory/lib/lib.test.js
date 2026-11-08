@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spendSummary } from "../../bin/api-first.js";
 import { projectName } from "../../tests/lib/cleanup.js";
 import { main } from "../cli.js";
 import { API_FIRST, ClaudeCallError, judge, runTask } from "./claude.js";
@@ -433,6 +434,41 @@ describe("claude runner", () => {
     fake("error");
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 429");
     expect(calls()).toHaveLength(1);
+  });
+
+  test("through claude-api, an unsaved call's result cost goes to claude-api's log by session", async () => {
+    // A wrapper named claude-api around the fake, as the default binary is named.
+    const bin = join(scratch, "claude-api");
+    writeFileSync(bin, `#!/bin/sh\nexec "${FAKE}" "$@"\n`);
+    chmodSync(bin, 0o755);
+    const state = join(scratch, "api-state");
+    const log = () => readJsonl(join(state, "decisions.jsonl"));
+    fake("structured", { CLAUDE_FACTORY_BIN: bin, API_FIRST_STATE: state, FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
+    const { events } = await judge({ prompt: "x", schema, model: "m" });
+    expect(calls()[0].args).toContain("--no-session-persistence");
+    const session = events.findLast((event) => event.type === "result").session_id;
+    expect(session).toEqual(expect.any(String));
+    expect(log()).toEqual([{ at: expect.any(String), mode: "cost", session, costUSD: 0.02, source: "result" }]);
+    // claude-api's own line for the run, which had no transcript, gets its cost from it.
+    const entries = [{ at: "2026-11-08T01:00:00.000Z", mode: "api", run: "r1", caller: "factory/cli.js" },
+      { at: "2026-11-08T01:01:00.000Z", mode: "cost", run: "r1", session, costUSD: null }, ...log()];
+    expect(spendSummary(entries).total).toMatchObject({ runs: 1, usd: 0.02, unknown: 0, untracked: 0 });
+
+    // A refused try and its retry each log their own session; so does a task session.
+    rmSync(join(state, "decisions.jsonl"));
+    rmSync(join(scratch, "log.jsonl"));
+    fake("refused", { CLAUDE_FACTORY_BIN: bin, API_FIRST_STATE: state, FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
+    await judge({ prompt: "x", schema, model: "m" });
+    fake("task", { CLAUDE_FACTORY_BIN: bin, API_FIRST_STATE: state, FAKE_CLAUDE_COST: "0.5" });
+    await runTask({ prompt: "x", cwd: scratch });
+    expect(log().map((line) => line.costUSD)).toEqual([0.02, 0.02, 0.5]);
+    expect(new Set(log().map((line) => line.session)).size).toBe(3);
+
+    // Under any other name the binary is not claude-api, and nothing is logged.
+    const other = join(scratch, "other-state");
+    fake("structured", { API_FIRST_STATE: other, FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
+    await judge({ prompt: "x", schema, model: "m" });
+    expect(existsSync(other)).toBe(false);
   });
 
   test("runTask passes the session options and returns the outcome", async () => {

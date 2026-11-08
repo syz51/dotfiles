@@ -59,6 +59,15 @@ describe("config", () => {
     ]);
   });
 
+  test("the skill's template is a valid configuration whose council is Haiku, then one Opus judge", () => {
+    const skill = readFileSync(join(import.meta.dir, "..", "..", "skills", "ui-climb", "SKILL.md"), "utf8");
+    const template = JSON.parse(skill.match(/^```json\n([\s\S]*?)^```$/m)[1]);
+    const config = validateConfig(template, FILE);
+    expect(config.judges.map((judge) => judge.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(skill).toContain("The council is a Haiku judge first and one Opus judge second");
+    expect(skill).toContain("Haiku must pass a round before the Opus judge scores it");
+  });
+
   test.each([
     [{ extra: 1 }, 'unknown field "extra"'],
     [{ version: 2 }, "version must be 1"],
@@ -815,6 +824,40 @@ button { font: inherit; padding: 8px 16px; }
     text = await status();
     expect(text).toContain("Plateau (claude-sonnet-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: lowest category best 7.50 vs 7.50 before");
     expect(text).not.toContain("structural round");
+  }, 300_000);
+
+  test("the skill's council: Haiku judges first, and a round Haiku fails never calls the Opus judge", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("council.json", JSON.stringify({ ...config, name: "council", judges: [{ model: "claude-haiku-5-5", effort: "high", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }] }));
+    write("web/home.html", page("This week", "<p>Council</p>"));
+    await commit("council");
+    const runs = join(state, "ui", "council", "runs");
+    // Opus rates the candidate above the bar 8.5 throughout; Haiku rates it under it until it is told not to.
+    const ui = (args, haiku) => runProcess(["bun", CLI, "ui", ...args, "--config", join(repo, "council.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: runs, FAKE_UI_SCORES: JSON.stringify({ baseline: 7, control: 3, candidate: 9.5, references: 8, models: { "claude-haiku-5-5": { candidate: haiku } } }) },
+    });
+    const models = (before) => calls().slice(before).map((call) => call.model);
+    let before = calls().length;
+    expect((await ui(["calibrate", "--samples", "2"], 8)).code).toBe(0);
+    expect(models(before)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
+    const [runId] = readdirSync(runs);
+    const verdicts = (round) => JSON.parse(readFileSync(join(runs, runId, "rounds", `round-${round}.json`), "utf8")).verdicts.map((v) => [v.judge, v.pass]);
+    // The run's first judged round hears from both judges, though Haiku fails.
+    before = calls().length;
+    expect((await ui(["round"], 8)).code).toBe(1);
+    expect(models(before)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(verdicts(1)).toEqual([["claude-haiku-5-5@high", false], ["claude-opus-5-5@high", true]]);
+    // Later, a round Haiku fails stops there: the Opus judge is not called.
+    before = calls().length;
+    expect((await ui(["round"], 8)).code).toBe(1);
+    expect(models(before)).toEqual(["claude-haiku-5-5"]);
+    expect(verdicts(2)).toEqual([["claude-haiku-5-5@high", false]]);
+    // A round Haiku passes goes on to the Opus judge, and passes when both do.
+    before = calls().length;
+    expect((await ui(["round"], 9.5)).code).toBe(0);
+    expect(models(before)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(verdicts(3)).toEqual([["claude-haiku-5-5@high", true], ["claude-opus-5-5@high", true]]);
   }, 300_000);
 
   test("a structural round is asked for once, far from the bar, and a judge the round's budget cannot cover is skipped", async () => {

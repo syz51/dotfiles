@@ -49,7 +49,7 @@ relative to its folder. Start from:
     { "id": "peer", "title": "A product people admire for this kind of screen", "url": "https://example.com/public-page", "views": ["desktop-light"], "steps": [{ "wait": 1500 }] }
   ],
   "judges": [
-    { "model": "claude-opus-5-5", "effort": "medium", "samples": 2 },
+    { "model": "claude-haiku-5-5", "effort": "high", "samples": 2 },
     { "model": "claude-opus-5-5", "effort": "high", "samples": 2 }
   ],
   "pass": { "min": 8, "gain": 0.5 },
@@ -68,9 +68,10 @@ relative to its folder. Start from:
   `capture`. `pass.references` (optional) also requires every category to beat the best
   reference by that margin; leave it out unless the owner asks for it or picks the
   suggested lead at calibration (below).
-- Judges run in order and a round stops at the first that fails, so put the cheapest
-  first. Until a round has heard from every judge, rounds run them all, so you learn
-  whether they agree.
+- The council is a Haiku judge first and one Opus judge second, as in the template. Use
+  only Opus and Haiku models. Judges run in order and a round stops at the first that
+  fails, so Haiku must pass a round before the Opus judge scores it. Until a round has
+  heard from every judge, rounds run them all, so you learn whether they agree.
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
@@ -89,6 +90,10 @@ not score a deliberately degraded copy of main at least a point lower overall an
 most categories, or whose scores vary by more than a point between calls. Then that
 judge cannot steer the climb: use a stronger model or effort, or better screens, and
 calibrate again. Rounds refuse to run without a passing calibration.
+
+Each judge is calibrated on its own, Haiku too: its own noise and bar reach, against the
+one shared bar. Haiku gates the Opus judge, so a bar-reach warning for Haiku alone means
+Opus may never score a candidate; say so in the ask below.
 
 Calibration also prints a **bar reach** warning when a judge almost never gives the bar:
 the bar is above the best reference by more than twice its noise, or under 5% of its scores of

@@ -6,7 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { logResultCost } from "../../bin/api-first.js";
 import { projectName } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused } from "../../tests/lib/stream.js";
@@ -23,6 +24,14 @@ const quietEnv = (overrides = {}) => childEnv(process.env, {
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   ...overrides,
 });
+
+// claude-api logs an API run's cost from its transcript, which a call with
+// --no-session-persistence does not keep. So when the factory runs claude-api, each
+// attempt's result cost goes to claude-api's log too, keyed by session; the spend summary
+// counts it only for an API run that has no other cost. env is the attempt's environment.
+const logCost = (events, env) => {
+  if (basename(claudeBin()) === "claude-api") logResultCost(resultEvent(events), env);
+};
 
 // A failed call. costUSD is what its stream reported, or null when it never reported a
 // result (then the caller cannot know what it spent and should assume its budget).
@@ -70,15 +79,20 @@ export async function judge({ prompt, content, system, schema, model, effort = "
     // A call the API refused for credit or the key before it did anything runs once more,
     // on the subscription.
     const { result, events, refused } = await retryRefused(async (timeout, { subscription }) => {
+      const env = quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {});
       let result;
       try {
-        result = await runProcess(argv, { cwd, env: quietEnv(subscription ? { API_FIRST_SUBSCRIPTION: "1" } : {}), timeout, input });
+        result = await runProcess(argv, { cwd, env, timeout, input });
       } catch (error) {
         // A deadline, the output bound or a spawn failure: one failed call, not a crash of
         // the caller's loop. The partial stream may still say what it cost.
-        throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events: partialEvents(error.stdout), stderr: (error.stderr ?? "").slice(-2000) });
+        const events = partialEvents(error.stdout);
+        logCost(events, env);
+        throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events, stderr: (error.stderr ?? "").slice(-2000) });
       }
-      return { result, events: eventsOf(result, "Judge call") };
+      const events = eventsOf(result, "Judge call");
+      logCost(events, env);
+      return { result, events };
     }, timeoutMs);
     const spentUSD = refused ? cost(refused.events) : 0;
     for (const event of events) {
@@ -156,9 +170,13 @@ export async function runTask({
         // Running out of time is the task's outcome, not a failed call: the stream so far.
         if (!/^Process timeout/.test(error.message ?? "")) throw error;
         const stdout = error.stdout ?? "";
-        return { result: { code: null, stdout, stderr: error.stderr ?? "", durationMs: timeout }, events: partialEvents(stdout), timedOut: true };
+        const events = partialEvents(stdout);
+        logCost(events, attemptEnv);
+        return { result: { code: null, stdout, stderr: error.stderr ?? "", durationMs: timeout }, events, timedOut: true };
       }
-      return { result, events: eventsOf(result, "Task run") };
+      const events = eventsOf(result, "Task run");
+      logCost(events, attemptEnv);
+      return { result, events };
     }, timeoutMs);
   } finally {
     try {

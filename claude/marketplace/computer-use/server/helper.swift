@@ -107,6 +107,15 @@ func focused() -> [String: Any] {
 // What decides the app under a point, for chooseApp in desktop.js: the visible windows that
 // contain it, front to back, the pid the Accessibility hit-test finds there (null when it
 // fails), the Dock's window level and the display bounds.
+// The Window Server's executable, symlinks resolved as proc_pidpath reports them. A window is
+// the Window Server's by this path, which SIP protects, never by its owner name.
+let windowServerPath = URL(fileURLWithPath: "/System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer").resolvingSymlinksInPath().path
+
+func isWindowServer(_ pid: pid_t) -> Bool {
+  var path = [CChar](repeating: 0, count: 4096)
+  return proc_pidpath(pid, &path, UInt32(path.count)) > 0 && String(cString: path) == windowServerPath
+}
+
 func scene(_ point: CGPoint) -> [String: Any] {
   let rect = { (r: CGRect) -> [String: Any] in ["x": r.origin.x, "y": r.origin.y, "width": r.width, "height": r.height] }
   var windows: [[String: Any]] = []
@@ -121,6 +130,7 @@ func scene(_ point: CGPoint) -> [String: Any] {
       "alpha": window[kCGWindowAlpha as String] as? Double ?? 1,
       "bounds": rect(bounds),
       "pid": pid.map { Int($0) } ?? NSNull(),
+      "windowServer": pid.map(isWindowServer) ?? false,
       "app": pid.flatMap { NSRunningApplication(processIdentifier: $0) }.map(appInfo) ?? NSNull(),
     ])
   }
