@@ -185,11 +185,13 @@ describe("settings", () => {
     expect(seen).toContain("claude/hooks/shell.js");
   });
 
-  // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read
-  // 300K-970K of context on every turn; 56% of two weeks' usage came from requests above 200K.
-  // 300K ran from 2026-11-06; 200K is a trial from 2026-11-08 (SETUP.md has the baseline).
-  test("conversations compact at 200K tokens, not near the 1M window", () => {
+  // A 200K window is a trial from 2026-11-08; SETUP.md gives the reason and the baseline.
+  // A per-model autoCompactWindow (which /autocompact saves) would override it unseen.
+  test("conversations compact against a 200K window, not the 1M one", () => {
     expect(settings.autoCompactWindow).toBe(200000);
+    for (const model of Object.values(settings.modelSettings ?? {})) {
+      expect(model).not.toHaveProperty("autoCompactWindow");
+    }
   });
 
   // This applies to every Claude Code worktree (--worktree, EnterWorktree and subagent
