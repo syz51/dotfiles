@@ -166,17 +166,19 @@ const sessionError = (task) => {
 };
 
 // One repository's review: { board, repo, base, head, commits, recipe, reviewCostUSD,
-// verifyCostUSD, confirmed: [finding + task], rejected: [finding], error }. A failed
+// verifyCostUSD, confirmed: [finding + task], rejected: [finding], skipped, error }. A failed
 // session or board call ends the repository with error set; what it spent is kept.
 export async function reviewRepo({ board, repo }, config, { file = true, now = Date.now(), env = process.env } = {}) {
   const date = new Date(now).toISOString().slice(0, 10);
-  const record = { board, repo, base: null, head: null, commits: null, recipe: null, reviewCostUSD: 0, verifyCostUSD: 0, confirmed: [], rejected: [], error: null };
+  const record = { board, repo, base: null, head: null, commits: null, recipe: null, reviewCostUSD: 0, verifyCostUSD: 0, confirmed: [], rejected: [], skipped: null, error: null };
   const root = realpathSync(mkdtempSync(join(tmpdir(), "claude-factory-review-")));
   const sessionEnv = { CLAUDE_CODE_TMPDIR: root, TMPDIR: root };
   try {
     const dir = join(root, "repo");
     Object.assign(record, await prepare(remoteUrl(repo, env), dir, { branch: config.branch, days: config.days, now }));
-    if (!record.base) return { ...record, error: `${config.branch} has no commit older than ${config.days} days` };
+    // A repository younger than the window would need a review of its whole history, a
+    // different and costlier job; it is skipped until it is old enough.
+    if (!record.base) return { ...record, skipped: `${config.branch} has no commit older than ${config.days} days` };
     if (record.commits === 0) return record;
     const settings = join(root, "settings.json");
     writeFileSync(settings, JSON.stringify(benchSettings()));
@@ -239,6 +241,7 @@ export function summaryLines(result) {
     const cost = usd(repo.reviewCostUSD + repo.verifyCostUSD);
     const range = repo.base && repo.head ? `${repo.base.slice(0, 8)}..${repo.head.slice(0, 8)}, ${repo.commits} commits` : "no range";
     if (repo.error) lines.push(`${repo.repo}: FAILED (${range}, ${cost}): ${repo.error}`);
+    else if (repo.skipped) lines.push(`${repo.repo}: skipped: ${repo.skipped}`);
     else if (repo.commits === 0) lines.push(`${repo.repo}: no commits on main in ${result.days} days`);
     else lines.push(`${repo.repo} (${range}, ${cost}${repo.recipe ? `, ${repo.recipe.split(" → ")[0]}` : ""}): ${repo.confirmed.length} confirmed, ${repo.rejected.length} rejected`);
     for (const finding of repo.confirmed) lines.push(`- Filed ${finding.task ?? "(dry run, not filed)"}: ${finding.title} (${finding.location})`);

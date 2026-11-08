@@ -170,11 +170,12 @@ describe("reviewRepo", () => {
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
   });
 
-  test("a repository younger than the window is an error, not a review of all history", async () => {
+  test("a repository younger than the window is skipped, not failed or reviewed in full", async () => {
     makeRemote("young", [2, 1]);
     const record = await reviewRepo({ board: "dotfiles", repo: "github.com/o/young" }, config(), { now: NOW });
-    expect(record.error).toBe("main has no commit older than 7 days");
+    expect([record.skipped, record.error]).toEqual(["main has no commit older than 7 days", null]);
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
+    expect(summaryLines({ days: 7, costUSD: 0, repos: [record] })[0]).toBe("github.com/o/young: skipped: main has no commit older than 7 days");
   });
 
   test("failures end the repository with the reason and what it spent", async () => {
