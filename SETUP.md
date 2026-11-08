@@ -695,10 +695,17 @@ scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures 
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use
 `claude-haiku-5-5`. Each suite prints its sessions' cost and its total. A full run
-costs about $5.80 and takes about 10 minutes:
+costs about $5.80 and takes about 10 minutes, so run it once before merge:
 
 ```sh
 RUN_CLAUDE_LIVE=1 bun test claude/tests
+```
+
+While a change is in progress, run only the suite files and scenarios it affects. `-t`
+matches a scenario's name:
+
+```sh
+RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks run through uv run"
 ```
 
 - `live.test.js`: a session in `nvim/` loads the global and repository instructions
