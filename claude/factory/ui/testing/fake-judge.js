@@ -2,8 +2,8 @@
 // a real judge sees: the content blocks on stdin and the system prompt file. It tells the
 // designs apart the only honest way a fake can, by matching each image's bytes against
 // the run's captured versions (the newest run under FAKE_UI_RUNS), and scores them from
-// FAKE_UI_SCORES ({ baseline, control, candidate, references }, or broken: true for output
-// that never fits). It appends to FAKE_UI_LEAKS any word in the prompts that would tell a
+// FAKE_UI_SCORES ({ baseline, control, candidate, references }, with models: { model:
+// scores } for one judge's own, or broken: true for output that never fits). It appends to FAKE_UI_LEAKS any word in the prompts that would tell a
 // judge which version is which, and to FAKE_UI_CALLS the version behind each design number.
 import { createHash } from "node:crypto";
 import { appendFileSync, readdirSync, readFileSync } from "node:fs";
@@ -51,7 +51,9 @@ export default async function ({ stdin, emit, option }) {
       designs.set(current.design, entry);
     }
   }
-  const scores = JSON.parse(env.FAKE_UI_SCORES);
+  // models: { "<model>": { candidate: 9 } } overrides the scores for one judge model.
+  const { models = {}, ...shared } = JSON.parse(env.FAKE_UI_SCORES);
+  const scores = { ...shared, ...models[option("--model")] };
   const output = { designs: [], issues: [], strengths: [] };
   // A judge that answers about a design it was not shown, so its output never fits.
   if (scores.broken) output.designs.push({ design: 99, scores: {}, summary: "" });

@@ -30,7 +30,9 @@
 // (2.1.319). So a SessionEnd hook adds the transcript's last two such lines to its report,
 // and the next plan logs the run's cost: the last total, less the one before it when a
 // resumed session carried that one over. A run that keeps no transcript
-// (--no-session-persistence) has no such line, and its cost is logged as unknown.
+// (--no-session-persistence) has no such line, and its cost is logged as unknown. A caller
+// that reads the run's stream, such as the factory, logs the result event's cost by session
+// instead (logResultCost), and the summary fills the unknown cost from it.
 // `bun api-first.js spend` sums the log by caller and day.
 //
 // Variables (named API_FIRST_* because callers strip CLAUDE_* from a child's environment):
@@ -71,6 +73,7 @@ const OWN_AUTH = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_U
 const home = (env) => env.HOME || homedir();
 export const keyFile = (env = process.env) => env.API_FIRST_KEY_FILE || join(home(env), ".local", "share", "codex-skills", "anthropic-api-key");
 export const stateDir = (env = process.env) => env.API_FIRST_STATE || join(env.XDG_STATE_HOME || join(home(env), ".local", "state"), "claude-api");
+export const decisionLog = (env = process.env) => join(stateDir(env), "decisions.jsonl");
 
 const real = (path) => {
   try {
@@ -283,7 +286,7 @@ export function applyReport(state, { input, keyHash, plannedAt, at }) {
 function foldReports(env, keyHash, state, now) {
   const dir = reportsDir(env);
   if (!existsSync(dir)) return state;
-  const log = join(stateDir(env), "decisions.jsonl");
+  const log = decisionLog(env);
   const reports = [];
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
@@ -426,12 +429,31 @@ function waitingCosts(env) {
   return costs;
 }
 
+// Logs what a run cost from the result event of its stream, by session, for a caller that
+// reads the stream. A run that keeps no transcript has no other record of its cost. The
+// line says nothing of how the run was billed; spendSummary counts it only for an API
+// run's session. An event without a session or a cost logs nothing.
+export function logResultCost(event, env = process.env, at = Date.now()) {
+  if (typeof event?.session_id !== "string" || !Number.isFinite(event.total_cost_usd)) return;
+  appendJsonl(decisionLog(env), { at: new Date(at).toISOString(), mode: "cost", session: event.session_id, costUSD: event.total_cost_usd, source: "result" });
+}
+
 // API spend from the decision log's entries: per caller, per day (UTC) and in total, the
 // API runs, the known cost and the runs whose cost is unknown. An unknown cost counts as
 // unknown, never as $0: a run logged before costs were recorded has no run id, one that
-// kept no transcript has a null cost, and one whose report was not folded yet has none.
+// kept no transcript and whose caller logged no result cost has a null cost, and one whose
+// report was not folded yet has none. A result cost (source "result") only fills a run's
+// null cost through the session its report names, so each run counts once. A result cost
+// that no API run's report names is not counted: it may be a subscription run's.
 export function spendSummary(entries, { since = -Infinity } = {}) {
-  const costs = new Map(entries.filter((entry) => entry.mode === "cost").map((entry) => [entry.run, entry.costUSD]));
+  const runCosts = new Map();
+  const resultCosts = new Map();
+  for (const entry of entries)
+    if (entry.mode === "cost") {
+      if (entry.source === "result") resultCosts.set(entry.session, entry.costUSD);
+      else runCosts.set(entry.run, entry);
+    }
+  const costs = new Map([...runCosts].map(([run, line]) => [run, line.costUSD ?? resultCosts.get(line.session) ?? null]));
   const empty = () => ({ runs: 0, usd: 0, unknown: 0 });
   const total = { ...empty(), before: 0, untracked: 0, unreported: 0 };
   const byCaller = new Map();
@@ -490,7 +512,7 @@ export function spend(argv, env = process.env) {
     console.error(`--days must be a whole number above 0\n${SPEND_USAGE}`);
     return 64;
   }
-  const log = join(stateDir(env), "decisions.jsonl");
+  const log = decisionLog(env);
   const since = days === undefined ? -Infinity : Date.now() - days * 86_400_000;
   console.log(spendLines(spendSummary([...readJsonl(log), ...waitingCosts(env)], { since }), log).join("\n"));
   return 0;
@@ -512,7 +534,7 @@ if (import.meta.main) {
   }
   if (result.mode !== "passthrough" || result.reason !== "not print mode") {
     const billed = result.mode === "api" ? { run: result.run, caller: caller() } : {};
-    appendJsonl(join(stateDir(), "decisions.jsonl"), { at: new Date().toISOString(), mode: result.mode, reason: result.reason, cwd: process.cwd(), ...billed });
+    appendJsonl(decisionLog(), { at: new Date().toISOString(), mode: result.mode, reason: result.reason, cwd: process.cwd(), ...billed });
   }
   if (result.mode === "subscription") console.error(`claude-api: running on the subscription (${result.reason})`);
   // Three lines for the shell: the real claude, the mode, the merged settings.

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyReport, caller, callerName, checkCredit, decide, lifetime, MAX_BACKOFF_MS, MAX_DEPTH, mergedSettings, parseReport, plan, readArgs, readSettings,
-  realClaude, runCost, spendLines, spendSummary, TTL_MS,
+  logResultCost, realClaude, runCost, spendLines, spendSummary, TTL_MS,
 } from "../bin/api-first.js";
 
 const WRAPPER = join(import.meta.dir, "..", "bin", "claude-api");
@@ -527,6 +527,24 @@ describe("spend", () => {
     const text = spendLines(summary, "log").join("\n");
     expect(text).toContain("Unknown costs are not counted as $0");
     expect(text).toContain("Total: 5 API runs, known cost $1.7500, 3 unknown (1 logged before costs were recorded, 1 without a transcript to read, 1 not reported yet).");
+  });
+
+  test("a result cost fills a null run cost by session, counts once, and counts nowhere unmatched", () => {
+    const result = (session, costUSD) => ({ at: "2026-11-08T01:20:00.000Z", mode: "cost", session, costUSD, source: "result" });
+    // c3 kept no transcript; the caller logged its result cost by session s3.
+    const filled = spendSummary([...LOG, result("s3", 0.25)]);
+    expect(filled.total).toEqual({ runs: 5, usd: 2, unknown: 2, before: 1, untracked: 0, unreported: 1 });
+    expect(filled.byCaller.find((row) => row.key === "research/masters.py")).toEqual({ key: "research/masters.py", runs: 2, usd: 1.5, unknown: 0 });
+    // b2 has a cost-state cost; its result cost for the same session does not add to it.
+    expect(spendSummary([...LOG, result("s2", 1.25)]).total).toMatchObject({ runs: 5, usd: 1.75, unknown: 3 });
+    // A result cost that no API run's report names, such as a subscription run's, is not
+    // counted, nor is one for d4, whose report is not in yet and so names no session.
+    expect(spendSummary([...LOG, result("s9", 3)]).total).toEqual(spendSummary(LOG).total);
+    // logResultCost writes the line read above; an event without a session or cost writes none.
+    logResultCost({ type: "result", session_id: "s3", total_cost_usd: 0.25 }, env, Date.parse("2026-11-08T01:20:00Z"));
+    logResultCost({ type: "result", session_id: "s5" }, env);
+    logResultCost(undefined, env);
+    expect(loggedModes()).toEqual([result("s3", 0.25)]);
   });
 
   test("the spend command prints the log, with the costs still waiting in reports/", () => {
