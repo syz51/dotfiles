@@ -698,9 +698,12 @@ the real state.
 
 ## Verification
 
-From the repository root, run the focused local suites:
+From the repository root, run the focused local suites. The first line installs Playwright
+and headless Chromium for the `claude/factory/ui` end-to-end tests. Without it, those tests
+skip with a warning. It only downloads what is missing, and git ignores what it installs.
 
 ```sh
+sh claude/skills/headless-browser/scripts/setup.sh
 bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
