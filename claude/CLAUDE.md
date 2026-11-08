@@ -8,6 +8,7 @@
 - Validate unknown inputs at their owning boundary, then pass validated, typed values inward. Do not recheck invariants established by validation, constructors, or trusted internal contracts.
 - Let errors propagate unless this layer can recover, add useful context, or translate them at a boundary. Keep `try`/`catch` narrow; never silently swallow errors.
 - Never turn on fast mode, the `ultrathink` or `ultracode` effort levels, or an `ultra` code review.
+- The Artifact tool is hidden behind ToolSearch. Load it for your own session with `select:Artifact` only when you must publish, read, open or update an artifact, such as when asked for a page or given an artifact link; never turn it on for other sessions.
 
 ## Skills
 

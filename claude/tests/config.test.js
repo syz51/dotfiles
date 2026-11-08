@@ -33,10 +33,14 @@ function section(heading) {
   return match[1];
 }
 
+// These agents never get the claude.ai Gmail and Docs connectors: their instructions and
+// schemas add about 1.5k tokens to each such subagent's prompt (dotfiles-116). Built-in
+// agent types still get them.
+const CONNECTORS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Claude_Docs"];
 const POLICY = {
-  explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent"] },
-  worker: { model: "opus", effort: "high", disallowedTools: ["Agent"] },
-  solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent"] },
+  explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS] },
+  worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS] },
+  solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS] },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -763,6 +767,59 @@ describe("computer-use plugin", () => {
   test("its tests run in the verification suites and CI", () => {
     expect(read("SETUP.md")).toMatch(/^bun test .* claude\/marketplace$/m);
     expect(read(".github/workflows/checks.yml")).toMatch(/^\s+bun test .* claude\/marketplace$/m);
+  });
+});
+
+// The fixed prompt every session re-reads (dotfiles-116). The Artifact tool's description is
+// about 12k tokens. Turning it off (enableArtifact: false) is off in every layer, so no
+// session could turn it back on; the lean-prompt plugin defers it behind ToolSearch instead,
+// and a session that publishes a page loads it for itself.
+describe("lean prompt", () => {
+  const marketplace = JSON.parse(read(".claude-plugin/marketplace.json"));
+  const settings = JSON.parse(read("claude/settings.json"));
+
+  test("the lean-prompt plugin is listed from its folder and enabled", () => {
+    const entry = marketplace.plugins.find((plugin) => plugin.name === "lean-prompt");
+    expect(entry.source).toBe("./claude/marketplace/lean-prompt");
+    const manifest = JSON.parse(read("claude/marketplace/lean-prompt/.claude-plugin/plugin.json"));
+    expect(manifest.name).toBe("lean-prompt");
+    expect(manifest.version).toBeUndefined();
+    expect(JSON.parse(read("claude/marketplace/lean-prompt/hooks/hooks.json"))).toEqual({ modules: ["./register.ts"] });
+    expect(settings.enabledPlugins["lean-prompt@dotfiles"]).toBe(true);
+  });
+
+  test("Artifact is deferred, not turned off, so a session can still opt in", () => {
+    expect(settings.enableArtifact).toBeUndefined();
+    expect(settings.disableArtifact).toBeUndefined();
+    expect(settings.permissions.deny ?? []).not.toContain("Artifact");
+    expect(section("Working preferences")).toMatch(/Artifact tool is hidden behind ToolSearch\. Load it for your own session with `select:Artifact` only when you must publish, read, open or update an artifact/);
+    // A deferred tool is not in the tool list, so "when that tool is available" would skip it.
+    expect(read("claude/skills/ui-climb/SKILL.md")).toContain("load that tool with ToolSearch `select:Artifact`");
+  });
+
+  // Skills with no skillUsage record in ~/.claude.json on 2026-11-08. A skill the model may
+  // still need to load (a tool or the user asks for it) keeps its name in the listing; only
+  // the two skills that just explain Claude Code to the user are hidden from the model. Their
+  // slash commands stay typable. Overrides match any skill of that name, project ones too.
+  test("unused skills are trimmed from the model's listing", () => {
+    expect(settings.skillOverrides).toEqual({
+      "artifact-capabilities": "name-only",
+      "artifact-diagramming": "name-only",
+      "workflow-authoring": "name-only",
+      init: "name-only",
+      loop: "name-only",
+      run: "name-only",
+      schedule: "name-only",
+      "security-review": "name-only",
+      simplify: "name-only",
+      "update-config": "name-only",
+      "fewer-permission-prompts": "user-invocable-only",
+      "keybindings-help": "user-invocable-only",
+    });
+    // Skills these instructions or the Artifact tool tell agents to load stay listed.
+    for (const name of ["work-stages", "headless-browser", "frontend-ui", "code-review", "artifact-design", "cheat-sheets"]) {
+      expect(settings.skillOverrides[name]).toBeUndefined();
+    }
   });
 });
 
