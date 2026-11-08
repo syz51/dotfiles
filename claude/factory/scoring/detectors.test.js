@@ -96,6 +96,12 @@ describe("package-runner", () => {
   test("is na without any Bash call", () => {
     expect(packageRunner(actions([call("Read", { file_path: "/a" })])).verdict).toBe("na");
   });
+
+  // guard-runtimes also blocks the codex CLI, but this dimension scores the uv and bun rule only.
+  test("a codex call is not a package-runner failure", () => {
+    expect(packageRunner(actions([bash("codex exec hi")])).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("bunx @openai/codex exec hi")])).verdict).toBe("pass");
+  });
 });
 
 describe("shell-file-edit", () => {

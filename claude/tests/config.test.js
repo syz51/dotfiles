@@ -533,6 +533,20 @@ describe("rules the live suites test", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${preferences.split("\n").find((line) => line.startsWith("- Run all Python"))}\n`);
   });
 
+  // The user has only a Claude plan; guard-runtimes also blocks the codex CLI.
+  test("Working preferences allow Claude models only, in both instruction files", () => {
+    const rule = section("Working preferences").split("\n").find((line) => line.startsWith("- Use Claude models only"));
+    expect(rule).toBeDefined();
+    expect(rule).toContain("Never start the `codex` CLI or a `gpt-*` model");
+    expect(rule).toContain("never delegate to the Codex provider");
+    expect(rule).toContain("Reading past Codex session files is fine");
+    // A Codex session cannot spawn Claude subagents, so its copy says to hand the work back.
+    const codexRule = read("codex/AGENTS.md").split("\n").find((line) => line.startsWith("- Use Claude models only"));
+    expect(codexRule).toContain("stop and ask me to continue it in Claude");
+    expect(codexRule).toContain("Never start the `codex` CLI or a `gpt-*` model");
+    expect(codexRule).toContain("never delegate to the Codex provider");
+  });
+
   test("Workflow stops background work before finishing", () => {
     expect(section("Workflow")).toMatch(/Before finishing, stop the background commands and processes you started and confirm none is still running, unless I asked to keep them running/);
   });

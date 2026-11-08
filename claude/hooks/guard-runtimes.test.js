@@ -108,6 +108,18 @@ describe("blocks", () => {
     ["ssh -t host 'bash -lc \"node check.js\"'"],
     ["ssh host <<'EOF'\npython3 check.py\nEOF"],
     ["ssh host bash -s <<'EOF'\npip install x\nEOF"],
+    // the Codex CLI: the user has only a Claude plan
+    ["codex exec 'review this diff'"],
+    ["codex -m gpt-6-luna exec hi"],
+    ["/opt/homebrew/bin/codex review"],
+    ["CODEX_HOME=/tmp/x codex app-server"],
+    ["cd repo && codex"],
+    ["bunx @openai/codex exec hi"],
+    ["bunx @openai/codex@0.50 exec hi"],
+    ["bun x codex exec hi"],
+    ["ssh host 'codex exec hi'"],
+    ["bash -lc 'codex exec hi'"],
+    ["Codex exec hi"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeDefined();
   });
@@ -158,6 +170,13 @@ describe("allows", () => {
     ["find . -name node_modules -prune"],
     ["sudo -u me uv run python check.py"],
     ["pipenv --version"],
+    // reading Codex's files, or tools that only share the name
+    ["ls ~/.codex/sessions"],
+    ["grep -rn 'codex exec' ."],
+    ["cat codex/AGENTS.md"],
+    ["codex-skills daily --config c.json"],
+    ["which codex"],
+    ["bun claude/factory/metrics/cli.js --codex-home ~/.codex"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
@@ -176,6 +195,10 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("node check.js")).not.toContain("lockfile");
   expect(verdict("pnpm install")).toContain("`bun install`");
   expect(verdict("bunx pnpm@11 store prune")).toContain("runs pnpm through bunx");
+  expect(verdict("codex exec hi")).toContain("only a Claude plan");
+  expect(verdict("codex exec hi")).toContain("with Claude instead");
+  expect(verdict("codex exec hi")).not.toContain("bun");
+  expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });
 
 describe("hook process", () => {
@@ -189,6 +212,12 @@ describe("hook process", () => {
     const result = bash("python3 check.py");
     expect(result.code).toBe(2);
     expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `python3 check.py` runs python3 directly.");
+  });
+
+  test("blocks the Codex CLI with exit 2 before it starts", () => {
+    const result = bash("codex exec 'say hi'");
+    expect(result.code).toBe(2);
+    expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `codex exec say hi` runs codex.");
   });
 
   // Codex sends its exec_command calls as tool_name Bash with the command string and the
