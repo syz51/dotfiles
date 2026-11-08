@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
-import { AT_INSTALLED, EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
+import { AT_INSTALLED, EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL, TEARDOWN_TIMEOUT } from "./lib/live.js";
 import {
   agentSpawns, concurrentSpawns, finalText, mainBashPrinted, printedFrom, spawnEnds, subagentMessages, toolResults, toolUses,
 } from "./lib/stream.js";
@@ -85,7 +85,7 @@ function assertAgentRan(session, name, { count = 1 } = {}) {
 
 describe.skipIf(!LIVE)("live Claude Code", () => {
   beforeAll(() => suite.setup());
-  afterAll(() => suite.teardown());
+  afterAll(() => suite.teardown(), TEARDOWN_TIMEOUT);
 
   // Run outside the installed checkout, sessions load its configuration, not this one's,
   // so these location checks cannot pass there; setup prints a notice instead.

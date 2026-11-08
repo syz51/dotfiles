@@ -10,7 +10,7 @@ import { chmodSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { mayInvoke, successfulCheck } from "./lib/command.js";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
-import { HOME_CLAUDE, LIVE, liveSuite } from "./lib/live.js";
+import { HOME_CLAUDE, LIVE, liveSuite, TEARDOWN_TIMEOUT } from "./lib/live.js";
 import { childEnv, runProcess, stopLeftovers } from "./lib/process.js";
 import { agentSpawns, backgroundAtAnswer, finalText, mainBashPrinted } from "./lib/stream.js";
 import { chineseLines, hasKana, singleChineseLine } from "./lib/text.js";
@@ -213,7 +213,7 @@ describe("the Codex scenario's answer check", () => {
 
 describe.skipIf(!LIVE)("live policy", () => {
   beforeAll(() => suite.setup());
-  afterAll(() => suite.teardown());
+  afterAll(() => suite.teardown(), TEARDOWN_TIMEOUT);
 
   for (const scenario of scenarios)
     test.concurrent(scenario.name, () => suite.scenario(scenario.name, async ({ fixture, session }) => {

@@ -158,12 +158,13 @@ describe("freshen", () => {
     expect(freshenHere(scratch())).toBeUndefined();
   });
 
-  test("the fetch never prompts: git's prompt is off and ssh runs in batch mode", () => {
+  test("the fetch never prompts or hangs: git's prompt is off, ssh runs in batch mode and stops connecting in time", () => {
     const { work } = setup();
-    expect(fetchEnv(work, ENV)).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" });
+    expect(fetchEnv(work, ENV)).toMatchObject({ GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o ConnectTimeout=15" });
     git(work, "config", "core.sshCommand", "ssh -i key");
-    expect(fetchEnv(work, ENV).GIT_SSH_COMMAND).toBe("ssh -i key -o BatchMode=yes");
-    expect(fetchEnv(work, { ...ENV, GIT_SSH_COMMAND: "myssh" }).GIT_SSH_COMMAND).toBe("myssh -o BatchMode=yes");
+    expect(fetchEnv(work, ENV).GIT_SSH_COMMAND).toBe("ssh -i key -o BatchMode=yes -o ConnectTimeout=15");
+    expect(fetchEnv(work, { ...ENV, GIT_SSH_COMMAND: "myssh" }).GIT_SSH_COMMAND).toBe("myssh -o BatchMode=yes -o ConnectTimeout=15");
+    expect(fetchEnv(work, ENV, { connectTimeoutMs: 2_500 }).GIT_SSH_COMMAND).toBe("ssh -i key -o BatchMode=yes -o ConnectTimeout=3");
   });
 });
 

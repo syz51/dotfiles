@@ -15,26 +15,55 @@ export function childEnv(base, overrides = {}) {
 // Process ids descending from pid, from one snapshot of the process table. A child that
 // started its own process group (as nested runProcess calls do) is outside pid's group,
 // so killing the group alone would leave it running.
+// A failed snapshot finds none.
 export function descendants(pid) {
-  const table = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
-  if (table.status !== 0) return [];
-  const children = new Map();
-  for (const line of table.stdout.split("\n")) {
-    const [child, parent] = line.trim().split(/\s+/).map(Number);
-    if (child && parent) children.set(parent, [...(children.get(parent) ?? []), child]);
+  let table;
+  try {
+    table = processTable();
+  } catch {
+    return [];
   }
+  return below(table, [pid]);
+}
+
+// One snapshot of the process table: pid -> { ppid, started, command }. started (the
+// start time) tells a process from a later one that reuses its pid.
+function processTable() {
+  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,lstart=,command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+  if (table.status !== 0) throw new Error(`ps failed: ${table.stderr}`);
+  const processes = new Map();
+  for (const line of table.stdout.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/);
+    if (match) processes.set(Number(match[1]), { ppid: Number(match[2]), started: match[3], command: match[4] });
+  }
+  return processes;
+}
+
+// Every process in table descending from one of pids.
+function below(table, pids) {
+  const children = new Map();
+  for (const [child, { ppid }] of table) children.set(ppid, [...(children.get(ppid) ?? []), child]);
   const found = [];
-  for (let queue = [pid]; queue.length;) for (const child of children.get(queue.shift()) ?? []) {
+  for (let queue = [...pids]; queue.length;) for (const child of children.get(queue.shift()) ?? []) {
     found.push(child);
     queue.push(child);
   }
   return found;
 }
 
-// Processes, other than this one, working inside dir or naming it in their command line:
-// what a session left running in a fixture. dir must be a real path, as lsof reports
-// working directories resolved. Returns [{ pid, command }].
-export function processesUnder(dir) {
+// Adds to tracked (pid -> start time) every process descending from pid now. Polled while
+// pid runs, it keeps the processes a session started, such as background tasks, findable
+// after the session exits, when they no longer descend from it.
+export function trackDescendants(pid, tracked) {
+  const table = processTable();
+  for (const child of below(table, [pid])) tracked.set(child, table.get(child).started);
+}
+
+// Processes, other than this one, working inside dir or naming it in their command line,
+// plus those in tracked (see trackDescendants) still running and their descendants: what
+// a session left running in a fixture. dir must be a real path, as lsof reports working
+// directories resolved. Returns [{ pid, command }].
+export function processesUnder(dir, { tracked = new Map() } = {}) {
   const inside = (path) => path === dir || path.startsWith(`${dir}/`);
   const pids = new Set();
   // lsof exits 1 when it could not inspect some processes; its output still counts.
@@ -45,26 +74,21 @@ export function processesUnder(dir) {
     if (line.startsWith("p")) pid = Number(line.slice(1));
     else if (line.startsWith("n") && inside(line.slice(1))) pids.add(pid);
   }
-  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,command="], { encoding: "utf8" });
-  if (table.status !== 0) throw new Error(`ps failed: ${table.stderr}`);
-  const commands = new Map();
-  for (const line of table.stdout.split("\n")) {
-    const match = line.match(/^\s*(\d+)\s(.*)$/);
-    if (!match) continue;
-    commands.set(Number(match[1]), match[2]);
-    if (match[2].includes(dir)) pids.add(Number(match[1]));
-  }
+  const table = processTable();
+  for (const [id, { command }] of table) if (command.includes(dir)) pids.add(id);
+  const live = [...tracked].filter(([id, started]) => table.get(id)?.started === started).map(([id]) => id);
+  for (const id of [...live, ...below(table, live)]) pids.add(id);
   pids.delete(process.pid);
-  // A process that exited between the two snapshots has no command: it is gone.
-  return [...pids].filter((id) => commands.has(id)).map((id) => ({ pid: id, command: commands.get(id) }));
+  // A process that exited between the two snapshots is not in the table: it is gone.
+  return [...pids].filter((id) => table.has(id)).map((id) => ({ pid: id, command: table.get(id).command }));
 }
 
-// Processes still under dir once graceMs has passed (see processesUnder), each then
-// killed: what a session left behind, given its own children time to finish exiting.
-// Returns them as found. A process gone by the time it is signalled is skipped.
-export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100 } = {}) {
-  let left = processesUnder(dir);
-  for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir))
+// Processes still under dir once graceMs has passed (see processesUnder, which also gets
+// tracked), each then killed: what a session left behind, given its own children time to
+// finish exiting. Returns them as found. A process gone by the time it is signalled is skipped.
+export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, tracked } = {}) {
+  let left = processesUnder(dir, { tracked });
+  for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir, { tracked }))
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   for (const { pid } of left)
     try {
@@ -83,7 +107,9 @@ export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100 } = {}) 
 // input, when given, is written to stdin, which is then closed; otherwise stdin is empty.
 // interact, instead, holds stdin open for a conversation: it is called once with stdin and
 // returns a listener that gets stdout as text, chunk by chunk; it must end stdin itself.
-export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input, interact } = {}) {
+// track, a Map, gets the child's descendants every trackMs while it runs (see
+// trackDescendants), so those that outlive it can be waited for.
+export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input, interact, track, trackMs = 250 } = {}) {
   if (input !== undefined && interact) throw new Error("runProcess takes input or interact, not both");
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -123,6 +149,16 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
       failure ??= new Error(`Process timeout after ${timeout} ms: ${argv[0]}`);
       kill();
     }, timeout);
+    const poll = () => {
+      try {
+        trackDescendants(child.pid, track);
+      } catch (error) {
+        failure ??= error;
+        kill();
+      }
+    };
+    const tracker = track && child.pid && setInterval(poll, trackMs);
+    if (tracker) poll();
     // A listener, or an interact call, that throws fails the run like any other failure;
     // once the run has failed, the listener gets no more output.
     let listen;
@@ -153,10 +189,12 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
       });
     child.on("error", (error) => {
       clearTimeout(timer);
+      clearInterval(tracker);
       reject(error);
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      clearInterval(tracker);
       const stdout = Buffer.concat(out).toString("utf8");
       const stderr = Buffer.concat(err).toString("utf8");
       if (failure) reject(Object.assign(failure, { stdout, stderr }));

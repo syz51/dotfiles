@@ -2,7 +2,7 @@
 // runs the hooks from --settings like Claude Code does, really executes the tool calls it
 // reports, and behaves according to FAKE_MODE. It also writes a session entry under
 // ~/.claude/projects despite --no-session-persistence, so cleanup is put to the test.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -79,6 +79,17 @@ if (process.env.FAKE_REFUSE_ONCE && !existsSync(process.env.FAKE_REFUSE_ONCE)) {
   emit({ type: "result", subtype: "success", is_error: true, api_error_status: 400, result: "Credit balance is too low", total_cost_usd: 0, num_turns: 1 });
   for (const event of events) console.log(JSON.stringify(event));
   process.exit(1);
+}
+// With FAKE_LINGER, a background task outlives the session and writes to Claude Code's
+// temporary folder under CLAUDE_CODE_TMPDIR, as Claude Code's task output does: once
+// after 2 s ("late"), or every 200 ms until killed ("stuck"). It works outside the fixture
+// and does not name it, so only the processes tracked during the session lead to it.
+if (process.env.FAKE_LINGER) {
+  const write = 'mkdir -p "$CLAUDE_CODE_TMPDIR/claude-$(id -u)/late-task/tasks"';
+  const script = process.env.FAKE_LINGER === "stuck" ? `while :; do ${write}; sleep 0.2; done` : `sleep 2; ${write}; sleep 0.3`;
+  spawn("sh", ["-c", script], { cwd: "/", detached: true, stdio: "ignore" }).unref();
+  // Long enough for the harness to see the task while the session runs.
+  await Bun.sleep(800);
 }
 if (mode === "incomplete") {
   console.log(JSON.stringify(events[0]));

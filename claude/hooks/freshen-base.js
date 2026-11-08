@@ -18,7 +18,7 @@ const LOCK_WAIT_MS = 30_000;
 const LOCK_STALE_MS = 120_000;
 
 // A local git call. A timeout counts as a failed call; any other spawn error (no git) throws.
-function git(cwd, args, { env = process.env, timeout = READ_TIMEOUT_MS } = {}) {
+export function git(cwd, args, { env = process.env, timeout = READ_TIMEOUT_MS } = {}) {
   const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", env, timeout });
   if (result.error && result.error.code !== "ETIMEDOUT") throw result.error;
   return { ok: result.status === 0, timedOut: Boolean(result.error), out: (result.stdout ?? "").trim(), err: (result.stderr ?? "").trim() };
@@ -27,12 +27,13 @@ function git(cwd, args, { env = process.env, timeout = READ_TIMEOUT_MS } = {}) {
 // The last line git printed, without progress meters, for a one-line note.
 const lastLine = (text) => text.split(/[\r\n]+/).map((line) => line.trim()).filter(Boolean).at(-1) ?? "no output";
 
-/** The environment for the fetch: git and ssh fail instead of prompting on the terminal. */
-export function fetchEnv(cwd, env = process.env) {
+/** The environment for a fetch: git and ssh fail instead of prompting, and ssh stops connecting in time. */
+export function fetchEnv(cwd, env = process.env, { connectTimeoutMs = FETCH_TIMEOUT_MS } = {}) {
   const out = { ...env, GIT_TERMINAL_PROMPT: "0" };
   if (!env.GIT_SSH) {
     const ssh = env.GIT_SSH_COMMAND || git(cwd, ["config", "--get", "core.sshCommand"], { env }).out || "ssh";
-    out.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
+    // A fetch timeout stops git but not its ssh, so ssh also gives up connecting on its own.
+    out.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes -o ConnectTimeout=${Math.ceil(connectTimeoutMs / 1000)}`;
   }
   return out;
 }
@@ -51,12 +52,16 @@ export function createsWorktree(input) {
   return false;
 }
 
-// Runs work() holding a lock in the repository's common git folder, shared by its worktrees.
-function withLock(cwd, env, work) {
+// Returned by withLock when another run held the lock for longer than waitMs.
+export const BUSY = Symbol("busy");
+
+// Runs work() holding a lock in the repository's common git folder, shared by its worktrees
+// and by stale-base.js, so concurrent fetches of one ref do not fail each other.
+export function withLock(cwd, env, work, waitMs = LOCK_WAIT_MS) {
   const common = git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { env });
   if (!common.ok) return undefined;
   const lock = join(common.out, "freshen-base.lock");
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   for (;;) {
     try {
       mkdirSync(lock);
@@ -72,7 +77,7 @@ function withLock(cwd, env, work) {
       throw error;
     }
     if (age > LOCK_STALE_MS) rmSync(lock, { recursive: true, force: true });
-    else if (Date.now() > deadline) return `Another freshen-base run held ${lock} for over ${LOCK_WAIT_MS / 1000} s, so the default branch was not fetched; the new worktree starts from it as it is.`;
+    else if (Date.now() > deadline) return BUSY;
     else Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
   }
   try {
@@ -96,7 +101,7 @@ export function freshen(cwd, { env = process.env } = {}) {
   if (branch !== defaultBranch) return undefined;
   const target = `${remote}/${branch}`;
   const targetRef = `${prefix}${branch}`;
-  return withLock(cwd, env, () => {
+  const note = withLock(cwd, env, () => {
     const fetched = run(["fetch", "--quiet", remote, branch], { env: fetchEnv(cwd, env), timeout: FETCH_TIMEOUT_MS });
     if (!fetched.ok) {
       const why = fetched.timedOut ? `timed out after ${FETCH_TIMEOUT_MS / 1000} s` : lastLine(fetched.err);
@@ -118,6 +123,7 @@ export function freshen(cwd, { env = process.env } = {}) {
     const tip = run(["rev-parse", "--short=12", "HEAD"]).out;
     return `Fast-forwarded ${branch} by ${behind} commit(s) to ${target} (${tip}) before creating the worktree.`;
   });
+  return note === BUSY ? `Another run held the freshen-base lock for over ${LOCK_WAIT_MS / 1000} s, so the default branch was not fetched; the new worktree starts from it as it is.` : note;
 }
 
 if (import.meta.main) {

@@ -104,6 +104,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/stale-base.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
