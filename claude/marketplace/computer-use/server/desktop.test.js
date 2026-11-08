@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chooseApp, createDesktop, fitScreenshot,handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
+import { chooseApp, createDesktop, fitScreenshot, handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
 
 // A Retina laptop as the main display and a 1080p display to its left, one point above.
 const RETINA = { index: 0, id: 1, main: true, x: 0, y: 0, width: 1470, height: 956, pixelWidth: 2940, pixelHeight: 1912, scale: 2 };
@@ -127,6 +127,16 @@ describe("the app under the pointer", () => {
     expect(chooseApp(scene([dockLayer(), helium], null))).toBe(DOCK);
   });
 
+  test("past the Dock's layer, the deciding window must belong to the app the hit-test found", () => {
+    // The hit-test found an app whose window is not in the list, or is one the loop passes over.
+    expect(chooseApp(scene([dockLayer(), helium], 77))).toBeNull();
+    const appless = { owner: "SomeService", name: "", layer: 0, alpha: 1, bounds: { x: 0, y: 30, width: 400, height: 300 }, pid: 77, app: null };
+    expect(chooseApp(scene([dockLayer(), appless, helium], 77))).toBeNull();
+    // The bare desktop past the Dock's layer is Finder's only when the hit-test says so.
+    expect(chooseApp(scene([dockLayer()], FINDER.pid))).toBe(FINDER);
+    expect(chooseApp(scene([dockLayer()], HELIUM.pid))).toBeNull();
+  });
+
   test.each([
     ["a Dock menu", { layer: 101 }],
     ["Mission Control", { layer: 18 }],
@@ -178,8 +188,9 @@ describe("session", () => {
           case "displays": return [RETINA, SIDE];
           case "app-info": return apps[args[1]] ?? null;
           case "scene": return toScene(under({ x: Number(args[1]), y: Number(args[2]) }));
-          case "focused": return focus ?? { app: front };
-          case "frontmost": return typeof frontmost === "function" ? frontmost() : frontmost;
+          case "focused":
+            if (!focus) return { app: front };
+            return "axError" in focus ? { ...focus, frontmost: typeof frontmost === "function" ? frontmost() : frontmost } : focus;
           case "screenshot": return { path: args[4] };
           default:
             mac.actions.push(args);
@@ -312,6 +323,12 @@ describe("session", () => {
     frontmost = null;
     expect((await mac.call("type", { text: "x" })).text).toContain("No app found the frontmost app");
     expect(mac.actions).toEqual([["type", "hi"]]);
+  });
+
+  test("any Accessibility error on the focus query uses the frontmost app", async () => {
+    const mac = fakeMac({ focus: { axError: -25204 }, frontmost: HELIUM });
+    await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+    expect((await mac.call("key", { combo: "cmd+l" })).text).toBe("Pressed cmd+l in Helium.");
   });
 
   test("a focused-app answer without an app is refused, not replaced by the frontmost app", async () => {

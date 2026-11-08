@@ -103,26 +103,31 @@ const covers = (outer, inner) => outer.x <= inner.x && outer.y <= inner.y
  * sees, so a window is passed over only when it cannot take the input:
  * - a window with alpha 0, and a Window Server surface (its menu bar is the frontmost app's);
  * - the Dock's full-display window at the Dock level, matched by bundle id, never by its
- *   localized name, when the hit-test reaches another app through it.
+ *   localized name, when the hit-test reaches another app through it. The window that then
+ *   decides must belong to the app the hit-test found, or no app is chosen.
  * Every other window decides, including the Dock's tiles, menus and Mission Control, a failed
  * hit-test, and screencaptureui, whose buttons take the click.
  */
 export function chooseApp({ windows, hitPid, dockLevel, displays, frontmost, finder }) {
+  let passedDock = false;
+  const decide = (window, app) => (!passedDock || window.pid === hitPid ? app : null);
   for (const window of windows) {
     if (window.alpha === 0) continue;
     if (window.owner === "Window Server") {
-      if (window.name === "Menubar") return frontmost;
+      if (window.name === "Menubar") return decide(window, frontmost);
       continue;
     }
     if (!window.app) continue;
-    const passThroughDock = window.app.bundleId === DOCK && window.layer === dockLevel
+    if (window.app.bundleId === DOCK && window.layer === dockLevel
       && displays.some((display) => covers(window.bounds, display))
-      && Number.isInteger(hitPid) && hitPid !== window.pid;
-    if (passThroughDock) continue;
-    return window.app;
+      && Number.isInteger(hitPid) && hitPid !== window.pid) {
+      passedDock = true;
+      continue;
+    }
+    return decide(window, window.app);
   }
   // Nothing but the desktop: Finder owns it.
-  return finder;
+  return passedDock && finder?.pid !== hitPid ? null : finder;
 }
 
 /** An error the model should read: it becomes a tool result with isError. */
@@ -331,12 +336,12 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
   }
 
   const appAt = (p) => check(chooseApp(helper(["scene", String(p.x), String(p.y)])), "under the pointer");
-  // Some apps, such as Chromium browsers, answer no focused app to Accessibility. Only then
-  // does the frontmost app stand in, and it passes the same check.
+  // The Accessibility focused-app query fails for some apps, such as Helium. Only then does
+  // the frontmost app stand in, and it passes the same check.
   function focused() {
-    const { app, axError } = helper(["focused"]);
+    const { app, axError, frontmost } = helper(["focused"]);
     if (axError === undefined) return check(app, "the app with keyboard focus");
-    return check(helper(["frontmost"]), `the frontmost app; Accessibility found no focused app, error ${axError}`);
+    return check(frontmost, `the frontmost app; Accessibility found no focused app, error ${axError}`);
   }
   const at = (p) => [String(p.x), String(p.y)];
   const text = (value) => ({ content: [{ type: "text", text: value }] });

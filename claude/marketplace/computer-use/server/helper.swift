@@ -7,7 +7,7 @@
 //   frontmost                           the frontmost app
 //   focused                             {app} that has keyboard focus, which can differ from the
 //                                       frontmost app (Spotlight and other non-activating
-//                                       panels), or {axError} when the query fails
+//                                       panels), or {axError, frontmost} when the query fails
 //   scene <x> <y>                       the windows at a point and the Accessibility hit-test
 //                                       there, from which desktop.js picks the app
 //   app-info <name or bundle id>        a running or installed app
@@ -91,12 +91,12 @@ func frontmost() -> [String: Any]? {
   NSWorkspace.shared.frontmostApplication.map(appInfo)
 }
 
-// The focused app, or the AX error code when the query fails; desktop.js decides what a
-// failure means.
+// The focused app, or the AX error code and the frontmost app when the query fails, in one
+// call; desktop.js decides what a failure means.
 func focused() -> [String: Any] {
   var value: CFTypeRef?
   let error = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value)
-  guard error == .success else { return ["axError": Int(error.rawValue)] }
+  guard error == .success else { return ["axError": Int(error.rawValue), "frontmost": frontmost() ?? NSNull()] }
   guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return ["app": NSNull()] }
   var pid: pid_t = 0
   guard AXUIElementGetPid(value as! AXUIElement, &pid) == .success,
@@ -124,15 +124,24 @@ func scene(_ point: CGPoint) -> [String: Any] {
       "app": pid.flatMap { NSRunningApplication(processIdentifier: $0) }.map(appInfo) ?? NSNull(),
     ])
   }
-  var element: AXUIElement?
+  // Only a Dock window at the Dock level uses the hit-test, so other points skip the AX call,
+  // which waits for a busy app.
+  let dockLevel = Int(CGWindowLevelForKey(.dockWindow))
+  var hit = false
   var hitPid: pid_t = 0
-  let hit = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element) == .success
-    && element.map { AXUIElementGetPid($0, &hitPid) == .success } == true
+  if windows.contains(where: { ($0["app"] as? [String: Any])?["bundleId"] as? String == "com.apple.dock" && $0["layer"] as? Int == dockLevel }) {
+    let systemWide = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(systemWide, 1)
+    var element: AXUIElement?
+    hit = AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &element) == .success
+      && element.map { AXUIElementGetPid($0, &hitPid) == .success } == true
+  }
+  let bounds = displays().map { $0.filter { ["x", "y", "width", "height"].contains($0.key) } }
   return [
     "windows": windows,
     "hitPid": hit ? Int(hitPid) : NSNull(),
-    "dockLevel": Int(CGWindowLevelForKey(.dockWindow)),
-    "displays": displays().map { ["x": $0["x"]!, "y": $0["y"]!, "width": $0["width"]!, "height": $0["height"]!] },
+    "dockLevel": dockLevel,
+    "displays": bounds,
     "frontmost": frontmost() ?? NSNull(),
     "finder": NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first.map(appInfo) ?? NSNull(),
   ]
