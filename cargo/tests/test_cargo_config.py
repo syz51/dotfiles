@@ -54,15 +54,14 @@ class CargoBuildTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def rustc_lines(self, *args, env=None):
-        """The rustc command line cargo ran for each crate, keyed by crate name."""
-        environment = {
-            key: value for key, value in os.environ.items()
-            if not key.startswith(("CARGO_PROFILE_", "CARGO_BUILD_", "CARGO_INCREMENTAL", "RUSTFLAGS"))
-        }
-        environment.update(CARGO_HOME=str(self.home), CARGO_TARGET_DIR=str(self.app / "target"))
+        """The rustc command line cargo ran for each crate, keyed by crate name. The
+        environment is built from scratch, so no CARGO_* or RUSTFLAGS setting of the
+        caller's changes the flags."""
+        environment = {key: os.environ[key] for key in ("PATH", "HOME", "TMPDIR") if key in os.environ}
         # rustup's proxies find their toolchains through RUSTUP_HOME, which defaults to a
         # folder beside the real CARGO_HOME.
-        environment.setdefault("RUSTUP_HOME", str(Path.home() / ".rustup"))
+        environment["RUSTUP_HOME"] = os.environ.get("RUSTUP_HOME", str(Path.home() / ".rustup"))
+        environment.update(CARGO_HOME=str(self.home), CARGO_TARGET_DIR=str(self.app / "target"))
         environment.update(env or {})
         result = subprocess.run(
             ["cargo", "build", "-v", "--offline", *args],
@@ -84,9 +83,17 @@ class CargoBuildTest(unittest.TestCase):
         # Incremental compilation stays on for workspace members, as Cargo's default.
         self.assertIn("-C incremental=", lines["app"])
 
-    def test_an_environment_override_still_wins(self):
+    def test_an_environment_override_still_wins_for_members(self):
         lines = self.rustc_lines(env={"CARGO_PROFILE_DEV_DEBUG": "true"})
         self.assertIn("-C debuginfo=2", lines["app"])
+        self.assertNotIn("-C debuginfo=", lines["dep"])
+
+    def test_the_documented_debugging_override_covers_dependencies(self):
+        lines = self.rustc_lines(
+            "--config", "profile.dev.debug=true", "--config", 'profile.dev.package."*".debug=true'
+        )
+        self.assertIn("-C debuginfo=2", lines["app"])
+        self.assertIn("-C debuginfo=2", lines["dep"])
 
     def test_release_builds_are_unchanged(self):
         lines = self.rustc_lines("--release")

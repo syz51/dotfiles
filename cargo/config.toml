@@ -7,7 +7,8 @@
 
 [profile.dev]
 # Files and line numbers for panics and backtraces, without the variable and type
-# information a debugger needs. For a debugging session: CARGO_PROFILE_DEV_DEBUG=true.
+# information a debugger needs. For a debugging session, full debug info everywhere:
+#   cargo build --config profile.dev.debug=true --config 'profile.dev.package."*".debug=true'
 debug = "line-tables-only"
 
 [profile.dev.package."*"]

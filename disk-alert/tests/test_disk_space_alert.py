@@ -537,6 +537,14 @@ class TargetSweepTest(unittest.TestCase):
         when = (self.now - timedelta(hours=hours_ago)).timestamp()
         os.utime(path, (when, when))
 
+    def built(self, target):
+        return (target / "debug" / "deps" / "libx.rlib").exists()
+
+    def assert_emptied(self, target):
+        """Only the tag, the lock files and the folders holding them are left."""
+        left = sorted(str(path.relative_to(target)) for path in target.rglob("*"))
+        self.assertEqual(left, ["CACHEDIR.TAG", "debug", *sorted(f"debug/{name}" for name in alert.CARGO_LOCKS)])
+
     def sweep(self, runner=None, level="low", dry_run=False):
         return alert.sweep_targets(self.config, runner or FakeRunner(), self.now, level, dry_run)
 
@@ -553,7 +561,7 @@ class TargetSweepTest(unittest.TestCase):
         self.assertTrue(all(item.kind == "target" and item.error is None for item in swept))
         self.assertGreaterEqual(max(item.bytes for item in swept), 100_000)
         for folder in (top, nested, claude_target):
-            self.assertFalse(folder.exists())
+            self.assert_emptied(folder)
         self.assertTrue((tree / "src" / "lib.rs").exists() and (claude / "Cargo.toml").exists())
 
     def test_only_cargo_tagged_target_folders_are_candidates(self):
@@ -574,9 +582,9 @@ class TargetSweepTest(unittest.TestCase):
         target = self.target(self.t3_worktree() / "target")
         self.set_mtime(target / "debug" / "deps" / "libx.rlib", hours_ago=3)
         self.assertEqual(self.sweep(level="low"), [])
-        self.assertTrue(target.exists())
+        self.assertTrue(self.built(target))
         self.assertEqual([item.path for item in self.sweep(level="critical")], [str(target)])
-        self.assertFalse(target.exists())
+        self.assert_emptied(target)
 
     def test_held_build_lock_keeps_it(self):
         target = self.target(self.t3_worktree() / "target")
@@ -584,26 +592,67 @@ class TargetSweepTest(unittest.TestCase):
         try:
             alert.fcntl.flock(descriptor, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
             self.assertEqual(self.sweep(), [])
-            self.assertTrue(target.exists())
+            self.assertTrue(self.built(target))
         finally:
             os.close(descriptor)
         self.assertEqual([item.path for item in self.sweep()], [str(target)])
 
     def test_locks_are_released_when_a_later_one_is_held(self):
         target = self.target(self.t3_worktree() / "target")
-        triple = target / "aarch64-apple-darwin" / "debug"
-        triple.mkdir(parents=True)
-        (triple / ".cargo-lock").touch()
-        descriptor = os.open(triple / ".cargo-lock", os.O_RDONLY)
+        locks = alert.build_lock_files(target)
+        # The files sort by name, so .cargo-lock is taken last.
+        self.assertEqual(locks[-1], target / "debug" / ".cargo-lock")
+        descriptor = os.open(locks[-1], os.O_RDONLY)
         try:
             alert.fcntl.flock(descriptor, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
-            self.assertIsNone(alert.take_build_locks(target))
+            self.assertIsNone(alert.take_build_locks(locks))
             # The locks taken before the held one were released.
-            again = alert.take_build_locks(target / "debug")
-            self.assertEqual(len(again), len(alert.CARGO_LOCKS))
+            again = alert.take_build_locks(locks[:-1])
+            self.assertEqual(len(again), len(alert.CARGO_LOCKS) - 1)
             alert.release(again)
         finally:
             os.close(descriptor)
+
+    def test_locks_tag_and_profile_folders_outlive_the_sweep(self):
+        target = self.target(self.t3_worktree() / "target")
+        triple = target / "aarch64-apple-darwin" / "release"
+        (triple / "build").mkdir(parents=True)
+        (triple / "build" / "out.o").write_bytes(b"x" * 4096)
+        (triple / ".cargo-lock").touch()
+        (target / "doc").mkdir()
+        (target / ".rustc_info.json").write_text("{}")
+        locks = alert.build_lock_files(target)
+        self.assertEqual(len(locks), len(alert.CARGO_LOCKS) + 1)
+        inodes = {lock: lock.stat().st_ino for lock in locks}
+        tag = (target / "CACHEDIR.TAG").read_bytes()
+        self.assertEqual([item.path for item in self.sweep()], [str(target)])
+        # A build waiting on these locks gets the same files, in a folder still tagged.
+        self.assertEqual({lock: lock.stat().st_ino for lock in locks}, inodes)
+        self.assertEqual((target / "CACHEDIR.TAG").read_bytes(), tag)
+        self.assertEqual(sorted(path.name for path in triple.iterdir()), [".cargo-lock"])
+        self.assertFalse((target / "doc").exists() or (target / ".rustc_info.json").exists())
+        self.assertFalse((target / "debug" / "deps").exists())
+
+    def test_emptied_target_is_not_swept_again(self):
+        target = self.target(self.t3_worktree() / "target")
+        self.assertEqual(len(self.sweep()), 1)
+        runner = FakeRunner()
+        self.assertEqual(self.sweep(runner), [])
+        self.assertEqual(runner.calls, [])
+        self.assert_emptied(target)
+
+    def test_unreadable_registry_does_not_stop_the_target_sweep(self):
+        (self.registry / f"{os.getpid()}.json").write_text("not json")
+        target = self.target(self.t3_worktree() / "target")
+        self.assertEqual([item.path for item in self.sweep()], [str(target)])
+
+    def test_failing_session_sweep_keeps_the_target_sweep(self):
+        target = self.target(self.t3_worktree() / "target")
+        with mock.patch.object(alert, "sweep_sessions", side_effect=PermissionError("denied")):
+            swept, failures = alert.sweep(self.config, FakeRunner(), self.now)
+        self.assertEqual([item.path for item in swept], [str(target)])
+        self.assertEqual([(failure["sweep"], failure["error"]) for failure in failures], [("sessions", "denied")])
+        self.assert_emptied(target)
 
     def test_running_processes_keep_their_targets(self):
         named = self.target(self.t3_worktree("t3-1") / "target")
@@ -614,18 +663,18 @@ class TargetSweepTest(unittest.TestCase):
             lsof=f"p10\nfcwd\nn{inside}/debug\np11\nfcwd\nn{beside.parent}\n",
         )
         self.assertEqual([item.path for item in self.sweep(runner)], [str(beside)])
-        self.assertTrue(named.exists() and inside.exists())
+        self.assertTrue(self.built(named) and self.built(inside))
 
     def test_unreadable_process_list_removes_nothing(self):
         target = self.target(self.t3_worktree() / "target")
         self.assertEqual(self.sweep(FakeRunner(ps_code=1, ps="")), [])
-        self.assertTrue(target.exists())
+        self.assertTrue(self.built(target))
 
     def test_dry_run_lists_without_removing(self):
         target = self.target(self.t3_worktree() / "target")
         (swept,) = self.sweep(dry_run=True)
         self.assertEqual((swept.path, swept.kind), (str(target), "target"))
-        self.assertTrue(target.exists())
+        self.assertTrue(self.built(target))
 
     def test_nothing_to_sweep_reads_no_process_list(self):
         runner = FakeRunner()
@@ -638,6 +687,8 @@ class TargetSweepTest(unittest.TestCase):
 
     def test_main_checkout_reads_only_linked_worktree_git_files(self):
         tree = self.t3_worktree()
+        self.assertEqual(alert.main_checkout(tree), self.repo)
+        (tree / ".git").write_text(f"gitdir: {os.path.relpath(self.repo, tree)}/.git/worktrees/t3-1\n")
         self.assertEqual(alert.main_checkout(tree), self.repo)
         (tree / ".git").write_text("gitdir: /somewhere/else\n")
         self.assertIsNone(alert.main_checkout(tree))
@@ -652,7 +703,7 @@ class TargetSweepTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             code = alert.run_check(self.config, runner, lambda: next(values), self.now)
         self.assertEqual(code, 0)
-        self.assertFalse(target.exists())
+        self.assert_emptied(target)
         self.assertIn("removed 1 idle Rust target folder in agent worktrees (about 3 MB)", runner.calls[2][1])
 
     def test_note_names_both_kinds(self):
@@ -854,16 +905,18 @@ class CommandLineTest(unittest.TestCase):
         self.assertTrue(listed["dry_run"])
         self.assertEqual([item["path"] for item in listed["sessions"]], [str(folder)])
         self.assertEqual([item["path"] for item in listed["targets"]], [str(target)])
-        self.assertTrue(folder.exists() and target.exists())
+        self.assertTrue(folder.exists() and (target / "debug").exists())
+        self.assertEqual(listed["failures"], [])
         self.assertFalse((self.state_dir / "events.jsonl").exists())
 
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(alert.main(base + ["--no-sweep"], now=later), 0)
-        self.assertTrue(folder.exists() and target.exists())
+        self.assertTrue(folder.exists() and (target / "debug").exists())
 
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(alert.main(base, now=later), 0)
-        self.assertFalse(folder.exists() or target.exists())
+        self.assertFalse(folder.exists())
+        self.assertEqual([path.name for path in target.iterdir()], ["CACHEDIR.TAG"])
         (event,) = [json.loads(line) for line in (self.state_dir / "events.jsonl").read_text().splitlines()]
         self.assertEqual((event["event"], event["removed"]), ("swept", [str(folder), str(target)]))
 
@@ -877,7 +930,22 @@ class CommandLineTest(unittest.TestCase):
                  "--osascript", self.osascript, *self.sweep_args(claude_tmp)],
                 now=later,
             )
-        self.assertTrue(folder.exists() and target.exists())
+        self.assertTrue(folder.exists() and (target / "debug").exists())
+
+    def test_failed_sweep_command_logs_it_and_fails(self):
+        claude_tmp, _folder = self.idle_session()
+        target = self.idle_target()
+        later = datetime.now(timezone.utc) + timedelta(days=2)
+        out = io.StringIO()
+        with mock.patch.object(alert, "sweep_sessions", side_effect=PermissionError("denied")), \
+                contextlib.redirect_stdout(out):
+            code = alert.main(["sweep", "--state-dir", str(self.state_dir), *self.sweep_args(claude_tmp)], now=later)
+        self.assertEqual(code, 1)
+        printed = json.loads(out.getvalue())
+        self.assertEqual([item["path"] for item in printed["targets"]], [str(target)])
+        self.assertEqual([failure["sweep"] for failure in printed["failures"]], ["sessions"])
+        events = [json.loads(line) for line in (self.state_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([event["event"] for event in events], ["sweep_failed", "swept"])
 
     def test_critical_must_be_below_low(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

@@ -22,14 +22,15 @@ registry of running sessions (`~/.claude/sessions`) does not list, and that no
 running process names or works inside. When any of that cannot be read, the folder
 stays.
 
-The same checks then remove idle Rust build folders in agent worktrees: the cargo
+The same checks then empty idle Rust build folders in agent worktrees: the cargo
 `target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`) and in the
 Claude Code worktrees (`<repo>/.claude/worktrees/<name>`) of the repositories those
-belong to. A folder qualifies when cargo's `CACHEDIR.TAG` marks it, nothing in it
-has changed for 6 hours (1 hour while space is critical), no running process names
-it or works inside it, and every cargo build lock in it can be taken at once. The
-locks stay held while it is removed, so a build that starts meanwhile waits and then
-starts afresh.
+belong to. A folder qualifies when cargo's `CACHEDIR.TAG` marks it, every cargo build
+lock in it can be taken at once, nothing in it has changed for 6 hours (1 hour while
+space is critical), and no running process names it or works inside it. The locks
+are taken first and held to the end. Emptying keeps the tag and the lock files, so a
+build that starts meanwhile waits on the same locks and then starts afresh in a
+folder still tagged.
 
 The alert says what was freed, and a sweep that brings space back without an alert
 posts a notification. `sweep --dry-run` lists what would go now, whatever the free
@@ -90,6 +91,7 @@ CARGO_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
 # for the whole of a build.
 CARGO_LOCKS = frozenset((".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock"))
 TARGET_SEARCH_DEPTH = 6
+LOCK_SEARCH_DEPTH = 3
 
 Runner = Callable[[list, Optional[str]], subprocess.CompletedProcess]
 
@@ -231,18 +233,16 @@ class Processes:
     commands: str
     cwds: tuple
 
+    def works_inside(self, folder: Path) -> bool:
+        real = str(folder.resolve())
+        return any(cwd == real or cwd.startswith(real + "/") for cwd in self.cwds)
+
     def use(self, session: Path) -> bool:
-        real = str(session.resolve())
-        return (
-            session.name in self.session_ids
-            or session.name in self.commands
-            or any(cwd == real or cwd.startswith(real + "/") for cwd in self.cwds)
-        )
+        return session.name in self.session_ids or session.name in self.commands or self.works_inside(session)
 
     def inside(self, folder: Path) -> bool:
         """Whether a running command names folder or anything in it, or works inside it."""
-        real = str(folder.resolve())
-        return real in self.commands or any(cwd == real or cwd.startswith(real + "/") for cwd in self.cwds)
+        return str(folder.resolve()) in self.commands or self.works_inside(folder)
 
 
 def registered_sessions(registry: Path) -> Optional[frozenset]:
@@ -270,9 +270,10 @@ def registered_sessions(registry: Path) -> Optional[frozenset]:
     return frozenset(ids)
 
 
-def running_processes(run: Runner, registry: Path) -> Optional[Processes]:
-    """A snapshot of what is running, or None when any part of it cannot be read."""
-    session_ids = registered_sessions(registry)
+def running_processes(run: Runner, registry: Optional[Path]) -> Optional[Processes]:
+    """A snapshot of what is running, or None when any part of it cannot be read. With
+    no registry, the snapshot has no session ids and does not read one."""
+    session_ids = frozenset() if registry is None else registered_sessions(registry)
     ps = run(["ps", "-axww", "-o", "command="], None)
     # lsof exits 1 when it could not inspect some processes; what it printed still counts.
     lsof = run(["lsof", "-nP", "-d", "cwd", "-Fn"], None)
@@ -343,13 +344,9 @@ def session_candidates(tmp_root: Path, projects: Path, cutoff: float) -> list:
     for project in sorted(tmp_root.iterdir()):
         if project.is_symlink() or not project.is_dir():
             continue
-        try:
-            sessions = sorted(project.iterdir())
-        except OSError:
-            continue
         transcripts = projects / project.name
-        for session in sessions:
-            if not SESSION_ID.match(session.name) or session.is_symlink() or not session.is_dir():
+        for session in subfolders(project):
+            if not SESSION_ID.match(session.name):
                 continue
             if (
                 idle_size(transcripts / f"{session.name}.jsonl", cutoff) is None
@@ -395,24 +392,24 @@ def sweep_sessions(
 
 
 def subfolders(folder: Path) -> list:
-    """The real (not linked) folders directly in folder; none when it cannot be listed."""
+    """The real (not linked) folders directly in folder; none when it cannot be read."""
     try:
-        entries = sorted(folder.iterdir())
+        return [entry for entry in sorted(folder.iterdir()) if entry.is_dir() and not entry.is_symlink()]
     except OSError:
         return []
-    return [entry for entry in entries if entry.is_dir() and not entry.is_symlink()]
 
 
 def main_checkout(worktree: Path) -> Optional[Path]:
     """The repository a linked worktree belongs to, read from its `.git` file
-    (`gitdir: <repo>/.git/worktrees/<name>`), or None."""
+    (`gitdir: <repo>/.git/worktrees/<name>`, the path absolute or relative to the
+    worktree), or None."""
     try:
         line = (worktree / ".git").read_text().strip()
     except (OSError, UnicodeDecodeError):
         return None
     if not line.startswith("gitdir: "):
         return None
-    gitdir = Path(line[len("gitdir: "):])
+    gitdir = (worktree / line[len("gitdir: "):]).resolve()
     if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
         return None
     return gitdir.parents[2]
@@ -452,19 +449,28 @@ def cargo_targets(worktree: Path) -> list:
     return found
 
 
-def take_build_locks(target: Path) -> Optional[list]:
-    """Take every cargo build lock in target's profile folders without waiting and return
-    their descriptors, or None, holding nothing, when a build holds any of them or one
-    cannot be opened."""
+def build_lock_files(target: Path) -> list:
+    """Cargo's lock files in target's profile folders (target/debug,
+    target/<triple>/release, target/llvm-cov-target/<triple>/debug, ...). A folder holding
+    any of them is a profile folder and is not searched further."""
+    found = []
+    for folder, dirs, files in os.walk(target):
+        names = sorted(CARGO_LOCKS.intersection(files))
+        found += [Path(folder, name) for name in names]
+        if names or len(Path(folder).relative_to(target).parts) >= LOCK_SEARCH_DEPTH:
+            dirs.clear()
+    return found
+
+
+def take_build_locks(lock_files: list) -> Optional[list]:
+    """Take every lock in lock_files without waiting and return their descriptors, or
+    None, holding nothing, when a build holds any of them or one cannot be opened."""
     held = []
     try:
-        for folder, dirs, files in os.walk(target):
-            if len(Path(folder).relative_to(target).parts) >= 2:
-                dirs.clear()
-            for name in sorted(CARGO_LOCKS.intersection(files)):
-                descriptor = os.open(os.path.join(folder, name), os.O_RDONLY)
-                held.append(descriptor)
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for path in lock_files:
+            descriptor = os.open(path, os.O_RDONLY)
+            held.append(descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         release(held)
         return None
@@ -476,47 +482,96 @@ def release(descriptors: list) -> None:
         os.close(descriptor)
 
 
+def removable(target: Path, lock_files: list) -> list:
+    """What emptying target removes: everything in it but its CACHEDIR.TAG, the lock
+    files and the folders that hold them. Those stay so that a build which starts
+    meanwhile waits on the same locks, and finds the folder still tagged afterwards."""
+    keep = {target / "CACHEDIR.TAG", *lock_files}
+    holders = {folder for lock in lock_files for folder in lock.parents if target in folder.parents}
+    entries, pending = [], [target]
+    while pending:
+        folder = pending.pop()
+        for entry in sorted(folder.iterdir()):
+            if entry in holders:
+                pending.append(entry)
+            elif entry not in keep:
+                entries.append(entry)
+    return sorted(entries)
+
+
+def remove_entry(entry: Path) -> None:
+    if entry.is_dir() and not entry.is_symlink():
+        remove_tree(entry)
+    else:
+        entry.unlink()
+
+
 def sweep_targets(
     config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
     clock: Callable[[], float] = time.monotonic,
 ) -> list:
-    """Remove idle cargo target folders in agent worktrees (see the module doc)."""
+    """Empty idle cargo target folders in agent worktrees (see the module doc). Each one's
+    build locks are taken first and held to the end, so its idleness is read while no
+    build can start in it. The process snapshot is taken only once an idle folder turns
+    up, and renewed every few seconds."""
     if config.worktrees is None or not config.worktrees.is_dir():
         return []
     cutoff = (now - TARGET_IDLE.get(level, TARGET_IDLE["low"])).timestamp()
-    candidates = []
-    for worktree in agent_worktrees(config.worktrees):
-        for target in cargo_targets(worktree):
-            size = idle_size(target, cutoff)
-            if size:
-                candidates.append((target, size))
     swept = []
     processes, taken = None, 0.0
-    for target, size in candidates:
-        if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
-            processes, taken = running_processes(run, config.claude_sessions), clock()
-            if processes is None:
-                break
-        if processes.inside(target):
-            continue
-        locks = take_build_locks(target)
-        if locks is None:
-            continue
-        error = None
-        try:
-            if not dry_run:
-                remove_tree(target)
-        except OSError as failure:
-            error = str(failure)
-        finally:
-            release(locks)
-        swept.append(Swept(str(target), size, error, "target"))
+    for worktree in agent_worktrees(config.worktrees):
+        for target in cargo_targets(worktree):
+            lock_files = build_lock_files(target)
+            held = take_build_locks(lock_files)
+            if held is None:
+                continue
+            try:
+                size = idle_size(target, cutoff)
+                if not size:
+                    continue
+                try:
+                    entries = removable(target, lock_files)
+                except OSError:
+                    continue
+                if not entries:
+                    continue
+                if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
+                    # Session ids play no part here, so Claude Code's registry is not read.
+                    processes, taken = running_processes(run, None), clock()
+                    if processes is None:
+                        return swept
+                if processes.inside(target):
+                    continue
+                error = None
+                if not dry_run:
+                    try:
+                        for entry in entries:
+                            remove_entry(entry)
+                    except OSError as failure:
+                        error = str(failure)
+                swept.append(Swept(str(target), size, error, "target"))
+            finally:
+                release(held)
     return swept
 
 
-def sweep(config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False) -> list:
-    """Both sweeps: idle session scratch, then idle cargo target folders."""
-    return sweep_sessions(config, run, now, dry_run) + sweep_targets(config, run, now, level, dry_run)
+def sweep(config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False) -> tuple:
+    """Both sweeps, idle session scratch and then idle cargo target folders. Returns
+    what they removed and a failure record for each that raised; one failing does not
+    stop the other or lose what it removed."""
+    swept, failures = [], []
+    steps = (
+        ("sessions", lambda: sweep_sessions(config, run, now, dry_run)),
+        ("targets", lambda: sweep_targets(config, run, now, level, dry_run)),
+    )
+    for name, step in steps:
+        try:
+            swept += step()
+        except OSError as error:
+            failures.append(
+                {"at": now.isoformat(timespec="seconds"), "event": "sweep_failed", "sweep": name, "error": str(error)}
+            )
+    return swept, failures
 
 
 def format_size(size: int) -> str:
@@ -733,13 +788,10 @@ def run_check(config: Config, run: Runner, measure: Callable[[], float], now: da
     failed = False
     level = classify(free, state.level, config.low_gb, config.critical_gb)
     if (config.claude_tmp or config.worktrees) and level != "ok":
-        try:
-            swept = sweep(config, run, now, level)
-        except OSError as error:
-            # A sweep that fails must not stop the alert.
-            swept = []
+        # A sweep that fails must not stop the alert.
+        swept, failures = sweep(config, run, now, level)
+        for failure in failures:
             failed = True
-            failure = {"at": now.isoformat(timespec="seconds"), "event": "sweep_failed", "error": str(error)}
             append_event(config.state_dir, failure)
             print(json.dumps(failure, ensure_ascii=False))
         if swept:
@@ -763,20 +815,24 @@ def run_check(config: Config, run: Runner, measure: Callable[[], float], now: da
 
 
 def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
-    swept = sweep(config, run, now, "low", dry_run)
-    if swept and not dry_run:
-        append_event(config.state_dir, sweep_record(swept, now))
+    swept, failures = sweep(config, run, now, "low", dry_run)
+    if not dry_run:
+        for failure in failures:
+            append_event(config.state_dir, failure)
+        if swept:
+            append_event(config.state_dir, sweep_record(swept, now))
     print(json.dumps(
         {
             "dry_run": dry_run,
             "freed_gb": round(sum(item.bytes for item in swept if item.error is None) / 1e9, 2),
             "sessions": [asdict(item) for item in swept if item.kind == "session"],
             "targets": [asdict(item) for item in swept if item.kind == "target"],
+            "failures": failures,
         },
         indent=2,
         ensure_ascii=False,
     ))
-    return 1 if any(item.error for item in swept) else 0
+    return 1 if failures or any(item.error for item in swept) else 0
 
 def run_test(config: Config, run: Runner, now: datetime) -> int:
     free = free_gb(config.volume)

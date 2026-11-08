@@ -691,8 +691,11 @@ If `~/.cargo/config.toml` already exists, move its settings into `cargo/config.t
 first. The settings are:
 
 - `profile.dev.debug = "line-tables-only"`: panics and backtraces keep files and line
-  numbers, but a debugger cannot show variables. For a debugging session, run
-  `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
+  numbers, but a debugger cannot show variables. For a debugging session with full
+  debug information, dependencies included, run
+  `cargo build --config profile.dev.debug=true --config 'profile.dev.package."*".debug=true'`.
+  `CARGO_PROFILE_DEV_DEBUG=true` alone covers only the workspace's own crates, since no
+  variable can name the `"*"` package.
 - `profile.dev.package."*".debug = false`: dependencies keep no debug information.
 
 They override the same settings in a project's `Cargo.toml`. A project's own
@@ -710,7 +713,7 @@ machine):
 
 Incremental compilation stays on. Turning it off saves another 1 GB a worktree but
 makes each edit-and-test loop about four times slower. The disk space alert's sweep
-instead removes `target/` folders that agents have left idle (see
+instead empties `target/` folders that agents have left idle (see
 [Disk space alert](#disk-space-alert)).
 
 One shared `CARGO_TARGET_DIR` for all worktrees would not help. Cargo locks the
@@ -746,22 +749,24 @@ registry of running sessions (`~/.claude/sessions`) does not list it, and no run
 process names the session or works inside the folder. Anything that cannot be read
 keeps the folder, and a sweep that fails still lets the alert go out.
 
-The same sweep then removes idle Rust build output in agent worktrees: the cargo
-`target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`, at any depth
-outside hidden folders and `node_modules`) and in the Claude Code worktrees
-(`<repo>/.claude/worktrees/<name>`) of the repositories those belong to. A folder
-qualifies only when cargo's `CACHEDIR.TAG` marks it, nothing in it has changed for
-6 hours (1 hour while space is critical), and no running process names it or works
-inside it. The sweep then takes every cargo build lock in the folder without waiting
-and holds them while it removes the folder, so a running build keeps it and a build
-that starts meanwhile waits and then starts afresh. The worktree's sources are never
-touched; its next build is a full one. `--worktrees` points the sweep at another
-folder.
+The same sweep then empties idle Rust build output in agent worktrees: the cargo
+`target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`, up to six
+folders deep, outside hidden folders and `node_modules`) and in the Claude Code
+worktrees (`<repo>/.claude/worktrees/<name>`) of the repositories those belong to.
+For each folder marked by cargo's `CACHEDIR.TAG`, the sweep first takes every cargo
+build lock in it without waiting, and skips the folder when a build holds one. While
+it holds the locks, the folder qualifies only when nothing in it has changed for
+6 hours (1 hour while space is critical) and no running process names it or works
+inside it. The sweep then removes everything in the folder except the tag, the lock
+files and the folders that hold them. A build that starts meanwhile waits on those
+same locks, then starts afresh in a folder still tagged. The worktree's sources are
+never touched; its next build is a full one. `--worktrees` points the sweep at
+another folder.
 
 The alert says what was freed, or a notification does when the sweep alone brings
 space back, and `events.jsonl` gets a `swept` line listing the folders.
 `sweep --dry-run` lists what would go now, whatever the free space, `sweep` removes
-it and logs it, and `--no-sweep` turns the sweep off for a run. A simulated reading
+it and logs it (exiting 1 when either part of the sweep failed), and `--no-sweep` turns the sweep off for a run. A simulated reading
 (`check --free-gb`) never sweeps.
 
 Install it on each Mac from the main checkout, which the plist points to, and send a
