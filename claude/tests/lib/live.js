@@ -36,12 +36,24 @@ function guardedPaths() {
   const paths = ["CLAUDE.md", "settings.json", "frontend-avoid.md", "agents", "hooks"].map((name) => join(HOME_CLAUDE, name));
   const skills = join(HOME_CLAUDE, "skills");
   if (existsSync(skills)) for (const name of readdirSync(skills)) paths.push(join(skills, name));
-  paths.push(join(homedir(), ".codex", "skill-feedback"));
+  paths.push(skillFeedback());
   return paths.filter((path) => existsSync(path));
 }
 const IGNORED = new Set(["node_modules", ".DS_Store"]);
 const guardSnapshot = () => Object.fromEntries(guardedPaths().map((path) =>
   [path, snapshot(path, { allowLinks: true, followRoot: true, ignore: IGNORED })]));
+
+// Skill feedback jobs in other sessions append records under <skill>/notes and
+// <skill>/verifications while a run is going, so entries added there (and a new skill's
+// folder) do not fail it. Edits and removals of existing entries still do.
+const skillFeedback = () => join(homedir(), ".codex", "skill-feedback");
+const appendedRecord = (key, entry) =>
+  /^[^/]+\/(notes|verifications)(\/|$)/.test(key) || (entry.kind === "directory" && !key.includes("/"));
+function withoutAppendedRecords(before, after) {
+  const kept = Object.create(null);
+  for (const key of Object.keys(after)) if (key in before || !appendedRecord(key, after[key])) kept[key] = after[key];
+  return kept;
+}
 
 function assertGuarded(before) {
   const after = guardSnapshot();
@@ -49,7 +61,7 @@ function assertGuarded(before) {
   for (const path of paths) {
     if (!before[path] || !after[path]) throw new Error(`Configuration changed during the run: ${path} appeared or vanished`);
     try {
-      assertUnchanged(before[path], after[path]);
+      assertUnchanged(before[path], path === skillFeedback() ? withoutAppendedRecords(before[path], after[path]) : after[path]);
     } catch (error) {
       throw new Error(`Configuration changed during the run: ${path}: ${error.message}`);
     }
