@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDesktop, fitScreenshot, handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
+import { chooseApp, createDesktop, fitScreenshot,handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
 
 // A Retina laptop as the main display and a 1080p display to its left, one point above.
 const RETINA = { index: 0, id: 1, main: true, x: 0, y: 0, width: 1470, height: 956, pixelWidth: 2940, pixelHeight: 1912, scale: 2 };
@@ -11,6 +11,20 @@ const SIDE = { index: 1, id: 2, main: false, x: -1920, y: -1, width: 1920, heigh
 const SAFARI = { name: "Safari", bundleId: "com.apple.Safari", category: "public.app-category.productivity" };
 const NOTES = { name: "Notes", bundleId: "com.apple.Notes" };
 const BANK = { name: "Chase", bundleId: "com.chase.sig.Chase", category: "public.app-category.finance" };
+const HELIUM = { name: "Helium", bundleId: "net.imput.helium", pid: 82 };
+// The Dock's localized name on a Chinese system.
+const DOCK = { name: "程序坞", bundleId: "com.apple.dock", pid: 30 };
+const SCREENCAPTURE = { name: "screencaptureui", bundleId: "com.apple.screencaptureui", pid: 40 };
+const FINDER = { name: "Finder", bundleId: "com.apple.finder", pid: 20 };
+const DOCK_LEVEL = 20;
+
+// A window of `app` at a point; by default an ordinary window at layer 0.
+const win = (app, { layer = 0, alpha = 1, bounds = { x: 0, y: 30, width: 1470, height: 875 }, owner = app.name, name = "" } = {}) =>
+  ({ owner, name, layer, alpha, bounds, pid: app.pid ?? 1, app });
+// The Dock's full-display window over the Retina display.
+const dockLayer = (overrides = {}) => win(DOCK, { layer: DOCK_LEVEL, bounds: { x: 0, y: 0, width: 1470, height: 956 }, ...overrides });
+const scene = (windows, hitPid = windows.at(-1)?.pid ?? null) =>
+  ({ windows, hitPid, dockLevel: DOCK_LEVEL, displays: [RETINA, SIDE].map(({ x, y, width, height }) => ({ x, y, width, height })), frontmost: SAFARI, finder: FINDER });
 
 describe("screenshots and coordinates", () => {
   test("screenshots fit 1568 px and about 1.15 megapixels", () => {
@@ -91,6 +105,57 @@ describe("sensitive apps", () => {
     });
 });
 
+describe("the app under the pointer", () => {
+  const helium = win(HELIUM);
+
+  test("the topmost ordinary window decides", () => {
+    expect(chooseApp(scene([win(NOTES), helium]))).toBe(NOTES);
+    expect(chooseApp(scene([helium]))).toBe(HELIUM);
+  });
+
+  test("the Dock's full-display layer is passed over when the hit-test reaches the app below", () => {
+    expect(chooseApp(scene([dockLayer(), helium], HELIUM.pid))).toBe(HELIUM);
+    // A full-display Dock window on the second display, too.
+    expect(chooseApp(scene([dockLayer({ bounds: { x: -1920, y: -1, width: 1920, height: 1080 } }), helium], HELIUM.pid))).toBe(HELIUM);
+  });
+
+  test("the Dock's tiles, where the hit-test finds the Dock, decide", () => {
+    expect(chooseApp(scene([dockLayer(), helium], DOCK.pid))).toBe(DOCK);
+  });
+
+  test("a failed hit-test fails closed", () => {
+    expect(chooseApp(scene([dockLayer(), helium], null))).toBe(DOCK);
+  });
+
+  test.each([
+    ["a Dock menu", { layer: 101 }],
+    ["Mission Control", { layer: 18 }],
+    ["a Dock window smaller than the display", { bounds: { x: 0, y: 880, width: 1470, height: 76 } }],
+  ])("%s decides", (_, overrides) => {
+    expect(chooseApp(scene([dockLayer(overrides), helium], HELIUM.pid))).toBe(DOCK);
+  });
+
+  test("the Dock is matched by bundle id, never by name", () => {
+    const impostor = { name: "Dock", bundleId: "com.example.dock", pid: 50 };
+    expect(chooseApp(scene([win(impostor, { layer: DOCK_LEVEL, bounds: { x: 0, y: 0, width: 1470, height: 956 } }), helium], HELIUM.pid))).toBe(impostor);
+    // The real Dock under any localized name is still passed over.
+    expect(chooseApp(scene([dockLayer({ owner: "Dock" }), helium], HELIUM.pid))).toBe(HELIUM);
+  });
+
+  test("a visible screencaptureui window decides; an invisible one does not", () => {
+    expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000 }), helium], HELIUM.pid))).toBe(SCREENCAPTURE);
+    expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000, alpha: 0.2 }), helium], HELIUM.pid))).toBe(SCREENCAPTURE);
+    expect(chooseApp(scene([win(SCREENCAPTURE, { layer: 1000, alpha: 0 }), helium], HELIUM.pid))).toBe(HELIUM);
+  });
+
+  test("the menu bar is the frontmost app's and the bare desktop is Finder's", () => {
+    const menubar = { owner: "Window Server", name: "Menubar", layer: 24, alpha: 1, bounds: { x: 0, y: 0, width: 1470, height: 30 }, pid: 1, app: null };
+    expect(chooseApp(scene([menubar, helium]))).toBe(SAFARI);
+    expect(chooseApp(scene([{ ...menubar, name: "Backstop" }, helium]))).toBe(HELIUM);
+    expect(chooseApp(scene([]))).toBe(FINDER);
+  });
+});
+
 describe("session", () => {
   let stateDir;
   beforeEach(() => {
@@ -100,8 +165,11 @@ describe("session", () => {
 
   // A fake Mac: apps by name, the app under each point, the focused app, and a log of the
   // helper calls that change something.
-  function fakeMac({ under = () => SAFARI, front = SAFARI, allow = true, pid = 100, holds = () => true } = {}) {
-    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK };
+  // `under` gives an app, which becomes a one-window scene, or a whole scene. `focus` is the
+  // helper's focused reply; `front` is the focused app when `focus` is not given.
+  function fakeMac({ under = () => SAFARI, front = SAFARI, focus, frontmost = front, allow = true, pid = 100, holds = () => true } = {}) {
+    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK, Helium: HELIUM };
+    const toScene = (value) => (value === null ? { ...scene([]), finder: null } : "windows" in value ? value : scene([win(value)]));
     const mac = { actions: [], dialogs: [], overlays: [] };
     mac.desktop = createDesktop({
       stateDir, pid, holds,
@@ -109,8 +177,9 @@ describe("session", () => {
         switch (args[0]) {
           case "displays": return [RETINA, SIDE];
           case "app-info": return apps[args[1]] ?? null;
-          case "app-at": return under({ x: Number(args[1]), y: Number(args[2]) });
-          case "focused": return front;
+          case "scene": return toScene(under({ x: Number(args[1]), y: Number(args[2]) }));
+          case "focused": return focus ?? { app: front };
+          case "frontmost": return typeof frontmost === "function" ? frontmost() : frontmost;
           case "screenshot": return { path: args[4] };
           default:
             mac.actions.push(args);
@@ -207,6 +276,49 @@ describe("session", () => {
     expect((await mac.call("key", { combo: "cmd+t" })).text).toBe("Pressed cmd+t in Notes.");
     expect(mac.actions).toEqual([["key", "17", "cmd"]]);
     expect(mac.overlays).toHaveLength(1);
+  });
+
+  test("with only Helium approved, a click passes the Dock's layer but not its tiles or a screenshot overlay", async () => {
+    let under = scene([dockLayer(), win(HELIUM)], HELIUM.pid);
+    const mac = fakeMac({ under: () => under });
+    await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+    await mac.call("screenshot", {});
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Clicked in Helium.");
+    expect((await mac.call("mouse_move", { x: 10, y: 10 })).text).toBe("Moved the pointer over Helium.");
+    expect(mac.actions.map((action) => action[0])).toEqual(["click", "move"]);
+    mac.actions.length = 0;
+    under = scene([dockLayer(), win(HELIUM)], DOCK.pid);
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("程序坞 (under the pointer) is not approved. Call request_access with it first.");
+    under = scene([dockLayer({ layer: 101 }), win(HELIUM)], HELIUM.pid);
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toContain("程序坞 (under the pointer) is not approved");
+    under = scene([dockLayer(), win(HELIUM)], null);
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toContain("程序坞 (under the pointer) is not approved");
+    under = scene([win(SCREENCAPTURE, { layer: 1000 }), dockLayer(), win(HELIUM)], HELIUM.pid);
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("screencaptureui (under the pointer) is not approved. Call request_access with it first.");
+    expect(mac.actions).toEqual([]);
+  });
+
+  test("when Accessibility finds no focused app, keys and typing go to the frontmost app only if it is approved", async () => {
+    let frontmost = HELIUM;
+    const mac = fakeMac({ focus: { axError: -25212 }, frontmost: () => frontmost });
+    await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+    expect((await mac.call("type", { text: "hi" })).text).toBe("Typed into Helium.");
+    frontmost = NOTES;
+    expect((await mac.call("type", { text: "secret" })).text).toBe(
+      "Notes (the frontmost app; Accessibility found no focused app, error -25212) is not approved. Call request_access with it first.");
+    expect((await mac.call("key", { combo: "cmd+t" })).error).toBe(true);
+    frontmost = BANK;
+    expect((await mac.call("key", { combo: "cmd+t" })).text).toBe("Chase is refused: it is a finance app.");
+    frontmost = null;
+    expect((await mac.call("type", { text: "x" })).text).toContain("No app found the frontmost app");
+    expect(mac.actions).toEqual([["type", "hi"]]);
+  });
+
+  test("a focused-app answer without an app is refused, not replaced by the frontmost app", async () => {
+    const mac = fakeMac({ focus: { app: null }, frontmost: SAFARI });
+    await mac.call("request_access", { apps: ["Safari"], reason: "r" });
+    expect((await mac.call("type", { text: "hi" })).text).toBe("No app found the app with keyboard focus; nothing was done.");
+    expect(mac.actions).toEqual([]);
   });
 
   test("a drag checks both ends", async () => {

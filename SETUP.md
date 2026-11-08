@@ -568,6 +568,13 @@ The server keeps these safeguards:
 - Each click, drag, scroll or pointer move checks the app under the pointer. Keys and
   typing check the app with keyboard focus (Accessibility). An app that is not approved
   is refused.
+- The app under the pointer is the topmost visible window's. The only window passed over
+  is the Dock's full-display layer (bundle id `com.apple.dock` at the Dock window level),
+  and only when the Accessibility hit-test reaches another app through it. The Dock's
+  tiles, its menus, Mission Control, a failed hit-test and a visible screenshot overlay
+  (screencaptureui) all count, so a click there is refused unless that app is approved.
+- When Accessibility reports no focused app (some Chromium browsers), keys and typing
+  check the frontmost app instead, with the same approval and sensitive-app checks.
 - Finance, medical and health apps (by App Store category) are always refused. So are
   apps whose name or bundle id names a bank, health, government, password manager or
   authenticator.

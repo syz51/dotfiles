@@ -5,9 +5,11 @@
 //   permissions                         Screen Recording and Accessibility status
 //   displays                            active displays, in points and pixels
 //   frontmost                           the frontmost app
-//   focused                             the app that has keyboard focus, which can differ from the
-//                                       frontmost app (Spotlight and other non-activating panels)
-//   app-at <x> <y>                      the app whose window is topmost at a point
+//   focused                             {app} that has keyboard focus, which can differ from the
+//                                       frontmost app (Spotlight and other non-activating
+//                                       panels), or {axError} when the query fails
+//   scene <x> <y>                       the windows at a point and the Accessibility hit-test
+//                                       there, from which desktop.js picks the app
 //   app-info <name or bundle id>        a running or installed app
 //   screenshot <display id> <w> <h> <path>   JPEG of a display, scaled to w x h
 //   move <x> <y>
@@ -89,36 +91,51 @@ func frontmost() -> [String: Any]? {
   NSWorkspace.shared.frontmostApplication.map(appInfo)
 }
 
-func focused() -> [String: Any]? {
+// The focused app, or the AX error code when the query fails; desktop.js decides what a
+// failure means.
+func focused() -> [String: Any] {
   var value: CFTypeRef?
   let error = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedApplicationAttribute as CFString, &value)
-  guard error == .success, let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+  guard error == .success else { return ["axError": Int(error.rawValue)] }
+  guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return ["app": NSNull()] }
   var pid: pid_t = 0
   guard AXUIElementGetPid(value as! AXUIElement, &pid) == .success,
-        let app = NSRunningApplication(processIdentifier: pid) else { return nil }
-  return appInfo(app)
+        let app = NSRunningApplication(processIdentifier: pid) else { return ["app": NSNull()] }
+  return ["app": appInfo(app)]
 }
 
-// The topmost visible window containing the point decides the app. The menu bar belongs to
-// the frontmost app; other window-server surfaces are skipped.
-func appAt(_ point: CGPoint) -> [String: Any]? {
-  guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
-  else { return nil }
-  for window in windows {
+// What decides the app under a point, for chooseApp in desktop.js: the visible windows that
+// contain it, front to back, the pid the Accessibility hit-test finds there (null when it
+// fails), the Dock's window level and the display bounds.
+func scene(_ point: CGPoint) -> [String: Any] {
+  let rect = { (r: CGRect) -> [String: Any] in ["x": r.origin.x, "y": r.origin.y, "width": r.width, "height": r.height] }
+  var windows: [[String: Any]] = []
+  for window in CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? [] {
     guard let boundsDict = window[kCGWindowBounds as String] as? NSDictionary,
           let bounds = CGRect(dictionaryRepresentation: boundsDict), bounds.contains(point) else { continue }
-    if let alpha = window[kCGWindowAlpha as String] as? Double, alpha == 0 { continue }
-    let owner = window[kCGWindowOwnerName as String] as? String ?? ""
-    if owner == "Window Server" {
-      if (window[kCGWindowName as String] as? String) == "Menubar" { return frontmost() }
-      continue
-    }
-    guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
-          let app = NSRunningApplication(processIdentifier: pid) else { continue }
-    return appInfo(app)
+    let pid = window[kCGWindowOwnerPID as String] as? pid_t
+    windows.append([
+      "owner": window[kCGWindowOwnerName as String] as? String ?? "",
+      "name": window[kCGWindowName as String] as? String ?? "",
+      "layer": window[kCGWindowLayer as String] as? Int ?? 0,
+      "alpha": window[kCGWindowAlpha as String] as? Double ?? 1,
+      "bounds": rect(bounds),
+      "pid": pid.map { Int($0) } ?? NSNull(),
+      "app": pid.flatMap { NSRunningApplication(processIdentifier: $0) }.map(appInfo) ?? NSNull(),
+    ])
   }
-  // Nothing but the desktop: Finder owns it.
-  return NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first.map(appInfo)
+  var element: AXUIElement?
+  var hitPid: pid_t = 0
+  let hit = AXUIElementCopyElementAtPosition(AXUIElementCreateSystemWide(), Float(point.x), Float(point.y), &element) == .success
+    && element.map { AXUIElementGetPid($0, &hitPid) == .success } == true
+  return [
+    "windows": windows,
+    "hitPid": hit ? Int(hitPid) : NSNull(),
+    "dockLevel": Int(CGWindowLevelForKey(.dockWindow)),
+    "displays": displays().map { ["x": $0["x"]!, "y": $0["y"]!, "width": $0["width"]!, "height": $0["height"]!] },
+    "frontmost": frontmost() ?? NSNull(),
+    "finder": NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first.map(appInfo) ?? NSNull(),
+  ]
 }
 
 func findApp(_ query: String) -> [String: Any]? {
@@ -332,9 +349,10 @@ case "frontmost":
   emit(frontmost() ?? NSNull())
 case "focused":
   requireAccessibility()
-  emit(focused() ?? NSNull())
-case "app-at":
-  emit(appAt(point(0)) ?? NSNull())
+  emit(focused())
+case "scene":
+  requireAccessibility()
+  emit(scene(point(0)))
 case "app-info":
   emit(findApp(arg(0)) ?? NSNull())
 case "screenshot":

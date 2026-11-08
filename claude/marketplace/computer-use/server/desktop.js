@@ -3,8 +3,9 @@
 // - Banking, healthcare, government and password apps are refused, approved or not.
 // - One session at a time holds the lock file; another session's request_access is refused.
 // - A stop panel (button or Esc) ends the session at any time.
-// Every action checks the app it lands on: the app under the pointer for mouse actions, the
-// app with keyboard focus for keys and typing. helper.swift does the macOS calls.
+// Every action checks the app it lands on: the app under the pointer for mouse actions
+// (chooseApp), the app with keyboard focus for keys and typing. helper.swift does the macOS
+// calls.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -89,6 +90,39 @@ export function sensitiveReason(app) {
   const words = `${app.name ?? ""} ${(app.bundleId ?? "").replace(/\./g, " ")}`;
   const match = SENSITIVE_WORDS.exec(words);
   return match ? `it looks like a banking, healthcare, government or password app ("${match[1].toLowerCase()}")` : undefined;
+}
+
+const DOCK = "com.apple.dock";
+const covers = (outer, inner) => outer.x <= inner.x && outer.y <= inner.y
+  && outer.x + outer.width >= inner.x + inner.width && outer.y + outer.height >= inner.y + inner.height;
+
+/**
+ * The app under a point, from the helper's scene: the visible windows containing the point,
+ * front to back, the pid the Accessibility hit-test found there (null when it failed), the
+ * Dock's window level and the display bounds. This decides which app the approval check
+ * sees, so a window is passed over only when it cannot take the input:
+ * - a window with alpha 0, and a Window Server surface (its menu bar is the frontmost app's);
+ * - the Dock's full-display window at the Dock level, matched by bundle id, never by its
+ *   localized name, when the hit-test reaches another app through it.
+ * Every other window decides, including the Dock's tiles, menus and Mission Control, a failed
+ * hit-test, and screencaptureui, whose buttons take the click.
+ */
+export function chooseApp({ windows, hitPid, dockLevel, displays, frontmost, finder }) {
+  for (const window of windows) {
+    if (window.alpha === 0) continue;
+    if (window.owner === "Window Server") {
+      if (window.name === "Menubar") return frontmost;
+      continue;
+    }
+    if (!window.app) continue;
+    const passThroughDock = window.app.bundleId === DOCK && window.layer === dockLevel
+      && displays.some((display) => covers(window.bounds, display))
+      && Number.isInteger(hitPid) && hitPid !== window.pid;
+    if (passThroughDock) continue;
+    return window.app;
+  }
+  // Nothing but the desktop: Finder owns it.
+  return finder;
 }
 
 /** An error the model should read: it becomes a tool result with isError. */
@@ -296,8 +330,14 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     return toGlobal(shot.display, shot, x, y);
   }
 
-  const appAt = (p) => check(helper(["app-at", String(p.x), String(p.y)]), "under the pointer");
-  const focused = () => check(helper(["focused"]), "the app with keyboard focus");
+  const appAt = (p) => check(chooseApp(helper(["scene", String(p.x), String(p.y)])), "under the pointer");
+  // Some apps, such as Chromium browsers, answer no focused app to Accessibility. Only then
+  // does the frontmost app stand in, and it passes the same check.
+  function focused() {
+    const { app, axError } = helper(["focused"]);
+    if (axError === undefined) return check(app, "the app with keyboard focus");
+    return check(helper(["frontmost"]), `the frontmost app; Accessibility found no focused app, error ${axError}`);
+  }
   const at = (p) => [String(p.x), String(p.y)];
   const text = (value) => ({ content: [{ type: "text", text: value }] });
 
