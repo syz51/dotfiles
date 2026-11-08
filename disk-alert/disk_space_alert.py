@@ -20,9 +20,21 @@ sessions, `/private/tmp/claude-<uid>/<project>/<session id>`: those whose folder
 transcript and subagent transcripts have not changed for 24 hours, that Claude Code's
 registry of running sessions (`~/.claude/sessions`) does not list, and that no
 running process names or works inside. When any of that cannot be read, the folder
-stays. The alert says what was freed, and a sweep that brings space back without an
-alert posts a notification. `sweep --dry-run` lists what would go now, whatever the
-free space; a simulated reading (`check --free-gb`) never sweeps.
+stays.
+
+The same checks then empty idle Rust build folders in agent worktrees: the cargo
+`target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`) and in the
+Claude Code worktrees (`<repo>/.claude/worktrees/<name>`) of the repositories those
+belong to. A folder qualifies when cargo's `CACHEDIR.TAG` marks it, every cargo build
+lock in it can be taken at once, nothing in it has changed for 6 hours (1 hour while
+space is critical), and no running process names it or works inside it. The locks
+are taken first and held to the end. Emptying keeps the tag and the lock files, so a
+build that starts meanwhile waits on the same locks and then starts afresh in a
+folder still tagged.
+
+The alert says what was freed, and a sweep that brings space back without an alert
+posts a notification. `sweep --dry-run` lists what would go now, whatever the free
+space; a simulated reading (`check --free-gb`) never sweeps.
 
 State lives in `~/.local/state/disk-space-alert/state.json` and every alert adds
 one line to `events.jsonl` there. `test` sends a test alert through both channels
@@ -33,6 +45,7 @@ writes and loads the LaunchAgent.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import plistlib
@@ -70,6 +83,15 @@ DEFAULT_CLAUDE_SESSIONS = HOME / ".claude" / "sessions"
 PROCESS_SNAPSHOT_SECONDS = 5
 SWEEP_IDLE = timedelta(hours=24)
 SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+DEFAULT_WORKTREES = HOME / ".t3" / "worktrees"
+TARGET_IDLE = {"low": timedelta(hours=6), "critical": timedelta(hours=1)}
+# The first line of the CACHEDIR.TAG cargo writes into every target folder.
+CARGO_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
+# Cargo holds these in each profile folder (target/debug, target/<triple>/release, ...)
+# for the whole of a build.
+CARGO_LOCKS = frozenset((".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock"))
+TARGET_SEARCH_DEPTH = 6
+LOCK_SEARCH_DEPTH = 3
 
 Runner = Callable[[list, Optional[str]], subprocess.CompletedProcess]
 
@@ -106,6 +128,9 @@ class Config:
     claude_tmp: Optional[Path] = None
     claude_projects: Path = field(default_factory=lambda: DEFAULT_CLAUDE_PROJECTS)
     claude_sessions: Path = field(default_factory=lambda: DEFAULT_CLAUDE_SESSIONS)
+    # T3's worktree folder, whose cargo target folders are swept while space is low;
+    # None turns that sweep off.
+    worktrees: Optional[Path] = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +221,7 @@ class Swept:
     path: str
     bytes: int
     error: Optional[str] = None
+    kind: str = "session"
 
 
 @dataclass(frozen=True)
@@ -207,13 +233,16 @@ class Processes:
     commands: str
     cwds: tuple
 
+    def works_inside(self, folder: Path) -> bool:
+        real = str(folder.resolve())
+        return any(cwd == real or cwd.startswith(real + "/") for cwd in self.cwds)
+
     def use(self, session: Path) -> bool:
-        real = str(session.resolve())
-        return (
-            session.name in self.session_ids
-            or session.name in self.commands
-            or any(cwd == real or cwd.startswith(real + "/") for cwd in self.cwds)
-        )
+        return session.name in self.session_ids or session.name in self.commands or self.works_inside(session)
+
+    def inside(self, folder: Path) -> bool:
+        """Whether a running command names folder or anything in it, or works inside it."""
+        return str(folder.resolve()) in self.commands or self.works_inside(folder)
 
 
 def registered_sessions(registry: Path) -> Optional[frozenset]:
@@ -241,9 +270,10 @@ def registered_sessions(registry: Path) -> Optional[frozenset]:
     return frozenset(ids)
 
 
-def running_processes(run: Runner, registry: Path) -> Optional[Processes]:
-    """A snapshot of what is running, or None when any part of it cannot be read."""
-    session_ids = registered_sessions(registry)
+def running_processes(run: Runner, registry: Optional[Path]) -> Optional[Processes]:
+    """A snapshot of what is running, or None when any part of it cannot be read. With
+    no registry, the snapshot has no session ids and does not read one."""
+    session_ids = frozenset() if registry is None else registered_sessions(registry)
     ps = run(["ps", "-axww", "-o", "command="], None)
     # lsof exits 1 when it could not inspect some processes; what it printed still counts.
     lsof = run(["lsof", "-nP", "-d", "cwd", "-Fn"], None)
@@ -314,13 +344,9 @@ def session_candidates(tmp_root: Path, projects: Path, cutoff: float) -> list:
     for project in sorted(tmp_root.iterdir()):
         if project.is_symlink() or not project.is_dir():
             continue
-        try:
-            sessions = sorted(project.iterdir())
-        except OSError:
-            continue
         transcripts = projects / project.name
-        for session in sessions:
-            if not SESSION_ID.match(session.name) or session.is_symlink() or not session.is_dir():
+        for session in subfolders(project):
+            if not SESSION_ID.match(session.name):
                 continue
             if (
                 idle_size(transcripts / f"{session.name}.jsonl", cutoff) is None
@@ -339,7 +365,7 @@ def sweep_sessions(
     """Remove the scratch folders of idle Claude Code sessions (see the module doc).
     The process snapshot is taken once there is something to remove and renewed every
     few seconds, so a session resumed during a long sweep is still seen."""
-    if not config.claude_tmp.is_dir():
+    if config.claude_tmp is None or not config.claude_tmp.is_dir():
         return []
     cutoff = (now - SWEEP_IDLE).timestamp()
     candidates = session_candidates(config.claude_tmp, config.claude_projects, cutoff)
@@ -365,6 +391,189 @@ def sweep_sessions(
     return swept
 
 
+def subfolders(folder: Path) -> list:
+    """The real (not linked) folders directly in folder; none when it cannot be read."""
+    try:
+        return [entry for entry in sorted(folder.iterdir()) if entry.is_dir() and not entry.is_symlink()]
+    except OSError:
+        return []
+
+
+def main_checkout(worktree: Path) -> Optional[Path]:
+    """The repository a linked worktree belongs to, read from its `.git` file
+    (`gitdir: <repo>/.git/worktrees/<name>`, the path absolute or relative to the
+    worktree), or None."""
+    try:
+        line = (worktree / ".git").read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not line.startswith("gitdir: "):
+        return None
+    gitdir = (worktree / line[len("gitdir: "):]).resolve()
+    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+        return None
+    return gitdir.parents[2]
+
+
+def agent_worktrees(root: Path) -> list:
+    """T3 worktrees, root/<project>/<name>, then the Claude Code worktrees,
+    <repo>/.claude/worktrees/<name>, of the repositories they belong to."""
+    worktrees = [tree for project in subfolders(root) for tree in subfolders(project)]
+    repos = sorted({repo for repo in map(main_checkout, worktrees) if repo is not None})
+    return worktrees + [tree for repo in repos for tree in subfolders(repo / ".claude" / "worktrees")]
+
+
+def is_cargo_target(folder: Path) -> bool:
+    if folder.name != "target" or folder.is_symlink():
+        return False
+    try:
+        with open(folder / "CACHEDIR.TAG", "rb") as tag:
+            return tag.read(len(CARGO_TAG)) == CARGO_TAG
+    except OSError:
+        return False
+
+
+def cargo_targets(worktree: Path) -> list:
+    """Cargo target folders in a worktree, such as `target` or `services/api/target`.
+    Hidden folders and node_modules are not searched, nor is anything inside a target."""
+    found = []
+    for folder, dirs, _files in os.walk(worktree):
+        path = Path(folder)
+        if is_cargo_target(path):
+            found.append(path)
+            dirs.clear()
+        elif len(path.relative_to(worktree).parts) >= TARGET_SEARCH_DEPTH:
+            dirs.clear()
+        else:
+            dirs[:] = sorted(name for name in dirs if not name.startswith(".") and name != "node_modules")
+    return found
+
+
+def build_lock_files(target: Path) -> list:
+    """Cargo's lock files in target's profile folders (target/debug,
+    target/<triple>/release, target/llvm-cov-target/<triple>/debug, ...). A folder holding
+    any of them is a profile folder and is not searched further."""
+    found = []
+    for folder, dirs, files in os.walk(target):
+        names = sorted(CARGO_LOCKS.intersection(files))
+        found += [Path(folder, name) for name in names]
+        if names or len(Path(folder).relative_to(target).parts) >= LOCK_SEARCH_DEPTH:
+            dirs.clear()
+    return found
+
+
+def take_build_locks(lock_files: list) -> Optional[list]:
+    """Take every lock in lock_files without waiting and return their descriptors, or
+    None, holding nothing, when a build holds any of them or one cannot be opened."""
+    held = []
+    try:
+        for path in lock_files:
+            descriptor = os.open(path, os.O_RDONLY)
+            held.append(descriptor)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        release(held)
+        return None
+    return held
+
+
+def release(descriptors: list) -> None:
+    for descriptor in descriptors:
+        os.close(descriptor)
+
+
+def removable(target: Path, lock_files: list) -> list:
+    """What emptying target removes: everything in it but its CACHEDIR.TAG, the lock
+    files and the folders that hold them. Those stay so that a build which starts
+    meanwhile waits on the same locks, and finds the folder still tagged afterwards."""
+    keep = {target / "CACHEDIR.TAG", *lock_files}
+    holders = {folder for lock in lock_files for folder in lock.parents if target in folder.parents}
+    entries, pending = [], [target]
+    while pending:
+        folder = pending.pop()
+        for entry in sorted(folder.iterdir()):
+            if entry in holders:
+                pending.append(entry)
+            elif entry not in keep:
+                entries.append(entry)
+    return sorted(entries)
+
+
+def remove_entry(entry: Path) -> None:
+    if entry.is_dir() and not entry.is_symlink():
+        remove_tree(entry)
+    else:
+        entry.unlink()
+
+
+def sweep_targets(
+    config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic,
+) -> list:
+    """Empty idle cargo target folders in agent worktrees (see the module doc). Each one's
+    build locks are taken first and held to the end, so its idleness is read while no
+    build can start in it. The process snapshot is taken only once an idle folder turns
+    up, and renewed every few seconds."""
+    if config.worktrees is None or not config.worktrees.is_dir():
+        return []
+    cutoff = (now - TARGET_IDLE.get(level, TARGET_IDLE["low"])).timestamp()
+    swept = []
+    processes, taken = None, 0.0
+    for worktree in agent_worktrees(config.worktrees):
+        for target in cargo_targets(worktree):
+            lock_files = build_lock_files(target)
+            held = take_build_locks(lock_files)
+            if held is None:
+                continue
+            try:
+                size = idle_size(target, cutoff)
+                if not size:
+                    continue
+                try:
+                    entries = removable(target, lock_files)
+                except OSError:
+                    continue
+                if not entries:
+                    continue
+                if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
+                    # Session ids play no part here, so Claude Code's registry is not read.
+                    processes, taken = running_processes(run, None), clock()
+                    if processes is None:
+                        return swept
+                if processes.inside(target):
+                    continue
+                error = None
+                if not dry_run:
+                    try:
+                        for entry in entries:
+                            remove_entry(entry)
+                    except OSError as failure:
+                        error = str(failure)
+                swept.append(Swept(str(target), size, error, "target"))
+            finally:
+                release(held)
+    return swept
+
+
+def sweep(config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False) -> tuple:
+    """Both sweeps, idle session scratch and then idle cargo target folders. Returns
+    what they removed and a failure record for each that raised; one failing does not
+    stop the other or lose what it removed."""
+    swept, failures = [], []
+    steps = (
+        ("sessions", lambda: sweep_sessions(config, run, now, dry_run)),
+        ("targets", lambda: sweep_targets(config, run, now, level, dry_run)),
+    )
+    for name, step in steps:
+        try:
+            swept += step()
+        except OSError as error:
+            failures.append(
+                {"at": now.isoformat(timespec="seconds"), "event": "sweep_failed", "sweep": name, "error": str(error)}
+            )
+    return swept, failures
+
+
 def format_size(size: int) -> str:
     return f"{size / 1e9:.1f} GB" if size >= 1e9 else f"{size / 1e6:.0f} MB"
 
@@ -373,10 +582,18 @@ def sweep_note(swept: list) -> str:
     removed = [item for item in swept if item.error is None]
     if not removed:
         return ""
+    sessions = sum(1 for item in removed if item.kind == "session")
+    targets = len(removed) - sessions
+    parts = []
+    if sessions:
+        parts.append(f"{sessions} idle Claude Code session scratch folder{'s' if sessions != 1 else ''}")
+    if targets:
+        parts.append(f"{targets} idle Rust target folder{'s' if targets != 1 else ''} in agent worktrees")
     return (
-        f"The monitor removed {len(removed)} idle Claude Code session scratch "
-        f"folder{'s' if len(removed) != 1 else ''} (about {format_size(sum(item.bytes for item in removed))})."
+        f"The monitor removed {' and '.join(parts)} "
+        f"(about {format_size(sum(item.bytes for item in removed))})."
     )
+
 
 def describe(level: str, config: Config) -> str:
     if level == "critical":
@@ -569,14 +786,12 @@ def run_check(config: Config, run: Runner, measure: Callable[[], float], now: da
     state = load_state(state_path)
     note = ""
     failed = False
-    if config.claude_tmp and classify(free, state.level, config.low_gb, config.critical_gb) != "ok":
-        try:
-            swept = sweep_sessions(config, run, now)
-        except OSError as error:
-            # A sweep that fails must not stop the alert.
-            swept = []
+    level = classify(free, state.level, config.low_gb, config.critical_gb)
+    if (config.claude_tmp or config.worktrees) and level != "ok":
+        # A sweep that fails must not stop the alert.
+        swept, failures = sweep(config, run, now, level)
+        for failure in failures:
             failed = True
-            failure = {"at": now.isoformat(timespec="seconds"), "event": "sweep_failed", "error": str(error)}
             append_event(config.state_dir, failure)
             print(json.dumps(failure, ensure_ascii=False))
         if swept:
@@ -591,7 +806,7 @@ def run_check(config: Config, run: Runner, measure: Callable[[], float], now: da
     # Escalations and reminders carry the note; any other outcome, such as a sweep that
     # brought the reading back to ok, still says what was removed.
     if note and (record is None or record["event"] not in ("escalated", "reminder")):
-        failed = bool(notify(run, config, "Disk space: session scratch removed", note)) or failed
+        failed = bool(notify(run, config, "Disk space: idle build output removed", note)) or failed
     if record is None:
         return 1 if failed else 0
     append_event(config.state_dir, record)
@@ -600,19 +815,24 @@ def run_check(config: Config, run: Runner, measure: Callable[[], float], now: da
 
 
 def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
-    swept = sweep_sessions(config, run, now, dry_run)
-    if swept and not dry_run:
-        append_event(config.state_dir, sweep_record(swept, now))
+    swept, failures = sweep(config, run, now, "low", dry_run)
+    if not dry_run:
+        for failure in failures:
+            append_event(config.state_dir, failure)
+        if swept:
+            append_event(config.state_dir, sweep_record(swept, now))
     print(json.dumps(
         {
             "dry_run": dry_run,
             "freed_gb": round(sum(item.bytes for item in swept if item.error is None) / 1e9, 2),
-            "sessions": [asdict(item) for item in swept],
+            "sessions": [asdict(item) for item in swept if item.kind == "session"],
+            "targets": [asdict(item) for item in swept if item.kind == "target"],
+            "failures": failures,
         },
         indent=2,
         ensure_ascii=False,
     ))
-    return 1 if any(item.error for item in swept) else 0
+    return 1 if failures or any(item.error for item in swept) else 0
 
 def run_test(config: Config, run: Runner, now: datetime) -> int:
     free = free_gb(config.volume)
@@ -740,7 +960,13 @@ def parse_args(argv: list) -> argparse.Namespace:
         command.add_argument("--claude-tmp", type=Path, default=DEFAULT_CLAUDE_TMP)
         command.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
         command.add_argument("--claude-sessions", type=Path, default=DEFAULT_CLAUDE_SESSIONS)
-        command.add_argument("--no-sweep", action="store_true", help="never remove session folders")
+        command.add_argument(
+            "--worktrees", type=Path, default=DEFAULT_WORKTREES,
+            help="T3 worktree folder whose idle cargo target folders are swept",
+        )
+        command.add_argument(
+            "--no-sweep", action="store_true", help="never remove session or target folders"
+        )
 
     check_command = commands.add_parser("check", help="measure once and alert if needed")
     add_common(check_command)
@@ -755,10 +981,12 @@ def parse_args(argv: list) -> argparse.Namespace:
     install.add_argument("--low-gb", type=float, default=DEFAULT_LOW_GB)
     install.add_argument("--critical-gb", type=float, default=DEFAULT_CRITICAL_GB)
     commands.add_parser("uninstall", help="unload and remove the LaunchAgent")
-    sweep = commands.add_parser("sweep", help="remove idle Claude Code session scratch now")
-    sweep.add_argument("--dry-run", action="store_true", help="list them without removing")
-    sweep.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
-    add_sweep(sweep)
+    sweep_command = commands.add_parser(
+        "sweep", help="remove idle session scratch and worktree target folders now"
+    )
+    sweep_command.add_argument("--dry-run", action="store_true", help="list them without removing")
+    sweep_command.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    add_sweep(sweep_command)
 
     args = parser.parse_args(argv)
     if args.command not in ("uninstall", "sweep") and args.critical_gb >= args.low_gb:
@@ -776,6 +1004,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
     # A simulated reading never sweeps: it must not touch real folders.
     simulated = getattr(args, "free_gb", None) is not None
     claude_tmp = None if args.no_sweep or simulated else args.claude_tmp
+    worktrees = None if args.no_sweep or simulated else args.worktrees
     if args.command == "sweep":
         if claude_tmp is None:
             return 0
@@ -784,6 +1013,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
             claude_tmp=claude_tmp,
             claude_projects=args.claude_projects,
             claude_sessions=args.claude_sessions,
+            worktrees=worktrees,
         )
         return run_sweep(config, run, now, args.dry_run)
     config = Config(
@@ -797,6 +1027,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
         claude_tmp=claude_tmp,
         claude_projects=args.claude_projects,
         claude_sessions=args.claude_sessions,
+        worktrees=worktrees,
     )
     if args.command == "check":
         measure = (lambda: args.free_gb) if simulated else (lambda: free_gb(config.volume))

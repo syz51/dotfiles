@@ -694,6 +694,52 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+## Rust build size
+
+Every agent worktree of a Rust repository builds its own `target/` folder. A test build
+of agent-board takes about 3 GB with Cargo's defaults and grows with each edit.
+`cargo/config.toml` holds user-wide Cargo settings that shrink dev and test builds.
+Link it on each Mac:
+
+```sh
+mkdir -p ~/.cargo
+ln -s ~/.config/cargo/config.toml ~/.cargo/config.toml
+```
+
+If `~/.cargo/config.toml` already exists, move its settings into `cargo/config.toml`
+first. The settings are:
+
+- `profile.dev.debug = "line-tables-only"`: panics and backtraces keep files and line
+  numbers, but a debugger cannot show variables. For a debugging session with full
+  debug information, dependencies included, run
+  `cargo build --config profile.dev.debug=true --config 'profile.dev.package."*".debug=true'`.
+  `CARGO_PROFILE_DEV_DEBUG=true` alone covers only the workspace's own crates, since no
+  variable can name the `"*"` package.
+- `profile.dev.package."*".debug = false`: dependencies keep no debug information.
+
+They override the same settings in a project's `Cargo.toml`. A project's own
+`.cargo/config.toml` and `CARGO_PROFILE_*` variables override them again. Release
+builds keep each project's settings.
+
+Measured on agent-board's `cargo test --workspace --no-run` (CPU seconds, on a busy
+machine):
+
+| Settings | Size, then after two edits | Full build | Rebuild after an edit |
+| --- | --- | --- | --- |
+| Cargo defaults | 2.8 GB, 3.2 GB | 316 s | 13.5 s |
+| These settings | 2.0 GB, 2.3 GB | 266 s | 14 s |
+| These settings without incremental compilation | 1.3 GB, 1.3 GB | 241 s | 54 s |
+
+Incremental compilation stays on. Turning it off saves another 1 GB a worktree but
+makes each edit-and-test loop about four times slower. The disk space alert's sweep
+instead empties `target/` folders that agents have left idle (see
+[Disk space alert](#disk-space-alert)).
+
+One shared `CARGO_TARGET_DIR` for all worktrees would not help. Cargo locks the
+whole build folder for each build, so parallel agents would wait on each other. The
+worktrees of a repository would also overwrite each other's builds. Cargo's
+fine-grained build locking and shared build cache were still unstable in Cargo 1.99.
+
 ## Disk space alert
 
 `disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
@@ -720,12 +766,27 @@ folders and other build output pile up. A folder qualifies only when nothing in 
 its transcript or in its subagent transcripts has changed for 24 hours, Claude Code's
 registry of running sessions (`~/.claude/sessions`) does not list it, and no running
 process names the session or works inside the folder. Anything that cannot be read
-keeps the folder, and a sweep that fails still lets the alert go out. The alert says
-what was freed, or a notification does when the sweep alone brings space back, and
-`events.jsonl` gets a `swept` line listing the folders. `sweep --dry-run` lists
-what would go now, whatever the free space, `sweep` removes it and logs it, and
-`--no-sweep` turns the sweep off for a run. A simulated reading (`check --free-gb`)
-never sweeps.
+keeps the folder, and a sweep that fails still lets the alert go out.
+
+The same sweep then empties idle Rust build output in agent worktrees: the cargo
+`target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`, up to six
+folders deep, outside hidden folders and `node_modules`) and in the Claude Code
+worktrees (`<repo>/.claude/worktrees/<name>`) of the repositories those belong to.
+For each folder marked by cargo's `CACHEDIR.TAG`, the sweep first takes every cargo
+build lock in it without waiting, and skips the folder when a build holds one. While
+it holds the locks, the folder qualifies only when nothing in it has changed for
+6 hours (1 hour while space is critical) and no running process names it or works
+inside it. The sweep then removes everything in the folder except the tag, the lock
+files and the folders that hold them. A build that starts meanwhile waits on those
+same locks, then starts afresh in a folder still tagged. The worktree's sources are
+never touched; its next build is a full one. `--worktrees` points the sweep at
+another folder.
+
+The alert says what was freed, or a notification does when the sweep alone brings
+space back, and `events.jsonl` gets a `swept` line listing the folders.
+`sweep --dry-run` lists what would go now, whatever the free space, `sweep` removes
+it and logs it (exiting 1 when either part of the sweep failed), and `--no-sweep` turns the sweep off for a run. A simulated reading
+(`check --free-gb`) never sweeps.
 
 Install it on each Mac from the main checkout, which the plist points to, and send a
 test alert through both channels:
@@ -756,6 +817,7 @@ uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s cargo/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s config-sync/tests -v
 ```
 
