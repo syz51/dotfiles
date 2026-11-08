@@ -221,14 +221,20 @@ a variable, command substitution or brace expansion, and one that sets push
 configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 cannot see git aliases or `GIT_CONFIG_*` variables.
-guard-main-checkout (Claude Code only) blocks git commands that move a main checkout's
-branch or set its work aside: `switch`, `checkout` of a branch, `reset --hard`, `--keep`,
-`--merge` or `--soft`, `merge`, `rebase`, `pull` and `stash`. Their abort, list and show
-forms, file restores (`git checkout -- <path>`) and every command in a linked worktree
-still run. A main checkout is one whose git directory is the common git directory. To
-allow these commands in one repository, run `git config claude.mainCheckout allow`
-yourself; the guard refuses a session that sets that key. It fails open when it cannot
-tell the repository, such as with `--git-dir` or a directory held in a variable.
+guard-main-checkout (Claude Code only) blocks commands that switch, move or reset a main
+checkout's branch or set its work aside: git `switch`, `checkout` of a branch,
+`checkout -f`, `reset` to another commit or with `--hard`, `--keep`, `--merge` or
+`--soft`, `merge`, `rebase`, `pull`, `stash`, `bisect` and `gh pr checkout`. Their
+continue, abort, list and show forms, file restores (`git checkout -- <path>`,
+`git reset -- <path>`) and every command in a linked worktree still run. A main checkout
+is one whose git directory is the common git directory. Repositories in the temporary
+directory or Claude Code's `/tmp/claude-<uid>` scratch folder are a session's own and
+are not guarded. To allow these commands in one repository, run
+`git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
+command that sets that key. It is a guardrail against mistakes, not a security
+boundary: it does not see aliases, scripts or direct edits of `.git/config`. It fails
+open when it cannot tell the repository, such as with `--git-dir` or a directory held
+in a variable, and for scripts nested too deeply to parse.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and

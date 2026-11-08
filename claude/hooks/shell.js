@@ -10,6 +10,8 @@ const MAX_DEPTH = 8;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
+/** git's global options that take the next word as their value, for the guards that read git commands. */
+export const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"]);
 // Commands that run another command, with their options that take a value.
 const WRAPPERS = {
   arch: ["-e", "-arch"],
