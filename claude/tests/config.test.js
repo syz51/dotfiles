@@ -238,9 +238,10 @@ describe("settings", () => {
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
-// .claude/settings.local.json and stages writes it cannot make in place in .claude/.cc-writes/.
+// .claude/settings.local.json, stages writes it cannot make in place in .claude/.cc-writes/, and
+// puts Agent isolation and EnterWorktree checkouts in .claude/worktrees/.
 // It is checked in an empty repository, since this one's .gitignore also covers /.claude/.
-test.each([".claude/settings.local.json", ".claude/.cc-writes/file", "sub/.claude/.cc-writes/file"])("the global git ignore file excludes %s", (path) => {
+test.each([".claude/settings.local.json", ".claude/.cc-writes/file", "sub/.claude/.cc-writes/file", ".claude/worktrees/x/file", "sub/.claude/worktrees/x/file"])("the global git ignore file excludes %s", (path) => {
   const repo = mkdtempSync(join(tmpdir(), "git-ignore-"));
   try {
     expect(spawnSync("git", ["init", "-q", repo]).status).toBe(0);
@@ -707,9 +708,10 @@ describe("rules the live suites test", () => {
 
   // Threads that start in a repository's main checkout share it; one that switched or reset
   // it moved the branch under the others (dotfiles-164). guard-main-checkout.js enforces the
-  // git part.
+  // git part. Fast-forwards and a clean switch back to the default branch lose nothing, and
+  // the user wants agents to run them without a second step (dotfiles-235).
   test("Workflow moves work out of a shared main checkout", () => {
-    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. A hook refuses those git commands in a main checkout outside the temporary directories\./);
+    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories\./);
   });
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its

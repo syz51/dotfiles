@@ -1,3 +1,5 @@
 **/.claude/settings.local.json
 # Claude Code stages a file here when it cannot rewrite it in place.
 **/.claude/.cc-writes/
+# Agent isolation and EnterWorktree put their worktrees here.
+**/.claude/worktrees/

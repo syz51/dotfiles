@@ -235,7 +235,15 @@ checkout's branch or set its work aside: git `switch`, `checkout` of a branch,
 `checkout -f`, `reset` to another commit or with `--hard`, `--keep`, `--merge` or
 `--soft`, `merge`, `rebase`, `pull`, `stash`, `bisect` and `gh pr checkout`. Their
 continue, abort, list and show forms, file restores (`git checkout -- <path>`,
-`git reset -- <path>`) and every command in a linked worktree still run. A main checkout
+`git reset -- <path>`), fast-forwards, a clean switch back to the default branch and
+every command in a linked worktree still run. A fast-forward is a `merge` or `pull` whose
+last of `--ff`, `--no-ff` and `--ff-only` is `--ff-only`, with only output options,
+`--no-edit`, `--no-autostash`, `--no-rebase` or `--rebase=false` beside it, spelled out,
+no refspec that forces (`+a`) or names a destination (`a:b`), and no global `-c`. Any
+other option, such as `-s ours` or `--autostash`, makes it an ordinary merge or pull. A
+switch back is `git switch <name>` or `git checkout <name>` (with `-q` at most) where
+`origin/HEAD` names that branch and no tracked file has changes. Neither loses work, so
+agents may update a shared checkout without asking the user again. A main checkout
 is one whose git directory is the common git directory. Repositories in the temporary
 directory or Claude Code's `/tmp/claude-<uid>` scratch folder are a session's own and
 are not guarded. To allow these commands in one repository, run
@@ -585,8 +593,11 @@ The server keeps these safeguards:
   typing check the app with keyboard focus (Accessibility). An app that is not approved
   is refused.
 - The app under the pointer is the topmost visible app window's. Invisible (alpha 0)
-  windows, Window Server surfaces other than the menu bar, and windows of processes that
-  are not apps are passed over. Of app windows, only the Dock's full-display layer (bundle
+  windows and Window Server surfaces other than the menu bar are passed over. The helper
+  knows the Window Server by its executable path, not by its name. A visible window of
+  any other process that is not an app (no running application) is refused, naming its
+  owner and pid, past the Dock's layer too. Its owner name, which the process chooses,
+  never goes to the approval check. Of app windows, only the Dock's full-display layer (bundle
   id `com.apple.dock` at the Dock window level) is passed over, and only when the
   Accessibility hit-test reaches another app through it. The window below must then
   belong to that app, or the click is refused. The Dock's tiles, its menus, Mission
