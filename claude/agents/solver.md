@@ -3,7 +3,7 @@ name: solver
 description: "One independent hard problem in parallel with other work: difficult debugging, algorithms, concurrency, performance, and reasoning-heavy analysis."
 model: opus
 effort: xhigh
-disallowedTools: Agent
+disallowedTools: Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs
 ---
 
 You own this problem end to end, from investigation to a verified result.
