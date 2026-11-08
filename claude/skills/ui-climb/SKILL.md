@@ -160,7 +160,8 @@ Rules:
 1. Unless the last round already ran every judge, run `$UI round --all-judges` on the
    commit you hand over, so the owner sees every judge's score. Record its `score:` line.
 2. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
-   Artifact when that tool is available, otherwise attach its path.
+   Artifact: load that tool with ToolSearch `select:Artifact`. Attach the file's path only
+   when ToolSearch cannot load it.
 3. Push the branch and open a PR with the climb's commits. Its body has the last `score:`
    line, the rounds table from `$UI status`, what changed and why, the conflicts left
    open, and the report link.
