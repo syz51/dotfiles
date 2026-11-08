@@ -24,6 +24,19 @@ describe("package-runner", () => {
     "npx prettier --write .",
     "pnpm test",
     "yarn build",
+    "corepack enable",
+    "vp run build",
+    "bunx pnpm@11 store prune",
+    "bun x npm install",
+    "node check.js",
+    "nodejs server.js",
+    "pnpx create-vite",
+    "yarnpkg add x",
+    "vpx tsc",
+    "NPM install",
+    "BUNX pnpm install",
+    "bunx --cwd app npm install",
+    "ssh host 'npm ci'",
     "pip install requests",
     "pytest -q",
     "python3 script.py",
@@ -49,6 +62,9 @@ describe("package-runner", () => {
   test.each([
     "bun test",
     "bunx prettier --check .",
+    "bunx --cwd npm tsc",
+    "bun install",
+    "bun run test",
     "uv run pytest -q",
     "uv run --no-project python -B script.py",
     "UV_OFFLINE=1 uv run python3 x.py",
@@ -73,18 +89,8 @@ describe("package-runner", () => {
     expect(packageRunner(actions([bash("command -p pip install x")])).verdict).toBe("fail");
   });
 
-  test("a matching lockfile in the session's folder makes the project's runner fine", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "claude-factory-lock-"));
-    cleanup.push(cwd);
-    writeFileSync(join(cwd, "pnpm-lock.yaml"), "");
-    expect(packageRunner(actions([bash("pnpm test")], { cwd })).verdict).toBe("pass");
-    expect(packageRunner(actions([bash("npm test")], { cwd })).verdict).toBe("fail");
-    writeFileSync(join(cwd, "package-lock.json"), "{}");
-    expect(packageRunner(actions([bash("npm test"), bash("npx tsc")], { cwd })).verdict).toBe("pass");
-    // A lockfile cannot excuse Python outside uv.
-    expect(packageRunner(actions([bash("pip install x")], { cwd })).verdict).toBe("fail");
-    // The folder no longer existing leaves the command unexcused.
-    expect(packageRunner(actions([bash("pnpm test")], { cwd: join(cwd, "gone") })).verdict).toBe("fail");
+  test("names the blocked tool, also behind bunx", () => {
+    expect(packageRunner(actions([bash("cd app && bunx pnpm@9 install")])).hits[0].tool).toBe("pnpm");
   });
 
   test("is na without any Bash call", () => {
