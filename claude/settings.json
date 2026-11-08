@@ -24,6 +24,10 @@
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-runtimes.js\""
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-main-checkout.js\""
           }
         ]
       },

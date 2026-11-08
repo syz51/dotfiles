@@ -221,6 +221,14 @@ a variable, command substitution or brace expansion, and one that sets push
 configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 cannot see git aliases or `GIT_CONFIG_*` variables.
+guard-main-checkout (Claude Code only) blocks git commands that move a main checkout's
+branch or set its work aside: `switch`, `checkout` of a branch, `reset --hard`, `--keep`,
+`--merge` or `--soft`, `merge`, `rebase`, `pull` and `stash`. Their abort, list and show
+forms, file restores (`git checkout -- <path>`) and every command in a linked worktree
+still run. A main checkout is one whose git directory is the common git directory. To
+allow these commands in one repository, run `git config claude.mainCheckout allow`
+yourself; the guard refuses a session that sets that key. It fails open when it cannot
+tell the repository, such as with `--git-dir` or a directory held in a variable.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
