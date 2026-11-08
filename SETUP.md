@@ -257,7 +257,9 @@ its own. It fetches origin's default branch with a 4-second limit, sharing
 It never changes the worktree. It stays quiet in a main checkout, with tracked changes,
 on a branch with its own commits or another upstream, and when HEAD is current. When the
 fetch fails, it compares with the last fetched branch and says so. It adds about 1 to 2
-seconds to the start of such a session, and about 0.2 seconds offline.
+seconds to the start of such a session, and about 0.2 seconds offline. Claude Code reads
+hooks when a session starts, so a session that started before config-sync installed a
+hook never runs it.
 Do not replace an existing tool home without backing up its local data.
 
 Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
@@ -816,7 +818,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   through `ReportFindings`, with a category and an outcome. The real owner-check
   finding is `skipped`, because the checkout stays read-only. The guard hooks block a user-authorized leased force push to the branch the
   remote's HEAD names as its default and a bare
-  `python3`, while `uv run python` still runs.
+  `python3`, while `uv run python` still runs. A session in a linked worktree cut from a
+  stale local main, with origin two commits ahead, gets the `stale-base.js` warning at
+  start. Its commit then sits on origin's tip.
 - `live-dispatch.test.js`: the Skills section's routing. TypeScript, Rust, Tauri,
   TSX, Vue, chart, built-page, skill-search and article tasks load their skills in
   order, and an Effect review reads only its routed reference. A README fix in a
