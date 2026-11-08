@@ -540,7 +540,11 @@ describe("rules the live suites test", () => {
     expect(rule).toContain("Never start the `codex` CLI or a `gpt-*` model");
     expect(rule).toContain("never delegate to the Codex provider");
     expect(rule).toContain("Reading past Codex session files is fine");
-    expect(read("codex/AGENTS.md")).toContain(`${rule}\n`);
+    // A Codex session cannot spawn Claude subagents, so its copy says to hand the work back.
+    const codexRule = read("codex/AGENTS.md").split("\n").find((line) => line.startsWith("- Use Claude models only"));
+    expect(codexRule).toContain("stop and ask me to continue it in Claude");
+    expect(codexRule).toContain("Never start the `codex` CLI or a `gpt-*` model");
+    expect(codexRule).toContain("never delegate to the Codex provider");
   });
 
   test("Workflow stops background work before finishing", () => {

@@ -52,17 +52,21 @@ function bunxTools(words) {
   return tools.filter(Boolean).map((tool) => tool.replace(/(?<=.)@.*$/, ""));
 }
 
-/** The runtime the command `words` must not start, as { tool, viaBunx }, or undefined. */
-export function blockedRuntime(words) {
+// Both return the tool `words` must not start, as { tool, viaBunx }, or undefined. The
+// scoring's package-runner detector reuses blockedRuntime for the uv and bun rule, so the
+// Codex check stays separate.
+const find = (words, pattern) => {
   const name = basename(words[0]);
-  if (PYTHON.test(name) || JS_TOOL.test(name) || CODEX.test(name)) return { tool: name, viaBunx: false };
-  const tool = bunxTools(words).find((candidate) => JS_TOOL.test(candidate) || CODEX.test(candidate));
+  if (pattern(name)) return { tool: name, viaBunx: false };
+  const tool = bunxTools(words).find(pattern);
   return tool ? { tool, viaBunx: true } : undefined;
-}
+};
+export const blockedRuntime = (words) => find(words, (tool) => PYTHON.test(tool) || JS_TOOL.test(tool));
+export const codexLaunch = (words) => find(words, (tool) => CODEX.test(tool));
 
 /** Why the command `words` must not run, or undefined when it may. */
 export function runtimeViolation(words) {
-  const blocked = blockedRuntime(words);
+  const blocked = blockedRuntime(words) ?? codexLaunch(words);
   if (!blocked) return undefined;
   const { tool, viaBunx } = blocked;
   const command = `\`${words.join(" ")}\``;
@@ -72,8 +76,8 @@ export function runtimeViolation(words) {
   }
   const runs = `${command} runs ${tool}${viaBunx ? " through bunx" : ""}.`;
   if (CODEX.test(tool)) {
-    return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Use Claude instead: `
-      + "do the work yourself, spawn a Claude subagent, or delegate on the Claude provider.";
+    return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Do the work `
+      + "with Claude instead; in a Codex session, stop and ask the user to continue it in Claude.";
   }
   if (/^node(?:js)?$/i.test(tool)) return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead.`;
   return `${runs} Use \`bun\` or \`bunx\` instead (\`bun install\`, \`bun run <script>\`, \`bunx <tool>\`), even where a `

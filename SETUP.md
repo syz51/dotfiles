@@ -205,8 +205,9 @@ requiring Git and network access. Inspect `nvim/lazyvim.json` and
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 
 Agents run on Claude models only: `claude/CLAUDE.md` forbids the `codex` CLI, `gpt-*`
-models and the Codex delegate provider, and guard-runtimes blocks a Bash call that starts
-`codex`. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
+models and the Codex delegate provider. As a backstop, guard-runtimes blocks a Bash command
+named `codex`, also through `bunx @openai/codex`; it does not see other launchers or the T3
+delegate tools. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
 files below stay until their removal is decided.
 
 `codex/config.example.toml` is a reference configuration. Review and adapt it
@@ -492,7 +493,8 @@ rule. Codex runs a new or changed hook only after it is approved: run
 (it lists them first without `--trust`). It approves hooks from `$CODEX_HOME/hooks.json`
 only while that file matches `codex/hooks.json` on `origin/main`, so pull first, and exits
 1 when hooks stay unapproved or Codex reports problems loading them. Run it again after
-`codex/hooks.json` changes.
+`codex/hooks.json` changes. Only a person runs it: it starts `codex app-server`, and
+agents may not start the Codex CLI.
 
 Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
 token in `~/.local/share/agent-board/token` (mode 0600) instead.

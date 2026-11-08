@@ -196,7 +196,7 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("pnpm install")).toContain("`bun install`");
   expect(verdict("bunx pnpm@11 store prune")).toContain("runs pnpm through bunx");
   expect(verdict("codex exec hi")).toContain("only a Claude plan");
-  expect(verdict("codex exec hi")).toContain("Claude provider");
+  expect(verdict("codex exec hi")).toContain("with Claude instead");
   expect(verdict("codex exec hi")).not.toContain("bun");
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });
