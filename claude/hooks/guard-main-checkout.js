@@ -5,9 +5,9 @@
 // reset the checked-out branch or set work aside: git switch, checkout of a branch, a
 // discarding checkout -f, reset to another commit or with --hard/--keep/--merge/--soft,
 // merge, rebase, pull, stash, bisect and gh pr checkout. Their read-only, continue and abort
-// forms, file restores, fast-forward-only merges and pulls (--ff-only, without --squash or
-// --rebase), every command in a linked worktree and every repository in a temporary
-// directory still run. The user can allow them for one repository with
+// forms, file restores, fast-forward-only merges and pulls (see fastForwardOnly), a switch to
+// the default branch with no tracked changes, every command in a linked worktree and every
+// repository in a temporary directory still run. The user can allow them for one repository with
 // `git config claude.mainCheckout allow`, which the guard refuses to let a session run, or
 // run the command themselves. This is a guardrail against mistakes, not a security
 // boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
@@ -30,6 +30,19 @@ const SAFE_SUBCOMMANDS = {
   bisect: ["log", "view", "visualize", "reset", "terms", "help"],
 };
 const MOVING_RESETS = ["--hard", "--keep", "--merge", "--soft"];
+const FF_MODES = ["--ff", "--no-ff", "--ff-only"];
+// Options that leave a --ff-only merge or pull a fast-forward: output, and turning rebase,
+// autostash and the editor off.
+const FAST_FORWARD_OPTIONS = new Set([...FF_MODES, "-q", "--quiet", "-v", "--verbose", "--stat", "-n", "--no-stat",
+  "--progress", "--no-progress", "--no-edit", "--no-autostash", "--no-rebase", "--rebase=false"]);
+const HINTS = {
+  checkout: " To restore files, use `git restore <path>` or `git checkout -- <path>`."
+    + " A switch to the default branch may run here when no tracked file has changes.",
+  switch: " A switch to the default branch may run here when no tracked file has changes.",
+  reset: " To unstage files, use `git restore --staged <path>` or `git reset -- <path>`.",
+  merge: " A fast-forward, `git merge --ff-only <commit>`, may run here.",
+  pull: " A fast-forward, `git pull --ff-only`, may run here.",
+};
 const CONFIG_WRITES = ["set", "unset", "rename-section", "remove-section", "edit", "--unset", "--unset-all", "--add",
   "--replace-all", "--rename-section", "--remove-section", "--edit", "-e"];
 
@@ -71,23 +84,29 @@ function checkoutChanges(args) {
 }
 
 /**
- * Whether `git merge` or `git pull` with `args` only fast-forwards: its last of --ff, --no-ff
- * and --ff-only is --ff-only, and it neither squashes nor rebases.
+ * Whether `git merge` or `git pull` with `args` only fast-forwards. It is an allowlist: the
+ * last of --ff, --no-ff and --ff-only is --ff-only, every option is in FAST_FORWARD_OPTIONS
+ * (spelled out, as abbreviations and values are not followed), and no refspec forces (`+a`)
+ * or names a destination (`a:b`), which pull's fetch would force-update. Anything else, such
+ * as a strategy (`-s ours` merges even with --ff-only), --autostash or --squash, is an
+ * ordinary merge or pull.
  */
 function fastForwardOnly(args) {
-  const dash = args.indexOf("--");
   let mode;
-  for (const arg of dash < 0 ? args : args.slice(0, dash)) {
-    if (!arg.startsWith("--")) {
-      if (shortLetters(arg).includes("r")) return false; // pull -r rebases
-      continue;
+  let afterDash = false;
+  for (const arg of args) {
+    if (!afterDash && arg === "--") afterDash = true;
+    else if (afterDash || !arg.startsWith("-") || arg === "-") {
+      if (arg.startsWith("+") || arg.includes(":")) return false;
+    } else if (/^-[a-zA-Z]{2,}$/.test(arg)) {
+      if (![...arg.slice(1)].every((letter) => FAST_FORWARD_OPTIONS.has(`-${letter}`))) return false;
+    } else if (!FAST_FORWARD_OPTIONS.has(arg)) {
+      return false;
+    } else if (FF_MODES.includes(arg)) {
+      mode = arg;
     }
-    if (arg === "--ff") mode = "ff";
-    else if (isLong(arg, "--no-ff")) mode = "no-ff";
-    else if (isLong(arg, "--ff-only")) mode = "ff-only";
-    else if (isLong(arg, "--squash") || (isLong(arg, "--rebase") && arg !== "--rebase=false")) return false;
   }
-  return mode === "ff-only";
+  return mode === "--ff-only";
 }
 
 /** Whether `git reset args` moves the branch or discards changes; resetting paths in the index does neither. */
@@ -112,7 +131,7 @@ export function changesBranch(subcommand, args) {
     case "merge":
       return !fastForwardOnly(args) && !args.some((arg) => SAFE_FORMS.merge.some((name) => isLong(arg, name)));
     case "rebase":
-      return !args.some((arg) => SAFE_FORMS[subcommand].some((name) => isLong(arg, name)));
+      return !args.some((arg) => SAFE_FORMS.rebase.some((name) => isLong(arg, name)));
     case "stash":
     case "bisect":
       // `git stash -- <paths>` is a push.
@@ -150,23 +169,39 @@ function mainCheckoutReason(dir, git, tempRoots, hint) {
     + "Do not run it from a script to get past this guard.";
 }
 
+/**
+ * Whether `git switch` or `git checkout` with `args` moves `dir` back to its default branch
+ * (origin/HEAD's name) while no tracked file has changes, so it loses nothing.
+ */
+function switchesToCleanDefault(subcommand, args, dir, git) {
+  if (!["switch", "checkout"].includes(subcommand)) return false;
+  const words = args.filter((arg) => arg !== "-q" && arg !== "--quiet");
+  if (words.length !== 1 || words[0].startsWith("-")) return false;
+  const remoteHead = git(dir, ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]);
+  if (remoteHead !== `origin/${words[0]}`) return false;
+  // Porcelain v2 with --branch always prints `# branch.*` headers, so empty output is a failure.
+  const status = git(dir, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"]);
+  return status !== undefined && status.split("\n").every((line) => line.startsWith("#"));
+}
+
 function gitCommand(words, dir, git, tempRoots) {
   let i = 1;
   let unknownRepo = false;
+  let configured = false;
   while (i < words.length && words[i].startsWith("-")) {
     if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
     if (/^--(?:git-dir|work-tree)(?:=|$)/.test(words[i])) unknownRepo = true;
+    // `-c merge.autostash=true` and the like can turn a fast-forward into something else.
+    if (words[i] === "-c" || /^--config-env(?:=|$)/.test(words[i])) configured = true;
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const [subcommand, ...args] = words.slice(i);
   if (subcommand === "config" && setsOverride(args))
     return "claude.mainCheckout is the user's switch for the guard-main-checkout hook. Only the user sets it.";
-  if (!changesBranch(subcommand, args) || unknownRepo || dir === undefined) return undefined;
-  const hint = subcommand === "checkout" ? " To restore files, use `git restore <path>` or `git checkout -- <path>`."
-    : subcommand === "reset" ? " To unstage files, use `git restore --staged <path>` or `git reset -- <path>`."
-    : subcommand === "merge" ? " A fast-forward, `git merge --ff-only <commit>`, may run here."
-    : subcommand === "pull" ? " A fast-forward, `git pull --ff-only`, may run here." : "";
-  return mainCheckoutReason(dir, git, tempRoots, hint);
+  const configuredFastForward = configured && ["merge", "pull"].includes(subcommand) && fastForwardOnly(args);
+  if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) return undefined;
+  const reason = mainCheckoutReason(dir, git, tempRoots, HINTS[subcommand] ?? "");
+  return reason && !switchesToCleanDefault(subcommand, args, dir, git) ? reason : undefined;
 }
 
 /**
