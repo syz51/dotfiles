@@ -165,6 +165,36 @@ test("stopLeftovers waits for exiting processes and kills the rest", async () =>
   }
 });
 
+test("a tracked run's background process stays findable after the run exits, until it is killed", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "process-tracked-")));
+  const pidFile = join(root, "pid");
+  const tracked = new Map();
+  let pid;
+  try {
+    // The child leaves a detached task working outside root, which outlives it.
+    const code = `const {spawn}=require("node:child_process");const fs=require("node:fs");`
+      + `const c=spawn(${JSON.stringify(bun)},["-e","setInterval(()=>{},1000)"],{cwd:"/",detached:true,stdio:"ignore"});`
+      + `fs.writeFileSync(${JSON.stringify(pidFile)},String(c.pid));c.unref();setTimeout(()=>{},600);`;
+    await runProcess([bun, "-e", code], { track: tracked, trackMs: 100 });
+    pid = Number(readFileSync(pidFile, "utf8"));
+    expect([...tracked.keys()]).toContain(pid);
+    expect(processesUnder(root).map((found) => found.pid)).toEqual([]);
+    expect(processesUnder(root, { tracked }).map((found) => found.pid)).toEqual([pid]);
+    // A tracked pid whose start time differs is another process that reuses it.
+    expect(processesUnder(root, { tracked: new Map([[pid, "Thu Jan  1 00:00:00 1970"]]) })).toEqual([]);
+    expect((await stopLeftovers(root, { graceMs: 0, tracked })).map((found) => found.pid)).toEqual([pid]);
+    await Bun.sleep(200);
+    expect(processesUnder(root, { tracked })).toEqual([]);
+  } finally {
+    if (pid) try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("stdout and stderr share one output bound", async () => {
   await expect(runProcess([bun, "-e", 'process.stdout.write("a".repeat(400));process.stderr.write("b".repeat(400))'], { maxBytes: 500 }))
     .rejects.toThrow("bound");

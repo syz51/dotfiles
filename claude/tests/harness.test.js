@@ -127,6 +127,27 @@ describe("policy final verification boundary", () => {
   }, 30_000);
 });
 
+// A session's background task can outlive it and write under the suite root, its TMPDIR,
+// after the scenario ends; teardown waits for it before removing the root.
+describe("teardown waits for the sessions' leftover processes", () => {
+  test("a background task that writes after the session ends leaves no root behind", async () => {
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "late" });
+    expect(run.code, output(run)).toBe(0);
+    // Past the task's write, 2 s after it started: without the wait it recreates the root.
+    await Bun.sleep(2500);
+    assertCleanedUp();
+  }, 30_000);
+
+  test("a background task still running after the wait is killed and fails the suite with the root's path", async () => {
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "stuck", CLAUDE_LIVE_SETTLE_MS: "1500" });
+    expect(run.code, output(run)).not.toBe(0);
+    expect(output(run)).toMatch(new RegExp(`Session processes still ran 1500 ms after the suite's sessions; killed them, then removed ${join(root, "tmp")}/claude-live-policy-\\w+:\\n\\d+ sh -c while`));
+    // A writer still alive would recreate the root within 200 ms.
+    await Bun.sleep(500);
+    assertCleanedUp();
+  }, 30_000);
+});
+
 describe("guidance scope covers subagents", () => {
   test("a run that reads only the routed guidance passes", async () => {
     const run = await runLive("live-dispatch.test.js", "chart work", "chart-clean");
