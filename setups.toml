@@ -58,11 +58,20 @@ verify = ["bun test claude/tests/config.test.js", "bun ~/.claude/factory/cli.js 
 [[setup]]
 id = "computer-use"
 title = "Computer-use plugin (desktop MCP server)"
-covers = [".claude-plugin", "claude/marketplace"]
+covers = [".claude-plugin", "claude/marketplace/computer-use"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests for the safeguard; a live check in a T3 Code session when the helper changes"
 verify = ["bun test claude/marketplace"]
+
+[[setup]]
+id = "lean-prompt"
+title = "Fixed prompt trims (deferred Artifact tool, hidden skills)"
+covers = ["claude/marketplace/lean-prompt", "skillOverrides in claude/settings.json"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; measure a fresh session's fixed prefix before and after"
+verify = ["bun test claude/marketplace claude/tests/config.test.js"]
 
 [[setup]]
 id = "skills"
