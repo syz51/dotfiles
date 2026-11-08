@@ -17,13 +17,14 @@ The server reads the first of these files that exists:
 
 1. `policy.json` in the server's state folder, `~/.local/state/desktop-mcp/policy.json` by
    default (`$DESKTOP_MCP_STATE`, or `$XDG_STATE_HOME/desktop-mcp`, when set). No checkout
-   tracks this file, so a branch switch or an agent's commit does not change it.
-   `DESKTOP_MCP_POLICY` names another file instead.
+   tracks this file, so a branch switch or a commit does not change it. An agent's shell
+   can still write it. `DESKTOP_MCP_POLICY` names another file instead.
 2. The plugin's own `policy.json`, which sets `auto`.
 
 To switch to the dialog, write `{"approval": "dialog"}` to the first file. Delete it to go
 back to the plugin's default. The server reads the policy at each `request_access`, so the
-change takes effect at once, also in running sessions. With no file at all, the server uses
+change applies to the next request, also in running sessions. Apps that a session already
+has keep their approval until it releases or you press Stop. With no file at all, the server uses
 `dialog`. A file that cannot be read, is not valid JSON or has another `approval` value
 makes `request_access` fail; the server never guesses a mode.
 
@@ -32,19 +33,24 @@ These safeguards stay in both modes:
 - Only the apps the model names are approved. Every action checks the app under the
   pointer or with keyboard focus against that list.
 - Banking, healthcare, government and password apps are always refused.
-- Apps that reach past Claude Code's permission rules and hooks always need the dialog:
-  terminals (Terminal, iTerm, Ghostty, Warp, Alacritty, kitty, WezTerm), agent apps (T3
-  Code, Claude), System Settings, Script Editor, Shortcuts, Automator, Activity Monitor,
-  Keychain Access and Installer. `DIALOG_APPS` in `server/desktop.js` lists them by name
-  and bundle id.
+- Apps that reach past Claude Code's permission rules and hooks always need the dialog.
+  `DIALOG_APPS` in `server/desktop.js` lists them by name and bundle id:
+  - terminals: Terminal, iTerm, Ghostty, Warp, Alacritty, kitty, WezTerm;
+  - agent apps: T3 Code, Claude, ChatGPT and Codex;
+  - editors with a terminal: Visual Studio Code, Cursor, Windsurf, Zed, Xcode;
+  - script tools: Script Editor, Shortcuts, Automator, Raycast, Alfred;
+  - system apps: System Settings, Control Center, the system prompt agents
+    (CoreServicesUIAgent, UserNotificationCenter, SecurityAgent, SystemUIServer),
+    loginwindow, the Dock, Activity Monitor and Installer.
 - One session at a time holds the lock.
-- The stop panel shows during a session and names the approved apps. Its Stop button or
-  Esc ends the session.
+- The stop panel shows during a session and names the approved apps; hover over it to
+  see a long list in full. Its Stop button or Esc ends the session. Force-quitting or
+  killing the panel counts as a Stop too.
 - After you press Stop, `request_access` shows the dialog in every session, also after a
   server restart, even in `auto` mode. The server records the Stop in `user-stopped` in
   the state folder. Once you allow apps in a dialog, it removes that file and the policy
-  applies again. A panel that crashes or is killed ends the session, but does not count
-  as a Stop.
+  applies again. A panel that crashes or fails to start ends the session, but does not
+  count as a Stop.
 - Each approval adds a JSON line to `approvals.log` in the state folder: the time, the
   apps, the model's reason, and `mode` `auto` or `dialog`.
 

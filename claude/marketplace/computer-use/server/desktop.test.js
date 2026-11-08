@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   approvalLogPath, BUNDLED_POLICY, chooseApp, createDesktop, dialogReason, fitScreenshot, handle, INSTRUCTIONS, modifierList, parseKey, policyPaths, readPolicy,
-  SERVER_NAME, sensitiveReason, stateDirFor, stopPath, toGlobal, ToolError, TOOLS, userStopPath,
+  panelExit, SERVER_NAME, sensitiveReason, stateDirFor, stopPath, toGlobal, ToolError, TOOLS, userStopPath,
 } from "./desktop.js";
 
 // A Retina laptop as the main display and a 1080p display to its left, one point above.
@@ -661,9 +661,9 @@ describe("session", () => {
     test("a panel that crashes or fails to start ends the session but is not the user's Stop", async () => {
       const mac = fakeMac({ approval: "auto" });
       await mac.call("request_access", { apps: ["Helium"], reason: "r" });
-      mac.overlays[0].onExit("killed by SIGKILL");
+      mac.overlays[0].onExit("crashed with SIGSEGV");
       expect(existsSync(join(stateDir, "session.json"))).toBe(false);
-      expect((await mac.call("screenshot", {})).text).toBe("The stop panel failed (killed by SIGKILL), so the session ended. Call request_access again.");
+      expect((await mac.call("screenshot", {})).text).toBe("The stop panel failed (crashed with SIGSEGV), so the session ended. Call request_access again.");
       expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
       expect(existsSync(userStopPath(stateDir))).toBe(false);
       // The next request needs no dialog; a failure seen first by request_access is reported there.
@@ -693,13 +693,63 @@ describe("session", () => {
       expect(readFileSync(approvalLogPath(stateDir), "utf8").trim().split("\n")).toHaveLength(2);
     });
 
-    test("a long list of apps is cut short in the panel label", async () => {
+    test("the panel gets every approved name; the helper cuts a long label short", async () => {
       const mac = fakeMac({ approval: "auto" });
-      await mac.call("request_access", { apps: ["Helium", "Notes", "Safari", "Terminal"], reason: "r" });
-      expect(mac.overlays.at(-1).label).toBe("Claude controls: Helium, Notes, Safari, Terminal");
-      expect(mac.overlays.at(-1).label.length).toBe(48);
-      await mac.call("request_access", { apps: ["T3"], reason: "r" });
-      expect(mac.overlays.at(-1).label).toBe("Claude controls: Helium, Notes, Safari, Termina…");
+      await mac.call("request_access", { apps: ["Helium", "Notes", "Safari", "Terminal", "T3"], reason: "r" });
+      expect(mac.overlays.at(-1).label).toBe("Claude controls: Helium, Notes, Safari, Terminal, T3 Code (Alpha)");
+    });
+
+    test("a Stop that a killed server with this pid never saw counts, and does not end the next session", async () => {
+      writeFileSync(stopPath(stateDir, 100), "");
+      const mac = fakeMac({ approval: "auto", allow: false });
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toStartWith(
+        "The user pressed Stop, which ended the last session.\nNot approved: Helium. A dialog was shown, because the user pressed Stop");
+      expect(existsSync(stopPath(stateDir, 100))).toBe(false);
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+    });
+
+    test("a request that fails still reports how the last session ended", async () => {
+      let approval = "auto";
+      const mac = fakeMac({ approval: () => {
+        if (approval === "broken") throw new ToolError("The approval policy p is not valid JSON; nothing was approved.");
+        return { approval };
+      } });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      mac.overlays[0].onExit();
+      approval = "broken";
+      const failed = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(failed.error).toBe(true);
+      expect(failed.text).toBe("The user pressed Stop, which ended the last session.\nThe approval policy p is not valid JSON; nothing was approved.");
+      // Reported once, in that error.
+      expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+    });
+
+    test("an approval that cannot be logged approves nothing, frees the lock and keeps the user's Stop", async () => {
+      mkdirSync(approvalLogPath(stateDir));
+      const mac = fakeMac({ approval: "auto" });
+      const result = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(result.error).toBe(true);
+      expect(result.text).toBe(`Could not write the approval log ${approvalLogPath(stateDir)} (EISDIR); nothing was approved.`);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      expect(mac.overlays).toHaveLength(0);
+      writeFileSync(userStopPath(stateDir), "");
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).error).toBe(true);
+      expect(mac.dialogs).toHaveLength(1);
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    });
+
+    test("an Allow keeps the user's Stop when another session took the lock during the dialog", async () => {
+      writeFileSync(userStopPath(stateDir), "");
+      const mac = fakeMac({
+        approval: "auto",
+        allow: () => {
+          writeFileSync(join(stateDir, "session.json"), JSON.stringify({ pid: 300 }));
+          return true;
+        },
+      });
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toBe("Another session (pid 300) is controlling this computer. Try again after it releases.");
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
     });
   });
 });
@@ -720,7 +770,18 @@ describe("apps that always need the dialog", () => {
     [{ name: "Shortcuts", bundleId: "com.apple.shortcuts" }],
     [{ name: "Automator", bundleId: "com.apple.Automator" }],
     [{ name: "Activity Monitor", bundleId: "com.apple.ActivityMonitor" }],
-    [{ name: "Keychain Access", bundleId: "com.apple.keychainaccess" }],
+    [{ name: "ChatGPT", bundleId: "com.openai.codex" }],
+    [{ name: "Visual Studio Code", bundleId: "com.microsoft.VSCode" }],
+    [{ name: "Cursor", bundleId: "com.todesktop.230313mzl4w4u92" }],
+    [{ name: "Zed", bundleId: "dev.zed.Zed" }],
+    [{ name: "Xcode", bundleId: "com.apple.dt.Xcode" }],
+    [{ name: "Raycast", bundleId: "com.raycast.macos" }],
+    [{ name: "Alfred 5", bundleId: "com.runningwithcrayons.Alfred" }],
+    [{ name: "控制中心", bundleId: "com.apple.controlcenter" }],
+    [{ name: "CoreServicesUIAgent", bundleId: "com.apple.coreservices.uiagent" }],
+    [{ name: "UserNotificationCenter", bundleId: "com.apple.UserNotificationCenter" }],
+    [{ name: "loginwindow", bundleId: "com.apple.loginwindow" }],
+    [{ name: "程序坞", bundleId: "com.apple.dock" }],
     [{ name: "Installer", bundleId: "com.apple.installer" }],
     // By bundle id alone, whatever the name, and by name alone.
     [{ name: "终端", bundleId: "com.apple.terminal" }],
@@ -734,6 +795,30 @@ describe("apps that always need the dialog", () => {
     "%o does not", (app) => {
       expect(dialogReason(app)).toBeUndefined();
     });
+
+  // Keychain Access is a password app: refused outright, so it has no dialog entry.
+  test("Keychain Access is refused, not offered in a dialog", () => {
+    const keychain = { name: "Keychain Access", bundleId: "com.apple.keychainaccess" };
+    expect(sensitiveReason(keychain)).toContain("keychain");
+    expect(dialogReason(keychain)).toBeUndefined();
+  });
+});
+
+describe("the stop panel's exit", () => {
+  test.each([
+    [0, null, undefined],
+    [null, "SIGKILL", undefined],
+    [null, "SIGTERM", undefined],
+    [null, "SIGINT", undefined],
+    [null, "SIGHUP", undefined],
+    [null, "SIGQUIT", undefined],
+    [1, null, "exit 1"],
+    [3, null, "exit 3"],
+    [null, "SIGSEGV", "crashed with SIGSEGV"],
+    [null, "SIGABRT", "crashed with SIGABRT"],
+  ])("exit %p, signal %p: %p", (code, signal, failure) => {
+    expect(panelExit(code, signal)).toBe(failure);
+  });
 });
 
 describe("approval policy file", () => {
