@@ -187,8 +187,9 @@ describe("settings", () => {
 
   // Opus 5.5 has a 1M window and otherwise compacts only near 967K, so long threads re-read
   // 300K-970K of context on every turn; 56% of two weeks' usage came from requests above 200K.
-  test("conversations compact at 300K tokens, not near the 1M window", () => {
-    expect(settings.autoCompactWindow).toBe(300000);
+  // 300K ran from 2026-11-06; 200K is a trial from 2026-11-08 (SETUP.md has the baseline).
+  test("conversations compact at 200K tokens, not near the 1M window", () => {
+    expect(settings.autoCompactWindow).toBe(200000);
   });
 
   // This applies to every Claude Code worktree (--worktree, EnterWorktree and subagent

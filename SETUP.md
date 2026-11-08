@@ -321,6 +321,15 @@ fetch fails, it compares with the last fetched branch and says so. It adds about
 seconds to the start of such a session, and about 0.2 seconds offline. Claude Code reads
 hooks when a session starts, so a session that started before config-sync installed a
 hook never runs it.
+`claude/settings.json` sets `autoCompactWindow`, the context size at which Claude Code
+compacts a conversation. Opus 5.5 has a 1M window and otherwise compacts near 967K, so long
+threads re-read most of that context on every call. The value was 300000 from 2026-11-06.
+From 2026-11-08 it is 200000 as a trial. At 300000, from 2026-11-06 to 2026-11-08 on the Air,
+a main-thread call read 150K cached tokens on average, and 26% of calls carried more than
+200K of context. On or after 2026-11-12, compare at least three full days at 200000 with
+that baseline: cache-read tokens per main-thread call, compactions per session and board
+tasks done per day. Keep the better value. To revert, set it back to 300000 and update its
+test in `claude/tests/config.test.js`.
 Do not replace an existing tool home without backing up its local data.
 
 Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
