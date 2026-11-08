@@ -15,6 +15,13 @@ After every check it also verifies the links that install the instructions from 
 checkout (`~/.claude` and Codex's AGENTS.md); a copy instead of a link stops pulls from
 reaching the agents.
 
+A live suite run (`RUN_CLAUDE_LIVE=1 bun test claude/tests`) fails when ~/.claude changes
+under it, so it holds a lock: a file in `~/.local/state/config-sync/locks/` holding its PID.
+While a lock's process is alive, a check skips everything (the pull, the settings.json
+restore, which rewrites a file the run guards, and the link checks) and logs the skip. A
+lock whose PID is dead, whose text is not a PID, or older than MAX_HOLD (a reused PID) is
+stale and ignored, so a crashed run does not stop pulls.
+
 A report goes to the board's feedback intake about the `config-sync` setup, once per
 distinct set of problems: `board feedback --about config-sync --activity operate`, or
 plain `board feedback` where the installed CLI lacks those options, or a macOS
@@ -22,7 +29,7 @@ notification when the board cannot be reached. A fetch that keeps failing (the M
 offline, say) is reported only after 24 hours.
 
 State lives in `~/.local/state/config-sync/state.json` and each check that pulled,
-restored or reported adds a line to `events.jsonl` there. `status` prints the state,
+restored, reported or skipped adds a line to `events.jsonl` there. `status` prints the state,
 `install` writes and loads the LaunchAgent.
 """
 
@@ -52,6 +59,10 @@ LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 REMOTE = "origin"
 BRANCH = "main"
 SETTINGS = "claude/settings.json"
+LOCKS = "locks"
+# A full live run takes about 12 minutes; a lock older than this belongs to a crashed run
+# whose PID another process now has.
+MAX_HOLD = timedelta(hours=3)
 # The board agent reports file as: launchd's environment names no session, and the board
 # takes only t3, claude or codex agent ids (as the factory's friction capture does).
 AGENT = "claude:config-sync"
@@ -104,6 +115,33 @@ def append_event(state_dir: Path, event: dict) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     with (state_dir / "events.jsonl").open("a") as log:
         log.write(json.dumps(event) + "\n")
+
+
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # another user's process
+        return True
+    return True
+
+
+def holds(state_dir: Path, now: datetime) -> list:
+    """The live locks in state_dir/locks as "name (pid N)"; stale locks are left out."""
+    held = []
+    for lock in sorted((state_dir / LOCKS).glob("*.lock")):
+        try:
+            pid = int(lock.read_text().strip())
+            written = datetime.fromtimestamp(lock.stat().st_mtime, timezone.utc)
+        except FileNotFoundError:  # released since the listing
+            continue
+        except ValueError:  # not a PID
+            continue
+        # os.kill(0) or a negative PID signals a process group, so those are not PIDs.
+        if 0 < pid < 2**31 and now - written < MAX_HOLD and alive(pid):
+            held.append(f"{lock.name} (pid {pid})")
+    return held
 
 
 def short(path: Path) -> str:
@@ -232,6 +270,15 @@ def report(run: Runner, board: Optional[str], text: str, signature: str) -> str:
 def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: datetime, host: str) -> int:
     state_path = state_dir / "state.json"
     state = load_state(state_path)
+    held = holds(state_dir, now)
+    if held:
+        # The rest of the state stays as the last full check left it, so the problems it
+        # reported are not reported again when the lock goes.
+        state.last_check = now.isoformat()
+        save_state(state_path, state)
+        append_event(state_dir, {"at": now.isoformat(), "skipped": "a live suite run holds a lock", "locks": held})
+        print(f"skipped: a live suite run holds {', '.join(held)}")
+        return 0
     outcome = sync(repo, run)
     problems = list(outcome.problems)
     if outcome.fetch_failed:

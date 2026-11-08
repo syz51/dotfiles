@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -412,6 +413,98 @@ class FetchTests(Sandbox):
         git(self.repo, "remote", "set-url", "origin", url)
         self.check(Runner(), NOW + timedelta(hours=30))
         self.assertIsNone(self.state_json()["fetch_failing_since"])
+
+
+class LockTests(Sandbox):
+    """A live suite run holds a lock in state/locks; config-sync leaves ~/.claude alone meanwhile."""
+
+    def lock(self, text, name="live-suite-1.lock", age=timedelta(minutes=1)):
+        path = self.state / "locks" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        stamp = (NOW - age).timestamp()
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def dead_pid(self):
+        child = subprocess.Popen(["true"])
+        child.wait()
+        return child.pid
+
+    def check_output(self, runner):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            sync.check(self.repo, self.state, runner, "board", NOW, "mac")
+        return out.getvalue()
+
+    def test_a_held_lock_skips_the_pull_and_logs_why(self):
+        before = self.head()
+        self.advance()
+        self.lock(f"{os.getpid()}\n")
+        runner = Runner()
+        out = self.check_output(runner)
+        self.assertEqual(self.head(), before)
+        self.assertIn(f"skipped: a live suite run holds live-suite-1.lock (pid {os.getpid()})", out)
+        event = json.loads((self.state / "events.jsonl").read_text())
+        self.assertEqual(event["locks"], [f"live-suite-1.lock (pid {os.getpid()})"])
+        self.assertNotIn("pulled", event)
+        self.assertEqual(self.state_json()["last_check"], NOW.isoformat())
+
+    def test_a_held_lock_leaves_a_reformat_and_reported_problems_alone(self):
+        settings = self.repo / "claude" / "settings.json"
+        (self.upstream / "claude" / "settings.json").write_text('{"a": 1, "b": 2}\n')
+        git(self.upstream, "add", ".")
+        git(self.upstream, "commit", "-m", "settings")
+        git(self.upstream, "push", "origin", "HEAD:main")
+        self.check(Runner())
+        (self.home / ".codex" / "AGENTS.md").unlink()
+        (self.home / ".codex" / "AGENTS.md").write_text("copy\n")
+        self.check(Runner())
+        reported = self.state_json()["reported"]
+        settings.write_text('{"b": 2,\n  "a": 1}\n')
+        self.lock(f"{os.getpid()}\n")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(settings.read_text(), '{"b": 2,\n  "a": 1}\n')
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state_json()["reported"], reported)
+
+    def test_a_released_lock_pulls_again(self):
+        lock = self.lock(f"{os.getpid()}\n")
+        target = self.advance()
+        self.check(Runner())
+        lock.unlink()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+
+    def test_stale_locks_do_not_stop_the_pull(self):
+        for name, text, age in [
+            ("dead", f"{self.dead_pid()}\n", timedelta(minutes=1)),
+            ("unparsable", "not a pid\n", timedelta(minutes=1)),
+            ("empty", "", timedelta(minutes=1)),
+            ("group", "0\n", timedelta(minutes=1)),
+            ("negative", "-1\n", timedelta(minutes=1)),
+            ("huge", f"{2**64}\n", timedelta(minutes=1)),
+            ("old", f"{os.getpid()}\n", sync.MAX_HOLD),
+        ]:
+            with self.subTest(name):
+                lock = self.lock(text, f"{name}.lock", age)
+                target = self.advance(name)
+                self.check(Runner())
+                self.assertEqual(self.head(), target)
+                lock.unlink()
+
+    def test_other_files_in_the_locks_folder_are_not_locks(self):
+        self.lock(f"{os.getpid()}\n", ".live-suite-1.tmp")
+        target = self.advance()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+
+    def test_no_locks_folder_pulls(self):
+        target = self.advance()
+        self.check(Runner())
+        self.assertFalse((self.state / "locks").exists())
+        self.assertEqual(self.head(), target)
 
 
 class InstallTests(unittest.TestCase):

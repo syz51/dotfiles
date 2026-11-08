@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { configuredEffort, toolDirectories } from "./lib/live.js";
+import { configuredEffort, holdConfigSync, toolDirectories } from "./lib/live.js";
 import { childEnv, runProcess } from "./lib/process.js";
 
 const TESTS = import.meta.dir;
@@ -83,6 +83,60 @@ function assertCleanedUp() {
 }
 
 const output = (run) => run.stdout + run.stderr;
+
+// config-sync skips its checks while a live run holds a lock, so ~/.claude does not change
+// under the run (config-sync/tests covers the config-sync side).
+describe("config-sync lock", () => {
+  const locks = () => join(home, ".local", "state", "config-sync", "locks");
+
+  test("holds one file per process with its PID, written whole, until released", () => {
+    const releaseA = holdConfigSync(locks(), 111);
+    const releaseB = holdConfigSync(locks(), 222);
+    expect(readdirSync(locks()).sort()).toEqual(["live-suite-111.lock", "live-suite-222.lock"]);
+    expect(readFileSync(join(locks(), "live-suite-111.lock"), "utf8")).toBe("111\n");
+    releaseA();
+    releaseA();
+    expect(readdirSync(locks())).toEqual(["live-suite-222.lock"]);
+    releaseB();
+    expect(readdirSync(locks())).toEqual([]);
+  });
+
+  test("suites in one process share the lock until the last one ends", async () => {
+    const script = join(root, "suites.js");
+    writeFileSync(script, `
+      import { readdirSync } from "node:fs";
+      import { liveSuite } from ${JSON.stringify(join(TESTS, "lib", "live.js"))};
+      const locks = () => readdirSync(${JSON.stringify(locks())});
+      const [a, b] = [liveSuite("a"), liveSuite("b")];
+      const seen = [];
+      a.setup(); b.setup(); seen.push(locks());
+      await a.teardown(); seen.push(locks());
+      await b.teardown(); seen.push(locks());
+      b.setup(); seen.push(locks());
+      await b.teardown(); seen.push(locks());
+      console.log(JSON.stringify({ pid: process.pid, seen }));
+    `);
+    const env = childEnv(process.env, { HOME: home, TMPDIR: join(root, "tmp"), CLAUDE_LIVE_SETTLE_MS: "100" });
+    const run = await runProcess([process.execPath, script], { cwd: root, env, timeout: 20_000 });
+    expect(run.code, output(run)).toBe(0);
+    const { pid, seen } = JSON.parse(run.stdout.trim().split("\n").at(-1));
+    const held = [`live-suite-${pid}.lock`];
+    expect(seen).toEqual([held, held, [], held, []]);
+  }, 30_000);
+
+  for (const [mode, passes] of [["python-clean", true], ["exit7", false]])
+    test(`is held during a session and removed when the run ends (${mode})`, async () => {
+      const seen = join(root, "locks.json");
+      const run = await runLive("live-policy.test.js", "Python checks", mode, { FAKE_RECORD_LOCKS: seen });
+      expect(run.code === 0, output(run)).toBe(passes);
+      const held = Object.entries(JSON.parse(readFileSync(seen, "utf8")));
+      expect(held).toHaveLength(1);
+      const [name, text] = held[0];
+      expect(name).toMatch(/^live-suite-\d+\.lock$/);
+      expect(name).toBe(`live-suite-${text.trim()}.lock`);
+      expect(readdirSync(locks())).toEqual([]);
+    }, 30_000);
+});
 
 describe("failed sessions still clean up", () => {
   for (const mode of ["exit7", "malformed", "incomplete", "timeout"])

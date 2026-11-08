@@ -3,7 +3,7 @@
 // reports, and behaves according to FAKE_MODE. It also writes a session entry under
 // ~/.claude/projects despite --no-session-persistence, so cleanup is put to the test.
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { projectName } from "./cleanup.js";
@@ -20,6 +20,13 @@ mkdirSync(join(projects, projectName(cwd)), { recursive: true });
 writeFileSync(join(projects, projectName(cwd), `${sessionId}.jsonl`), `${JSON.stringify({ sessionId, cwd })}\n`);
 mkdirSync(join(projects, "-unrelated-project"), { recursive: true });
 writeFileSync(join(projects, "-unrelated-project", "other.jsonl"), "{}\n");
+
+// With FAKE_RECORD_LOCKS (a path), it saves config-sync's locks as the session sees them.
+if (process.env.FAKE_RECORD_LOCKS) {
+  const locks = join(home, ".local", "state", "config-sync", "locks");
+  const held = existsSync(locks) ? Object.fromEntries(readdirSync(locks).map((name) => [name, readFileSync(join(locks, name), "utf8")])) : {};
+  writeFileSync(process.env.FAKE_RECORD_LOCKS, JSON.stringify(held));
+}
 
 if (mode === "exit7") process.exit(7);
 if (mode === "malformed") {
