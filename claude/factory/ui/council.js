@@ -59,7 +59,7 @@ export function systemPrompt(config, avoid = avoidList()) {
     ...RUBRIC.categories.map((category) => `- ${category.id} (${category.name}): ${category.description}${category.needsNarrow ? " Score it only for a design that includes phone-width screenshots; otherwise give null." : ""}`),
     "",
     "How to judge:",
-    "- Use the whole scale. Most real products are a 6 to 8; reserve 9 and 10 for work you would hold up as an example.",
+    "- Use the whole scale and score each category against the anchors above.",
     "- Judge the visual and interaction design, not the content or data on screen, and not the features a product has.",
     "- Score each design on its own merits. Do not assume any design is newer or older, finished or unfinished, or related to any other.",
     "- Every issue names one screen, using the identifier in brackets from that screenshot's caption, and a concrete fix a developer could apply.",
