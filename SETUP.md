@@ -628,6 +628,11 @@ display points, so Retina scaling and displays left of or above the main one wor
 
 ## T3 Code thread cleanup
 
+A thread that finishes its work settles itself after a final check, as the Workflow
+section of `claude/CLAUDE.md` says. Board coordinator threads and Agent-tool subagents are
+exempt, and T3 unsettles a thread when new activity arrives. A self-settle starts the
+child cascade below and the 7-day settled-worktree cleanup.
+
 T3 Code settles only the thread you settle, not its subagent children, so they stay
 unsettled until something settles each one. `t3code/settle_children.py` lists the subagent
 threads that a cascade would settle: idle children whose parent or root is settled or
