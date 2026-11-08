@@ -90,14 +90,14 @@ export function commandLists(command) {
 const UV_ENV = new Set(["UV_OFFLINE=1", "UV_NO_CACHE=1", "UV_PYTHON_DOWNLOADS=never", "PYTHONDONTWRITEBYTECODE=1"]);
 const UV_FLAGS = new Set(["--no-project", "--no-config", "--offline", "--no-cache", "--no-python-downloads", "--no-managed-python", "--quiet", "-q"]);
 
-// Whether words run the contract's check: uv runs a Python script, bun runs a script,
-// npm runs the package's test script.
+// Whether words run the contract's check: uv runs a Python script, bun runs a script or
+// the package's test script, npm runs the package's test script.
 export function checkInvocation(source, { tool, script }) {
   const words = [...source];
   if (tool === "uv") while (UV_ENV.has(words[0])) words.shift();
   const same = (expected) => JSON.stringify(words) === JSON.stringify(expected);
   const scripts = [script, `./${script}`];
-  if (tool === "bun") return scripts.some((path) => same(["bun", path]) || same(["bun", "run", path]));
+  if (tool === "bun") return scripts.some((path) => same(["bun", path]) || same(["bun", "run", path])) || same(["bun", "run", "test"]);
   if (tool === "npm") return same(["npm", "test"]) || same(["npm", "t"]) || same(["npm", "run", "test"]);
   if (tool !== "uv" || words[0] !== "uv" || words[1] !== "run") return false;
   const args = words.slice(2);
