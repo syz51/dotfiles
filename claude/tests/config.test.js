@@ -725,37 +725,55 @@ describe("computer-use plugin", () => {
 });
 
 // On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
-// before any test ran. Retries cover short failures; the cache covers long ones.
+// before any test ran. Retries cover short failures of this download; the cache covers
+// long ones. setup-uv also downloads from that host and has no cache.
 describe("CI gitleaks download", () => {
   const workflow = read(".github/workflows/checks.yml");
-  const download = /curl (?:[^\n]*\\\n)*[^\n]*\n/.exec(workflow)?.[0] ?? "";
+  const steps = Bun.YAML.parse(workflow).jobs.tests.steps;
+  const step = (name) => steps.find((entry) => entry.name === name);
+  const fetch = step("Fetch and check gitleaks").run;
+  const download = /^ *curl (?:[^\n]*\\\n)*[^\n]*\n/m.exec(fetch)?.[0] ?? "";
   const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
+  const key = "${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}";
 
   test("the download retries every error within the job's timeout", () => {
-    expect(download).toContain("releases/download/v8.30.1/$archive");
+    expect(download).toMatch(/releases\/download\/v[\d.]+\/\$archive"/);
     // A 504 can end curl with exit 56 over HTTP/2, which plain --retry does not retry.
     expect(download).toContain("--retry-all-errors");
     expect(flag("retry")).toBeGreaterThanOrEqual(5);
-    expect(workflow).toMatch(/^ {4}timeout-minutes: 10$/m);
-    // No retry starts after --retry-max-time, and the last attempt runs up to --max-time,
-    // which leaves the tests at least 6 of the job's 10 minutes.
-    expect(flag("retry-max-time") + flag("max-time")).toBeLessThanOrEqual(240);
+    expect(Bun.YAML.parse(workflow).jobs.tests["timeout-minutes"]).toBe(10);
+    // curl checks --retry-max-time before it waits --retry-delay, and the last attempt
+    // runs up to --max-time, which leaves the tests at least 6 of the job's 10 minutes.
+    expect(flag("retry-max-time") + flag("retry-delay") + flag("max-time")).toBeLessThanOrEqual(240);
   });
 
   test("a pinned cache keyed by archive and checksum skips the download", () => {
-    expect(workflow).toMatch(/^ {6}- uses: actions\/cache@[0-9a-f]{40} # v\S+$/m);
-    expect(workflow).toContain("key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}");
-    expect(workflow).toMatch(/^ {10}if \[ -f "\$GITLEAKS_CACHE\/\$archive" \]; then$/m);
+    const restore = step("Restore the gitleaks archive");
+    const save = step("Save the gitleaks archive");
+    expect(restore.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
+    expect(save.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
+    expect(restore.with).toEqual({ path: "${{ steps.gitleaks.outputs.cache }}", key });
+    expect(save.with).toEqual(restore.with);
+    expect(save.if).toBe(`steps.${restore.id}.outputs.cache-hit != 'true'`);
+    // A failing cache service falls through to the download instead of failing the job.
+    for (const entry of [restore, save]) expect(entry["continue-on-error"]).toBe(true);
+    expect(step("Fetch and check gitleaks").env.cache).toBe(restore.with.path);
+    expect(fetch).toMatch(/^if \[ -f "\$cache\/\$archive" \]; then$/m);
   });
 
-  test("the checksum check runs before extraction on a downloaded or cached archive", () => {
-    // The copy sits outside the if, so both paths reach the check.
-    const copy = workflow.search(/^ {10}cp "\$GITLEAKS_CACHE\/\$archive" "\$scratch\/\$archive"$/m);
-    const check = workflow.indexOf(`(cd "$scratch" && printf '%s  %s\\n' "$checksum" "$archive" | shasum -a 256 --check)`);
-    const extract = workflow.indexOf(`tar -xzf "$scratch/$archive" -C "$scratch" gitleaks`);
-    expect(workflow.indexOf(download)).toBeLessThan(copy);
-    expect(copy).toBeLessThan(check);
-    expect(check).toBeLessThan(extract);
+  test("the checksum check runs on a downloaded or cached archive before extraction and saving", () => {
+    const end = fetch.search(/^fi$/m);
+    const check = fetch.indexOf(`(cd "$cache" && printf '%s  %s\\n' "$checksum" "$archive" | shasum -a 256 --check)`);
+    const extract = fetch.indexOf(`tar -xzf "$cache/$archive" -C "$bin" gitleaks`);
+    expect(download).not.toBe("");
+    expect(fetch.indexOf(download)).toBeLessThan(end);
+    // The check follows the if's closing fi, so both the hit and the miss reach it.
+    expect(end).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(end);
+    expect(extract).toBeGreaterThan(check);
+    const names = steps.map((entry) => entry.name);
+    expect(names.indexOf("Save the gitleaks archive")).toBe(names.indexOf("Fetch and check gitleaks") + 1);
+    expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save the gitleaks archive"));
   });
 });
 
