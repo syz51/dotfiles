@@ -177,3 +177,9 @@ Rules:
 - State lives in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/ui/<name>/runs/<id>/`:
   screenshots per version, `rounds/round-N.json` with every judge's scores and issues,
   `calibration.json` and the spending ledger.
+
+## Feedback on this skill
+
+Report it with `feedback` and `about` `ui-climb`. To review that feedback, read the
+feedback board's items about `ui-climb` and the dotfiles tasks they were routed to, then
+change this file and its pins in `claude/tests/config.test.js` through a dotfiles PR.
