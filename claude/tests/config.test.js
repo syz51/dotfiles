@@ -223,6 +223,7 @@ test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(instructions).not.toMatch(/^\s*@/m);
   expect(instructions).toMatch(/clean up temporary test files/);
   expect(instructions).toMatch(/^- Keep the test suite in step with every change/m);
+  expect(instructions).toMatch(/run only the live suite files and scenarios the change touches while you work, and the full live set once before merge/);
 });
 
 describe("rejected frontend defaults list", () => {
