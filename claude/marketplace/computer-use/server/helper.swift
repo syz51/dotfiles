@@ -323,7 +323,10 @@ final class Overlay: NSObject, NSApplicationDelegate {
     panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
     panel.backgroundColor = NSColor.black.withAlphaComponent(0.82)
     panel.isOpaque = false
+    // The text names the approved apps; a long list ends in an ellipsis, and the tooltip shows it all.
     let label = NSTextField(labelWithString: text)
+    label.lineBreakMode = .byTruncatingTail
+    label.toolTip = text
     label.textColor = .white
     label.font = .systemFont(ofSize: 13, weight: .medium)
     label.frame = NSRect(x: 14, y: 13, width: 290, height: 18)
