@@ -42,7 +42,10 @@ The other Mac can then update with the fast-forward command above.
 The `com.syz51.config-sync` LaunchAgent does that update every 30 minutes on each Mac,
 so a merge reaches both within the hour. `config-sync/config_sync.py check` fetches
 `origin/main` and fast-forwards the checkout only when it is on `main` with no tracked
-changes and no commits of its own; it never stashes, resets or merges. Otherwise it
+changes and no commits of its own; it never stashes, resets or merges. One exception:
+a Claude Code plugin install, update or enable rewrites `claude/settings.json` in its own
+key order and layout, so a tracked `.json` file whose parsed JSON still equals `HEAD`'s
+gets its committed text back (logged as `restored`); a real change stays. Otherwise it
 leaves the checkout as it is and files one Feedback report about `config-sync` per
 distinct set of problems: off `main`, tracked changes, diverged, a fast-forward that
 failed (an untracked file in the way, say), a fetch failing for over 24 hours, or an
