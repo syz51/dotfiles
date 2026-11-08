@@ -461,8 +461,15 @@ points; up to 8 of those scoring at least 4 go to a restricted judge (Haiku by d
 $0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
 agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
 factual lines quoting at most one error line and naming the session, turn and project
-folder. The board merges reports with the same setup and title, so the same friction seen
-in many turns is one item. Records stay in `friction.jsonl` and the cursor in
+folder. The board merges reports with the same signature, by default the setup and title,
+so the same friction seen in many turns is one item. Titles differ between turns, so the
+judge also sees the items already filed: those capture reported to in the last 7 days and
+the board's unresolved `board-feedback` items, newest 200 first, by setup. It names the
+item a finding repeats. Capture then files the report with that item's `--signature`, so
+the board adds it to the item while it is live (unresolved, declined, or routed to open
+work), or files a new item that recurs it. A finding whose item was fixed, or whose work
+was done, after its turn ended is skipped as a `skipped` record: the fix, such as a raised
+limit, came later. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
