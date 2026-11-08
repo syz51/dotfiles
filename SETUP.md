@@ -249,7 +249,10 @@ directory or Claude Code's `/tmp/claude-<uid>` scratch folder are a session's ow
 are not guarded. When the user asked for such a change in that checkout, the agent
 runs that one git command as `git -c claude.mainCheckout=allow <subcommand> ...`,
 which the guard lets through; the block message tells agents so, and never to hand the
-command back to the user. To allow every such command in one repository, run
+command back to the user. Even then the guard refuses what could lose another thread's work:
+`reset --hard`, `checkout -f` and `switch -f` or `--discard-changes` while tracked files have
+changes, and `stash drop` or `stash clear`. For `gh pr checkout` the message gives the same
+route through `git fetch` and `git switch`. To allow every such command in one repository, run
 `git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
 command that sets that key. It is a guardrail against mistakes, not a security
 boundary: it does not see aliases, scripts or direct edits of `.git/config`. It fails

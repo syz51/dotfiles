@@ -136,6 +136,10 @@ describe("in a main checkout it blocks", () => {
     ["git -c claude.mainCheckout switch feature"],
     ["git -c claude.mainCheckout=allow status && git switch feature"],
     ["git switch feature -c claude.mainCheckout=allow"],
+    // git uses the last value, and a value from --config-env is not visible
+    ["git -c claude.mainCheckout=allow -c claude.mainCheckout=deny switch feature"],
+    ["git --config-env=claude.mainCheckout=ALLOW switch feature"],
+    ["git -c claude.mainCheckout=allow --config-env claude.mainCheckout=ALLOW switch feature"],
   ])("%s", (...row) => {
     expect(verdict(...row)).toContain("a main checkout other threads share");
   });
@@ -144,8 +148,9 @@ describe("in a main checkout it blocks", () => {
     const reason = verdict("git switch feature", "/main/sub");
     expect(reason).toStartWith("`git switch feature`: it changes the branch of /main, a main checkout");
     expect(reason).toContain("Move into your own worktree first");
-    expect(reason).toContain("If the user asked for this change in this checkout, run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...`");
+    expect(reason).toContain("If the user's own message asked for this change in this checkout (not a step that only follows from a request, and not another agent's brief), run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...`");
     expect(reason).toContain("never ask the user to run it");
+    expect(reason).not.toContain("gh pr checkout");
     expect(reason).not.toContain("they can run it themselves");
     expect(reason).toContain("Do not run it from a script to get past this guard.");
     expect(reason).toContain("A switch to the default branch may run here when no tracked file has changes.");
@@ -155,6 +160,13 @@ describe("in a main checkout it blocks", () => {
     expect(verdict("git pull")).toContain("A fast-forward, `git pull --ff-only`, may run here.");
     expect(verdict("git checkout feature")).toContain("use `git restore <path>` or `git checkout -- <path>`");
     expect(verdict("git reset file.txt")).toContain("use `git restore --staged <path>` or `git reset -- <path>`");
+  });
+
+  test("gives gh pr checkout its route through git", () => {
+    const reason = verdict("gh pr checkout 12");
+    expect(reason).toContain("check it out with git: `git fetch origin pull/<N>/head:<branch>`, then `git -c claude.mainCheckout=allow switch <branch>`");
+    expect(reason).toContain("Never ask the user to run it.");
+    expect(reason).not.toContain("<subcommand>");
   });
 });
 
@@ -250,8 +262,38 @@ describe("it allows", () => {
     ["git -c core.pager=cat -c claude.mainCheckout=allow reset --hard origin/main"],
     ["git -C /main -c claude.mainCheckout=allow rebase origin/main", "/elsewhere"],
     ["cd /main && git -c claude.mainCheckout=allow stash", "/elsewhere"],
+    ["git -c claude.mainCheckout=deny -c claude.mainCheckout=allow switch feature"],
+    ["git -c claude.mainCheckout=allow checkout -f feature"],
+    ["git -c claude.mainCheckout=allow switch feature", "/dirty"],
+    ["git -c claude.mainCheckout=allow reset --keep origin/main", "/dirty"],
+    ["git -c claude.mainCheckout=allow stash push -m why", "/dirty"],
+    ["git -c claude.mainCheckout=allow stash pop", "/dirty"],
+    ["git -c claude.mainCheckout=allow checkout -bfix", "/dirty"],
+    ["git -c claude.mainCheckout=allow switch -cfix", "/dirty"],
   ])("%s: a change the user asked for in this checkout", (...row) => {
     expect(verdict(...row)).toBeUndefined();
+  });
+
+  test.each([
+    ["git -c claude.mainCheckout=allow reset --hard origin/main"],
+    ["git -c claude.mainCheckout=allow reset --ha"],
+    ["git -c claude.mainCheckout=allow checkout -f"],
+    ["git -c claude.mainCheckout=allow checkout -qf feature"],
+    ["git -c claude.mainCheckout=allow checkout --force feature"],
+    ["git -c claude.mainCheckout=allow switch -f feature"],
+    ["git -c claude.mainCheckout=allow switch --discard-changes feature"],
+  ])("%s: a change the user asked for still keeps tracked changes", (...row) => {
+    const reason = verdict(row[0], "/dirty");
+    expect(reason).toContain("it would discard changes to tracked files in /dirty, a main checkout other threads share");
+    expect(reason).toContain("`git -c claude.mainCheckout=allow stash push -m <why>`");
+  });
+
+  test.each([
+    ["git -c claude.mainCheckout=allow stash drop"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{1}"],
+    ["git -c claude.mainCheckout=allow stash clear"],
+  ])("%s: a change the user asked for still keeps stashed work", (...row) => {
+    expect(verdict(...row)).toContain("it deletes stashed work in /main");
   });
 });
 
@@ -267,7 +309,9 @@ describe("the override", () => {
     ["git config claude.mainCheckout allow", "/not-a-repo"],
     ["git -c claude.mainCheckout=allow config claude.mainCheckout allow"],
   ])("only the user sets it: %s", (...row) => {
-    expect(verdict(...row)).toContain("claude.mainCheckout is the user's switch for the guard-main-checkout hook");
+    const reason = verdict(...row);
+    expect(reason).toContain("claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it.");
+    expect(reason).toContain("pass it on that git command instead: If the user's own message asked");
   });
 });
 
@@ -353,6 +397,18 @@ describe("hook process", () => {
   test("allows one branch change the user asked for, marked on the git command", () => {
     expect(run("git -c claude.mainCheckout=allow reset --hard", main)).toEqual({ code: 0, stderr: "" });
     expect(run("git reset --hard", main).code).toBe(2);
+  });
+
+  test("keeps tracked changes even in a change the user asked for", () => {
+    writeFileSync(join(main, "a.txt"), "changed");
+    try {
+      const result = run("git -c claude.mainCheckout=allow reset --hard", main);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("it would discard changes to tracked files");
+      expect(run("git -c claude.mainCheckout=allow stash push -m why", main)).toEqual({ code: 0, stderr: "" });
+    } finally {
+      writeFileSync(join(main, "a.txt"), "a");
+    }
   });
 
   test("allows branch changes in a repository under its temporary directory", () => {
