@@ -1,12 +1,14 @@
 // The API-first wrapper: its planner (claude/bin/api-first.js) and the shell script that
 // replaces itself with the real claude (claude/bin/claude-api).
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  applyReport, checkCredit, decide, lifetime, MAX_BACKOFF_MS, MAX_DEPTH, mergedSettings, plan, readArgs, readSettings, realClaude, TTL_MS,
+  applyReport, caller, callerName, checkCredit, decide, lifetime, MAX_BACKOFF_MS, MAX_DEPTH, mergedSettings, parseReport, plan, readArgs, readSettings,
+  realClaude, runCost, spendLines, spendSummary, TTL_MS,
 } from "../bin/api-first.js";
 
 const WRAPPER = join(import.meta.dir, "..", "bin", "claude-api");
@@ -32,13 +34,31 @@ const LOW_CREDIT = { type: "error", error: { type: "invalid_request_error", mess
 // ends normally (Claude Code 2.1.318).
 const refusedRun = { hook_event_name: "StopFailure", error: "billing_error", last_assistant_message: "Credit balance is too low" };
 const finishedRun = { hook_event_name: "Stop", stop_hook_active: false };
+// The hook input of a print run's SessionEnd, and the cost-state line Claude Code writes to
+// the transcript as the run exits, before SessionEnd (both recorded from 2.1.319, with the
+// ids and figures replaced). A resumed run adds a line with the session's new total.
+const SESSION = "11111111-2222-3333-4444-555555555555";
+const sessionEnd = (transcript, sessionId = SESSION) => ({ session_id: sessionId, transcript_path: transcript, cwd: "/work", prompt_id: "p1", hook_event_name: "SessionEnd", reason: "other" });
+const costState = (totalCostUSD, sessionId = SESSION) => ({
+  type: "cost-state", sessionId, totalCostUSD, totalAPIDuration: 1830, totalAPIDurationWithoutRetries: 1830, totalToolDuration: 0, totalLinesAdded: 0,
+  totalLinesRemoved: 0, totalDuration: 2950, startTime: 1794122198767, hasUnknownModelCost: false,
+  modelUsage: { "claude-haiku-5-5": { inputTokens: 10, outputTokens: 5, thinkingTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0,
+    cacheCreationEphemeral5mInputTokens: 0, cacheCreationEphemeral1hInputTokens: 0, webSearchRequests: 0, costUSD: totalCostUSD } },
+});
+const assistantLine = { parentUuid: null, isSidechain: false, type: "assistant", sessionId: SESSION, message: { role: "assistant", content: [{ type: "text", text: "ok" }] } };
+function transcript(lines, name = "transcript.jsonl") {
+  const file = join(root, name);
+  writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  return file;
+}
 const KEY_HASH = createHash("sha256").update("sk-test-key").digest("hex").slice(0, 16);
 // Leaves a report as the hook does, written at `at`.
 let reportPid = 0;
-function report(input, { plannedAt = 0, at = Date.now(), keyHash = KEY_HASH } = {}) {
+// A run id names the run it reports for; reports from before costs were recorded have none.
+function report(input, { plannedAt = 0, at = Date.now(), keyHash = KEY_HASH, run } = {}) {
   const dir = join(root, "state", "reports");
   mkdirSync(dir, { recursive: true });
-  const file = join(dir, `${plannedAt}-${keyHash}-${++reportPid}.json`);
+  const file = join(dir, `${plannedAt}-${keyHash}${run ? `-r${run}` : ""}-${++reportPid}.json`);
   writeFileSync(file, typeof input === "string" ? input : JSON.stringify(input));
   utimesSync(file, at / 1000, at / 1000);
 }
@@ -66,10 +86,11 @@ describe("arguments and settings", () => {
 
   test("the report hooks follow the caller's own, and a caller's own key helper gets none", () => {
     const own = { hooks: [{ type: "command", command: "mine" }] };
-    const merged = JSON.parse(mergedSettings({ hooks: { Stop: [own], PreToolUse: [own] } }, "h", "r"));
-    const report = { hooks: [{ type: "command", command: "r" }] };
-    expect(merged).toEqual({ apiKeyHelper: "h", hooks: { Stop: [own, report], StopFailure: [report], PreToolUse: [own] } });
-    expect(JSON.parse(mergedSettings({ apiKeyHelper: "mine" }, "h", "r"))).toEqual({ apiKeyHelper: "mine" });
+    const reports = { StopFailure: "r", Stop: "r", SessionEnd: "c" };
+    const merged = JSON.parse(mergedSettings({ hooks: { Stop: [own], PreToolUse: [own] } }, "h", reports));
+    const hook = (command) => ({ hooks: [{ type: "command", command }] });
+    expect(merged).toEqual({ apiKeyHelper: "h", hooks: { Stop: [own, hook("r")], StopFailure: [hook("r")], SessionEnd: [hook("c")], PreToolUse: [own] } });
+    expect(JSON.parse(mergedSettings({ apiKeyHelper: "mine" }, "h", reports))).toEqual({ apiKeyHelper: "mine" });
   });
 });
 
@@ -369,7 +390,8 @@ describe("plan", () => {
     expect(api.mode).toBe("api");
     const settings = JSON.parse(api.settings);
     expect(settings).toMatchObject({ apiKeyHelper: `cat '${join(root, "key")}'`, a: 1 });
-    expect(Object.keys(settings.hooks).sort()).toEqual(["Stop", "StopFailure"]);
+    expect(Object.keys(settings.hooks).sort()).toEqual(["SessionEnd", "Stop", "StopFailure"]);
+    expect(api.run).toMatch(/^[0-9a-f]{12}$/);
     rmSync(join(root, "state"), { recursive: true, force: true });
     const fallback = await plan(["-p", "x"], { env: base, check: statusOf("exhausted") });
     expect([fallback.mode, fallback.settings]).toEqual(["subscription", undefined]);
@@ -387,7 +409,7 @@ describe("plan", () => {
     expect([await proc.exited, await new Response(proc.stdout).text(), await new Response(proc.stderr).text()]).toEqual([0, "", ""]);
     const reports = readdirSync(join(root, "it's state", "reports"));
     expect(reports).toHaveLength(1);
-    expect(reports[0]).toMatch(new RegExp(`^${now}-${KEY_HASH}-\\d+\\.json$`));
+    expect(reports[0]).toMatch(new RegExp(`^${now}-${KEY_HASH}-r[0-9a-f]{12}-\\d+\\.json$`));
     expect((await plan(["-p", "x"], { env: base, check: statusOf("ok") })).mode).toBe("subscription");
     expect(existsSync(join(root, "it's state", "reports", reports[0]))).toBe(false);
     // A report that cannot be saved fails quietly with exit 0, which never blocks a Stop.
@@ -401,19 +423,146 @@ describe("plan", () => {
   });
 });
 
+describe("costs", () => {
+  test("a run's cost is its session's last total, less the one a resumed session carried over", () => {
+    expect(runCost(sessionEnd("t"), [costState(0.25)])).toEqual({ costUSD: 0.25 });
+    expect(runCost(sessionEnd("t"), [costState(0.1), costState(0.35)]).costUSD).toBeCloseTo(0.25, 10);
+    // Another session's line, and a total lower than the one before, which no carry-over explains.
+    expect(runCost(sessionEnd("t"), [costState(9, "other"), costState(0.2)])).toEqual({ costUSD: 0.2 });
+    expect(runCost(sessionEnd("t"), [costState(0.5), costState(0.2)])).toEqual({ costUSD: 0.2 });
+    const none = runCost(sessionEnd("t"), [undefined, { type: "cost-state", sessionId: SESSION, totalCostUSD: "1" }]);
+    expect(none.costUSD).toBeNull();
+    expect(none.detail).toContain("--no-session-persistence");
+  });
+
+  test("a report is its hook input, then any JSON lines; a damaged input is no report", () => {
+    expect(parseReport(JSON.stringify(finishedRun))).toEqual({ input: finishedRun, lines: [] });
+    expect(parseReport(`${JSON.stringify(sessionEnd("t"))}\n\n${JSON.stringify(costState(1))}\n{cut\n`)).toEqual({ input: sessionEnd("t"), lines: [costState(1), undefined] });
+    for (const text of ["{cut off", "", "null", "[1]", `7\n${JSON.stringify(costState(1))}`]) expect(parseReport(text)).toBeNull();
+  });
+
+  test("the SessionEnd hook adds the transcript's cost, and the next plan logs it under the run", async () => {
+    const base = { ...env, API_FIRST_REAL_BIN: "/x/claude" };
+    const first = await plan(["-p", "x"], { env: base, check: statusOf("ok") });
+    const command = JSON.parse(first.settings).hooks.SessionEnd[0].hooks[0].command;
+    expect(command).not.toContain("bun");
+    // A resumed session: the earlier run left 0.1, this one ends at 0.35.
+    const file = transcript([assistantLine, costState(0.1), assistantLine, costState(0.35)]);
+    const proc = Bun.spawn(["/bin/sh", "-c", command], { env: { PATH: "/usr/bin:/bin" }, stdin: new Blob([JSON.stringify(sessionEnd(file))]), stdout: "pipe", stderr: "pipe" });
+    expect([await proc.exited, await new Response(proc.stdout).text(), await new Response(proc.stderr).text()]).toEqual([0, "", ""]);
+    const dir = join(root, "state", "reports");
+    const [name] = readdirSync(dir);
+    expect(name).toMatch(new RegExp(`-r${first.run}-\\d+\\.json$`));
+    expect(parseReport(readFileSync(join(dir, name), "utf8"))).toEqual({ input: sessionEnd(file), lines: [costState(0.1), costState(0.35)] });
+    expect((await plan(["-p", "x"], { env: base, check: statusOf("ok") })).mode).toBe("api");
+    const logged = loggedModes();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ mode: "cost", run: first.run, session: SESSION });
+    expect(logged[0].costUSD).toBeCloseTo(0.25, 10);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  test("a run without a transcript is logged with an unknown cost, and its report still saves", async () => {
+    const base = { ...env, API_FIRST_REAL_BIN: "/x/claude" };
+    const first = await plan(["-p", "x"], { env: base, check: statusOf("ok") });
+    const command = JSON.parse(first.settings).hooks.SessionEnd[0].hooks[0].command;
+    const proc = Bun.spawn(["/bin/sh", "-c", command], { env: { PATH: "/usr/bin:/bin" }, stdin: new Blob([JSON.stringify(sessionEnd(join(root, "missing.jsonl")))]) });
+    expect(await proc.exited).toBe(0);
+    await plan(["-p", "x"], { env: base, check: statusOf("ok") });
+    expect(loggedModes()).toEqual([expect.objectContaining({ mode: "cost", run: first.run, costUSD: null })]);
+  });
+
+  test("a SessionEnd report from before costs were recorded, without a run id, is dropped", async () => {
+    report(sessionEnd(transcript([costState(1)])));
+    await decide({ env, check: statusOf("ok") });
+    expect(existsSync(join(root, "state", "decisions.jsonl"))).toBe(false);
+    expect(readdirSync(join(root, "state", "reports"))).toEqual([]);
+  });
+});
+
+describe("callers", () => {
+  test("a caller is named by its script's folder and name, its module, or its program", () => {
+    expect(callerName("/opt/bun/bin/bun test claude/tests/live.test.js")).toBe("tests/live.test.js");
+    expect(callerName("bun /home/u/.claude/factory/cli.js weekly --pr")).toBe("factory/cli.js");
+    expect(callerName("uv run python research/masters.py --limit 3")).toBe("research/masters.py");
+    expect(callerName("python3 -m research.batch --all")).toBe("research.batch");
+    expect(callerName("/bin/zsh -c claude-api -p hi")).toBe("zsh");
+  });
+
+  test("API_FIRST_CALLER names the caller, else the process API_FIRST_CALLER_PID", () => {
+    expect(caller({ API_FIRST_CALLER: "masters", API_FIRST_CALLER_PID: String(process.pid) })).toBe("masters");
+    const own = spawnSync("ps", ["-o", "command=", "-p", String(process.pid)], { encoding: "utf8" }).stdout;
+    expect(caller({ API_FIRST_CALLER_PID: String(process.pid) })).toBe(callerName(own));
+    expect(caller({})).toBeNull();
+    expect(caller({ API_FIRST_CALLER_PID: "1; rm -rf /" })).toBeNull();
+  });
+});
+
+describe("spend", () => {
+  // A log as the planner writes it: a run from before costs were recorded, runs with a
+  // cost, one without a transcript, one not reported yet, and lines that are not API runs.
+  const LOG = [
+    { at: "2026-11-07T08:00:00.000Z", mode: "api", reason: "ok: HTTP 200", cwd: "/w" },
+    { at: "2026-11-07T09:00:00.000Z", mode: "api", reason: "ok: HTTP 200", cwd: "/w", run: "a1", caller: "tests/live.test.js" },
+    { at: "2026-11-07T09:05:00.000Z", mode: "cost", run: "a1", session: "s1", costUSD: 0.5 },
+    { at: "2026-11-08T01:00:00.000Z", mode: "api", reason: "ok: HTTP 200", cwd: "/w", run: "b2", caller: "research/masters.py" },
+    { at: "2026-11-08T01:00:00.000Z", mode: "api", reason: "ok: HTTP 200", cwd: "/w", run: "c3", caller: "research/masters.py" },
+    { at: "2026-11-08T01:10:00.000Z", mode: "cost", run: "b2", session: "s2", costUSD: 1.25 },
+    { at: "2026-11-08T01:11:00.000Z", mode: "cost", run: "c3", session: "s3", costUSD: null, detail: "no cost-state line" },
+    { at: "2026-11-08T02:00:00.000Z", mode: "api", reason: "ok: HTTP 200", cwd: "/w", run: "d4", caller: "tests/live.test.js" },
+    { at: "2026-11-08T03:00:00.000Z", mode: "subscription", reason: "exhausted: HTTP 400", cwd: "/w" },
+    { at: "2026-11-08T03:00:00.000Z", mode: "refused", reason: "exhausted: a Claude Code run was refused", cwd: "/w" },
+  ];
+
+  test("sums API runs by caller and day, and counts unknown costs apart, never as $0", () => {
+    const summary = spendSummary(LOG);
+    expect(summary.total).toEqual({ runs: 5, usd: 1.75, unknown: 3, before: 1, untracked: 1, unreported: 1 });
+    expect(summary.byCaller).toEqual([
+      { key: "(not logged)", runs: 1, usd: 0, unknown: 1 },
+      { key: "research/masters.py", runs: 2, usd: 1.25, unknown: 1 },
+      { key: "tests/live.test.js", runs: 2, usd: 0.5, unknown: 1 },
+    ]);
+    expect(summary.byDay).toEqual([{ key: "2026-11-07", runs: 2, usd: 0.5, unknown: 1 }, { key: "2026-11-08", runs: 3, usd: 1.25, unknown: 2 }]);
+    expect(spendSummary(LOG, { since: Date.parse("2026-11-08T00:00:00Z") }).total).toMatchObject({ runs: 3, usd: 1.25, unknown: 2 });
+    const text = spendLines(summary, "log").join("\n");
+    expect(text).toContain("Unknown costs are not counted as $0");
+    expect(text).toContain("Total: 5 API runs, known cost $1.7500, 3 unknown (1 logged before costs were recorded, 1 without a transcript to read, 1 not reported yet).");
+  });
+
+  test("the spend command prints the log, with the costs still waiting in reports/", () => {
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "decisions.jsonl"), LOG.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    // Run d4's SessionEnd report, not yet folded by a plan.
+    report(`${JSON.stringify(sessionEnd("t", "s4"))}\n${JSON.stringify(costState(0.1, "s4"))}`, { run: "d4" });
+    const module = join(import.meta.dir, "..", "bin", "api-first.js");
+    const run = (...args) => spawnSync(process.execPath, [module, "spend", ...args], { env: { ...env, PATH: process.env.PATH }, encoding: "utf8" });
+    const result = run();
+    expect([result.status, result.stderr]).toEqual([0, ""]);
+    expect(result.stdout).toContain(`API spend logged in ${join(root, "state", "decisions.jsonl")}. Days are UTC.`);
+    expect(result.stdout).toMatch(/^tests\/live\.test\.js +2 +0 +\$0\.6000$/m);
+    expect(result.stdout).toMatch(/^2026-11-08 +3 +1 +\$1\.3500$/m);
+    expect(result.stdout).toContain("Total: 5 API runs, known cost $1.8500, 2 unknown (1 logged before costs were recorded, 1 without a transcript to read, 0 not reported yet).");
+    // Reading does not claim the report; the next plan folds it.
+    expect(readdirSync(join(root, "state", "reports"))).toHaveLength(1);
+    expect(run("--days", "0").status).toBe(64);
+    expect(run("--bogus").status).toBe(64);
+  });
+});
+
 describe("end to end", () => {
   // A fake claude that records its argv, its process id and whether a key variable
   // reached it, then exits with FAKE_EXIT.
   function fakeClaude() {
     const dir = join(root, "real");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\necho $$ > "${join(root, "pid.txt")}"\n[ -n "\${ANTHROPIC_API_KEY:-}" ] && echo visible > "${join(root, "key-env.txt")}"\n[ -n "\${FAKE_REFUSED:-}" ] && "${process.execPath}" "${join(root, "refused.js")}" "$@"\nexit "\${FAKE_EXIT:-0}"\n`);
-    // With FAKE_REFUSED, it ends as Claude Code ends a run the API refused for credit: it
-    // runs the StopFailure hooks of its --settings.
-    writeFileSync(join(root, "refused.js"), `import { spawnSync } from "node:child_process";
+    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\necho $$ > "${join(root, "pid.txt")}"\n[ -n "\${ANTHROPIC_API_KEY:-}" ] && echo visible > "${join(root, "key-env.txt")}"\n[ -n "\${FAKE_HOOKS:-}" ] && "${process.execPath}" "${join(root, "hooks.js")}" "$@"\nexit "\${FAKE_EXIT:-0}"\n`);
+    // With FAKE_HOOKS ({ event: input }), it ends as Claude Code ends a run: it runs those
+    // events' hooks of its --settings, in order, each given its input.
+    writeFileSync(join(root, "hooks.js"), `import { spawnSync } from "node:child_process";
 const args = process.argv.slice(2);
 const { hooks } = JSON.parse(args[args.indexOf("--settings") + 1]);
-for (const group of hooks.StopFailure) for (const hook of group.hooks) spawnSync("/bin/sh", ["-c", hook.command], { input: ${JSON.stringify(JSON.stringify(refusedRun))}, stdio: ["pipe", "inherit", "inherit"] });
+for (const [event, input] of Object.entries(JSON.parse(process.env.FAKE_HOOKS)))
+  for (const group of hooks[event]) for (const hook of group.hooks) spawnSync("/bin/sh", ["-c", hook.command], { input: JSON.stringify(input), stdio: ["pipe", "inherit", "inherit"] });
 `);
     chmodSync(join(dir, "claude"), 0o755);
     return dir;
@@ -448,6 +597,19 @@ for (const group of hooks.StopFailure) for (const hook of group.hooks) spawnSync
     expect(decisions().map((entry) => entry.mode)).toEqual(["api"]);
   });
 
+  test("an API run is logged with its run id and caller, and the next plan logs what it cost", async () => {
+    const file = transcript([assistantLine, costState(0.0123)]);
+    await runWrapper(["-p", "hello"], { extraEnv: { FAKE_HOOKS: JSON.stringify({ Stop: finishedRun, SessionEnd: sessionEnd(file) }) } });
+    await runWrapper(["-p", "again"]);
+    const [first, cost, second, ...rest] = decisions();
+    // The wrapper's caller is this test process.
+    expect(first).toMatchObject({ mode: "api", run: expect.stringMatching(/^[0-9a-f]{12}$/), caller: caller({ API_FIRST_CALLER_PID: String(process.pid) }) });
+    expect(first.caller).toBeTruthy();
+    expect(cost).toEqual({ at: expect.any(String), mode: "cost", run: first.run, session: SESSION, costUSD: 0.0123 });
+    expect([second.mode, second.run === first.run, rest]).toEqual(["api", false, []]);
+    expect(spendSummary(decisions()).total).toEqual({ runs: 2, usd: 0.0123, unknown: 1, before: 0, untracked: 0, unreported: 1 });
+  });
+
   test("the merged settings go before a -- marker, and earlier --settings are dropped", async () => {
     const run = await runWrapper(["-p", "--settings", '{"a":1}', "--", "--settings is prompt text"]);
     expect(run.argv.slice(0, 2)).toEqual(["-p", "--settings"]);
@@ -464,7 +626,7 @@ for (const group of hooks.StopFailure) for (const hook of group.hooks) spawnSync
 
   test("credit that only Claude Code's requests are refused moves runs to the subscription after the first refusal", async () => {
     const api = (request) => claudeCodeGated(Object.fromEntries(request.headers));
-    const first = await runWrapper(["-p", "hello"], { api, exit: 1, extraEnv: { FAKE_REFUSED: "1" } });
+    const first = await runWrapper(["-p", "hello"], { api, exit: 1, extraEnv: { FAKE_HOOKS: JSON.stringify({ StopFailure: refusedRun }) } });
     expect([first.code, first.argv[2]]).toEqual([1, "--settings"]);
     const second = await runWrapper(["-p", "hello"], { api });
     expect(second.argv).toEqual(["-p", "hello"]);
