@@ -238,17 +238,21 @@ guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'
 section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
 head commit. A check run is pending until its status is `COMPLETED`; it fails with any
-conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`, and every run counts, also one with the
-name of a later run. A head commit without checks passes only when the repository has no
+conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
+also one with the name of a later run; within one Actions workflow run, which a re-run
+reuses, only the latest attempt of each job counts. A head commit without checks passes only when the repository has no
 active Actions workflows. `--auto` on a non-draft passes when the base branch requires status
 checks through protection or a ruleset and gh enables auto-merge, so GitHub waits for the
 required checks. When the pull request is `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, gh merges at
 once, so the guard checks it as a direct merge. It also refuses `gh api` calls to
 `pulls/<n>/merge` and the `mergePullRequest` and `enablePullRequestAutoMerge` mutations. It
 refuses any merge argument or subcommand that the shell fills in, arguments that `xargs`
-adds, options other than `-R` before the subcommand, `GH_HOST` set in the command, and
-`GH_REPO` set without `-R`. It runs once before the whole command, so it refuses a merge in a
-command that also runs `git push`: merge in a separate call once the new head's checks pass.
+adds, options other than `-R` before the subcommand, `GH_HOST` set in the command,
+`GH_REPO` set without `-R`, `GIT_DIR` and `GIT_WORK_TREE`, and a glob that can name gh or
+fill in its subcommand or selector. It runs once before the whole command, so it refuses a
+merge in a command that also runs another merge, or a git or gh command that is not
+read-only, such as `git push`, `git switch`, `gh pr checkout` or `gh pr update-branch`: merge
+in a separate call once the head's checks pass.
 It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
 crash blocks the merge. The queries add about 0.7 seconds to each merge, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot

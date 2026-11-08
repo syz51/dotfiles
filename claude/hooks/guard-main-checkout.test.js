@@ -141,6 +141,11 @@ describe("in a main checkout it blocks", () => {
     // a cd still moves the commands after it in its own subshell or background job
     ["(cd /main && git switch feature)", "/linked"],
     ["cd /main && git switch feature &", "/linked"],
+    ["(cd /main; echo \"$(git reset --hard HEAD~1)\") | cat", "/linked"],
+    ["(cd /main; x=$(git stash)) | cat", "/linked"],
+    // a case pattern's ) does not end the subshell
+    ["(cd /main; case a in a) ;; esac; git reset --hard HEAD~1)", "/linked"],
+    ["noglob git switch feature"],
     ["git switch feature", "/main/sub"],
     ["sh -c 'git switch feature'"],
     ["sudo git reset --hard"],
@@ -283,6 +288,8 @@ describe("it allows", () => {
     ["(cd /main); git reset --hard HEAD~1", "/linked"],
     ["true | (cd /main); git reset --hard HEAD~1", "/linked"],
     ["cd /main & git reset --hard HEAD~1", "/linked"],
+    ["{ cd /main; } | true; git reset --hard HEAD~1", "/linked"],
+    ["(case a in a) cd /main;; esac); git reset --hard HEAD~1", "/linked"],
     ["git checkout -b feature", "/allowed"],
     ["git checkout -b repro", "/scratch/repo"],
     ["git stash", "/scratch/repo"],

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyChecks, findMergeViolation, parseMerge, runGh } from "./guard-pr-merge.js";
+import { classifyChecks, findMergeViolation, globMatches, parseMerge, runGh } from "./guard-pr-merge.js";
 
 const HOOK = join(import.meta.dir, "guard-pr-merge.js");
 
@@ -80,14 +80,38 @@ describe("refuses", () => {
     // xargs appends the selector, which the guard cannot see
     ["echo 13 | xargs gh pr merge --squash", {}, "xargs adds arguments"],
     // a push in the same command moves the head after the guard reads its checks, in any order
-    ["git push && gh pr merge 12", {}, "also runs `git push`"],
-    ["git push -u origin feature; gh pr merge 12 --squash", {}, "also runs `git push`"],
+    ["git push && gh pr merge 12", {}, "also runs `git push`, which may push a new head"],
+    ["git push -u origin feature; gh pr merge 12 --squash", {}, "also runs `git push -u origin feature`"],
     ["gh pr merge 12 && git push", {}, "also runs `git push`"],
-    ["git -C /repo push & gh pr merge 12", {}, "also runs `git push`"],
+    ["git -C /repo push & gh pr merge 12", {}, "also runs `git -C /repo push`"],
     ["bash -c 'git push' && gh pr merge 12", {}, "also runs `git push`"],
-    ["GIT push && gh pr merge 12", {}, "also runs `git push`"],
-    ["$GIT push && gh pr merge 12", {}, "also runs `git push`"],
-    ["git $SUB && gh pr merge 12", {}, "also runs `git push`"],
+    ["GIT push && gh pr merge 12", {}, "also runs `GIT push`"],
+    ["$GIT push && gh pr merge 12", {}, "also runs `$GIT push`"],
+    ["git $SUB && gh pr merge 12", {}, "also runs `git $SUB`"],
+    ["[g]it push && gh pr merge 12", {}, "also runs `[g]it push`"],
+    // an alias, even one set with -c, may push: aliases cannot take a read-only subcommand's name
+    ["git -c alias.p=push p origin HEAD && gh pr merge 12", {}, "also runs `git -c alias.p=push p origin HEAD`"],
+    // a branch or pull request change makes a merge without a selector pick another pull request
+    ["gh pr checkout 13 && gh pr merge --squash -d", {}, "also runs `gh pr checkout 13`"],
+    ["git switch feature-b && gh pr merge --squash", {}, "also runs `git switch feature-b`"],
+    ["git checkout feature-b && gh pr merge", {}, "also runs `git checkout feature-b`"],
+    ["gh repo set-default o/other && gh pr merge 12", {}, "also runs `gh repo set-default o/other`"],
+    ["gh pr update-branch 12 && gh pr merge 12", {}, "also runs `gh pr update-branch 12`"],
+    ["gh api -X PATCH repos/o/r/git/refs/heads/x -f sha=abc; gh pr merge 12", {}, "also runs `gh api -X PATCH"],
+    ["gh api repos/o/r/git/refs -f ref=refs/heads/x && gh pr merge 12", {}, "also runs `gh api repos/o/r/git/refs"],
+    ["gh pr merge 12 && gh pr merge 13", {}, "runs another `gh pr merge`"],
+    // GIT_DIR and GIT_WORK_TREE change the repository gh resolves
+    ["GIT_DIR=/other/.git gh pr merge 12", {}, "sets GIT_DIR or GIT_WORK_TREE"],
+    // a glob can name gh, its subcommand, or the selector
+    ["/opt/homebrew/bin/[g]h pr merge 12 --admin", {}, "--admin bypasses"],
+    ["g? pr merge 12 --admin", {}, "--admin bypasses"],
+    ["gh pr m[e]rge 12 --admin", {}, "the gh pr subcommand"],
+    ["gh p* merge 12", {}, "the gh subcommand"],
+    ["gh pr merge 1? --squash", {}, "the shell fills in `1?`"],
+    ["noglob gh pr merge 12 --admin", {}, "--admin bypasses"],
+    ["nocorrect gh pr merge 12 --admin", {}, "--admin bypasses"],
+    // a body the guard cannot read gets a route that works
+    ["gh pr merge 12 --body 'Fixes `foo`'", {}, "pass --body-file"],
     // an option the guard does not know could take a value and hide the selector
     ["gh pr merge --new-option 12", {}, "does not know the option"],
     ["gh pr merge -x 12", {}, "does not know the option"],
@@ -176,6 +200,14 @@ describe("allows", () => {
     ["git push && gh pr view 12", {}],
     ["git fetch && git pull --ff-only && gh pr merge 12", {}],
     ["echo git push && gh pr merge 12", {}],
+    // read-only git and gh commands in the same command
+    ["git status && git log -1 && gh pr checks 12 && gh pr merge 12", {}],
+    ["gh api repos/o/r/pulls/12/reviews && gh pr merge 12", {}],
+    ["gh api -X GET repos/o/r/issues -f state=open && gh pr merge 12", {}],
+    ["gh pr view 12 && gh pr merge 12 --squash", {}],
+    // a glob that cannot match gh, and one in a body value
+    ["l? && gh pr merge 12", {}],
+    ["gh pr merge 12 --subject 'Fix it?'", {}],
   ])("%s", (command, options) => {
     expect(verdict(command, options)).toBeUndefined();
   });
@@ -188,6 +220,35 @@ describe("allows", () => {
     expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [failed, passed] } })).toContain("checks failed");
     expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [passed, failed] } })).toContain("checks failed");
     expect(classifyChecks([failed, run("t", "QUEUED", "")])).toEqual({ pending: ["Checks / t"], failed: ["Checks / t (FAILURE)"] });
+    // runs from different workflow runs, as a push run and a pull_request run are, all count
+    const pushRun = run("t", "COMPLETED", "FAILURE", { detailsUrl: "https://github.com/o/r/actions/runs/1/job/10", startedAt: "2026-11-08T10:00:00Z" });
+    const prRun = run("t", "COMPLETED", "SUCCESS", { detailsUrl: "https://github.com/o/r/actions/runs/2/job/20", startedAt: "2026-11-08T11:00:00Z" });
+    expect(classifyChecks([pushRun, prRun]).failed).toEqual(["Checks / t (FAILURE)"]);
+  });
+
+  // A re-run keeps the workflow run's id and adds a new attempt of each job.
+  test("only the latest attempt of a job in one workflow run counts", () => {
+    const attempt = (conclusion, startedAt, job, status = "COMPLETED") =>
+      run("t", status, conclusion, { detailsUrl: `https://github.com/o/r/actions/runs/7/job/${job}`, startedAt });
+    const first = attempt("FAILURE", "2026-11-08T10:00:00Z", 1);
+    const second = attempt("SUCCESS", "2026-11-08T11:00:00Z", 2);
+    expect(classifyChecks([first, second])).toEqual({ pending: [], failed: [] });
+    expect(classifyChecks([second, first])).toEqual({ pending: [], failed: [] });
+    expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [first, second] } })).toBeUndefined();
+    // a queued re-run has no start time yet, or GitHub's zero time, and is the latest
+    expect(classifyChecks([first, attempt("", null, 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
+    expect(classifyChecks([first, attempt("", "0001-01-01T00:00:00Z", 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
+    // a failed re-run still fails
+    expect(classifyChecks([second, attempt("FAILURE", "2026-11-08T12:00:00Z", 4)]).failed).toEqual(["Checks / t (FAILURE)"]);
+  });
+
+  test("globMatches reads zsh's *, ? and [...]", () => {
+    expect(globMatches("[g]h", "gh")).toBe(true);
+    expect(globMatches("G?", "gh")).toBe(true);
+    expect(globMatches("*", "gh")).toBe(true);
+    expect(globMatches("[!g]h", "gh")).toBe(false);
+    expect(globMatches("l?", "gh")).toBe(false);
+    expect(globMatches("g.", "gh")).toBe(false);
   });
 });
 

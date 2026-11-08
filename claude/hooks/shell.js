@@ -54,6 +54,9 @@ const WRAPPERS = {
   env: ["-u", "-P", "-S", "-C", "--unset", "--split-string", "--chdir"],
   exec: ["-a"],
   nice: ["-n"],
+  // zsh precommand modifiers
+  nocorrect: [],
+  noglob: [],
   nohup: [],
   stdbuf: ["-i", "-o", "-e"],
   sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"],
@@ -146,17 +149,36 @@ export function parseScript(source) {
   let word;
   let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
   let heredocs = [];
+  // Open `case` statements and `(` subshells, innermost last, so the `)` that ends a case
+  // pattern is not read as the end of a subshell. `pattern` is the argv index where the
+  // current command's pattern starts while one is expected, after `in` or `;;`.
+  const nesting = [];
+  let pattern;
+  const firstWord = (argv) => argv.find((arg) => !SHELL_KEYWORDS.has(arg));
+  // Whether a case pattern is being read; a pending `esac` word ends the case instead.
+  const inPattern = () => nesting.at(-1) === "case" && pattern !== undefined
+    && !(word === "esac" && destination === "argv" && firstWord(current.argv) === undefined);
 
   const endWord = () => {
     if (word === undefined) return;
-    if (destination === "argv") current.argv.push(word);
-    else if (destination === "input") current.inputs.push(word);
+    if (destination === "argv") {
+      current.argv.push(word);
+      const first = firstWord(current.argv);
+      if (word === "in" && first === "case" && current.argv.length === current.argv.indexOf("case") + 3) {
+        nesting.push("case");
+        pattern = current.argv.length;
+      } else if (word === "esac" && first === "esac" && nesting.at(-1) === "case") {
+        nesting.pop();
+        pattern = undefined;
+      }
+    } else if (destination === "input") current.inputs.push(word);
     destination = "argv";
     word = undefined;
   };
   const endCommand = (next) => {
     endWord();
     destination = "argv";
+    if (pattern !== undefined) pattern = 0; // the pattern continues in the next command
     if (current.argv.length > 0 || current.inputs.length > 0) {
       commands.push({ ...current, next });
       current = fresh();
@@ -229,6 +251,9 @@ export function parseScript(source) {
       current.substitutions.push(body);
       word = (word ?? "") + source.slice(i, end);
       i = end;
+    } else if (c === "|" && inPattern()) {
+      endWord(); // separates alternatives in a case pattern
+      i += 1;
     } else if (c === "|") {
       const operator = source[i + 1] === "|" || source[i + 1] === "&" ? c + source[i + 1] : c;
       endCommand(operator);
@@ -240,15 +265,30 @@ export function parseScript(source) {
       const operator = source[i + 1] === "&" ? "&&" : "&";
       endCommand(operator);
       i += operator.length;
+    } else if (c === "(" && nesting.at(-1) === "case" && word === undefined && current.argv.length === pattern) {
+      i += 1; // the optional `(` before a case pattern
     } else if (c === "(") {
       endCommand(c);
       current.opens += 1;
+      nesting.push(c);
+      i += 1;
+    } else if (c === ")" && inPattern()) {
+      // The end of a case pattern: drop the pattern's words, and run what follows as a command.
+      endWord();
+      current.argv.length = Math.min(current.argv.length, pattern);
+      endCommand(";");
+      pattern = undefined;
       i += 1;
     } else if (c === ")") {
       endCommand(c);
+      if (nesting.at(-1) === "(") nesting.pop();
       if (current.opens > 0) current.opens -= 1; // an empty `()`, as in a function definition
       else if (commands.length > 0) Object.assign(commands.at(-1), { closes: commands.at(-1).closes + 1, next: ")" });
       i += 1;
+    } else if (c === ";" && nesting.at(-1) === "case" && ";&|".includes(source[i + 1] ?? "")) {
+      endCommand(";"); // `;;`, `;&`, or zsh's `;|` ends a case item; a pattern comes next
+      pattern = 0;
+      i += 2;
     } else if (c === ";") {
       endCommand(c);
       i += 1;
@@ -488,9 +528,20 @@ function inspect(source, state, visit, depth, tooDeep) {
   const leave = (count) => {
     for (let k = 0; k < count && subshells.length > 0; k += 1) state.dir = subshells.pop();
   };
+  // The directory before each open `{ …; }` group: zsh runs a group that a `|` or `&` follows
+  // in a subshell, so a `cd` inside it ends with it.
+  const braces = [];
   let pipeline = [];
   for (const command of commands) {
     for (let k = 0; k < command.opens; k += 1) subshells.push(state.dir);
+    for (const word of command.argv) {
+      if (!SHELL_KEYWORDS.has(word)) break;
+      if (word === "{") braces.push(state.dir);
+    }
+    if (command.argv[0] === "}" && braces.length > 0) {
+      const before = braces.pop();
+      if (["|", "|&", "&"].includes(command.next)) state.dir = before;
+    }
     const run = program(command.argv, state.dir);
     for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
     const text = run.words.length > 0 ? printed(run.words) : undefined;
@@ -500,7 +551,8 @@ function inspect(source, state, visit, depth, tooDeep) {
       run.printed = groups.pop();
       groups.at(-1)?.push(...run.printed);
     }
-    pipeline.push({ command, run });
+    // `before` is the shell's directory when this part starts, where its substitutions run.
+    pipeline.push({ command, run, before: state.dir });
     if (command.next === "|" || command.next === "|&") {
       leave(command.closes);
       continue;
@@ -512,11 +564,11 @@ function inspect(source, state, visit, depth, tooDeep) {
     // there moves nothing after it. zsh, the shell Claude Code runs commands in, runs the last
     // part in the current shell, so a `cd` there moves later commands; bash would not.
     const background = pipeline.at(-1).command.next === "&";
-    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text, appended } }] of pipeline.entries()) {
+    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text, appended }, before }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
-      // Its substitutions, which the current shell runs first, scripts this command runs itself,
-      // and scripts the reading shell runs in its directory.
-      const scripts = [...substitutions.map((script) => [script, state.dir]), ...nested.map((script) => [script, dir]), ...(local ?? [])];
+      // Its substitutions, which the shell running it expands first, scripts this command runs
+      // itself, and scripts the reading shell runs in its directory.
+      const scripts = [...substitutions.map((script) => [script, before]), ...nested.map((script) => [script, dir]), ...(local ?? [])];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir]));
       if (name === "eval") scripts.push([words.slice(1).join(" "), dir]);
       if (name === "find") scripts.push(...findScripts(words, dir));
@@ -531,7 +583,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       if (name === "cd" || name === "pushd" || name === "popd") {
         if (background || index < pipeline.length - 1) continue;
         if (name === "popd") state.dir = undefined;
-        else state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
+        else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
         const violation = visit(words, dir, { appended: appended === true });
         if (violation) return violation;

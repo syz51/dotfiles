@@ -10,9 +10,12 @@
 // follows the shell syntax around the command, so `cd`, `sh -c`, wrappers, substitutions and
 // `ssh` are seen; any merge argument the shell fills in, arguments xargs adds, options before
 // `merge` other than -R, a command that sets GH_HOST, and one that sets GH_REPO without a literal
-// -R are refused. The hook runs once before the whole command, so a merge in a command that also
-// runs `git push`, in any order, is refused: the push could move the head after the check. It
-// fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// -R are refused, as are GIT_DIR, GIT_WORK_TREE and a glob in the command name, selector or
+// subcommand. The hook runs once before the whole command, so it refuses a merge in a command
+// that also runs, in any order, another merge or a git or gh command that is not read-only,
+// such as `git push`, `git switch` or `gh pr checkout`: it could move the head or change which
+// pull request gh merges after the check. Within one Actions workflow run only the latest
+// attempt of each job counts, so a passing re-run replaces a failed attempt. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
 // block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
@@ -39,6 +42,9 @@ const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // so it refuses before settings.json's 45-second timeout, which would let the command through.
 export const CALL_TIMEOUT_MS = 8000;
 export const BUDGET_MS = 35000;
+
+// zsh expands these glob characters in any word, the command name too.
+const GLOB = /[*?[]/;
 
 class Refusal extends Error {}
 
@@ -87,19 +93,29 @@ export function parseMerge(args, repo) {
   merge.selector = positionals[0];
   // Unquoted, a word the shell fills in can become no word or several and shift the others, and
   // the parser has dropped the quotes, so any such word hides what the merge does.
-  merge.unresolved = args.find(expands);
+  // A glob in the selector or repository can match a file name and become another value.
+  merge.unresolved = args.find(expands) ?? [merge.selector, merge.repo].find((word) => word !== undefined && GLOB.test(word));
   return merge;
 }
 
 /**
  * The checks on the head commit that are still running and those that failed, as display names.
- * Every run counts: the rollup does not say which event started a run, so a later run with the
- * same name, say from pull_request, does not hide a failed one from push.
+ * Runs of different workflow runs all count: a later run with the same name, say from
+ * pull_request, does not hide a failed one from push. Within one Actions workflow run, which a
+ * re-run reuses, only the latest attempt of each job counts.
  */
 export function classifyChecks(rollup) {
   const pending = [];
   const failed = [];
+  // A re-run attempt that has not started yet has no start time, or GitHub's zero time.
+  const started = (check) => (!check.startedAt || check.startedAt.startsWith("0001-") ? "9999" : check.startedAt);
+  const latest = new Map();
   for (const check of rollup) {
+    const run = check.__typename === "CheckRun" ? /\/actions\/runs\/(\d+)\/job\//.exec(check.detailsUrl ?? "")?.[1] : undefined;
+    const key = run === undefined ? Symbol("check") : `${run}\0${check.workflowName}\0${check.name}`;
+    if (!latest.has(key) || started(check) >= started(latest.get(key))) latest.set(key, check);
+  }
+  for (const check of latest.values()) {
     if (check.__typename === "CheckRun") {
       const name = check.workflowName ? `${check.workflowName} / ${check.name}` : check.name;
       // An in-progress run has conclusion "", so the status decides whether it finished.
@@ -152,8 +168,11 @@ function requiresChecks(query, dir, api, repo, base) {
 }
 
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
-function judgeMerge(merge, dir, query, { setsHost, setsRepo, appended }) {
-  if (merge.unresolved !== undefined) return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally.`;
+function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appended }) {
+  if (merge.unresolved !== undefined) {
+    return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally. `
+      + "The guard cannot see quotes, so for a body with `$`, backticks or braces, write it to a file and pass --body-file.";
+  }
   if (merge.unknown !== undefined) return `the guard does not know the option \`${merge.unknown}\`, so it cannot tell what this merge does. Use the options \`gh pr merge --help\` lists.`;
   if (merge.help) return undefined;
   if (merge.admin) return "--admin bypasses the repository's merge requirements. Never use it: merge only once the checks pass.";
@@ -161,6 +180,7 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, appended }) {
   if (appended) return "xargs adds arguments the guard cannot see. Write the pull request out literally: `gh pr merge <number>`.";
   if (setsHost) return "the command sets GH_HOST, which the guard does not follow. Name the repository with -R HOST/OWNER/REPO instead.";
   if (setsRepo && merge.repo === undefined) return "the command sets GH_REPO, which the guard does not follow. Name the repository with -R OWNER/REPO instead.";
+  if (setsGitDir) return "the command sets GIT_DIR or GIT_WORK_TREE, which change the repository and branch gh reads, and the guard does not follow them. Run the merge without them.";
   if (dir === undefined && merge.repo === undefined && !/^https?:\/\//.test(merge.selector ?? "")) {
     return "the guard cannot tell which directory, and so which repository, it runs in. Run it after a literal `cd`, or pass -R OWNER/REPO and the pull request number.";
   }
@@ -190,33 +210,102 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, appended }) {
   return undefined;
 }
 
-function ghCommand(words, dir, query, state) {
-  const fail = (reason) => `\`${words.join(" ")}\`: ${reason}`;
+const quoted = (words) => `\`${words.join(" ")}\``;
+const unsure = (word) => expands(word) || GLOB.test(word);
+
+/** Whether zsh glob `pattern` (`*`, `?` and `[…]`) can match `name`, ignoring case. A pattern it cannot read counts as a match. */
+export function globMatches(pattern, name) {
+  let source = "";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const c = pattern[i];
+    const close = c === "[" ? pattern.indexOf("]", i + 2) : -1;
+    if (c === "*") source += ".*";
+    else if (c === "?") source += ".";
+    else if (close !== -1) {
+      const set = pattern.slice(i + 1, close).replace(/^[!^]/, "^").replace(/[\\\]]/g, "\\$&");
+      source += `[${set}]`;
+      i = close;
+    } else source += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  try {
+    return new RegExp(`^${source}$`, "i").test(name);
+  } catch {
+    return true;
+  }
+}
+
+/** Whether the command name `word` runs `program`, or may: the shell fills it in, or a glob can match it. */
+const runs = (word, program) => {
+  const name = basename(word).toLowerCase();
+  return name === program || expands(word) || (GLOB.test(name) && globMatches(name, program));
+};
+
+// git subcommands that neither push nor change the branch or remote that gh resolves a pull
+// request from. Aliases cannot take these names, so any other subcommand may push.
+const GIT_READ_ONLY = new Set(["blame", "cat-file", "describe", "diff", "fetch", "for-each-ref", "grep", "help", "log", "ls-files",
+  "ls-remote", "merge-base", "pull", "rev-list", "rev-parse", "shortlog", "show", "show-ref", "status", "version"]);
+// gh subcommands that change nothing a merge depends on; `gh api` is checked by its method.
+const GH_READ_ONLY = { pr: ["checks", "diff", "list", "status", "view"], run: ["list", "view", "watch"], repo: ["list", "view"],
+  issue: ["list", "view"], auth: ["status"] };
+const API_FIELDS = /^(?:-[fF]|--field|--raw-field|--input)(?:=|$)|^-[fF]./;
+
+/**
+ * Whether `words`, a command other than `gh pr merge`, may push a new head or change which pull
+ * request or repository a merge without a selector picks: anything but a read-only git or gh
+ * command, and any command whose name the shell fills in.
+ */
+function mayMoveHead(words) {
+  if (expands(words[0])) return true;
+  if (runs(words[0], "git")) {
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-")) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
+    return words[i] !== undefined && !GIT_READ_ONLY.has(words[i]);
+  }
+  if (!runs(words[0], "gh")) return false;
+  const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+  if (group === undefined) return false;
+  if (group === "api") {
+    // gh api sends GET unless -X/--method says otherwise or fields make it a POST.
+    const index = words.findIndex((word) => /^(?:-X|--method)(?:=|$)|^-X./.test(word));
+    const method = index === -1 ? undefined : words[index].replace(/^(?:-X=?|--method=?)/, "") || words[index + 1];
+    return method === undefined ? words.some((word) => API_FIELDS.test(word)) : method.toUpperCase() !== "GET";
+  }
+  return other !== undefined || !(GH_READ_ONLY[group] ?? []).includes(subcommand);
+}
+
+/**
+ * Checks gh command `words`. Returns why it must not run, or undefined. A `gh pr merge` that
+ * passes the checks on its words is added to `merges` with a `check()` that queries GitHub,
+ * so the caller can first see the rest of the command.
+ */
+function ghCommand(words, dir, query, state, merges) {
+  const fail = (reason) => `${quoted(words)}: ${reason}`;
   // gh reads options anywhere, so the API check looks at every word, not only after `api`.
   if (words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)) || (words.includes("api") && MERGE_MUTATIONS.test(state.source))) {
     return fail("it merges a pull request through the API, which skips the guard's checks. Use `gh pr merge <number>` instead.");
   }
   const { path: [group, subcommand], next, repo, other } = ghSubcommands(words, 2);
-  if (group !== undefined && expands(group)) return fail(`the shell fills in the gh subcommand \`${group}\`, so the guard cannot see whether it merges.`);
+  if (group !== undefined && unsure(group)) return fail(`the shell fills in the gh subcommand \`${group}\`, so the guard cannot see whether it merges.`);
   if (other !== undefined && words.includes("pr") && words.includes("merge")) {
     return fail(`the guard cannot tell how gh reads \`${other}\` before the subcommand. Write options after it: \`gh pr merge <number> --squash -R OWNER/REPO\`.`);
   }
   if (group !== "pr") return undefined;
-  if (subcommand !== undefined && expands(subcommand)) return fail(`the shell fills in the gh pr subcommand \`${subcommand}\`, so the guard cannot see whether it merges.`);
+  if (subcommand !== undefined && unsure(subcommand)) return fail(`the shell fills in the gh pr subcommand \`${subcommand}\`, so the guard cannot see whether it merges.`);
   if (subcommand !== "merge") return undefined;
   if (repo !== undefined && expands(repo)) return fail(`the shell fills in the repository \`${repo}\`. Write it out literally.`);
-  if (state.pushes) {
-    return fail("the same command also runs `git push`. The guard checks the pull request once, before the whole command runs, "
-      + "so it would read the old head's checks and merge the new head. Push in one Bash call, wait for the new head's checks to pass, "
-      + "then merge in a separate call.");
-  }
-  try {
-    const reason = judgeMerge(parseMerge(words.slice(next), repo), dir, query, state);
-    return reason && fail(reason);
-  } catch (error) {
-    if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
-    throw error;
-  }
+  merges.push({
+    words,
+    check: () => {
+      try {
+        const reason = judgeMerge(parseMerge(words.slice(next), repo), dir, query, state);
+        return reason && fail(reason);
+      } catch (error) {
+        if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
+        throw error;
+      }
+    },
+  });
+  return undefined;
 }
 
 /**
@@ -227,25 +316,35 @@ function ghCommand(words, dir, query, state) {
 export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } = {}) {
   const query = makeQuery(run, Date.now() + budgetMs);
   // gh reads GH_REPO and GH_HOST from the environment; the guard does not track their values.
-  const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command), pushes: false };
-  // A git push anywhere in the command, or a git subcommand the shell fills in, may move the
-  // head between this check and the merge.
-  visitCommands(command, cwd, (words) => {
-    if (basename(words[0]).toLowerCase() !== "git" && !expands(words[0])) return undefined;
-    let i = 1;
-    while (i < words.length && words[i].startsWith("-")) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
-    if (words[i] === "push" || (words[i] !== undefined && expands(words[i]))) env.pushes = true;
-    return undefined;
-  });
-  return visitCommands(command, cwd, (words, dir, { appended }) => {
-    // macOS volumes ignore case, so GH and Gh run gh too.
+  // GIT_DIR and GIT_WORK_TREE change the repository and branch gh resolves a pull request from.
+  const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command),
+    setsGitDir: /\bGIT_(?:DIR|WORK_TREE)\b/.test(command) };
+  const merges = [];
+  let mover;
+  const violation = visitCommands(command, cwd, (words, dir, { appended }) => {
+    const before = merges.length;
+    // macOS volumes ignore case, so GH and Gh run gh too, and a glob such as [g]h can name it.
     const name = basename(words[0]).toLowerCase();
-    if (name === "gh") return ghCommand(words, dir, query, { ...env, appended });
-    if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
-      return `\`${words.join(" ")}\`: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
+    let reason;
+    if (name === "gh" || (GLOB.test(name) && globMatches(name, "gh"))) reason = ghCommand(words, dir, query, { ...env, appended }, merges);
+    else if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
+      reason = `${quoted(words)}: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
     }
-    return undefined;
+    if (reason === undefined && merges.length === before && mayMoveHead(words)) mover ??= words;
+    return reason;
   }, TOO_DEEP);
+  if (violation || merges.length === 0) return violation;
+  // The hook runs once, before the whole command, so it checks every merge before any of it runs.
+  if (merges.length > 1) {
+    return `${quoted(merges[1].words)}: the same command runs another \`gh pr merge\`, and the first merge can change what the second one merges. `
+      + "Merge each pull request in its own Bash call.";
+  }
+  if (mover !== undefined) {
+    return `${quoted(merges[0].words)}: the same command also runs ${quoted(mover)}, which may push a new head or change which pull request gh merges. `
+      + "The guard checks the pull request once, before the whole command runs, so it would read one head's checks and merge another. "
+      + "Run that command in its own Bash call, wait for the head's checks to pass, then merge in a separate call.";
+  }
+  return merges[0].check();
 }
 
 export function runGh(dir, args, timeout) {
@@ -267,8 +366,9 @@ if (import.meta.main) {
     const input = JSON.parse(readFileSync(0, "utf8"));
     const command = input?.tool_input?.command;
     // A cheap prefilter. Without quotes and backslashes, m"erge" and m\erge read as merge; a
-    // command the shell fills in has $ or `, and the parser refuses it when it reaches gh.
-    if (typeof command === "string" && /merge|gh|[$`]/i.test(command.replace(/["'\\]/g, ""))) {
+    // command the shell fills in has $ or `, and one that a glob names, as in [g]h, has * ? or [;
+    // the parser refuses them when it reaches gh.
+    if (typeof command === "string" && /merge|gh|[$`*?[]/i.test(command.replace(/["'\\]/g, ""))) {
       violation = findMergeViolation(command, typeof input.cwd === "string" ? input.cwd : process.cwd(), runGh);
     }
   } catch (error) {
