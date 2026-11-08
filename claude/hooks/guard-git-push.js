@@ -12,11 +12,10 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { changeDirectory, visitCommands } from "./shell.js";
+import { changeDirectory, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const DEFAULT_BRANCHES = ["main", "master"];
 const TOO_DEEP = "it nests shell commands too deeply to check.";
-const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"]);
 // `git push -h`; git accepts any unambiguous prefix of these.
 const PUSH_OPTIONS = ["--all", "--atomic", "--branches", "--delete", "--dry-run", "--exec", "--follow-tags", "--force",
   "--force-if-includes", "--force-with-lease", "--ipv4", "--ipv6", "--mirror", "--porcelain", "--progress", "--prune",

@@ -192,6 +192,7 @@ describe("settings", () => {
   test.each([
     ["claude/settings.json", "guard-git-push.js"],
     ["claude/settings.json", "guard-runtimes.js"],
+    ["claude/settings.json", "guard-main-checkout.js"],
     ["codex/hooks.json", "guard-git-push.js"],
     ["codex/hooks.json", "guard-runtimes.js"],
   ])("%s registers the %s guard for Bash PreToolUse", (path, script) => {
@@ -639,6 +640,13 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/explicit output-only or structured-format requirement/);
     expect(workflow).toMatch(/Do not duplicate Chinese-only replies/);
     expect(workflow).toMatch(/`headless-browser` skill/);
+  });
+
+  // Threads that start in a repository's main checkout share it; one that switched or reset
+  // it moved the branch under the others (dotfiles-164). guard-main-checkout.js enforces the
+  // git part.
+  test("Workflow moves work out of a shared main checkout", () => {
+    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. A hook refuses those git commands in a main checkout outside the temporary directories\./);
   });
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
