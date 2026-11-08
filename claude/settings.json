@@ -195,7 +195,8 @@
         "source": "github",
         "repo": "syz51/dotfiles",
         "sparsePaths": [".claude-plugin", "claude/marketplace"]
-      }
+      },
+      "autoUpdate": true
     }
   },
   "enabledPlugins": {

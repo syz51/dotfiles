@@ -42,14 +42,18 @@ The other Mac can then update with the fast-forward command above.
 The `com.syz51.config-sync` LaunchAgent does that update every 30 minutes on each Mac,
 so a merge reaches both within the hour. `config-sync/config_sync.py check` fetches
 `origin/main` and fast-forwards the checkout only when it is on `main` with no tracked
-changes and no commits of its own; it never stashes, resets or merges. Otherwise it
-leaves the checkout as it is and files one Feedback report about `config-sync` per
-distinct set of problems: off `main`, tracked changes, diverged, a fast-forward that
-failed (an untracked file in the way, say), a fetch failing for over 24 hours, or an
-instruction link (`~/.claude`, Codex's `AGENTS.md`) that is a copy or missing. It uses
-plain `board feedback` where the installed CLI lacks `--about`, and a macOS notification
-when the board is unreachable. State is in `~/.local/state/config-sync/state.json`, each
-pull or report adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
+changes and no commits of its own; it never stashes, resets or merges. One exception:
+a Claude Code plugin install, update or enable rewrites `claude/settings.json` in its own
+key order and layout. When that unstaged rewrite on `main` is the only tracked change and
+its parsed JSON still equals `HEAD`'s, config-sync writes the committed text back; any
+other change stays. Otherwise it leaves the checkout as it is and files one Feedback
+report about `config-sync` per distinct set of problems: off `main`, tracked changes,
+diverged, a fast-forward that failed (an untracked file in the way, say), a failed
+restore, a fetch failing for over 24 hours, or an instruction link (`~/.claude`, Codex's
+`AGENTS.md`) that is a copy or missing. It uses plain `board feedback` where the
+installed CLI lacks `--about`, and a macOS notification when the board is unreachable.
+State is in `~/.local/state/config-sync/state.json`, each pull, restore or report adds a
+line to `events.jsonl` there, and launchd writes to `launchd.log`.
 Install it on each Mac and check it:
 
 ```sh
@@ -603,9 +607,15 @@ server is named `desktop`, because Claude Code reserves the name `computer-use`.
 
 `claude/settings.json` declares the `dotfiles` marketplace (`.claude-plugin/marketplace.json`
 on GitHub) and enables the plugin, so there is nothing to install. Claude Code clones the
-marketplace at session start and installs the plugin from `main`. The plugin has no fixed
-version, so Claude Code keys it by commit and installs each new commit; run
-`claude plugin marketplace update dotfiles` to fetch one at once.
+marketplace and installs enabled plugins it lists at session start, also in T3 sessions.
+The plugins have no fixed version, so Claude Code keys them by commit. GitHub
+marketplaces do not auto-update by default, so the entry sets `"autoUpdate": true`: once
+per session, after a random delay of up to 10 minutes, Claude Code refreshes the clone
+and updates installed plugins to the new commit. A plugin newly enabled on `main` installs
+at the first session start after that refresh. To get a change at once, run
+`claude plugin marketplace update dotfiles` and `claude plugin update <name>@dotfiles`.
+A plugin install, update or enable can rewrite `claude/settings.json` in Claude Code's
+own layout; config-sync restores the committed text when only the layout changed.
 
 On first use the server compiles `server/helper.swift` with `xcrun swiftc` into
 `~/.local/state/desktop-mcp`, again after the source changes. macOS asks the app that
