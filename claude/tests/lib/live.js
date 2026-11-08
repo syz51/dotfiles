@@ -6,7 +6,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import { claudeTempDir, removeSessionArtifacts } from "./cleanup.js";
 import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
-import { childEnv, runProcess } from "./process.js";
+import { childEnv, runProcess, stopLeftovers } from "./process.js";
 import { Ledger, reportDirectory, writeReport } from "./reports.js";
 import { bashRuns, completed, cost, initEvent, parseStream, partialEvents, resultEvent, retryRefused, skillLoads, toolUses } from "./stream.js";
 
@@ -25,6 +25,10 @@ export const HAIKU = "claude-haiku-5-5";
 // Billed to the API while it has credit, else the subscription (claude/bin/claude-api).
 const BIN = process.env.CLAUDE_LIVE_BIN || join(import.meta.dir, "..", "..", "bin", "claude-api");
 const TIMEOUT = Number(process.env.CLAUDE_LIVE_TIMEOUT_MS) || 0;
+// How long teardown waits for the sessions' leftover processes, such as background tasks,
+// to exit. TEARDOWN_TIMEOUT is the afterAll timeout that leaves room for it.
+const SETTLE_MS = Number(process.env.CLAUDE_LIVE_SETTLE_MS) || 60_000;
+export const TEARDOWN_TIMEOUT = SETTLE_MS + 30_000;
 const HOOKS = join(import.meta.dir, "hooks");
 
 export const HOME_CLAUDE = join(homedir(), ".claude");
@@ -143,6 +147,8 @@ function writeFiles(dir, files) {
 export function liveSuite(name) {
   const ledger = new Ledger(name);
   const outside = [];
+  // Every process the sessions started (pid -> start time), for teardown.
+  const tracked = new Map();
   let root;
   let reports;
   let sequence = 0;
@@ -203,7 +209,7 @@ export function liveSuite(name) {
             mkdirSync(recordDir);
           }
           const run = await runProcess([BIN, ...args], {
-            cwd, env: subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env, timeout: limit,
+            cwd, env: subscription ? { ...env, API_FIRST_SUBSCRIPTION: "1" } : env, timeout: limit, track: tracked,
             interact: streamed ? conversation(prompt, followUp) : undefined,
           });
           return { run, events: partialEvents(run.stdout) };
@@ -273,11 +279,25 @@ export function liveSuite(name) {
       root = realpathSync(mkdtempSync(join(tmpdir(), `claude-live-${name}-`)));
     },
 
-    teardown() {
+    // Removes the root and the sessions' entries. A session's process can outlive it, such
+    // as a background task, and write to the root (its TMPDIR) after the root is gone, so
+    // the sessions' processes first get SETTLE_MS to exit. Those still running are then
+    // killed and fail the suite, and so does a root that is still there.
+    async teardown() {
       try {
-        if (root) removeSessionArtifacts({ bases: [PROJECTS, claudeTempDir()], roots: [root], sessions: outside });
+        if (!root) return;
+        let left;
+        try {
+          left = await stopLeftovers(root, { graceMs: SETTLE_MS, pollMs: 250, tracked });
+          removeSessionArtifacts({ bases: [PROJECTS, claudeTempDir()], roots: [root], sessions: outside });
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+        if (left.length)
+          throw new Error(`Session processes still ran ${SETTLE_MS} ms after the suite's sessions; killed them, then removed ${root}:\n`
+            + left.map(({ pid, command }) => `${pid} ${command}`).join("\n"));
+        if (existsSync(root)) throw new Error(`The suite root remains after teardown: ${root}`);
       } finally {
-        if (root) rmSync(root, { recursive: true, force: true });
         if (ledger.runs.length) console.log(ledger.summary());
       }
     },

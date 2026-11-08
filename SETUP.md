@@ -737,6 +737,8 @@ in CI:
   runner and leftover processes, two-message conversations, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
+  background task that writes to the suite root after its session ends leaves no root
+  behind. One still running after the wait is killed and fails the suite. A
   check that tampers with the fixture when re-run fails, and so do a single-track task
   handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
   too. Under `~/.codex/skill-feedback`, records that other sessions append to a skill's
@@ -758,7 +760,10 @@ in CI:
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
 package installs and web access, and removes its folders and session entries
-afterwards. Every session passes an explicit `--model` and `--effort`. Behavioral
+afterwards. A session's background task can outlive it and write to the root, its
+`TMPDIR`. So teardown first waits up to 60 seconds (`CLAUDE_LIVE_SETTLE_MS`) for every
+process the sessions started to exit, then removes the root. Processes still running
+then are killed, and the suite fails with the root's path. Every session passes an explicit `--model` and `--effort`. Behavioral
 scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures for it
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use

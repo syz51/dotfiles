@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { guidanceEvidence, guidanceTargets, scoreGuidance } from "./lib/guidance.js";
-import { HOME_CLAUDE, LIVE, liveSuite } from "./lib/live.js";
+import { HOME_CLAUDE, LIVE, liveSuite, TEARDOWN_TIMEOUT } from "./lib/live.js";
 import { finalText, skillLoads } from "./lib/stream.js";
 
 const suite = liveSuite("dispatch");
@@ -85,7 +85,7 @@ const cases = [
 
 describe.skipIf(!LIVE)("live skill dispatch", () => {
   beforeAll(() => suite.setup());
-  afterAll(() => suite.teardown());
+  afterAll(() => suite.teardown(), TEARDOWN_TIMEOUT);
 
   for (const scenario of cases)
     test.concurrent(scenario.name, () => suite.scenario(scenario.name, async ({ fixture, session }) => {
