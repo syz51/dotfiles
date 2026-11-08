@@ -163,7 +163,7 @@ describe("review", () => {
 
   test("runOne marks failed sessions, wrong configurations and bad judge answers as infra", async () => {
     setEnv({ FAKE_REVIEW_FAIL: "1" });
-    expect(await runOne(bugCase(), { ...options, repo })).toMatchObject({ infra: true, findings: null, reviewCostUSD: 0.3 });
+    expect(await runOne(bugCase(), { ...options, repo })).toMatchObject({ infra: true, findings: null, reviewCostUSD: 0.3, error: "review session ended without a result (error_during_execution, is_error)" });
     setEnv({ FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_RAN: "claude-haiku-5-5" });
     expect((await runOne(bugCase(), { ...options, repo })).error).toContain("requested claude-opus-5-5 but the session ran claude-haiku-5-5");
     setEnv({ FAKE_REVIEW_RAN: undefined, FAKE_CLAUDE_EFFORT: "high" });

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { ClaudeCallError, judge, runTask } from "../../lib/claude.js";
 import { claudeTempDir, removeSessionArtifacts } from "../../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../../tests/lib/process.js";
+import { resultEvent } from "../../../tests/lib/stream.js";
 import { benchSettings, configProblem } from "../runner.js";
 
 export const CASES_FILE = join(import.meta.dir, "cases.json");
@@ -194,7 +195,12 @@ export async function runOne(benchCase, { model, level, trial, batch, judgeModel
       reviewCostUSD: task.costUSD, durationMs: task.durationMs, recipe,
       modelObserved: models.join(",") || null, effortObserved: config.efforts.join(",") || null,
     });
-    if (!task.ok) return done({ error: `review session ended without a result${task.timedOut ? " (timed out)" : ""}`, infra: true });
+    if (!task.ok) {
+      const final = resultEvent(task.events);
+      const text = String(final?.result ?? "").slice(0, 200);
+      const why = task.timedOut ? "timed out" : final ? `${final.subtype}${final.is_error ? ", is_error" : ""}${text ? `: ${text}` : ""}` : "no result event";
+      return done({ error: `review session ended without a result (${why})`, infra: true });
+    }
     if (!session) return done({ error: "the session did not call the code-review skill", infra: true });
     if (config.problem) return done({ error: config.problem, infra: true });
     if (!recipe?.startsWith(`${level} effort`)) return done({ error: `requested level ${level} but the skill ran ${recipe ?? "no named recipe"}`, infra: true });
