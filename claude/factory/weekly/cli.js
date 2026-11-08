@@ -1,5 +1,5 @@
 // weekly: the factory loop in one run (metrics, audit, scoring, the work board, the feedback
-// loop, proposals) with a summary report, and the LaunchAgent that runs it every week on this Mac.
+// loop, the review of main, proposals) with a summary report, and the LaunchAgent that runs it every week on this Mac.
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { acquireLock, readJsonl, stateDir, statePath, writeJsonAtomic } from "..
 import { stateDir as apiStateDir } from "../../bin/api-first.js";
 import { summaryLines as boardLines } from "../board/cli.js";
 import { summaryLines as evolveLines } from "../evolve/cli.js";
+import { summaryLines as reviewLines } from "../review/cli.js";
 import { detectorDimensions } from "../scoring/rubric.js";
 
 // CLAUDE_FACTORY_WEEKLY_CLI replaces the factory CLI the steps run (tests use a fake).
@@ -19,12 +20,16 @@ const STEP_TIMEOUT = 45 * 60 * 1000;
 // Proposals run up to three sessions of 15 minutes, each followed by its tests (a cold
 // agent-board build among them), so they get longer.
 const PROPOSE_TIMEOUT = 150 * 60 * 1000;
+// The review of main runs a review and a verify session of up to 40 and 20 minutes per
+// repository, one repository after another.
+const REVIEW_TIMEOUT = 150 * 60 * 1000;
+const TIMEOUTS = { propose: PROPOSE_TIMEOUT, review: REVIEW_TIMEOUT };
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js weekly <run|install|uninstall|status> [options]
 
-  run        Run metrics, audit, scoring, the board review, the feedback loop report
-             and proposals once and write a summary
-    --no-pr            Dry-run proposals (no push, no PR)
+  run        Run metrics, audit, scoring, the board review, the feedback loop report,
+             the review of main and proposals once and write a summary
+    --no-pr            Dry-run proposals (no push, no PR) and file no review findings
     --score-usd N      Total judge budget for scoring (default 3)
     --sample N         Sessions to judge (default 8)
     --notify           Post a macOS notification when done
@@ -43,6 +48,8 @@ export function steps({ pr = true, scoreUsd = "3", sample = "8", boardSnapshot =
     ["score", ["score", "--sample", sample, "--max-total-usd", scoreUsd], "text"],
     ["board", ["board", "--days", "7", "--json", "--out", boardSnapshot], "json"],
     ["evolve", ["evolve", "--days", "7", "--json"], "json"],
+    // The last week of main per board repository; confirmed findings become board proposals.
+    ["review", ["review", "--json", ...(pr ? [] : ["--dry-run"])], "json"],
     // Judge verdicts are not yet calibrated, so only detector dimensions and the board can
     // open PRs.
     ["propose", ["propose", ...detectors, "--board-snapshot", boardSnapshot, ...(pr ? [] : ["--dry-run"])], "text"],
@@ -70,6 +77,7 @@ function highlights(name, output) {
   }
   if (name === "board") return boardLines(output);
   if (name === "evolve") return evolveLines(output);
+  if (name === "review") return reviewLines(output);
   return [];
 }
 
@@ -77,7 +85,7 @@ function highlights(name, output) {
 async function runStep([name, argv, kind], env) {
   const started = Date.now();
   try {
-    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: name === "propose" ? PROPOSE_TIMEOUT : STEP_TIMEOUT });
+    const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: TIMEOUTS[name] ?? STEP_TIMEOUT });
     const step = { name, code: result.code, durationMs: Date.now() - started, stderr: tail(result.stderr, 8) };
     if (kind === "json") {
       try {
