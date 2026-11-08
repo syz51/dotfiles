@@ -23,6 +23,16 @@
 // refused, each refusal keeps runs on the subscription twice as long as the last, up to
 // MAX_BACKOFF_MS.
 //
+// The same path records what each API run cost. Neither the Stop hook's input nor any other
+// hook's carries the cost, and claude-api cannot read the run's result, since it has
+// replaced itself with claude. Claude Code writes the session's running total to the
+// transcript as a "cost-state" line when it exits, after Stop but before SessionEnd
+// (2.1.319). So a SessionEnd hook adds the transcript's last two such lines to its report,
+// and the next plan logs the run's cost: the last total, less the one before it when a
+// resumed session carried that one over. A run that keeps no transcript
+// (--no-session-persistence) has no such line, and its cost is logged as unknown.
+// `bun api-first.js spend` sums the log by caller and day.
+//
 // Variables (named API_FIRST_* because callers strip CLAUDE_* from a child's environment):
 //   API_FIRST_KEY_FILE   key file, default ~/.local/share/codex-skills/anthropic-api-key
 //   API_FIRST_STATE      state folder, default ${XDG_STATE_HOME:-~/.local/state}/claude-api
@@ -32,11 +42,15 @@
 //   API_FIRST_SUBSCRIPTION  1 runs on the subscription without a check: for a caller
 //                        retrying a run the API refused, whose hook may have been cut off
 //                        before it reported the refusal
-import { createHash } from "node:crypto";
+//   API_FIRST_CALLER     the caller's name in the log; default the caller's script, read
+//                        from the process API_FIRST_CALLER_PID (set by claude-api)
+import { spawnSync } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
-import { appendJsonl, readJson, writeJsonAtomic } from "../factory/lib/state.js";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { parseArgs } from "node:util";
+import { appendJsonl, readJson, readJsonl, writeJsonAtomic } from "../factory/lib/state.js";
 
 export const TTL_MS = { ok: 10 * 60 * 1000, exhausted: 30 * 60 * 1000, invalid: 30 * 60 * 1000, refused: 30 * 60 * 1000, unknown: 60 * 1000 };
 export const MAX_BACKOFF_MS = 8 * 60 * 60 * 1000;
@@ -104,13 +118,13 @@ export function readArgs(argv) {
 // The caller's settings: a file path or JSON, or none.
 export const readSettings = (value) => value === undefined ? {} : JSON.parse(value.trim().startsWith("{") ? value : readFileSync(value, "utf8"));
 
-// The caller's settings with the key helper and the report hook added after the caller's
-// own hooks. A caller's own apiKeyHelper is kept, and then no report hook is added: its
-// runs say nothing about this key.
-export function mergedSettings(settings, helper, report) {
-  if (settings.apiKeyHelper !== undefined || report === undefined) return JSON.stringify({ apiKeyHelper: helper, ...settings });
+// The caller's settings with the key helper and the report hooks ({ event: command })
+// added after the caller's own hooks. A caller's own apiKeyHelper is kept, and then no
+// report hook is added: its runs say nothing about this key and are not billed to it.
+export function mergedSettings(settings, helper, reports) {
+  if (settings.apiKeyHelper !== undefined || reports === undefined) return JSON.stringify({ apiKeyHelper: helper, ...settings });
   const hooks = { ...settings.hooks };
-  for (const event of ["StopFailure", "Stop"]) hooks[event] = [...(hooks[event] ?? []), { hooks: [{ type: "command", command: report }] }];
+  for (const [event, command] of Object.entries(reports)) hooks[event] = [...(hooks[event] ?? []), { hooks: [{ type: "command", command }] }];
   return JSON.stringify({ ...settings, apiKeyHelper: helper, hooks });
 }
 
@@ -195,16 +209,57 @@ export function lifetime(state) {
   return state.source === "run" ? Math.min(base * 2 ** (state.refusals - 1), MAX_BACKOFF_MS) : base;
 }
 
-// The hook command an API run reports through: it saves the hook input as
-// reports/<plannedAt>-<keyHash>-<pid>.json. Plain sh and cat, because Claude Code does not
-// wait for StopFailure hooks and kills them when it exits (2.1.318): a 2-second hook was
-// cut off, so the hook has to finish in milliseconds. The file appears whole or not at all.
-// The hook prints nothing and always exits 0: a report that fails must not block a Stop
-// (exit 2) or add an error to the run.
-export function reportHook(dir, keyHash, plannedAt) {
-  const name = `${plannedAt}-${keyHash}-$$`;
-  return `{ cd ${quote(dir)} && cat > .${name} && mv .${name} ${name}.json; } >/dev/null 2>&1; exit 0`;
+// The hook commands an API run reports through, by event: each saves the hook input as
+// reports/<plannedAt>-<keyHash>-r<run>-<pid>.json. Plain sh, cat, sed and grep, because
+// Claude Code does not wait for StopFailure hooks and kills them when it exits (2.1.318): a
+// 2-second hook was cut off, so the hook has to finish in milliseconds. The SessionEnd
+// report adds, after the input line, the last two cost-state lines of the transcript the
+// input names. The file appears whole or not at all. The hooks print nothing and always
+// exit 0: a report that fails must not block a Stop (exit 2) or add an error to the run.
+export function reportHooks(dir, keyHash, plannedAt, run) {
+  const name = `${plannedAt}-${keyHash}-r${run}-$$`;
+  const save = (extra) => `{ cd ${quote(dir)} && cat > .${name} && { ${extra}mv .${name} ${name}.json; }; } >/dev/null 2>&1; exit 0`;
+  const report = save("");
+  const cost = save(`t=$(sed -n 's/.*"transcript_path":"\\([^"]*\\)".*/\\1/p' .${name}); echo >> .${name}; `
+    + `[ ! -f "$t" ] || grep '^{"type":"cost-state"' "$t" | tail -n 2 >> .${name}; `);
+  return { StopFailure: report, Stop: report, SessionEnd: cost };
 }
+
+// What a run cost, from its SessionEnd report: { costUSD, detail? }, costUSD null when the
+// report holds no cost-state line for the run's session. A resumed session carries its
+// total over, so the run's cost is its last total less the one before it.
+export function runCost(input, lines) {
+  const totals = lines.filter((line) => line?.type === "cost-state" && line.sessionId === input.session_id && Number.isFinite(line.totalCostUSD))
+    .map((line) => line.totalCostUSD);
+  if (!totals.length) return { costUSD: null, detail: "no cost-state line in the run's transcript; a run with --no-session-persistence keeps none" };
+  const [before, last] = totals.length > 1 ? totals.slice(-2) : [0, totals[0]];
+  return { costUSD: last >= before ? last - before : last };
+}
+
+// A report file's name: plannedAt, keyHash, and the run id, which reports from before
+// costs were recorded lack.
+const REPORT_NAME = /^(\d+)-([0-9a-f]+)(?:-r([0-9a-f]+))?-\d+\.json$/;
+
+const parsed = (text) => {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return null;
+  }
+};
+
+// A report's hook input and the JSON lines after it ({ input, lines }), or null when the
+// input is damaged. A damaged line after it is left out.
+export function parseReport(text) {
+  const [first, ...rest] = text.split("\n").filter((line) => line.trim());
+  const input = parsed(text)?.value ?? parsed(first ?? "")?.value;
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return null;
+  return { input, lines: parsed(text) ? [] : rest.map((line) => parsed(line)?.value) };
+}
+
+// The log line for run's SessionEnd report, saved at `at`.
+const costLine = (run, { input, lines }, at) => ({ at: new Date(at).toISOString(), mode: "cost", run, session: input.session_id, ...runCost(input, lines) });
 
 // The state after one run report ({ input, plannedAt, at }) for the state's key. A refusal
 // for credit or the key (StopFailure) moves later runs to the subscription, unless one for
@@ -222,15 +277,17 @@ export function applyReport(state, { input, keyHash, plannedAt, at }) {
 }
 
 // Folds the reports waiting in reports/ into state (this key's entry, or null), and logs
-// each refusal it records. A report is claimed by renaming it, so two plans never fold the
-// same one; reports for another key are dropped, as are leftovers of cut-off hooks.
+// each refusal it records and each run's cost. A report is claimed by renaming it, so two
+// plans never fold the same one. Costs are logged whatever the key; other reports for
+// another key are dropped, as are leftovers of cut-off hooks.
 function foldReports(env, keyHash, state, now) {
   const dir = reportsDir(env);
   if (!existsSync(dir)) return state;
+  const log = join(stateDir(env), "decisions.jsonl");
   const reports = [];
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
-    const match = /^(\d+)-([0-9a-f]+)-\d+\.json$/.exec(name);
+    const match = REPORT_NAME.exec(name);
     if (!match) {
       if (name.startsWith(".") && now - statSync(path, { throwIfNoEntry: false })?.mtimeMs > STALE_MS) rmSync(path, { recursive: true, force: true });
       continue;
@@ -244,22 +301,17 @@ function foldReports(env, keyHash, state, now) {
       if (error.code === "ENOENT") continue;
       throw error;
     }
-    const text = readFileSync(claimed, "utf8");
+    const report = parseReport(readFileSync(claimed, "utf8"));
     rmSync(claimed);
-    let input;
-    try {
-      input = JSON.parse(text);
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-      continue;
-    }
-    if (input === null || typeof input !== "object" || Array.isArray(input)) continue;
-    if (match[2] === keyHash) reports.push({ input, keyHash, plannedAt: Number(match[1]), at });
+    if (!report) continue;
+    if (report.input.hook_event_name === "SessionEnd") {
+      if (match[3]) appendJsonl(log, costLine(match[3], report, at));
+    } else if (match[2] === keyHash) reports.push({ input: report.input, keyHash, plannedAt: Number(match[1]), at });
   }
   for (const report of reports.sort((a, b) => a.at - b.at)) {
     const next = applyReport(state, report);
     if (next !== state && next.source === "run" && next.checkedAt === report.at)
-      appendJsonl(join(stateDir(env), "decisions.jsonl"), { at: new Date(report.at).toISOString(), mode: "refused", reason: `${next.status}: ${next.detail}`, cwd: report.input.cwd });
+      appendJsonl(log, { at: new Date(report.at).toISOString(), mode: "refused", reason: `${next.status}: ${next.detail}`, cwd: report.input.cwd });
     state = next;
   }
   return state;
@@ -304,8 +356,8 @@ export async function decide({ env = process.env, now = Date.now(), check = chec
   return { mode: onApi(result.status) ? "api" : "subscription", reason, keyHash };
 }
 
-// The plan for argv: { bin, mode: "api" | "subscription" | "passthrough", settings, reason }.
-// settings is the merged --settings value in API mode.
+// The plan for argv: { bin, mode: "api" | "subscription" | "passthrough", settings, reason, run }.
+// settings is the merged --settings value in API mode, and run the id its cost is logged under.
 export async function plan(argv, { env = process.env, check, now = Date.now() } = {}) {
   const depth = Number(env.API_FIRST_DEPTH ?? 0);
   if (depth > MAX_DEPTH) throw new Error(`nested ${depth} deep, which means a loop; set API_FIRST_REAL_BIN to the real claude`);
@@ -327,15 +379,128 @@ export async function plan(argv, { env = process.env, check, now = Date.now() } 
   if (decision.mode === "subscription") return { bin, ...decision };
   mkdirSync(reportsDir(env), { recursive: true });
   const helper = `cat ${quote(keyFile(env))}`;
-  return { bin, ...decision, settings: mergedSettings(settings, helper, reportHook(reportsDir(env), keyHash, now)) };
+  const run = randomBytes(6).toString("hex");
+  return { bin, ...decision, run, settings: mergedSettings(settings, helper, reportHooks(reportsDir(env), keyHash, now, run)) };
 }
 
 const quote = (value) => `'${value.replace(/'/g, "'\\''")}'`;
 
+// A caller's name from its command line: the folder and name of the script it runs (or
+// the module after -m), else its program's name.
+export function callerName(command) {
+  const words = command.trim().split(/\s+/);
+  const module = words.indexOf("-m");
+  if (module > 0 && words[module + 1]) return words[module + 1];
+  const script = words.slice(1).find((word) => !word.startsWith("-") && /\.(?:[cm]?[jt]s|py|sh|rb)$/.test(word));
+  return script ? join(basename(dirname(script)), basename(script)) : basename(words[0] ?? "");
+}
+
+// The caller to log: API_FIRST_CALLER, else the name of the process API_FIRST_CALLER_PID,
+// else null.
+export function caller(env = process.env) {
+  if (env.API_FIRST_CALLER) return env.API_FIRST_CALLER;
+  if (!/^\d+$/.test(env.API_FIRST_CALLER_PID ?? "")) return null;
+  const ps = spawnSync("ps", ["-o", "command=", "-p", env.API_FIRST_CALLER_PID], { encoding: "utf8" });
+  return ps.status === 0 && ps.stdout.trim() ? callerName(ps.stdout) : null;
+}
+
+// The costs of runs whose SessionEnd reports wait in reports/ for the next plan, by run
+// id. They are read, not claimed.
+function waitingCosts(env) {
+  const dir = reportsDir(env);
+  const costs = [];
+  if (!existsSync(dir)) return costs;
+  for (const name of readdirSync(dir)) {
+    const run = REPORT_NAME.exec(name)?.[3];
+    if (!run) continue;
+    let text;
+    try {
+      text = readFileSync(join(dir, name), "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const report = parseReport(text);
+    if (report?.input.hook_event_name === "SessionEnd") costs.push(costLine(run, report, Date.now()));
+  }
+  return costs;
+}
+
+// API spend from the decision log's entries: per caller, per day (UTC) and in total, the
+// API runs, the known cost and the runs whose cost is unknown. An unknown cost counts as
+// unknown, never as $0: a run logged before costs were recorded has no run id, one that
+// kept no transcript has a null cost, and one whose report was not folded yet has none.
+export function spendSummary(entries, { since = -Infinity } = {}) {
+  const costs = new Map(entries.filter((entry) => entry.mode === "cost").map((entry) => [entry.run, entry.costUSD]));
+  const empty = () => ({ runs: 0, usd: 0, unknown: 0 });
+  const total = { ...empty(), before: 0, untracked: 0, unreported: 0 };
+  const byCaller = new Map();
+  const byDay = new Map();
+  for (const entry of entries) {
+    if (entry.mode !== "api" || Date.parse(entry.at) < since) continue;
+    const cost = entry.run === undefined ? undefined : costs.get(entry.run);
+    const buckets = [total, ...[[byCaller, entry.caller ?? "(not logged)"], [byDay, entry.at.slice(0, 10)]]
+      .map(([map, key]) => map.get(key) ?? map.set(key, empty()).get(key))];
+    for (const bucket of buckets) {
+      bucket.runs++;
+      if (typeof cost === "number") bucket.usd += cost;
+      else bucket.unknown++;
+    }
+    if (entry.run === undefined) total.before++;
+    else if (cost === null) total.untracked++;
+    else if (cost === undefined) total.unreported++;
+  }
+  const sorted = (map) => [...map].sort(([a], [b]) => a.localeCompare(b)).map(([key, bucket]) => ({ key, ...bucket }));
+  return { total, byCaller: sorted(byCaller), byDay: sorted(byDay) };
+}
+
+const dollars = (usd) => `$${usd.toFixed(4)}`;
+
+// The summary as text tables.
+export function spendLines({ total, byCaller, byDay }, log) {
+  const table = (title, rows) => {
+    const width = Math.max(title.length, ...rows.map((row) => row.key.length));
+    return [`${title.padEnd(width)}  runs  unknown  known cost`,
+      ...rows.map((row) => `${row.key.padEnd(width)}  ${String(row.runs).padStart(4)}  ${String(row.unknown).padStart(7)}  ${dollars(row.usd).padStart(10)}`), ""];
+  };
+  return [`API spend logged in ${log}. Days are UTC.`,
+    "Unknown costs are not counted as $0: a run without a logged cost is unknown, and the known cost is a lower bound while any run is unknown.", "",
+    ...table("caller", byCaller), ...table("day", byDay),
+    `Total: ${total.runs} API runs, known cost ${dollars(total.usd)}, ${total.unknown} unknown`
+      + ` (${total.before} logged before costs were recorded, ${total.untracked} without a transcript to read, ${total.unreported} not reported yet).`];
+}
+
+const SPEND_USAGE = "usage: bun api-first.js spend [--days N]\n  API spend by caller and by day from decisions.jsonl; --days keeps the last N days.";
+
+// `spend`: prints the summary of the log and of the reports waiting to be folded.
+export function spend(argv, env = process.env) {
+  let values;
+  try {
+    ({ values } = parseArgs({ args: argv, strict: true, options: { days: { type: "string" }, help: { type: "boolean", default: false } } }));
+  } catch (error) {
+    console.error(`${error.message}\n${SPEND_USAGE}`);
+    return 64;
+  }
+  if (values.help) {
+    console.log(SPEND_USAGE);
+    return 0;
+  }
+  const days = values.days === undefined ? undefined : Number(values.days);
+  if (days !== undefined && !(Number.isInteger(days) && days > 0)) {
+    console.error(`--days must be a whole number above 0\n${SPEND_USAGE}`);
+    return 64;
+  }
+  const log = join(stateDir(env), "decisions.jsonl");
+  const since = days === undefined ? -Infinity : Date.now() - days * 86_400_000;
+  console.log(spendLines(spendSummary([...readJsonl(log), ...waitingCosts(env)], { since }), log).join("\n"));
+  return 0;
+}
+
 if (import.meta.main) {
   const [command, ...argv] = process.argv.slice(2);
+  if (command === "spend") process.exit(spend(argv));
   if (command !== "plan") {
-    console.error("usage: bun api-first.js plan <claude args>");
+    console.error("usage: bun api-first.js plan <claude args>\n       bun api-first.js spend [--days N]");
     process.exit(64);
   }
   let result;
@@ -345,8 +510,10 @@ if (import.meta.main) {
     console.error(`claude-api: ${error.message}`);
     process.exit(70);
   }
-  if (result.mode !== "passthrough" || result.reason !== "not print mode")
-    appendJsonl(join(stateDir(), "decisions.jsonl"), { at: new Date().toISOString(), mode: result.mode, reason: result.reason, cwd: process.cwd() });
+  if (result.mode !== "passthrough" || result.reason !== "not print mode") {
+    const billed = result.mode === "api" ? { run: result.run, caller: caller() } : {};
+    appendJsonl(join(stateDir(), "decisions.jsonl"), { at: new Date().toISOString(), mode: result.mode, reason: result.reason, cwd: process.cwd(), ...billed });
+  }
   if (result.mode === "subscription") console.error(`claude-api: running on the subscription (${result.reason})`);
   // Three lines for the shell: the real claude, the mode, the merged settings.
   process.stdout.write(`${result.bin}\n${result.mode}\n${result.settings ?? ""}\n`);

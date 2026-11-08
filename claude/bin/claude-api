@@ -10,7 +10,8 @@ API_FIRST_DEPTH=$(( ${API_FIRST_DEPTH:-0} + 1 ))
 export API_FIRST_DEPTH
 bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
 
-plan=$("$bun" "$here/api-first.js" plan "$@")
+# The caller's process id names the caller in the decision log.
+plan=$(API_FIRST_CALLER_PID=$PPID "$bun" "$here/api-first.js" plan "$@")
 real=$(printf '%s\n' "$plan" | sed -n 1p)
 mode=$(printf '%s\n' "$plan" | sed -n 2p)
 settings=$(printf '%s\n' "$plan" | sed -n 3p)
