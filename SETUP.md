@@ -251,10 +251,13 @@ and never blocks the call. Its fetch never prompts for credentials, and parallel
 take turns on a lock in the repository's git folder, so one fetches for all of them.
 Do not replace an existing tool home without backing up its local data.
 
-Two skills live here: `headless-browser`, and `work-stages`, which the Workflow sections
-of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at, for Claude Code and
-Codex alike. Claude Code finds both through `~/.claude/skills` when `~/.claude` links to
-`~/.config/claude`; otherwise link each skill into `~/.claude/skills`. Link `work-stages`
+Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
+Workflow sections of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at,
+for Claude Code and Codex alike. Claude Code finds them through `~/.claude/skills` when
+`~/.claude` links to `~/.config/claude`; otherwise link each skill into `~/.claude/skills`.
+`cheat-sheets` finds and downloads sheets from cheat-sheets.org into
+`~/.cache/cheat-sheets`. That site states no license, so never commit a downloaded sheet
+or a copy of its page; its test uses a synthetic page. Link `work-stages`
 for Codex too, after checking that nothing is at the target:
 
 ```sh
@@ -735,6 +738,10 @@ in CI:
   also fail. When `~/.claude` links to another checkout, the three location checks
   are skipped with one notice and the other tests still run; from the linked checkout
   they run without it.
+- `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
+  and a local server. It checks sections, aliases, item ids, formats, years, ranking,
+  the 7-day index cache, the saved-then-online download order and the PDF text copy.
+  The PDF check is skipped when `pdftotext` is missing.
 
 The live suites run real `claude -p` sessions against the installed `~/.claude`, using
 account quota. Each runs in a fresh fixture folder under one temporary root, blocks
