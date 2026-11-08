@@ -26,14 +26,13 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: false
-      - name: Scan history and run isolated tests
+      # The archive name and checksum key the cache, so a warm cache needs no download
+      # when GitHub's release host fails. The test step checks the checksum either way.
+      - name: Pick the gitleaks archive
+        id: gitleaks
         shell: bash
         run: |
           set -euo pipefail
-          scratch=$(mktemp -d "${TMPDIR%/}/dotfiles-checks.XXXXXX")
-          trap 'rm -rf "$scratch"' EXIT
-          export TMPDIR="$scratch"
-          export PYTHONDONTWRITEBYTECODE=1
           case "$(uname -m)" in
             arm64)
               archive=gitleaks_8.30.1_darwin_arm64.tar.gz
@@ -45,9 +44,40 @@ jobs:
               ;;
             *) echo "Unsupported runner architecture" >&2; exit 1 ;;
           esac
-          curl --fail --silent --show-error --location \
-            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$archive" \
-            --output "$scratch/$archive"
+          { echo "archive=$archive"; echo "checksum=$checksum"; } >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gitleaks-cache
+          key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}
+      - name: Scan history and run isolated tests
+        shell: bash
+        env:
+          GITLEAKS_ARCHIVE: ${{ steps.gitleaks.outputs.archive }}
+          GITLEAKS_CHECKSUM: ${{ steps.gitleaks.outputs.checksum }}
+          GITLEAKS_CACHE: ${{ runner.temp }}/gitleaks-cache
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "${TMPDIR%/}/dotfiles-checks.XXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          export TMPDIR="$scratch"
+          export PYTHONDONTWRITEBYTECODE=1
+          archive=$GITLEAKS_ARCHIVE
+          checksum=$GITLEAKS_CHECKSUM
+          # A 504 can surface as exit 56 over HTTP/2, so retry every error, within about
+          # 3.5 minutes in all to leave the 10-minute job time for the tests.
+          if [ -f "$GITLEAKS_CACHE/$archive" ]; then
+            echo "gitleaks archive: cache hit"
+          else
+            echo "gitleaks archive: cache miss, downloading"
+            mkdir -p "$GITLEAKS_CACHE"
+            curl --fail --silent --show-error --location \
+              --retry 6 --retry-delay 15 --retry-max-time 150 --retry-all-errors \
+              --connect-timeout 15 --max-time 60 \
+              "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$archive" \
+              --output "$GITLEAKS_CACHE/$archive"
+          fi
+          # The checksum check runs on the copy in the scratch folder, downloaded or cached.
+          cp "$GITLEAKS_CACHE/$archive" "$scratch/$archive"
           (cd "$scratch" && printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 --check)
           tar -xzf "$scratch/$archive" -C "$scratch" gitleaks
           "$scratch/gitleaks" git --redact=100 --max-decode-depth=2 --log-opts="--all"

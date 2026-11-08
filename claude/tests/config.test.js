@@ -724,6 +724,41 @@ describe("computer-use plugin", () => {
   });
 });
 
+// On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
+// before any test ran. Retries cover short failures; the cache covers long ones.
+describe("CI gitleaks download", () => {
+  const workflow = read(".github/workflows/checks.yml");
+  const download = /curl (?:[^\n]*\\\n)*[^\n]*\n/.exec(workflow)?.[0] ?? "";
+  const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
+
+  test("the download retries every error within the job's timeout", () => {
+    expect(download).toContain("releases/download/v8.30.1/$archive");
+    // A 504 can end curl with exit 56 over HTTP/2, which plain --retry does not retry.
+    expect(download).toContain("--retry-all-errors");
+    expect(flag("retry")).toBeGreaterThanOrEqual(5);
+    expect(workflow).toMatch(/^ {4}timeout-minutes: 10$/m);
+    // No retry starts after --retry-max-time, and the last attempt runs up to --max-time,
+    // which leaves the tests at least 6 of the job's 10 minutes.
+    expect(flag("retry-max-time") + flag("max-time")).toBeLessThanOrEqual(240);
+  });
+
+  test("a pinned cache keyed by archive and checksum skips the download", () => {
+    expect(workflow).toMatch(/^ {6}- uses: actions\/cache@[0-9a-f]{40} # v\S+$/m);
+    expect(workflow).toContain("key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}");
+    expect(workflow).toMatch(/^ {10}if \[ -f "\$GITLEAKS_CACHE\/\$archive" \]; then$/m);
+  });
+
+  test("the checksum check runs before extraction on a downloaded or cached archive", () => {
+    // The copy sits outside the if, so both paths reach the check.
+    const copy = workflow.search(/^ {10}cp "\$GITLEAKS_CACHE\/\$archive" "\$scratch\/\$archive"$/m);
+    const check = workflow.indexOf(`(cd "$scratch" && printf '%s  %s\\n' "$checksum" "$archive" | shasum -a 256 --check)`);
+    const extract = workflow.indexOf(`tar -xzf "$scratch/$archive" -C "$scratch" gitleaks`);
+    expect(workflow.indexOf(download)).toBeLessThan(copy);
+    expect(copy).toBeLessThan(check);
+    expect(check).toBeLessThan(extract);
+  });
+});
+
 // Since 2026-11-08 the user allows only Opus or Haiku models. Pricing keeps the other rows
 // to price past sessions; tests may name any model as data. Installed packages, such as the
 // headless-browser skill's Playwright, are not ours to change, so the scan skips node_modules.
