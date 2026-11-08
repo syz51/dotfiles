@@ -321,6 +321,18 @@ fetch fails, it compares with the last fetched branch and says so. It adds about
 seconds to the start of such a session, and about 0.2 seconds offline. Claude Code reads
 hooks when a session starts, so a session that started before config-sync installed a
 hook never runs it.
+`claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
+compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
+window, and long threads re-read most of that context on every call. The value applies to
+every session, subagents included, on both Macs. It was 300000, which compacts near 267K,
+from 2026-11-06. From 2026-11-08 it is 200000, which compacts near 167K, as a trial. At
+300000, on the Air from 2026-11-06 to part of 2026-11-08, a main-thread call read 150K
+cached tokens on average, 26% of calls carried more than 200K of context, and all calls
+read 1.85B, 4.03B and 4.69B cached tokens a day. Compare at least three full days at
+200000 with that baseline. A lower window lowers reads per call by construction, so judge
+it by total cache-read tokens per day and per board task done, and watch compactions per
+session. Then set the chosen value, update this paragraph and the test and its comment in
+`claude/tests/config.test.js`.
 Do not replace an existing tool home without backing up its local data.
 
 Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the

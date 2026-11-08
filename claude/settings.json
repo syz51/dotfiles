@@ -228,7 +228,7 @@
       "effortLevel": "high"
     }
   },
-  "autoCompactWindow": 300000,
+  "autoCompactWindow": 200000,
   "skipDangerousModePermissionPrompt": true,
   "disableSkillShellExecution": true,
   "theme": "dark",
