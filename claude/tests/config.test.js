@@ -541,6 +541,25 @@ describe("feedback rule", () => {
   });
 });
 
+describe("T3 self-settle", () => {
+  test("finished threads settle themselves after a final check; coordinators and subagents never do", () => {
+    const rule = section("Workflow").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
+    expect(rule).toBeDefined();
+    for (const guard of [
+      "nothing is left to do, track or file",
+      "no running job",
+      "open PR you must still merge or fix",
+      "task you own in `doing`",
+      "question or ask I have not answered",
+      "report item I must act on",
+    ]) expect(rule).toContain(guard);
+    expect(rule).toContain('`t3_thread_organize` with `action: "settle"` and no `threadId` as your last step, and say so in the report.');
+    expect(rule).toContain('call it again with `action: "unsettle"`; new activity also unsettles the thread.');
+    expect(rule).toContain("A brief or routine with its own settle rule overrides this one.");
+    expect(rule).toContain("Board coordinator threads and Agent-tool subagents never settle themselves; threads started by `delegate_task` or `t3_thread_launch` do.");
+  });
+});
+
 describe("work stages", () => {
   const STAGES = ["Explore", "Research", "Design", "Plan", "Build", "Verify"];
   const WORKFLOW = "- Shape non-trivial work in the stages of the `work-stages` skill (explore, research, design, plan, build, verify), skipping those it does not need.";
