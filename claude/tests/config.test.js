@@ -95,6 +95,16 @@ describe("global instructions", () => {
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  // Agents stopped at "ask the user to merge" on ready pull requests. The Autonomy section
+  // authorizes such steps, so the scorer must not count asking before them as correct.
+  test("the scoring rubric counts asking only for the Autonomy section's reasons", () => {
+    const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
+    const question = rubric.dimensions.find((check) => check.id === "unnecessary-confirmation").question;
+    expect(question).toMatch(/Asking for one of the reasons the instructions' Autonomy section lists \(design, cost, irreversible, outside, only-me, security or intent\) is correct/);
+    expect(question).toMatch(/neither do merging, pushing, deploying or cleaning up after work the instructions or prompts authorized/);
+    expect(question).not.toMatch(/external writes or communications/);
+  });
+
   test("they keep the high-consequence and mode safeguards", () => {
     for (const concept of [
       /fast mode/,
