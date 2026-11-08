@@ -1,0 +1,4 @@
+{
+  "name": "lean-prompt",
+  "description": "Keeps the Artifact tool's long schema out of every session's fixed prompt: the tool waits behind ToolSearch until a session loads it."
+}
