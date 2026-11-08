@@ -460,9 +460,10 @@ and falls back to the claude.ai subscription otherwise. The planner,
   when the check is inconclusive). Without a key file or credit, runs use the
   subscription and say so on stderr. Every decision goes to `decisions.jsonl` there, and
   the weekly summary counts them. Each API run also logs its caller and, once a later run
-  folds its `SessionEnd` report, its cost from the transcript (unknown for runs with
-  `--no-session-persistence`); `bun ~/.claude/bin/api-first.js spend` sums them by caller
-  and day.
+  folds its `SessionEnd` report, its cost from the transcript. Runs with
+  `--no-session-persistence` keep no transcript, so their cost is unknown, unless the
+  caller logs the stream's result cost by session, as the factory does. `bun
+  ~/.claude/bin/api-first.js spend` sums them by caller and day, and counts each run once.
 - The check cannot foresee every refusal: the API can refuse Claude Code's own requests
   for credit while plain ones are served, and refuses requests that only look like Claude
   Code's even while Claude Code is served, so no check request can stand in for a run. So
