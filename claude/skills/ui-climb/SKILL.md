@@ -112,7 +112,10 @@ Repeat:
    the budget left, status says so: first make one structural round aimed at the lowest
    category (a new type scale, layout system or component set, not more local fixes),
    judge it with `$UI round --structural` and note what it changes, and stop when status
-   says that round did not move it either. Say why you stopped in the last note.
+   says that round did not move it either. Status says so for every structural round
+   since a metric last moved; a structural round that moved one earns a new one at the
+   next plateau. Say why you stopped in the last note, with the calibration's bar-reach
+   warning when status repeats it.
 5. Otherwise fix what the round reported: failed gates first, then the issues marked
    `[under bar]` (in categories under the bar, furthest first), then the rest. When a
    category under the bar has few issues, the round prints what the judges said of the

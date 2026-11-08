@@ -101,6 +101,10 @@ function mainRange(list, judge) {
   return scores.length ? { low: Math.min(...scores), high: Math.max(...scores), rounds: scores.length } : null;
 }
 
+// The judges whose calibration warned that the bar may be out of their range, as [key, result]
+// pairs; judges is a calibration's judges map.
+const barWarnings = (judges) => Object.entries(judges ?? {}).filter(([, result]) => result.barReach?.warnings.length);
+
 function calibrated(config, calibration) {
   const missing = config.judges.filter((judge) => !calibration?.judges?.[judgeKey(judge)]?.pass);
   return { ok: missing.length === 0, missing };
@@ -126,7 +130,8 @@ export function scoreLine(round, config) {
 // binding judge is the latest round's first failing judge. Its metrics are those still short
 // of their bar: the lowest category and the total shortfall under min (so progress on one of
 // several tied categories counts), the gain over main, and the lead over the best reference
-// when pass.references is set. noise(judge key) gives { lowest, gain }.
+// when pass.references is set. noise(judge key) gives { lowest, gain }. movedAt is the latest
+// round in which one of those metrics beat every earlier round by more than the noise, or null.
 export function plateau(list, { min, references = null, noise }) {
   const judgedRounds = list.filter((round) => round.verdicts?.length);
   const judged = judgedRounds.length;
@@ -135,6 +140,7 @@ export function plateau(list, { min, references = null, noise }) {
   const judge = (latestRound.verdicts.find((v) => !v.pass) ?? latestRound.verdicts[0]).judge;
   const verdicts = verdictsOf(judgedRounds, judge);
   if (verdicts.length < 3) return { plateau: false, judged, judge, metrics: {} };
+  const roundOf = judgedRounds.filter((round) => round.verdicts.some((v) => v.judge === judge)).map((round) => round.round);
   const latest = verdicts.at(-1);
   const sigma = noise(judge);
   // name: [values, noise, lower is better]
@@ -146,14 +152,18 @@ export function plateau(list, { min, references = null, noise }) {
   if (latest.gain < latest.gainBar) series.gain = [verdicts.map((v) => v.gain), sigma.gain, false];
   if (references !== null && latest.referenceMargin !== null && latest.referenceMargin < references) series.references = [verdicts.map((v) => v.referenceMargin), sigma.lowest, false];
   const metrics = {};
+  let movedAt = null;
   for (const [name, [values, spread, lower]] of Object.entries(series)) {
     const best = (items) => (lower ? Math.min(...items) : Math.max(...items));
+    const beats = (value, before) => (lower ? value < before - spread : value > before + spread);
     const before = best(values.slice(0, -2));
     const recent = best(values.slice(-2));
-    metrics[name] = { before, recent, noise: spread, moved: lower ? recent < before - spread : recent > before + spread };
+    metrics[name] = { before, recent, noise: spread, moved: beats(recent, before) };
+    for (let index = 1; index < values.length; index++)
+      if (beats(values[index], best(values.slice(0, index)))) movedAt = Math.max(movedAt ?? 0, roundOf[index]);
   }
   const tracked = Object.values(metrics);
-  return { plateau: tracked.length > 0 && tracked.every((metric) => !metric.moved), judged, judge, metrics };
+  return { plateau: tracked.length > 0 && tracked.every((metric) => !metric.moved), judged, judge, metrics, movedAt };
 }
 
 function printGates(gates, dir) {
@@ -247,7 +257,7 @@ async function calibrateCommand(config, values) {
     console.log("| Judge | Main | Control | Drop | Lower in | σ category | σ overall | References | Result |\n|---|---|---|---|---|---|---|---|---|");
     for (const [key, result] of Object.entries(results))
       console.log(`| ${key} | ${fixed(result.baseline)} | ${fixed(result.control)} | ${fixed(result.drop)} | ${percent(result.lowerShare)} | ${fixed(result.sigmaCategory)} | ${fixed(result.sigmaOverall)} | ${Object.entries(result.references).map(([ref, score]) => `${ref.slice(4)} ${fixed(score)}`).join(", ") || "–"} | ${result.pass ? "pass" : `FAIL: ${result.reasons.join("; ")}`} |`);
-    const unreachable = Object.entries(results).filter(([, result]) => result.barReach?.warnings.length);
+    const unreachable = barWarnings(results);
     if (unreachable.length) {
       console.log(`\nBar reach: the bar ${config.pass.min} may be out of the judges' range.`);
       for (const [key, result] of unreachable)
@@ -455,9 +465,18 @@ function statusCommand(config, values) {
   }
   if (status.plateau.plateau) {
     console.log(`Plateau (${status.plateau.judge}): in the last two judged rounds nothing the bar needs moved beyond the noise: ${describeMetrics(status.plateau.metrics)}.`);
-    const structural = list.filter((round) => round.verdicts?.length).slice(-2).find((round) => round.structural);
-    if (structural) console.log(`Structural round ${structural.round} did not move it either: stop the climb and say so in the last note.`);
-    else if (status.barGap > 0.5 && status.budgetLeftShare > 0.5)
+    // A structural round since the metrics last moved has had its try; one that moved them has not
+    // stopped the climb, and a later plateau earns a new one.
+    const since = status.plateau.movedAt ?? -Infinity;
+    const structural = list.findLast((round) => round.verdicts?.length && round.structural && round.round > since);
+    if (structural) {
+      console.log(`Structural round ${structural.round} did not move it either: stop the climb and say so in the last note.`);
+      const unreachable = barWarnings(calibration?.judges);
+      if (unreachable.length) {
+        console.log(`Calibration warned that the bar ${config.pass.min} may be out of the judges' range: say so in that note too.`);
+        for (const [key, result] of unreachable) console.log(`- ${key}: ${result.barReach.warnings.join("; ")}.`);
+      }
+    } else if (status.barGap > 0.5 && status.budgetLeftShare > 0.5)
       console.log(`The bar is ${fixed(status.barGap)} away with ${percent(status.budgetLeftShare)} of the budget left: before stopping, make one structural round aimed at ${status.lowestCategory} (a new system for it, not more local fixes), judged with \`ui round --structural\`. Stop if that round does not move it either.`);
   } else console.log(`No plateau (${status.plateau.judged} judged round${status.plateau.judged === 1 ? "" : "s"}${Object.keys(status.plateau.metrics).length ? `; ${describeMetrics(status.plateau.metrics)}` : ""}).`);
   return 0;
