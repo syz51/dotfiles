@@ -91,6 +91,23 @@ describe("global instructions", () => {
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  // Agents stopped at "ask the user to merge" on ready pull requests. On 2026-11-08 the
+  // user gave standing permission to merge them; the conditions keep CI, review, drafts,
+  // other threads' work, weakened safeguards and production out of it.
+  test("agents merge their own ready pull requests within the stated conditions", () => {
+    const rule = section("Basic safeguards");
+    expect(rule).toContain("- You are authorized to merge a pull request that this thread opened for its task in my repositories, without asking, once all of these hold: it is not a draft; every CI check on its head commit passes; the Review section's findings are handled; and it is current with its base.");
+    expect(rule).toContain("To make it current, merge the base into it and push, then wait for the checks on the new head; when that merge resolved conflicts in a high-impact change, review the resolution first.");
+    expect(rule).toContain("Merge it yourself with `gh pr merge` and the repository's usual method, outside a main checkout, and never with `--admin`.");
+    expect(rule).toContain("- Ask first instead when the change weakens a safeguard (a guard, hook, permission or rule in this section), when the merge or a documented step deploys to production or is destructive, or when the repository's instructions or a skill leave the merge to me.");
+    expect(rule).toContain("A delegated child leaves its merge to its parent unless its brief says otherwise.");
+    expect(rule).toContain("After merging, do the pull request's documented setup steps on this machine, except updating a main checkout, which config-sync or I do; file steps for other machines on the board.");
+    const rubric = JSON.parse(read("claude/factory/scoring/rubric.json"));
+    expect(rubric.dimensions.find((check) => check.id === "unnecessary-confirmation").question).toMatch(
+      /neither does merging a ready pull request the agent opened, which the instructions authorize under their conditions/,
+    );
+  });
+
   test("they keep the high-consequence and mode safeguards", () => {
     for (const concept of [
       /fast mode/,
@@ -415,16 +432,6 @@ describe("work board", () => {
     expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
     for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/List work you found .*, for the parent to file\.$/m);
-  });
-
-  // Agents stopped at "ask the user to merge" on ready pull requests. On 2026-11-08 the
-  // user gave standing permission to merge them, within these conditions.
-  test("agents merge their own ready pull requests without asking", () => {
-    const rule = section("Basic safeguards");
-    expect(rule).toMatch(/You are authorized to merge your own pull requests in my repositories without asking, once the required checks pass, the Review section's findings are handled and the branch is current with its base/);
-    expect(rule).toMatch(/never bypass branch protection/);
-    expect(rule).toMatch(/Then do the after-merge steps the pull request documents on this machine/);
-    expect(rule).toMatch(/Ask first when the merge deploys to production or the pull request belongs to someone else/);
   });
 
   // Asks sent the user to look up what memory, the board or a repository already held,
