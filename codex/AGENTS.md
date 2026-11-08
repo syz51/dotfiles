@@ -2,7 +2,7 @@
 
 ## Working preferences
 
-- Run all Python through `uv run`, including one-off scripts and inline snippets; never invoke a Python interpreter, `pip` or `pytest` directly. Run JavaScript/TypeScript scripts, checks, tooling, installs and package queries with `bun` or `bunx` only, never `node`, including for fallbacks, and never npm, npx, pnpm, yarn, corepack or Vite+ (`vp`), even where a project's lockfiles or `packageManager` field select them. To install a project's packages, convert it to bun: run `bun install`, which migrates the lockfiles, keep `bun.lock`, delete the old lockfiles, and say so. Where the project's CI or scripts require another package manager, stop and ask me. Respect a project's other runtime settings, such as its Python version.
+- Run all Python through `uv run`, including one-off scripts and inline snippets; never invoke a Python interpreter, `pip` or `pytest` directly. Run JavaScript/TypeScript scripts, checks, tooling, installs and package queries with `bun` or `bunx` only, never `node`, including for fallbacks, and never npm, npx, pnpm, yarn, corepack or Vite+ (`vp`), even where a project's lockfiles or `packageManager` field select them. To install a project's packages, convert it to bun: run `bun install`, which migrates the lockfiles, keep `bun.lock`, delete the old lockfiles, and say so. Where the project's CI or scripts require another package manager, stop and ask me (`Reason: design`). Respect a project's other runtime settings, such as its Python version.
 - Use Claude models only; I have no Codex subscription. Do not continue work in Codex: stop and ask me to continue it in Claude. Never start the `codex` CLI or a `gpt-*` model, even to test, and never delegate to the Codex provider.
 
 ## Workflow
@@ -21,7 +21,7 @@
 - Before `task_done`, and before ending a turn, put each remaining step, follow-up and suggestion on the board, checking first for a task that covers it (add a note there instead). Where another section names the place for something, such as storage problems, it goes there.
   - Scope your task still needs: a sub-task (`task_add` with your task as parent). Your task stays open until every acceptance check passes.
   - Work you find outside your task: a proposal (`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L), on this repository's board or on its owner's board when you know it, with the task you found it in, if any, as parent, or named in the body when that task is on another board.
-  - Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`.
+  - Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`. Make the ask first, and set `blocked` only once it is accepted.
 - Name what you filed in your reply, and report it there instead when filing fails. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.
 - Read-only work, such as a review or an investigation, files too, unless I say not to touch the board. Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix. Agents in their own threads, such as a coordinator's children, file for themselves.
 
