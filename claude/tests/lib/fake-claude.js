@@ -114,6 +114,19 @@ if (mode.startsWith("chinese-")) {
     symlinkSync(join(home, "releases", "typescript-b"), link);
   }
   if (mode === "chinese-skill-edit") appendFileSync(join(home, "releases", "typescript", "SKILL.md"), "edited\n");
+  // A codex-skills release moves `current` from release-a to release-b; an edit to the old
+  // release, or a link retargeted straight at the new release, must still fail.
+  const codex = join(home, ".local", "share", "codex-skills");
+  if (["chinese-release-switch", "chinese-release-old-edit"].includes(mode)) {
+    rmSync(join(codex, "current"));
+    symlinkSync(join(codex, "releases", "release-b"), join(codex, "current"));
+  }
+  if (mode === "chinese-release-old-edit") appendFileSync(join(codex, "releases", "release-a", "skills", "rust", "SKILL.md"), "edited\n");
+  if (mode === "chinese-agents-retarget") {
+    const link = join(home, ".agents", "skills", "find-skills");
+    rmSync(link);
+    symlinkSync(join(codex, "releases", "release-b", "skills", "find-skills"), link);
+  }
   // Skill feedback written meanwhile: records appended by other sessions' jobs, an
   // existing record edited or removed, and a file added outside notes/ and verifications/.
   const feedback = join(home, ".codex", "skill-feedback");

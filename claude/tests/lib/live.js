@@ -1,8 +1,8 @@
 // Harness for the opt-in live suites: real `claude -p` sessions against this machine's
 // ~/.claude, each in a fixture folder under one temporary root per suite.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { claudeTempDir, removeSessionArtifacts } from "./cleanup.js";
 import { conversation } from "./conversation.js";
 import { assertUnchanged, snapshot } from "./filesystem.js";
@@ -39,9 +39,38 @@ function guardedPaths() {
   paths.push(skillFeedback());
   return paths.filter((path) => existsSync(path));
 }
-const IGNORED = new Set(["node_modules", ".DS_Store"]);
+const SNAPSHOT = { allowLinks: true, followRoot: true, ignore: new Set(["node_modules", ".DS_Store"]) };
+
+// The texts of the links from path to the first entry that is not a link.
+function linkTexts(path) {
+  const texts = [];
+  for (let at = path; lstatSync(at).isSymbolicLink(); ) {
+    texts.push(readlinkSync(at));
+    at = resolve(dirname(at), texts.at(-1));
+  }
+  return texts;
+}
+// snapshot first: it throws on a link cycle, which linkTexts would follow forever.
 const guardSnapshot = () => Object.fromEntries(guardedPaths().map((path) =>
-  [path, snapshot(path, { allowLinks: true, followRoot: true, ignore: IGNORED })]));
+  [path, { tree: snapshot(path, SNAPSHOT), links: linkTexts(path) }]));
+
+// Each codex-skills release (one per merged PR) lands in its own folder under releases/
+// and moves `current` to it. Skill links reach their skill through `current`, some by way
+// of ~/.agents/skills, so a release resolves them to the same skill in another release.
+// That passes when every link text is unchanged and the old release's copy is still as
+// it was; a retargeted link or an edit to the old copy still fails.
+const codexReleases = () => join(homedir(), ".local", "share", "codex-skills", "releases");
+function releaseSwitched(before, after) {
+  const releases = codexReleases();
+  if (!existsSync(releases)) return false;
+  const prefix = realpathSync(releases) + sep;
+  const [from, to] = [before.tree["."].resolved, after.tree["."].resolved].map((path) =>
+    path.startsWith(prefix) ? path.slice(prefix.length).split(sep) : []);
+  if (from.length < 2 || to.length < 2 || from[0] === to[0] || from.slice(1).join(sep) !== to.slice(1).join(sep)) return false;
+  if (JSON.stringify(before.links) !== JSON.stringify(after.links)) return false;
+  assertUnchanged(before.tree, snapshot(before.tree["."].resolved, SNAPSHOT));
+  return true;
+}
 
 // Skill feedback jobs in other sessions append records under <skill>/notes and
 // <skill>/verifications while a run is going, so entries added there (and a new skill's
@@ -61,7 +90,9 @@ function assertGuarded(before) {
   for (const path of paths) {
     if (!before[path] || !after[path]) throw new Error(`Configuration changed during the run: ${path} appeared or vanished`);
     try {
-      assertUnchanged(before[path], path === skillFeedback() ? withoutAppendedRecords(before[path], after[path]) : after[path]);
+      if (releaseSwitched(before[path], after[path])) continue;
+      const [was, now] = [before[path].tree, after[path].tree];
+      assertUnchanged(was, path === skillFeedback() ? withoutAppendedRecords(was, now) : now);
     } catch (error) {
       throw new Error(`Configuration changed during the run: ${path}: ${error.message}`);
     }
