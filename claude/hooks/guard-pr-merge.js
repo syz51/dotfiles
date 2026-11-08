@@ -3,20 +3,21 @@
 // `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses --admin, a draft,
 // a branch that is BEHIND its base or DIRTY with conflicts, and a head commit with a pending or
 // failed check, or with no checks while the repository has active Actions workflows. --auto
-// passes when the base branch requires status checks, because GitHub then waits for them;
-// elsewhere it is checked like a direct merge. It also refuses `gh api` calls to the
-// pulls/<n>/merge endpoint and the mergePullRequest and enablePullRequestAutoMerge mutations,
-// which skip these checks. shell.js follows the shell syntax around the command, so `cd`,
-// `sh -c`, wrappers, substitutions and `ssh` are seen; a selector, repository, option or
-// subcommand the shell fills in is refused, as is a command that sets GH_REPO or GH_HOST without
-// a literal -R. It fails closed: a gh query that fails or times out, an unknown merge option and
-// a crash all block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
+// passes when the base branch requires status checks and gh will enable auto-merge rather than
+// merge at once, because GitHub then waits for the required checks; otherwise it is checked like
+// a direct merge. It also refuses `gh api` calls to the pulls/<n>/merge endpoint and the
+// mergePullRequest and enablePullRequestAutoMerge mutations, which skip these checks. shell.js
+// follows the shell syntax around the command, so `cd`, `sh -c`, wrappers, substitutions and
+// `ssh` are seen; any merge argument the shell fills in, arguments xargs adds, options before
+// `merge` other than -R, a command that sets GH_HOST, and one that sets GH_REPO without a literal
+// -R are refused. It fails closed: a gh query that fails or times out, an unknown merge option
+// and a crash all block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { expands, visitCommands } from "./shell.js";
+import { expands, ghSubcommands, visitCommands } from "./shell.js";
 
 const TOO_DEEP = "it nests shell commands too deeply to check.";
 // `gh pr merge --help`: options without a value, and options that take one, by long name.
@@ -27,13 +28,15 @@ const SHORT_FLAGS = { A: "--author-email", b: "--body", F: "--body-file", t: "--
 // pflag's false spellings for a boolean option given as --flag=value.
 const FALSE = new Set(["0", "f", "F", "false", "FALSE", "False"]);
 const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
+// gh merges at once, without enabling auto-merge, when the pull request is in one of these states.
+const MERGEABLE_NOW = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 const VIEW_FIELDS = "number,url,state,isDraft,mergeStateStatus,baseRefName,statusCheckRollup";
 const MERGE_ENDPOINT = /(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
 const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // Each gh call gets at most this long, and the hook stops querying once the budget is spent,
 // so it refuses before settings.json's 45-second timeout, which would let the command through.
-const CALL_TIMEOUT_MS = 8000;
-const BUDGET_MS = 35000;
+export const CALL_TIMEOUT_MS = 8000;
+export const BUDGET_MS = 35000;
 
 class Refusal extends Error {}
 
@@ -57,11 +60,8 @@ export function parseMerge(args, repo) {
     if (arg.startsWith("--")) {
       const equals = arg.indexOf("=");
       const name = equals === -1 ? arg : arg.slice(0, equals);
-      if (expands(name)) merge.unresolved ??= arg;
       if (MERGE_VALUE_FLAGS.has(name)) {
-        const value = equals === -1 ? args[++i] : arg.slice(equals + 1);
-        if (name === "--repo" && value !== undefined && expands(value)) merge.unresolved ??= arg;
-        set(name, value);
+        set(name, equals === -1 ? args[++i] : arg.slice(equals + 1));
       } else if (MERGE_FLAGS.has(name)) {
         set(name, equals === -1 || !FALSE.has(arg.slice(equals + 1)));
       } else merge.unknown ??= arg;
@@ -69,16 +69,13 @@ export function parseMerge(args, repo) {
       for (let k = 1; k < arg.length; k += 1) {
         const name = SHORT_FLAGS[arg[k]];
         if (name === undefined) {
-          if (expands(arg[k])) merge.unresolved ??= arg;
-          else merge.unknown ??= arg;
+          merge.unknown ??= arg;
           break;
         }
         if (MERGE_VALUE_FLAGS.has(name)) {
           // The value is the rest of the word, after an optional `=`, or else the next word.
           const rest = arg.slice(k + 1).replace(/^=/, "");
-          const value = rest === "" ? args[++i] : rest;
-          if (name === "--repo" && value !== undefined && expands(value)) merge.unresolved ??= arg;
-          set(name, value);
+          set(name, rest === "" ? args[++i] : rest);
           break;
         }
         set(name, true);
@@ -86,29 +83,30 @@ export function parseMerge(args, repo) {
     } else positionals.push(arg);
   }
   merge.selector = positionals[0];
-  if (merge.selector !== undefined && expands(merge.selector)) merge.unresolved ??= merge.selector;
+  // Unquoted, a word the shell fills in can become no word or several and shift the others, and
+  // the parser has dropped the quotes, so any such word hides what the merge does.
+  merge.unresolved = args.find(expands);
   return merge;
 }
 
-/** The checks on the head commit that are still running and those that failed, as display names. */
+/**
+ * The checks on the head commit that are still running and those that failed, as display names.
+ * Every run counts: the rollup does not say which event started a run, so a later run with the
+ * same name, say from pull_request, does not hide a failed one from push.
+ */
 export function classifyChecks(rollup) {
   const pending = [];
   const failed = [];
-  // A re-run adds a check run with the same name; the latest completed one counts, as in `gh pr checks`.
-  const latest = new Map();
   for (const check of rollup) {
     if (check.__typename === "CheckRun") {
       const name = check.workflowName ? `${check.workflowName} / ${check.name}` : check.name;
       // An in-progress run has conclusion "", so the status decides whether it finished.
       if (check.status !== "COMPLETED") pending.push(name);
-      else if (!latest.has(name) || (check.completedAt ?? "") > (latest.get(name).completedAt ?? "")) latest.set(name, check);
+      else if (!PASSED.has(check.conclusion)) failed.push(`${name} (${check.conclusion || "no conclusion"})`);
     } else if (check.__typename === "StatusContext") {
       if (check.state === "PENDING" || check.state === "EXPECTED") pending.push(check.context);
       else if (check.state !== "SUCCESS") failed.push(`${check.context} (${check.state})`);
     } else failed.push(`${check.name ?? check.context ?? "a check"} of unknown type ${check.__typename}`);
-  }
-  for (const [name, run] of latest) {
-    if (!pending.includes(name) && !PASSED.has(run.conclusion)) failed.push(`${name} (${run.conclusion || "no conclusion"})`);
   }
   return { pending, failed };
 }
@@ -152,13 +150,15 @@ function requiresChecks(query, dir, api, repo, base) {
 }
 
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
-function judgeMerge(merge, dir, query, setsRepoEnv) {
+function judgeMerge(merge, dir, query, { setsHost, setsRepo, appended }) {
   if (merge.unresolved !== undefined) return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally.`;
   if (merge.unknown !== undefined) return `the guard does not know the option \`${merge.unknown}\`, so it cannot tell what this merge does. Use the options \`gh pr merge --help\` lists.`;
   if (merge.help) return undefined;
   if (merge.admin) return "--admin bypasses the repository's merge requirements. Never use it: merge only once the checks pass.";
   if (merge.disableAuto && !merge.auto) return undefined; // it only turns auto-merge off
-  if (setsRepoEnv && merge.repo === undefined) return "the command sets GH_REPO or GH_HOST, which the guard does not follow. Name the repository with -R OWNER/REPO instead.";
+  if (appended) return "xargs adds arguments the guard cannot see. Write the pull request out literally: `gh pr merge <number>`.";
+  if (setsHost) return "the command sets GH_HOST, which the guard does not follow. Name the repository with -R HOST/OWNER/REPO instead.";
+  if (setsRepo && merge.repo === undefined) return "the command sets GH_REPO, which the guard does not follow. Name the repository with -R OWNER/REPO instead.";
   if (dir === undefined && merge.repo === undefined && !/^https?:\/\//.test(merge.selector ?? "")) {
     return "the guard cannot tell which directory, and so which repository, it runs in. Run it after a literal `cd`, or pass -R OWNER/REPO and the pull request number.";
   }
@@ -171,8 +171,8 @@ function judgeMerge(merge, dir, query, setsRepoEnv) {
   const api = ["api", "--hostname", url.host];
   const repo = `repos/${owner}/${name}`;
   const pr = `pull request #${view.number}`;
-  if (merge.auto && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
   if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
+  if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
   if (view.mergeStateStatus === "BEHIND") return `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.number}\`), then wait for its checks to pass.`;
   if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
   const { pending, failed } = classifyChecks(view.statusCheckRollup ?? []);
@@ -188,36 +188,23 @@ function judgeMerge(merge, dir, query, setsRepoEnv) {
   return undefined;
 }
 
-/** The index of gh's pull request subcommand after `pr` in `words`, and the -R value before it. */
-function prSubcommand(words, start) {
-  let i = start;
-  let repo;
-  while (i < words.length && words[i].startsWith("-")) {
-    if (words[i] === "-R" || words[i] === "--repo") repo = words[(i += 1)];
-    else if (/^(?:-R=?|--repo=)/.test(words[i])) repo = words[i].replace(/^(?:-R=?|--repo=)/, "");
-    else return { index: -1, repo };
-    i += 1;
-  }
-  return { index: i, repo };
-}
-
 function ghCommand(words, dir, query, state) {
   const fail = (reason) => `\`${words.join(" ")}\`: ${reason}`;
-  if (expands(words[1] ?? "")) return fail(`the shell fills in the gh subcommand \`${words[1]}\`, so the guard cannot see whether it merges.`);
-  if (words[1] === "api") {
-    if (words.some((word) => MERGE_ENDPOINT.test(word)) || words.some((word) => MERGE_MUTATIONS.test(word)) || MERGE_MUTATIONS.test(state.source)) {
-      return fail("it merges a pull request through the API, which skips the guard's checks. Use `gh pr merge <number>` instead.");
-    }
-    return undefined;
+  // gh reads options anywhere, so the API check looks at every word, not only after `api`.
+  if (words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)) || (words.includes("api") && MERGE_MUTATIONS.test(state.source))) {
+    return fail("it merges a pull request through the API, which skips the guard's checks. Use `gh pr merge <number>` instead.");
   }
-  if (words[1] !== "pr") return undefined;
-  const { index, repo } = prSubcommand(words, 2);
-  if (index === -1) return words.includes("merge") ? fail("the guard cannot read the options before `merge`. Write them after it: `gh pr merge <number> -R OWNER/REPO`.") : undefined;
-  if (words[index] !== undefined && expands(words[index])) return fail(`the shell fills in the gh pr subcommand \`${words[index]}\`, so the guard cannot see whether it merges.`);
-  if (words[index] !== "merge") return undefined;
+  const { path: [group, subcommand], next, repo, other } = ghSubcommands(words, 2);
+  if (group !== undefined && expands(group)) return fail(`the shell fills in the gh subcommand \`${group}\`, so the guard cannot see whether it merges.`);
+  if (other !== undefined && words.includes("pr") && words.includes("merge")) {
+    return fail(`the guard cannot tell how gh reads \`${other}\` before the subcommand. Write options after it: \`gh pr merge <number> --squash -R OWNER/REPO\`.`);
+  }
+  if (group !== "pr") return undefined;
+  if (subcommand !== undefined && expands(subcommand)) return fail(`the shell fills in the gh pr subcommand \`${subcommand}\`, so the guard cannot see whether it merges.`);
+  if (subcommand !== "merge") return undefined;
   if (repo !== undefined && expands(repo)) return fail(`the shell fills in the repository \`${repo}\`. Write it out literally.`);
   try {
-    const reason = judgeMerge(parseMerge(words.slice(index + 1), repo), dir, query, state.setsRepoEnv);
+    const reason = judgeMerge(parseMerge(words.slice(next), repo), dir, query, state);
     return reason && fail(reason);
   } catch (error) {
     if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
@@ -233,11 +220,11 @@ function ghCommand(words, dir, query, state) {
 export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } = {}) {
   const query = makeQuery(run, Date.now() + budgetMs);
   // gh reads GH_REPO and GH_HOST from the environment; the guard does not track their values.
-  const state = { source: command, setsRepoEnv: /\bGH_(?:REPO|HOST)\b/.test(command) };
-  return visitCommands(command, cwd, (words, dir) => {
+  const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command) };
+  return visitCommands(command, cwd, (words, dir, { appended }) => {
     // macOS volumes ignore case, so GH and Gh run gh too.
     const name = basename(words[0]).toLowerCase();
-    if (name === "gh") return ghCommand(words, dir, query, state);
+    if (name === "gh") return ghCommand(words, dir, query, { ...env, appended });
     if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
       return `\`${words.join(" ")}\`: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
     }
@@ -259,21 +246,21 @@ export function runGh(dir, args, timeout) {
 }
 
 if (import.meta.main) {
-  const source = readFileSync(0, "utf8");
-  // A cheap prefilter on the text with quotes and backslashes removed, so m"erge" is seen.
-  if (/merge/i.test(source.replace(/["'\\]/g, ""))) {
-    let violation;
-    try {
-      const input = JSON.parse(source);
-      const command = input?.tool_input?.command;
-      if (typeof command === "string") violation = findMergeViolation(command, typeof input.cwd === "string" ? input.cwd : process.cwd(), runGh);
-    } catch (error) {
-      // A crash would be a non-blocking hook error and let the merge through, so it blocks instead.
-      violation = `the guard failed (${error.message}), so it cannot check this command.`;
+  let violation;
+  try {
+    const input = JSON.parse(readFileSync(0, "utf8"));
+    const command = input?.tool_input?.command;
+    // A cheap prefilter. Without quotes and backslashes, m"erge" and m\erge read as merge; a
+    // command the shell fills in has $ or `, and the parser refuses it when it reaches gh.
+    if (typeof command === "string" && /merge|gh|[$`]/i.test(command.replace(/["'\\]/g, ""))) {
+      violation = findMergeViolation(command, typeof input.cwd === "string" ? input.cwd : process.cwd(), runGh);
     }
-    if (violation) {
-      process.stderr.write(`Blocked by the guard-pr-merge hook: ${violation}\n`);
-      process.exit(2);
-    }
+  } catch (error) {
+    // A crash would be a non-blocking hook error and let the merge through, so it blocks instead.
+    violation = `the guard failed (${error.message}), so it cannot check this command.`;
+  }
+  if (violation) {
+    process.stderr.write(`Blocked by the guard-pr-merge hook: ${violation}\n`);
+    process.exit(2);
   }
 }

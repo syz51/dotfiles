@@ -17,6 +17,33 @@ export const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree"
  * expansion, so its value is unknown to a guard. parseScript drops quoting, so a quoted `$` counts too.
  */
 export const expands = (word) => /[$`]|\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(word);
+/**
+ * gh's first `count` subcommand words in `words` (a gh command), skipping options: `path`, the
+ * index after them (`next`), the last -R/--repo value given before them (`repo`), and the first
+ * other option before them (`other`). gh reads such an option wherever it appears, and may take
+ * the next word as its value, so a guard cannot trust `path` when `other` is set.
+ */
+export function ghSubcommands(words, count) {
+  const path = [];
+  let repo;
+  let other;
+  let i = 1;
+  while (i < words.length && path.length < count) {
+    const word = words[i];
+    if (word === "-R" || word === "--repo") {
+      repo = words[i + 1];
+      i += 2;
+    } else if (/^(?:-R.|--repo=)/.test(word)) {
+      repo = word.replace(/^(?:-R=?|--repo=)/, "");
+      i += 1;
+    } else {
+      if (word.startsWith("-")) other ??= word;
+      else path.push(word);
+      i += 1;
+    }
+  }
+  return { path, next: i, repo, other };
+}
 // Commands that run another command, with their options that take a value.
 const WRAPPERS = {
   arch: ["-e", "-arch"],
@@ -347,6 +374,7 @@ function sshProgram(argv, i, dir) {
 /** Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run. */
 function program(argv, dir) {
   const nested = [];
+  let appended = false; // xargs adds words read from standard input
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
@@ -387,8 +415,9 @@ function program(argv, dir) {
       }
     }
     if (name === "timeout") i += 1; // the duration
+    if (name === "xargs") appended = true;
   }
-  return { words: argv.slice(i), nested, dir };
+  return { words: argv.slice(i), nested, dir, appended };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -454,8 +483,14 @@ function inspect(source, state, visit, depth, tooDeep) {
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
   const groups = [];
+  // The directory before each open `( … )` subshell: a `cd` inside one ends with it.
+  const subshells = [];
+  const leave = (count) => {
+    for (let k = 0; k < count && subshells.length > 0; k += 1) state.dir = subshells.pop();
+  };
   let pipeline = [];
   for (const command of commands) {
+    for (let k = 0; k < command.opens; k += 1) subshells.push(state.dir);
     const run = program(command.argv, state.dir);
     for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
     const text = run.words.length > 0 ? printed(run.words) : undefined;
@@ -466,11 +501,17 @@ function inspect(source, state, visit, depth, tooDeep) {
       groups.at(-1)?.push(...run.printed);
     }
     pipeline.push({ command, run });
-    if (command.next === "|" || command.next === "|&") continue;
+    if (command.next === "|" || command.next === "|&") {
+      leave(command.closes);
+      continue;
+    }
     // A shell reading standard input runs the heredocs, here-strings and printed text piped to it.
     const fed = pipeline.length > 1 || pipeline[0].command.inputs.length > 0;
     const reader = fed ? pipeline.findIndex(({ run: { words, reads } }) => reads?.() === true || readsStdin(words)) : -1;
-    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text } }] of pipeline.entries()) {
+    // A background job and every part of a pipeline but the last run in a subshell; bash runs
+    // the last part in one too, zsh in the current shell, so its directory becomes unknown.
+    const background = pipeline.at(-1).command.next === "&";
+    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text, appended } }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       // Its substitutions, which the current shell runs first, scripts this command runs itself,
       // and scripts the reading shell runs in its directory.
@@ -486,21 +527,25 @@ function inspect(source, state, visit, depth, tooDeep) {
         const violation = script === undefined ? undefined : inspect(script, { dir: where }, visit, depth + 1, tooDeep);
         if (violation) return violation;
       }
-      if (name === "cd" || name === "pushd") state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
-      else if (name === "popd") state.dir = undefined;
-      else if (words.length > 0) {
-        const violation = visit(words, dir);
+      if (name === "cd" || name === "pushd" || name === "popd") {
+        if (background || index < pipeline.length - 1) continue;
+        if (pipeline.length > 1 || name === "popd") state.dir = undefined;
+        else state.dir = changeDirectory(state.dir, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
+      } else if (words.length > 0) {
+        const violation = visit(words, dir, { appended: appended === true });
         if (violation) return violation;
       }
     }
+    leave(pipeline.at(-1).command.closes);
     pipeline = [];
   }
   return undefined;
 }
 
 /**
- * Calls `visit(words, dir)` for every command `source` would run, after wrappers, through
- * shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its directory when known.
+ * Calls `visit(words, dir, { appended })` for every command `source` would run, after wrappers,
+ * through shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its directory when
+ * known, and `appended` says that xargs adds arguments the guard cannot see.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.
  */

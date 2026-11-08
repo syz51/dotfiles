@@ -54,7 +54,11 @@ describe("refuses", () => {
     ["gh pr merge 12", { view: { statusCheckRollup: [] }, workflows: WORKFLOWS }, "CI may not have started"],
     // --auto is a direct merge where the base branch requires no checks
     ["gh pr merge 12 --auto", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],
-    ["gh pr merge 12 --auto", { view: { isDraft: true }, branch: { protection: { required_status_checks: { enforcement_level: "off", contexts: ["x"] } } } }, "is a draft"],
+    ["gh pr merge 12 --auto", { view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("t", "IN_PROGRESS", "")] }, branch: { protection: { required_status_checks: { enforcement_level: "off", contexts: ["x"] } } } }, "still running"],
+    ["gh pr merge 12 --auto", { view: { isDraft: true, mergeStateStatus: "BLOCKED" }, branch: PROTECTED }, "is a draft"],
+    // gh merges at once rather than enabling auto-merge when the pull request can merge now
+    ["gh pr merge 12 --auto", { view: { mergeStateStatus: "UNSTABLE", statusCheckRollup: [...PASSING, run("Lint", "COMPLETED", "FAILURE")] }, branch: PROTECTED }, "checks failed"],
+    ["gh pr merge 12 --auto", { view: { mergeStateStatus: "CLEAN", statusCheckRollup: [] }, branch: PROTECTED, workflows: WORKFLOWS }, "CI may not have started"],
     // the shell fills in the selector, repository, an option or the subcommand
     ["gh pr merge $PR", {}, "the shell fills in `$PR`"],
     ["gh pr merge \"$(gh pr list -q .[0].number)\"", {}, "the shell fills in"],
@@ -65,13 +69,27 @@ describe("refuses", () => {
     ["gh pr $SUB 12", {}, "the gh pr subcommand"],
     ["gh $CMD merge 12", {}, "the gh subcommand"],
     ["$GH pr merge 12", {}, "the command name"],
-    ["GH_REPO=o/other gh pr merge 12", {}, "GH_REPO or GH_HOST"],
-    ["export GH_REPO=o/other; gh pr merge 12", {}, "GH_REPO or GH_HOST"],
-    ["GH_HOST=ghe.example gh pr merge 12", {}, "GH_REPO or GH_HOST"],
+    ["GH_REPO=o/other gh pr merge 12", {}, "sets GH_REPO"],
+    ["export GH_REPO=o/other; gh pr merge 12", {}, "sets GH_REPO"],
+    ["GH_HOST=ghe.example gh pr merge 12", {}, "sets GH_HOST"],
+    // gh resolves -R against GH_HOST, which the guard's own query does not see
+    ["GH_HOST=ghe.example gh pr merge 12 -R o/r", {}, "sets GH_HOST"],
+    // an unquoted value the shell fills in can vanish and shift the selector
+    ["gh pr merge --body $B 12", {}, "the shell fills in `$B`"],
+    ["gh pr merge 12 --subject \"$(date)\"", {}, "the shell fills in"],
+    // xargs appends the selector, which the guard cannot see
+    ["echo 13 | xargs gh pr merge --squash", {}, "xargs adds arguments"],
+    // a cd that ran in a subshell, pipeline or background job leaves the directory as it was;
+    // zsh runs a pipeline's last part in the current shell, bash does not
+    ["ls | cd /other; gh pr merge 13", {}, "cannot tell which directory"],
     // an option the guard does not know could take a value and hide the selector
     ["gh pr merge --new-option 12", {}, "does not know the option"],
     ["gh pr merge -x 12", {}, "does not know the option"],
-    ["gh pr --foo merge 12", {}, "options before `merge`"],
+    // gh reads options before the subcommand too, and may take the next word as a value
+    ["gh pr --foo merge 12", {}, "before the subcommand"],
+    ["gh --admin=true pr merge 12", {}, "before the subcommand"],
+    ["gh -b x pr merge 12", {}, "before the subcommand"],
+    ["gh -R o/r pr merge 12 --admin", {}, "--admin bypasses"],
     // the directory, and so the repository, is unknown
     ["cd \"$DIR\" && gh pr merge 12", {}, "cannot tell which directory"],
     ["ssh host gh pr merge 12", {}, "cannot tell which directory"],
@@ -88,6 +106,8 @@ describe("refuses", () => {
     ["gh api --method PUT /repos/o/r/pulls/$N/merge -f merge_method=squash", {}, "through the API"],
     ["gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'", {}, "through the API"],
     ["gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {pullRequestId: \"x\"}) { clientMutationId } }'", {}, "through the API"],
+    ["gh --method=PUT api repos/o/r/pulls/12/merge", {}, "through the API"],
+    ["gh -X PUT api repos/o/r/pulls/12/merge", {}, "through the API"],
     ["gh api graphql --input - <<'EOF'\n{\"query\": \"mutation { mergePullRequest(input: {}) { clientMutationId } }\"}\nEOF", {}, "through the API"],
     ["$GH api repos/o/r/pulls/12/merge", {}, "the command name"],
   ])("%s", (command, options, reason) => {
@@ -133,14 +153,12 @@ describe("allows", () => {
     ["gh pr merge 12", { view: { statusCheckRollup: [] } }],
     ["gh pr merge 12", { view: { statusCheckRollup: [] }, workflows: { workflows: [{ path: ".github/workflows/old.yml", state: "disabled_manually" }, { path: "dynamic/dependabot/dependabot-updates", state: "active" }] } }],
     // --auto where the base branch requires checks, by protection or a ruleset: GitHub waits for them
-    ["gh pr merge 12 --auto --squash", { branch: PROTECTED, view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }],
-    ["gh pr merge 12 --auto", { rules: [{ type: "required_status_checks" }], view: { statusCheckRollup: [] }, workflows: WORKFLOWS }],
+    ["gh pr merge 12 --auto --squash", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }],
+    ["gh pr merge 12 --auto", { rules: [{ type: "required_status_checks" }], view: { mergeStateStatus: "BEHIND", statusCheckRollup: [] }, workflows: WORKFLOWS }],
     ["gh pr merge 12 --disable-auto", { view: { isDraft: true } }],
     ["gh pr merge --help", { view: { isDraft: true } }],
     // gh refuses a closed or merged pull request itself
     ["gh pr merge 12", { view: { state: "MERGED", mergeStateStatus: "UNKNOWN", statusCheckRollup: [] }, workflows: WORKFLOWS }],
-    // the latest completed run of a re-run check counts
-    ["gh pr merge 12", { view: { statusCheckRollup: [run("t", "COMPLETED", "FAILURE", { completedAt: "2026-11-08T10:00:00Z" }), run("t", "COMPLETED", "SUCCESS", { completedAt: "2026-11-08T11:00:00Z" })] } }],
     // other gh and git commands
     ["gh pr view 12", { view: { isDraft: true } }],
     ["gh pr create --title merge", { view: { isDraft: true } }],
@@ -152,14 +170,14 @@ describe("allows", () => {
     expect(verdict(command, options)).toBeUndefined();
   });
 
-  test("an older passing run does not hide a later failure", () => {
-    const rollup = [run("t", "COMPLETED", "SUCCESS", { completedAt: "2026-11-08T10:00:00Z" }), run("t", "COMPLETED", "FAILURE", { completedAt: "2026-11-08T11:00:00Z" })];
-    expect(verdict("gh pr merge 12", { view: { statusCheckRollup: rollup } })).toContain("checks failed");
-  });
-
-  test("a queued re-run counts as pending", () => {
-    const rollup = [run("t", "COMPLETED", "FAILURE", { completedAt: "2026-11-08T10:00:00Z" }), run("t", "QUEUED", "")];
-    expect(classifyChecks(rollup)).toEqual({ pending: ["Checks / t"], failed: [] });
+  // The rollup does not say which event started a run, so a later success with the same name,
+  // say from pull_request, must not hide a failure from push.
+  test("every run with the same name counts, in either order", () => {
+    const failed = run("t", "COMPLETED", "FAILURE", { completedAt: "2026-11-08T10:00:00Z" });
+    const passed = run("t", "COMPLETED", "SUCCESS", { completedAt: "2026-11-08T11:00:00Z" });
+    expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [failed, passed] } })).toContain("checks failed");
+    expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [passed, failed] } })).toContain("checks failed");
+    expect(classifyChecks([failed, run("t", "QUEUED", "")])).toEqual({ pending: ["Checks / t"], failed: ["Checks / t (FAILURE)"] });
   });
 });
 
@@ -182,12 +200,19 @@ describe("resolves the pull request", () => {
     ["gh pr -R o/r merge 12", ["pr", "view", "12", "--repo", "o/r", ...json]],
     ["gh pr merge -b 'body text' -t subject -- 12", ["pr", "view", "12", ...json]],
     ["GH_REPO=o/r gh pr merge 12 -R o/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
+    ["gh -R o/r pr merge 12", ["pr", "view", "12", "--repo", "o/r", ...json]],
+    ["gh pr merge 12 --body \"$B\" -R o/r", undefined],
   ])("%s", (command, args) => {
-    expect(query(command)).toEqual({ dir: "/repo", args });
+    if (args === undefined) expect(findMergeViolation(command, "/repo", fakeGh())).toContain("the shell fills in");
+    else expect(query(command)).toEqual({ dir: "/repo", args });
   });
 
   test("in the directory the command runs in", () => {
     expect(query("cd /other && gh pr merge 12").dir).toBe("/other");
+    expect(query("(cd /other && ls); gh pr merge 13").dir).toBe("/repo");
+    expect(query("cd /other | cat; gh pr merge 13").dir).toBe("/repo");
+    expect(query("cd /other & gh pr merge 13").dir).toBe("/repo");
+    expect(query("(cd /other; gh pr merge 13)").dir).toBe("/other");
   });
 
   test("from a URL or -R when the directory is unknown", () => {
@@ -197,7 +222,7 @@ describe("resolves the pull request", () => {
 
   test("and queries the API on the pull request's host", () => {
     const calls = [];
-    findMergeViolation("gh pr merge 12 --auto", "/repo", fakeGh({ calls, view: { url: "https://ghe.example/team/app/pull/12", baseRefName: "release/1" } }));
+    findMergeViolation("gh pr merge 12 --auto", "/repo", fakeGh({ calls, view: { url: "https://ghe.example/team/app/pull/12", baseRefName: "release/1", mergeStateStatus: "BLOCKED" } }));
     expect(calls.slice(1).map((call) => call.args)).toEqual([
       ["api", "--hostname", "ghe.example", "repos/team/app/branches/release%2F1"],
       ["api", "--hostname", "ghe.example", "repos/team/app/rules/branches/release%2F1"],
@@ -269,6 +294,17 @@ describe("the hook", () => {
     } finally {
       for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+  });
+
+  test.each([
+    ["a line continuation inside the subcommand", "gh pr m\\\nerge 12 --admin", "--admin bypasses"],
+    ["a subcommand the shell fills in mid-word", "gh pr mer${E}ge 12 --admin", "the shell fills in"],
+    ["a subcommand from a command substitution", "gh pr \"$(printf m)erge\" 12", "the shell fills in"],
+    ["an ANSI-C quoted subcommand", "gh pr $'\\x6derge' 12", "the shell fills in"],
+  ])("blocks %s", (_, command, reason) => {
+    const result = bash(command);
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain(reason);
   });
 
   test("blocks rather than crash on input it cannot parse", () => {

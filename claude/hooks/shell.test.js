@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { parseScript, visitCommands } from "./shell.js";
+import { ghSubcommands, parseScript, visitCommands } from "./shell.js";
 
 /** Every command `source` runs, with the directory it runs in. */
 function commands(source, cwd = "/repo") {
@@ -159,4 +159,28 @@ test("a script nested too deeply returns tooDeep, or nothing by default", () => 
   expect(visitCommands(source, "/repo", blockMake)).toBeUndefined();
   expect(visitCommands(source, "/repo", blockMake, "too deep")).toBe("too deep");
   expect(visitCommands("bash -c make", "/repo", blockMake)).toBe("blocked");
+});
+
+test("a cd in a subshell, a background job or a pipeline does not move later commands", () => {
+  expect(commands("(cd x && make); ls")).toEqual([["make", "/repo/x"], ["ls", "/repo"]]);
+  expect(commands("(cd x; (cd y; make); ls); pwd")).toEqual([["make", "/repo/x/y"], ["ls", "/repo/x"], ["pwd", "/repo"]]);
+  expect(commands("cd x | cat; ls")).toEqual([["cat", "/repo"], ["ls", "/repo"]]);
+  expect(commands("cd x & ls")).toEqual([["ls", "/repo"]]);
+  // zsh runs a pipeline's last part in the current shell and bash does not, so it is unknown
+  expect(commands("ls | cd x; make")).toEqual([["ls", "/repo"], ["make", undefined]]);
+});
+
+test("visit learns that xargs appends arguments", () => {
+  const seen = [];
+  visitCommands("echo 1 | xargs make; make", "/repo", (words, dir, { appended }) => {
+    seen.push([words.join(" "), appended]);
+  });
+  expect(seen).toEqual([["echo 1", false], ["make", true], ["make", false]]);
+});
+
+test("ghSubcommands skips options and reports -R and others before the subcommand", () => {
+  expect(ghSubcommands(["gh", "pr", "merge", "12"], 2)).toEqual({ path: ["pr", "merge"], next: 3, repo: undefined, other: undefined });
+  expect(ghSubcommands(["gh", "-R", "o/r", "pr", "--repo=a/b", "merge", "-R", "x/y"], 2)).toEqual({ path: ["pr", "merge"], next: 6, repo: "a/b", other: undefined });
+  expect(ghSubcommands(["gh", "-Ro/r", "pr", "merge"], 2).repo).toBe("o/r");
+  expect(ghSubcommands(["gh", "-b", "x", "pr", "merge"], 2)).toEqual({ path: ["x", "pr"], next: 4, repo: undefined, other: "-b" });
 });

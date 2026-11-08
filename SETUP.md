@@ -234,13 +234,16 @@ guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'
 section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
 head commit. A check run is pending until its status is `COMPLETED`; it fails with any
-conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. A head commit without checks passes only
-when the repository has no active Actions workflows. `--auto` passes when the base branch
-requires status checks through protection or a ruleset, because GitHub then waits for them.
-It also refuses `gh api` calls to `pulls/<n>/merge` and the `mergePullRequest` and
-`enablePullRequestAutoMerge` mutations. It refuses a selector, repository, option or
-subcommand that the shell fills in, and `GH_REPO` or `GH_HOST` set in the command without
-`-R`. It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
+conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`, and every run counts, also one with the
+name of a later run. A head commit without checks passes only when the repository has no
+active Actions workflows. `--auto` on a non-draft passes when the base branch requires status
+checks through protection or a ruleset and gh enables auto-merge, so GitHub waits for the
+required checks. When the pull request is `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, gh merges at
+once, so the guard checks it as a direct merge. It also refuses `gh api` calls to
+`pulls/<n>/merge` and the `mergePullRequest` and `enablePullRequestAutoMerge` mutations. It
+refuses any merge argument or subcommand that the shell fills in, arguments that `xargs`
+adds, options other than `-R` before the subcommand, `GH_HOST` set in the command, and
+`GH_REPO` set without `-R`. It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
 crash blocks the merge. The queries add about 0.7 seconds to each merge, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot
 see gh aliases, scripts, an endpoint held wholly in a variable, a query read from a file,

@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { CATEGORIES, OUTCOMES } from "../factory/metrics/reviews.js";
 import { REQUIRED } from "../factory/setups/cli.js";
 import { configuredEffort } from "./lib/live.js";
+import { BUDGET_MS, CALL_TIMEOUT_MS } from "../hooks/guard-pr-merge.js";
 
 const CLAUDE = join(import.meta.dir, "..");
 const REPO = join(CLAUDE, "..");
@@ -146,7 +147,7 @@ describe("global instructions", () => {
   // Most of the user's repositories have no branch protection, so the hook enforces the merge
   // condition the Autonomy section grants (dotfiles-259).
   test("the merge rule names the hook that enforces it", () => {
-    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed.");
+    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks.");
   });
 
   test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
@@ -241,12 +242,13 @@ describe("settings", () => {
     expect(guard).toHaveLength(1);
   });
 
-  // A hook that times out is a non-blocking error, so the merge would run unchecked; the guard
-  // stops querying gh after 35 seconds and refuses.
+  // A hook that times out is a non-blocking error, so the merge would run unchecked. Each gh
+  // call is capped at the budget left, so all of them end within BUDGET_MS; the rest of the
+  // hook timeout covers bun's start and the parse.
   test("the pr-merge guard's timeout covers its gh calls", () => {
     const hook = handlers.find((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
-    expect(hook.timeout).toBe(45);
-    expect(read("claude/hooks/guard-pr-merge.js")).toContain("const BUDGET_MS = 35000;");
+    expect(CALL_TIMEOUT_MS).toBeLessThanOrEqual(BUDGET_MS);
+    expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
   });
 
   test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {

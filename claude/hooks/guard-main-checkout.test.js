@@ -120,6 +120,11 @@ describe("in a main checkout it blocks", () => {
     ["gh pr merge 12 --squash"],
     ["gh pr -R owner/repo merge 12"],
     ["gh pr --repo=owner/repo merge"],
+    // gh reads -R and other options before the subcommand
+    ["gh -R owner/repo pr checkout 12"],
+    ["gh --repo=owner/repo pr co 12"],
+    ["gh -R owner/repo pr merge 12"],
+    ["gh --foo=bar pr merge -d"],
     // the program name ignores case, as macOS volumes do
     ["GIT switch feature"],
     ["Git reset --hard"],

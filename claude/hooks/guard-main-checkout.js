@@ -22,7 +22,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
-import { changeDirectory, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
+import { changeDirectory, ghSubcommands, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const OVERRIDE_KEY = "claude.maincheckout"; // git config keys ignore case
 // `git -c claude.mainCheckout=allow <command>`: the user asked for this one change here.
@@ -279,13 +279,15 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     const name = basename(words[0]).toLowerCase();
     let reason;
     if (name === "git") reason = gitCommand(words, dir, git, tempRoots);
-    else if (name === "gh" && words[1] === "pr" && dir !== undefined) {
-      // gh takes -R/--repo before the pr subcommand too.
-      let i = 2;
-      while (/^(?:-R|--repo)(?:$|(?<=-R).|=)/.test(words[i] ?? "")) i += /^(?:-R|--repo)$/.test(words[i]) ? 2 : 1;
-      const subcommand = words[i];
-      const top = ["checkout", "co", "merge"].includes(subcommand) ? sharedMainCheckout(dir, git, tempRoots) : undefined;
-      if (top !== undefined) reason = subcommand === "merge" ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
+    else if (name === "gh" && dir !== undefined) {
+      // gh reads options anywhere, and one before the subcommand may take the next word as its
+      // value, so with such an option any checkout or merge word counts.
+      const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+      const merges = (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
+      const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
+        || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
+      const top = merges || checksOut ? sharedMainCheckout(dir, git, tempRoots) : undefined;
+      if (top !== undefined) reason = merges ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
     }
     return reason && `\`${words.join(" ")}\`: ${reason}`;
   });
