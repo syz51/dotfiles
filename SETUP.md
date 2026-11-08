@@ -204,6 +204,12 @@ requiring Git and network access. Inspect `nvim/lazyvim.json` and
 `nvim/lua/plugins/` for language integrations. For TeX, install Tectonic and Skim;
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 
+Agents run on Claude models only: `claude/CLAUDE.md` forbids the `codex` CLI, `gpt-*`
+models and the Codex delegate provider. As a backstop, guard-runtimes blocks a Bash command
+named `codex`, also through `bunx @openai/codex`; it does not see other launchers or the T3
+delegate tools. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
+files below stay until their removal is decided.
+
 `codex/config.example.toml` is a reference configuration. Review and adapt it
 before creating a local `codex/config.toml`, which is intentionally ignored.
 Codex expects its configuration under `~/.codex`; review your existing files
@@ -487,7 +493,8 @@ rule. Codex runs a new or changed hook only after it is approved: run
 (it lists them first without `--trust`). It approves hooks from `$CODEX_HOME/hooks.json`
 only while that file matches `codex/hooks.json` on `origin/main`, so pull first, and exits
 1 when hooks stay unapproved or Codex reports problems loading them. Run it again after
-`codex/hooks.json` changes.
+`codex/hooks.json` changes. Only a person runs it: it starts `codex app-server`, and
+agents may not start the Codex CLI.
 
 Over SSH or from launchd the login Keychain is locked, so `board login` there stores the
 token in `~/.local/share/agent-board/token` (mode 0600) instead.
@@ -521,7 +528,7 @@ without trying the server for a minute.
 
 Sessions started with `AGENT_BOARD_HOOKS=off` stay off the board. The test and
 benchmark runners set it through `childEnv` in `claude/tests/lib/process.js`. Set it
-for any other script that starts `claude -p` or `codex exec` from inside a thread:
+for any other script that starts `claude -p` from inside a thread:
 such a session inherits the thread's identity and would otherwise report as that
 thread.
 
@@ -794,7 +801,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   `bun`, also in a project whose lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
   rename across several files whose check proves from its own output that it passed
-  in the fixture, spawn no subagent. No scenario leaves a process running in its
+  in the fixture, spawn no subagent. A request to consult Codex runs no `codex`
+  command, not even the fixture's stand-in, and the reply says so. No scenario leaves a process running in its
   fixture, and a server the check needs, which detaches itself, is stopped by the time
   the session answers. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
