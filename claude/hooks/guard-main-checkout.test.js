@@ -61,11 +61,25 @@ describe("in a main checkout it blocks", () => {
     ["git reset --mixed origin/main"],
     ["git reset -q origin/main --"],
     ["git merge feature"],
-    ["git merge --ff-only origin/main"],
+    ["git merge --ff origin/main"],
+    ["git merge --no-ff origin/main"],
+    // the last of --ff, --no-ff and --ff-only wins, as in git
+    ["git merge --ff-only --no-ff origin/main"],
+    ["git merge --ff-only --ff origin/main"],
+    ["git merge --ff-only --squash origin/main"],
+    ["git merge --ff-only --squ origin/main"],
+    ["git merge origin/main -- --ff-only"],
     ["git rebase origin/main"],
     ["git rebase -i HEAD~3"],
     ["git pull"],
+    ["git pull origin main"],
+    ["git pull --no-ff"],
     ["git pull --rebase origin main"],
+    ["git pull --ff-only --rebase"],
+    ["git pull --ff-only --rebase=merges"],
+    ["git pull --ff-only -r"],
+    ["git pull --ff-only -qr"],
+    ["git pull --ff-only --no-ff"],
     ["git stash"],
     ["git stash push -u -m wip"],
     ["git stash pop"],
@@ -99,7 +113,11 @@ describe("in a main checkout it blocks", () => {
     expect(reason).toStartWith("`git switch feature`: it changes the branch of /main, a main checkout");
     expect(reason).toContain("Move into your own worktree first");
     expect(reason).toContain("`git config claude.mainCheckout allow`");
+    expect(reason).toContain("Do not run it from a script to get past this guard.");
     expect(reason).not.toContain("git restore");
+    expect(reason).not.toContain("--ff-only");
+    expect(verdict("git merge origin/main")).toContain("A fast-forward, `git merge --ff-only <commit>`, may run here.");
+    expect(verdict("git pull")).toContain("A fast-forward, `git pull --ff-only`, may run here.");
     expect(verdict("git checkout feature")).toContain("use `git restore <path>` or `git checkout -- <path>`");
     expect(verdict("git reset file.txt")).toContain("use `git restore --staged <path>` or `git reset -- <path>`");
   });
@@ -131,6 +149,18 @@ describe("it allows", () => {
     ["git reset -p"],
     ["git merge --abort"],
     ["git merge --continue"],
+    // a fast-forward moves the branch ahead along its own history
+    ["git merge --ff-only origin/main"],
+    ["git merge --ff-only t3/81955246"],
+    ["git merge --ff-o origin/main"],
+    ["git merge --no-ff --ff-only origin/main"],
+    ["git merge -q --ff-only origin/main"],
+    ["git pull --ff-only"],
+    ["git pull -q --ff-only origin main"],
+    ["git pull --ff-only --no-rebase"],
+    ["git pull --ff-only --rebase=false"],
+    ["git -C /main pull --ff-only", "/elsewhere"],
+    ["cd /main && git fetch && git merge --ff-only origin/main", "/elsewhere"],
     ["git rebase --abort"],
     ["git rebase --continue"],
     ["git rebase --skip"],
@@ -237,6 +267,13 @@ describe("hook process", () => {
     expect(run("git switch -c other", linked)).toEqual({ code: 0, stderr: "" });
     expect(run("git status", main)).toEqual({ code: 0, stderr: "" });
     expect(run("ls", main)).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("allows a fast-forward-only merge or pull in the main checkout, and blocks a plain one", () => {
+    expect(run("git merge --ff-only feature", main)).toEqual({ code: 0, stderr: "" });
+    expect(run("git pull --ff-only", main)).toEqual({ code: 0, stderr: "" });
+    expect(run("git merge feature", main).code).toBe(2);
+    expect(run("git pull", main).code).toBe(2);
   });
 
   test("allows branch changes in a repository the user allowed", () => {

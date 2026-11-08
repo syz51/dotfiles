@@ -5,8 +5,9 @@
 // reset the checked-out branch or set work aside: git switch, checkout of a branch, a
 // discarding checkout -f, reset to another commit or with --hard/--keep/--merge/--soft,
 // merge, rebase, pull, stash, bisect and gh pr checkout. Their read-only, continue and abort
-// forms, file restores, every command in a linked worktree and every repository in a
-// temporary directory still run. The user can allow them for one repository with
+// forms, file restores, fast-forward-only merges and pulls (--ff-only, without --squash or
+// --rebase), every command in a linked worktree and every repository in a temporary
+// directory still run. The user can allow them for one repository with
 // `git config claude.mainCheckout allow`, which the guard refuses to let a session run, or
 // run the command themselves. This is a guardrail against mistakes, not a security
 // boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
@@ -69,6 +70,26 @@ function checkoutChanges(args) {
   return positional === 1 || (positional === 0 && force);
 }
 
+/**
+ * Whether `git merge` or `git pull` with `args` only fast-forwards: its last of --ff, --no-ff
+ * and --ff-only is --ff-only, and it neither squashes nor rebases.
+ */
+function fastForwardOnly(args) {
+  const dash = args.indexOf("--");
+  let mode;
+  for (const arg of dash < 0 ? args : args.slice(0, dash)) {
+    if (!arg.startsWith("--")) {
+      if (shortLetters(arg).includes("r")) return false; // pull -r rebases
+      continue;
+    }
+    if (arg === "--ff") mode = "ff";
+    else if (isLong(arg, "--no-ff")) mode = "no-ff";
+    else if (isLong(arg, "--ff-only")) mode = "ff-only";
+    else if (isLong(arg, "--squash") || (isLong(arg, "--rebase") && arg !== "--rebase=false")) return false;
+  }
+  return mode === "ff-only";
+}
+
 /** Whether `git reset args` moves the branch or discards changes; resetting paths in the index does neither. */
 function resetChanges(args) {
   const dash = args.indexOf("--");
@@ -84,9 +105,12 @@ function resetChanges(args) {
 export function changesBranch(subcommand, args) {
   switch (subcommand) {
     case "switch":
-    case "pull":
       return true;
+    // A fast-forward only moves the branch ahead along its own history, so it may run.
+    case "pull":
+      return !fastForwardOnly(args);
     case "merge":
+      return !fastForwardOnly(args) && !args.some((arg) => SAFE_FORMS.merge.some((name) => isLong(arg, name)));
     case "rebase":
       return !args.some((arg) => SAFE_FORMS[subcommand].some((name) => isLong(arg, name)));
     case "stash":
@@ -122,7 +146,8 @@ function mainCheckoutReason(dir, git, tempRoots, hint) {
   if (git(dir, ["config", "--get", OVERRIDE_KEY])?.toLowerCase() === "allow") return undefined;
   return `it changes the branch of ${top}, a main checkout other threads share. `
     + `Move into your own worktree first (EnterWorktree in Claude Code, a worktree thread in T3) and run it there.${hint} `
-    + "If the user asked for it here, they can run it themselves or allow it for this repository with `git config claude.mainCheckout allow`.";
+    + "If the user asked for it here, they can run it themselves or allow it for this repository with `git config claude.mainCheckout allow`. "
+    + "Do not run it from a script to get past this guard.";
 }
 
 function gitCommand(words, dir, git, tempRoots) {
@@ -138,7 +163,9 @@ function gitCommand(words, dir, git, tempRoots) {
     return "claude.mainCheckout is the user's switch for the guard-main-checkout hook. Only the user sets it.";
   if (!changesBranch(subcommand, args) || unknownRepo || dir === undefined) return undefined;
   const hint = subcommand === "checkout" ? " To restore files, use `git restore <path>` or `git checkout -- <path>`."
-    : subcommand === "reset" ? " To unstage files, use `git restore --staged <path>` or `git reset -- <path>`." : "";
+    : subcommand === "reset" ? " To unstage files, use `git restore --staged <path>` or `git reset -- <path>`."
+    : subcommand === "merge" ? " A fast-forward, `git merge --ff-only <commit>`, may run here."
+    : subcommand === "pull" ? " A fast-forward, `git pull --ff-only`, may run here." : "";
   return mainCheckoutReason(dir, git, tempRoots, hint);
 }
 

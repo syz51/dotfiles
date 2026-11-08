@@ -693,7 +693,7 @@ describe("rules the live suites test", () => {
   // it moved the branch under the others (dotfiles-164). guard-main-checkout.js enforces the
   // git part.
   test("Workflow moves work out of a shared main checkout", () => {
-    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. A hook refuses those git commands in a main checkout outside the temporary directories\./);
+    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. A fast-forward-only merge or pull \(`--ff-only`\) may run there\. A hook refuses the other git commands in a main checkout outside the temporary directories\./);
   });
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
