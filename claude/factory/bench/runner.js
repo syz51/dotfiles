@@ -59,6 +59,19 @@ export function observedModels(events) {
   return [...counts].sort((a, b) => b[1] - a[1]).map(([model]) => model);
 }
 
+// Whether a session ran the model and effort it was asked for: { efforts, problem }, the
+// efforts its transcript recorded, most used first, and why the run is not that
+// configuration, or null.
+export function configProblem(task, models, { model, effort }) {
+  const efforts = Object.entries(task.efforts ?? {}).sort((a, b) => b[1] - a[1]).map(([name]) => name);
+  let problem = null;
+  if (efforts.length && (efforts.length > 1 || efforts[0] !== effort)) problem = `requested effort ${effort} but the session ran ${efforts.join(", ")}`;
+  else if (!efforts.length && task.ok) problem = "the session's transcript recorded no effort, so the requested effort is unverified";
+  // A dated model ID (requested-YYYYMMDD) is the requested model.
+  if (models.length && (models.length > 1 || (models[0] !== model && !models[0].startsWith(`${model}-`)))) problem = `requested ${model} but the session ran ${models.join(", ")}`;
+  return { efforts, problem };
+}
+
 // Runs one configuration of a case and returns its results record. Infrastructure
 // failures (no stream, API errors, the wrong model or effort) are marked infra, so reports leave
 // them out; fixture errors throw.
@@ -107,20 +120,9 @@ export async function runOne(benchCase, { model, effort, trial, runId, batch, cl
       record.error = `session ended with ${detail}${final?.api_error_status ? ` (HTTP ${final.api_error_status})` : ""}`;
       record.infra = !final || !!final.api_error_status || final.subtype === "success";
     }
-    const efforts = Object.entries(task.efforts ?? {}).sort((a, b) => b[1] - a[1]).map(([name]) => name);
-    record.effortObserved = efforts.join(",") || null;
-    if (efforts.length && (efforts.length > 1 || efforts[0] !== effort)) {
-      record.error = `requested effort ${effort} but the session ran ${efforts.join(", ")}`;
-      record.infra = true;
-    } else if (!efforts.length && task.ok) {
-      record.error = "the session's transcript recorded no effort, so the requested effort is unverified";
-      record.infra = true;
-    }
-    // A dated model ID (requested-YYYYMMDD) is the requested model.
-    if (models.length && (models.length > 1 || (models[0] !== model && !models[0].startsWith(`${model}-`)))) {
-      record.error = `requested ${model} but the session ran ${models.join(", ")}`;
-      record.infra = true;
-    }
+    const config = configProblem(task, models, { model, effort });
+    record.effortObserved = config.efforts.join(",") || null;
+    if (config.problem) Object.assign(record, { error: config.problem, infra: true });
     writeFileSync(finalAnswerFile, task.finalText);
     const oracle = await runOracle(benchCase.oracle, workspace, finalAnswerFile, benchCase.fixture);
     record.oracleExit = oracle.exit;

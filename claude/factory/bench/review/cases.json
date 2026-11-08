@@ -1,0 +1,197 @@
+[
+  {
+    "id": "config-sync-symlink-copy-false-positive",
+    "kind": "bug",
+    "base": "840ccc814faec0594d9305af3466f43af96779c8",
+    "head": "15b6bf49ceb8ca2791dfcbccb977524055f0687d",
+    "answers": [
+      {
+        "file": "config-sync/config_sync.py",
+        "line": 145
+      }
+    ],
+    "bug": "The link check requires the file itself to be a symlink, so a file reached through a linked parent folder is reported as a copy.",
+    "source": "PR #82 (merge 06d86e8); intro commit c1282f5; fix 3c480f7 (merged in PR #85, 41c4175). Shares base and head with the next case. Fix 3c480f745402bc6db67a3876e0b55dfc32ac1ed0."
+  },
+  {
+    "id": "config-sync-board-agent-missing",
+    "kind": "bug",
+    "base": "840ccc814faec0594d9305af3466f43af96779c8",
+    "head": "15b6bf49ceb8ca2791dfcbccb977524055f0687d",
+    "answers": [
+      {
+        "file": "config-sync/config_sync.py",
+        "line": 161
+      }
+    ],
+    "bug": "The board feedback call omits --agent and the -- separator, so config-sync reports are not filed as claude:config-sync.",
+    "source": "PR #82 (merge 06d86e8); intro commit c1282f5; fix b30b463 (merged in PR #85, 41c4175). Shares base and head with the previous case. Fix b30b4637be0c0e9dc97ade713352c314f21f5d16."
+  },
+  {
+    "id": "explore-override-validation",
+    "kind": "bug",
+    "base": "b47d10eec69fc89f7fa169afb1dd3fa6d0680c54",
+    "head": "f0350efe49ded51711429cef9d044df2a2c5cdc5",
+    "answers": [
+      {
+        "file": "explore/bin/explore-tv",
+        "line": 35
+      },
+      {
+        "file": "explore/bin/explore-television",
+        "line": 8
+      }
+    ],
+    "bug": "The Television override and private tv path are accepted with only an executable test; relative and non-file paths pass unchecked.",
+    "source": "Intro commit f0350ef (perf(explore): reduce picker startup and scan latency); fix 2e94858. diffLines is above 400 and within the 800 allowance for a good bug. Severity is a judgment call. Fix 2e94858f60e0e0a1e2e011a85e344f4df011030e."
+  },
+  {
+    "id": "nvim-dashboard-startup-refresh",
+    "kind": "bug",
+    "base": "fce25f5f49d72cbef3fb0840eef32d72fa621f74",
+    "head": "d318cfddac00cc677613e5c3b939e14074c81870",
+    "answers": [
+      {
+        "file": "nvim/lua/config/autocmds.lua",
+        "line": 12
+      },
+      {
+        "file": "nvim/lua/config/autocmds.lua",
+        "line": 14
+      }
+    ],
+    "bug": "A deferred startup autocmd forces a Snacks dashboard refresh; the fix removes it and sets cmdheight through a noice.lua change.",
+    "source": "Intro commit d318cfd; fix 59e91df. Severity of the defect is a judgment call. Fix 59e91df3c6ef6cede6cbe93ac513984cc65e004e."
+  },
+  {
+    "id": "runtime-guard-case-and-quoting",
+    "kind": "bug",
+    "base": "cc80da76d7f7f5ba774b4701d1249bdf47cae705",
+    "head": "336f654db105fc2645c5c3f010a9776ca5964ec2",
+    "answers": [
+      {
+        "file": "claude/hooks/guard-runtimes.js",
+        "line": 13
+      },
+      {
+        "file": "claude/hooks/guard-runtimes.js",
+        "line": 33
+      }
+    ],
+    "bug": "Case-sensitive runtime regexes let names such as Python or NODE pass, and the prefilter tests the raw command, so quoted or escaped names can skip the parser.",
+    "source": "Intro commit 336f654 (225 lines); fix 0583e84. Fix 0583e843512f1792ed3d81758c4915c5434a3f93."
+  },
+  {
+    "id": "freshen-base-silent-fetch-failure",
+    "kind": "bug",
+    "base": "06d86e8e8a963d4972d62a3ee3ca3e8794855fe8",
+    "head": "17f0be3dc1385d4ff56674e841ca579c50ac88e0",
+    "answers": [
+      {
+        "file": "claude/hooks/freshen-base.js",
+        "line": 37
+      },
+      {
+        "file": "claude/hooks/freshen-base.js",
+        "line": 48
+      }
+    ],
+    "bug": "A failed fetch returns without a report, and the ff-only merge keeps the default 10 s timeout.",
+    "source": "Intro commit 17f0be3 (parent 06d86e8); fix a9fb3f8. The fix message does not mention a review. Fix a9fb3f8e6b3d2d94ce051646e330c7d494990df3."
+  },
+  {
+    "id": "guard-push-config-refspecs",
+    "kind": "bug",
+    "base": "9f2a5e992f6b4f2b1e83b462350fc8c87fd1ceb3",
+    "head": "d4cef74fa435dd522b306afe14a19acb09ca1173",
+    "answers": [
+      {
+        "file": "claude/hooks/guard-git-push.js",
+        "line": 331
+      }
+    ],
+    "bug": "A push with no refspecs is judged only against @{push} and ignores remote.<name>.push, so a configured push refspec is not checked.",
+    "source": "Intro commit d4cef74 (669 insertions, 1 deletion); fix 42981d0. UNSURE: 42981d0 sits in PR #68, whose body mentions review-found bypasses fixed in 9b35d8d. The fix message itself does not mention a review. diffLines is above 400 and within the 800 allowance. Fix 42981d04d8b4d5781a46cd534d21d597b7eaeb8c."
+  },
+  {
+    "id": "installer-refuses-valid-layout",
+    "kind": "bug",
+    "base": "d17d62695bb73f1cd26c73e5115936289844f3ab",
+    "head": "f52b0a7db305e52a928adba6acc5ef8fcb98bd96",
+    "answers": [
+      {
+        "file": "shell/apply-startup-fixes.py",
+        "line": 32
+      },
+      {
+        "file": "shell/apply-startup-fixes.py",
+        "line": 33
+      }
+    ],
+    "bug": "The installer refuses a valid layout: it fails when autoload -Uz compinit appears anywhere in the file, and when the new block count is not exactly 1.",
+    "source": "Intro commit f52b0a7 (423 insertions in 3 files); fix 41fbc14, a mixed commit (497 insertions, 155 deletions) that also changes shell startup and TeX guard code. Fix 41fbc14e35b30a4faba5078c26f1ff66065fcaed."
+  },
+  {
+    "id": "nvim-rust-lsp-guard",
+    "kind": "clean",
+    "base": "c6bed052b50be94ab4b596a1c88be0c24c3b8cef",
+    "head": "7d8bfca54d17f7123240ae7b6733599161774bbe",
+    "source": "Commit on main (99 code lines in nvim/lua/plugins/rust.lua and nvim/tests/rust.lua, plus 8 lockfile lines). No later commit touches either code file. Later commits touch only nvim/lazy-lock.json (routine plugin bumps)."
+  },
+  {
+    "id": "shell-glob-passthrough",
+    "kind": "clean",
+    "base": "bd0342cadbfdc7364ffe450b75e6be63adc07b15",
+    "head": "72727cbe91f5e446e77310cb055067f4cc276898",
+    "source": "Commit on main (20 insertions, 2 deletions in shell/interactive.zsh, shell/test-startup-fixes.py and SETUP.md). No later commit touches the two code files. Size is at the low edge of 20 code lines."
+  },
+  {
+    "id": "evolve-triager-fixed-count-pr89",
+    "kind": "clean",
+    "base": "2360b7a20656a4811be8d74e6340e99c3557b10f",
+    "head": "29e677beef5e45952687effba4a5d523958d446b",
+    "source": "PR #89 (merge 695308f; commit 4c5260c): 22 insertions, 4 deletions in claude/factory/evolve/cli.js, evolve.test.js and SETUP.md. No later commit touches the evolve code files. Size is at the low edge of 20 code lines."
+  },
+  {
+    "id": "codex-guards-pr95",
+    "kind": "clean",
+    "base": "f9a3ce945503b185a0efc9856485acbee4be5287",
+    "head": "d24a267b0c291483a21a4755dc5a871d64a13e2d",
+    "source": "PR #95 (merge a77cddc). 44 of 44 added code lines unchanged on main; later commits touch only other lines of claude/tests/config.test.js."
+  },
+  {
+    "id": "factory-lib-cleanups-pr63",
+    "kind": "clean",
+    "base": "e0c9f598808f769ed649027c3846c3dda59fe319",
+    "head": "4499006ec3fbde075b7eca5513e0030c243149c1",
+    "source": "PR #63 (merge 6ef48ca). 102 of 102 added code lines unchanged on main; no later fix touches them."
+  },
+  {
+    "id": "live-flaky-scenarios-pr64",
+    "kind": "clean",
+    "base": "6ef48caf97f2d37eb49d3f692d261c8641927eec",
+    "head": "87fb8038b8815137da2b0fdb6e0a4b502aa259e9",
+    "source": "PR #64 (merge da11524). 75 of 75 added code lines unchanged on main."
+  },
+  {
+    "id": "score-claude-md-revision-pr59",
+    "kind": "clean",
+    "base": "2637452de59146a689cea2bf207e38cd5cf3a097",
+    "head": "b94630c7580c07ef557c7acb82831ff14f7e5742",
+    "source": "PR #59 (merge 7917856). 54 of 54 added code lines unchanged on main."
+  },
+  {
+    "id": "subagent-thread-cleanup-pr29",
+    "kind": "clean",
+    "base": "c6731f5bc89cf5a4c584b078d360ec4fbbfe2ef3",
+    "head": "9dac513f82bd185e023a87265954b1b05fcbfbd8",
+    "source": "PR #29 (merge 15006bd). 393 of 393 added code lines unchanged on main."
+  },
+  {
+    "id": "config-sync-agent-fixes-pr85",
+    "kind": "clean",
+    "base": "06d86e8e8a963d4972d62a3ee3ca3e8794855fe8",
+    "head": "3c480f745402bc6db67a3876e0b55dfc32ac1ed0",
+    "source": "PR #85 (merge 41c4175), itself two fixes. 28 of 28 added code lines unchanged on main; no later commit touches its files."
+  }
+]
