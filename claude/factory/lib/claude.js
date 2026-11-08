@@ -117,14 +117,16 @@ function transcriptEfforts(file) {
 // readEffort lets the session save its transcript, the only place Claude Code records
 // the effort each request ran at (the stream does not), reads it and deletes it;
 // efforts then counts the main thread's messages per effort, or is null when no
-// transcript was found. Returns the stream whether or not the task succeeded; a session
-// past timeoutMs is killed and returns what it streamed, with timedOut set.
+// transcript was found. schema makes the session end with JSON matching it, returned as
+// output (null when the session gave none). Returns the stream whether or not the task
+// succeeded; a session past timeoutMs is killed and returns what it streamed, with timedOut set.
 export async function runTask({
-  prompt, cwd, model, effort, agent, settings, tools, budgetUsd = 2, timeoutMs = 900_000,
+  prompt, cwd, model, effort, agent, settings, tools, schema, budgetUsd = 2, timeoutMs = 900_000,
   permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false, readEffort = false,
 }) {
   const argv = [claudeBin(), "--print", ...(readEffort ? [] : ["--no-session-persistence"]), "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
+  if (schema) argv.push("--json-schema", JSON.stringify(schema));
   if (model) argv.push("--model", model);
   if (effort) argv.push("--effort", effort);
   if (agent) argv.push("--agent", agent);
@@ -184,6 +186,7 @@ export async function runTask({
     ok: !timedOut && completed(events),
     timedOut,
     finalText: typeof final?.result === "string" ? final.result : "",
+    ...(schema ? { output: final?.structured_output && typeof final.structured_output === "object" ? final.structured_output : null } : {}),
     costUSD: (refused ? cost(refused.events) : 0) + (final?.total_cost_usd ?? 0),
     turns: final?.num_turns ?? null,
     durationMs: result.durationMs + (refused?.result.durationMs ?? 0),

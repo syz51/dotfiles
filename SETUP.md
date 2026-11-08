@@ -282,6 +282,7 @@ bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
 bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js evolve             # the feedback loop per setup this week
+bun ~/.claude/factory/cli.js review --dry-run   # review last week of main, file nothing (bills)
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js bench review report # /code-review level benchmark
