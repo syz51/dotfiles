@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeTempDir, removeSessionArtifacts } from "../../tests/lib/cleanup.js";
-import { HAIKU, HOME_CLAUDE, LIVE } from "../../tests/lib/live.js";
+import { HAIKU, HOME_CLAUDE, holdConfigSync, LIVE } from "../../tests/lib/live.js";
 import { failureDirectory, writeReport } from "../../tests/lib/reports.js";
 import { bashRuns, toolResults, toolUses } from "../../tests/lib/stream.js";
 import { runTask } from "../lib/claude.js";
@@ -18,6 +18,7 @@ import { readProfile, writeProfile } from "./sandbox.js";
 const TIMEOUT = 300_000;
 let root;
 let profiles;
+let releaseConfigSync;
 const costs = [];
 // The last session of each case, kept for the failure report.
 const lastRun = new Map();
@@ -49,6 +50,7 @@ async function kept(label, body) {
 async function session(label, { prompt, allowedDomains = [], tools, profile }) {
   const cwd = join(root, label);
   mkdirSync(cwd);
+  holdConfigSync("sandbox");
   const settings = writeProfile(join(profiles, `${label}.json`), { profile, allowedDomains });
   const run = await runTask({ prompt, cwd, model: HAIKU, effort: "low", settings, tools, budgetUsd: 0.5, timeoutMs: TIMEOUT - 10_000 });
   costs.push({ label, cost: run.costUSD });
@@ -70,6 +72,8 @@ const runOf = (runs, fragment) => {
 
 describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
   beforeAll(() => {
+    // config-sync must not change ~/.claude under the sessions; see holdConfigSync.
+    releaseConfigSync = holdConfigSync("sandbox");
     root = realpathSync(mkdtempSync(join(tmpdir(), "claude-live-sandbox-")));
     profiles = realpathSync(mkdtempSync(join(tmpdir(), "claude-live-sandbox-profiles-")));
   });
@@ -81,6 +85,7 @@ describe.skipIf(!LIVE)("unattended sandbox profile (live)", () => {
       rmSync(profiles, { recursive: true, force: true });
       const total = costs.reduce((sum, { cost }) => sum + cost, 0);
       if (costs.length) console.log(`sandbox live: ${costs.length} sessions, $${total.toFixed(4)}`);
+      releaseConfigSync?.();
     }
   });
 
