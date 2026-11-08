@@ -145,6 +145,8 @@ describe("in a main checkout it blocks", () => {
     ["(cd /main; x=$(git stash)) | cat", "/linked"],
     // a case pattern's ) does not end the subshell
     ["(cd /main; case a in a) ;; esac; git reset --hard HEAD~1)", "/linked"],
+    // a cd inside ( ) leaves the commands after the subshell in the main checkout
+    ["(cd /tmp); git switch feature"],
     ["noglob git switch feature"],
     ["git switch feature", "/main/sub"],
     ["sh -c 'git switch feature'"],
