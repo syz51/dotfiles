@@ -223,6 +223,22 @@ describe("settings", () => {
         && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
     expect(guard).toHaveLength(1);
   });
+
+  test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {
+    const groups = settings.hooks.PreToolUse.filter((group) =>
+      group.hooks.some((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/guard-asks.js"'));
+    expect(groups).toHaveLength(1);
+    expect(new RegExp(groups[0].matcher).test("mcp__board__ask_user")).toBe(true);
+    for (const tool of ["Bash", "mcp__board__task_add", "AskUserQuestion"]) expect(new RegExp(groups[0].matcher).test(tool)).toBe(false);
+  });
+
+  // guard-asks reads its policy at run time, so a missing or broken file would let every ask through.
+  test("the ask gate's policy file is tracked and valid", () => {
+    expect(tracked("claude/hooks/ask-policy.json")).toBe(true);
+    const policy = JSON.parse(read("claude/hooks/ask-policy.json"));
+    expect(Object.keys(policy.reasons).length).toBeGreaterThan(0);
+    for (const name of policy.action_reasons) expect(Object.keys(policy.reasons)).toContain(name);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
@@ -696,9 +712,10 @@ describe("rules the live suites test", () => {
 
   // Threads that start in a repository's main checkout share it; one that switched or reset
   // it moved the branch under the others (dotfiles-164). guard-main-checkout.js enforces the
-  // git part.
+  // git part. Fast-forwards and a clean switch back to the default branch lose nothing, and
+  // the user wants agents to run them without a second step (dotfiles-235).
   test("Workflow moves work out of a shared main checkout", () => {
-    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. A hook refuses those git commands in a main checkout outside the temporary directories\./);
+    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories\./);
   });
 
   // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
@@ -807,12 +824,13 @@ describe("lean prompt", () => {
 });
 
 // On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
-// before any test ran. Retries cover short failures of this download; the cache covers
-// long ones. setup-uv also downloads from that host and has no cache.
-describe("CI gitleaks download", () => {
+// before any test ran. Retries cover short failures of the gitleaks download; the cache
+// covers long ones. setup-uv uses the Astral mirror, and setup-bun caches Bun itself.
+describe("CI release downloads", () => {
   const workflow = read(".github/workflows/checks.yml");
   const steps = Bun.YAML.parse(workflow).jobs.tests.steps;
-  const step = (name) => steps.find((entry) => entry.name === name);
+  // A step by its name, or by its action for an unnamed one, such as "astral-sh/setup-uv".
+  const step = (name) => steps.find((entry) => entry.name === name || entry.uses?.split("@")[0] === name);
   const fetch = step("Fetch and check gitleaks").run;
   const download = /^ *curl (?:[^\n]*\\\n)*[^\n]*\n/m.exec(fetch)?.[0] ?? "";
   const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
@@ -856,6 +874,23 @@ describe("CI gitleaks download", () => {
     const names = steps.map((entry) => entry.name);
     expect(names.indexOf("Save the gitleaks archive")).toBe(names.indexOf("Fetch and check gitleaks") + 1);
     expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save the gitleaks archive"));
+  });
+
+  // setup-uv v10.3.2 added the known checksums for uv 0.13.5; v10 downloads from the
+  // Astral mirror and falls back to GitHub's release host.
+  test("setup-uv is the mirror release and keeps uv pinned", () => {
+    const setup = step("astral-sh/setup-uv");
+    expect(setup.uses).toBe("astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2");
+    expect(workflow).toContain("- uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3\n");
+    expect(setup.with).toEqual({ version: "0.13.5", "enable-cache": false });
+  });
+
+  test("setup-bun keeps its Bun cache on a pinned version, and a slow cache cannot stall the job", () => {
+    const bun = step("oven-sh/setup-bun");
+    // A pinned version turns on setup-bun's own cache of the Bun binary.
+    expect(bun.with).toEqual({ "bun-version": "1.4.4" });
+    expect(bun.env).toEqual({ SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1 });
+    expect(bun["timeout-minutes"]).toBe(3);
   });
 });
 

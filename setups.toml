@@ -173,6 +173,15 @@ change = "A PR on dotfiles with tests"
 verify = ["uv run --no-project python -B -m unittest discover -s disk-alert/tests"]
 
 [[setup]]
+id = "cargo"
+title = "User-wide Cargo settings that shrink Rust builds"
+covers = ["cargo"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests; measure build size and rebuild time before changing a setting"
+verify = ["uv run --no-project python -B -m unittest discover -s cargo/tests"]
+
+[[setup]]
 id = "config-sync"
 title = "Keeping each Mac's ~/.config checkout current with main"
 covers = ["config-sync"]

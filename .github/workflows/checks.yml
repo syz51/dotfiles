@@ -19,10 +19,20 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # setup-bun caches Bun with actions/cache, keyed by its download URL, which holds
+      # the version, OS and architecture, and downloads only on a miss. As for gitleaks,
+      # a slow cache service gives up after one minute, and the step timeout bounds a
+      # stalled download, so neither uses up the job.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        timeout-minutes: 3
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
         with:
           bun-version: 1.4.4
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      # This release downloads uv from the Astral mirror and falls back to GitHub's
+      # release host, so one host's outage does not fail CI. It checks the archive
+      # against its own known checksum for uv 0.13.5.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: 0.13.5
           enable-cache: false
@@ -116,4 +126,5 @@ jobs:
           uv run --offline --no-project --python 3.13 python -B shell/test-startup-fixes.py -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s t3code/tests -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s disk-alert/tests -v
+          uv run --offline --no-project --python 3.13 python -B -m unittest discover -s cargo/tests -v
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s config-sync/tests -v
