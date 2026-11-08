@@ -15,6 +15,14 @@ After every check it also verifies the links that install the instructions from 
 checkout (`~/.claude` and Codex's AGENTS.md); a copy instead of a link stops pulls from
 reaching the agents.
 
+A live suite run (`RUN_CLAUDE_LIVE=1 bun test claude/tests`) fails when ~/.claude changes
+under it, so each suite holds a lock: a file in `~/.local/state/config-sync/locks/` holding
+its PID. While a lock's process is alive, a check skips everything (the pull, the
+settings.json restore, which rewrites a file the run guards, and the link checks) and logs
+the skip; it looks again after the fetch, which can take minutes. A lock that cannot be
+read, whose text is not a PID, whose PID is dead, or older than MAX_HOLD (a reused PID) is
+stale and removed, so a killed run does not stop pulls.
+
 A report goes to the board's feedback intake about the `config-sync` setup, once per
 distinct set of problems: `board feedback --about config-sync --activity operate`, or
 plain `board feedback` where the installed CLI lacks those options, or a macOS
@@ -22,7 +30,7 @@ notification when the board cannot be reached. A fetch that keeps failing (the M
 offline, say) is reported only after 24 hours.
 
 State lives in `~/.local/state/config-sync/state.json` and each check that pulled,
-restored or reported adds a line to `events.jsonl` there. `status` prints the state,
+restored, reported or skipped adds a line to `events.jsonl` there. `status` prints the state,
 `install` writes and loads the LaunchAgent.
 """
 
@@ -52,6 +60,10 @@ LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 REMOTE = "origin"
 BRANCH = "main"
 SETTINGS = "claude/settings.json"
+LOCKS = "locks"
+# A live suite rewrites its lock before each session (at most minutes long), so a lock
+# older than this belongs to a killed run whose PID another process now has.
+MAX_HOLD = timedelta(hours=3)
 # The board agent reports file as: launchd's environment names no session, and the board
 # takes only t3, claude or codex agent ids (as the factory's friction capture does).
 AGENT = "claude:config-sync"
@@ -106,6 +118,37 @@ def append_event(state_dir: Path, event: dict) -> None:
         log.write(json.dumps(event) + "\n")
 
 
+def alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # another user's process
+        pass
+    return True
+
+
+def holds(state_dir: Path, now: datetime) -> list:
+    """The live locks in state_dir/locks as "name (pid N)". Stale locks are removed, so a
+    killed run's lock does not stay; a live run rewrites its lock before each session."""
+    held = []
+    for lock in sorted((state_dir / LOCKS).glob("*.lock")):
+        try:
+            pid = int(lock.read_text().strip())
+            written = datetime.fromtimestamp(lock.stat().st_mtime, timezone.utc)
+        except (OSError, ValueError, OverflowError):  # released since the listing, unreadable, or not a PID
+            pid, written = 0, now - MAX_HOLD
+        # os.kill(0) or a negative PID signals a process group, so those are not PIDs.
+        if 0 < pid < 2**31 and now - written < MAX_HOLD and alive(pid):
+            held.append(f"{lock.name} (pid {pid})")
+            continue
+        try:
+            lock.unlink(missing_ok=True)
+        except OSError as error:  # still stale, so still ignored
+            print(f"could not remove the stale lock {short(lock)}: {error}", file=sys.stderr)
+    return held
+
+
 def short(path: Path) -> str:
     text = str(path)
     return "~" + text[len(str(HOME)) :] if text.startswith(str(HOME) + os.sep) else text
@@ -118,6 +161,7 @@ class Outcome:
     fetch_failed: bool = False
     head: Optional[str] = None
     restored: list = field(default_factory=list)  # tracked paths put back to their committed text
+    held: list = field(default_factory=list)  # live locks found after the fetch; nothing else ran
 
 
 def canonical(value):
@@ -153,12 +197,16 @@ def restore_reformat(path: Path, committed: str) -> bool:
         temp.unlink(missing_ok=True)
 
 
-def sync(repo: Path, run: Runner) -> Outcome:
-    """Fetch and fast-forward when safe; return the problems found."""
+def sync(repo: Path, run: Runner, held: Callable[[], list] = list) -> Outcome:
+    """Fetch and fast-forward when safe; return the problems found. A fetch can take
+    minutes, so a live run may take a lock meanwhile: held() is asked again after it."""
     git = lambda *args: run(["git", "-C", str(repo), *args])  # noqa: E731
     problems = []
     fetched = git("fetch", "--quiet", REMOTE, BRANCH)
     fetch_failed = fetched.returncode != 0
+    late = held()
+    if late:
+        return Outcome([], fetch_failed=fetch_failed, held=late)
     branch = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     head = git("rev-parse", "HEAD").stdout.strip()
     target = git("rev-parse", f"{REMOTE}/{BRANCH}").stdout.strip()
@@ -232,7 +280,17 @@ def report(run: Runner, board: Optional[str], text: str, signature: str) -> str:
 def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: datetime, host: str) -> int:
     state_path = state_dir / "state.json"
     state = load_state(state_path)
-    outcome = sync(repo, run)
+    held = holds(state_dir, now)
+    outcome = None if held else sync(repo, run, lambda: holds(state_dir, now))
+    if held or outcome.held:
+        held = held or outcome.held
+        # The rest of the state stays as the last full check left it, so the problems it
+        # reported are not reported again when the lock goes.
+        state.last_check = now.isoformat()
+        save_state(state_path, state)
+        append_event(state_dir, {"at": now.isoformat(), "skipped": "a live suite run holds a lock", "locks": held})
+        print(f"skipped: a live suite run holds {', '.join(held)}")
+        return 0
     problems = list(outcome.problems)
     if outcome.fetch_failed:
         since = datetime.fromisoformat(state.fetch_failing_since) if state.fetch_failing_since else now

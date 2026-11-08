@@ -1,6 +1,6 @@
 // Harness for the opt-in live suites: real `claude -p` sessions against this machine's
 // ~/.claude, each in a fixture folder under one temporary root per suite.
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { claudeTempDir, removeSessionArtifacts } from "./cleanup.js";
@@ -44,6 +44,24 @@ if (LIVE && !AT_INSTALLED)
   console.log(`Live sessions use the installed checkout ${dirname(INSTALLED_CLAUDE)} (~/.claude is ${INSTALLED_CLAUDE}), `
     + `not this checkout ${dirname(CHECKOUT_CLAUDE)}. Configuration changes are live-tested only after merge and `
     + "config-sync; the checks of where sessions load configuration from are skipped.");
+
+// config-sync (config-sync/config_sync.py) fast-forwards the installed checkout every 30
+// minutes, which would change ~/.claude under a run and fail it. It skips its checks while
+// a live process holds a lock in its locks folder, so each suite holds its own, written
+// whole, from setup to the end of teardown, pass or fail (bun test fires no exit event to
+// hang this on). The file names the PID and the suite, so neither another suite nor another
+// run releases it. Calling this again rewrites it: config-sync takes a lock older than 3
+// hours for a reused PID, so each session renews it. A run killed before teardown leaves a
+// lock with a dead PID, which config-sync removes.
+export const CONFIG_SYNC_LOCKS = join(homedir(), ".local", "state", "config-sync", "locks");
+export function holdConfigSync(name, { dir = CONFIG_SYNC_LOCKS, pid = process.pid } = {}) {
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, `live-suite-${pid}-${name}.lock`);
+  const temp = join(dir, `.live-suite-${pid}-${name}.tmp`);
+  writeFileSync(temp, `${pid}\n`);
+  renameSync(temp, lock);
+  return () => rmSync(lock, { force: true });
+}
 
 // Configuration a session must not change. Installed skills are compared through their
 // links, so a retargeted or edited skill fails the run.
@@ -152,6 +170,7 @@ export function liveSuite(name) {
   let root;
   let reports;
   let sequence = 0;
+  let releaseConfigSync;
 
   // Runs one print-mode session; scratch files go in dir. Every PreToolUse and
   // InstructionsLoaded hook input is recorded; installs, downloads and web access are
@@ -183,6 +202,7 @@ export function liveSuite(name) {
       CARGO_NET_OFFLINE: "true",
       PYTHONDONTWRITEBYTECODE: "1",
     });
+    if (releaseConfigSync) holdConfigSync(name);
     const guard = guardSnapshot();
     const entry = { label, model, effort, durationMs: 0, status: "failed" };
     const started = Date.now();
@@ -275,6 +295,7 @@ export function liveSuite(name) {
     },
 
     setup() {
+      releaseConfigSync = holdConfigSync(name);
       if (process.env.CLAUDE_LIVE_REPORT_DIR) reports = reportDirectory(tmpdir(), process.env.CLAUDE_LIVE_REPORT_DIR);
       root = realpathSync(mkdtempSync(join(tmpdir(), `claude-live-${name}-`)));
     },
@@ -299,6 +320,8 @@ export function liveSuite(name) {
         if (existsSync(root)) throw new Error(`The suite root remains after teardown: ${root}`);
       } finally {
         if (ledger.runs.length) console.log(ledger.summary());
+        releaseConfigSync?.();
+        releaseConfigSync = undefined;
       }
     },
 

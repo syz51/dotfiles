@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -85,7 +86,9 @@ class Sandbox(unittest.TestCase):
         return git(self.upstream, "rev-parse", "HEAD")
 
     def check(self, runner, now=NOW, board="board"):
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        """Runs a check; what it printed is in self.stdout and self.stderr."""
+        self.stdout, self.stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
             return sync.check(self.repo, self.state, runner, board, now, "mac")
 
     def head(self):
@@ -412,6 +415,122 @@ class FetchTests(Sandbox):
         git(self.repo, "remote", "set-url", "origin", url)
         self.check(Runner(), NOW + timedelta(hours=30))
         self.assertIsNone(self.state_json()["fetch_failing_since"])
+
+
+class LockTests(Sandbox):
+    """A live suite run holds a lock in state/locks; config-sync leaves ~/.claude alone meanwhile."""
+
+    def lock(self, text, name="live-suite-1.lock", age=timedelta(minutes=1)):
+        path = self.state / "locks" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        stamp = (NOW - age).timestamp()
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def dead_pid(self):
+        child = subprocess.Popen(["true"])
+        child.wait()
+        return child.pid
+
+    def test_a_held_lock_skips_the_pull_and_logs_why(self):
+        before = self.head()
+        self.advance()
+        self.lock(f"{os.getpid()}\n")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.head(), before)
+        self.assertIn(f"skipped: a live suite run holds live-suite-1.lock (pid {os.getpid()})", self.stdout.getvalue())
+        event = json.loads((self.state / "events.jsonl").read_text())
+        self.assertEqual(event["locks"], [f"live-suite-1.lock (pid {os.getpid()})"])
+        self.assertNotIn("pulled", event)
+        self.assertEqual(self.state_json()["last_check"], NOW.isoformat())
+
+    def test_a_lock_taken_during_the_fetch_skips_the_rest(self):
+        before = self.head()
+        self.advance()
+        test = self
+
+        class LockingRunner(Runner):
+            def __call__(self, args):
+                result = super().__call__(args)
+                if "fetch" in args:
+                    test.lock(f"{os.getpid()}\n")
+                return result
+
+        self.check(LockingRunner())
+        self.assertEqual(self.head(), before)
+        self.assertIn("skipped: a live suite run holds", self.stdout.getvalue())
+        self.assertIsNone(self.state_json()["head"])
+
+    def test_a_held_lock_leaves_a_reformat_and_reported_problems_alone(self):
+        settings = self.repo / "claude" / "settings.json"
+        (self.upstream / "claude" / "settings.json").write_text('{"a": 1, "b": 2}\n')
+        git(self.upstream, "add", ".")
+        git(self.upstream, "commit", "-m", "settings")
+        git(self.upstream, "push", "origin", "HEAD:main")
+        self.check(Runner())
+        (self.home / ".codex" / "AGENTS.md").unlink()
+        (self.home / ".codex" / "AGENTS.md").write_text("copy\n")
+        self.check(Runner())
+        reported = self.state_json()["reported"]
+        settings.write_text('{"b": 2,\n  "a": 1}\n')
+        lock = self.lock(f"{os.getpid()}\n")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(settings.read_text(), '{"b": 2,\n  "a": 1}\n')
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state_json()["reported"], reported)
+        # Released: the next check restores the reformat and does not file the same problems again.
+        lock.unlink()
+        self.check(runner)
+        self.assertEqual(settings.read_text(), '{"a": 1, "b": 2}\n')
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.state_json()["reported"], reported)
+
+    def test_a_released_lock_pulls_again(self):
+        lock = self.lock(f"{os.getpid()}\n")
+        target = self.advance()
+        self.check(Runner())
+        lock.unlink()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+
+    def test_a_lock_folder_entry_that_cannot_be_read_is_stale(self):
+        (self.state / "locks" / "folder.lock").mkdir(parents=True)
+        target = self.advance()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+        self.assertIn("could not remove the stale lock", self.stderr.getvalue())
+
+    def test_stale_locks_do_not_stop_the_pull_and_are_removed(self):
+        for name, text, age in [
+            ("dead", f"{self.dead_pid()}\n", timedelta(minutes=1)),
+            ("unparsable", "not a pid\n", timedelta(minutes=1)),
+            ("empty", "", timedelta(minutes=1)),
+            ("group", "0\n", timedelta(minutes=1)),
+            ("negative", "-1\n", timedelta(minutes=1)),
+            ("huge", f"{2**64}\n", timedelta(minutes=1)),
+            ("old", f"{os.getpid()}\n", sync.MAX_HOLD),
+        ]:
+            with self.subTest(name):
+                lock = self.lock(text, f"{name}.lock", age)
+                target = self.advance(name)
+                self.check(Runner())
+                self.assertEqual(self.head(), target)
+                self.assertFalse(lock.exists())
+
+    def test_other_files_in_the_locks_folder_are_not_locks(self):
+        self.lock(f"{os.getpid()}\n", ".live-suite-1.tmp")
+        target = self.advance()
+        self.check(Runner())
+        self.assertEqual(self.head(), target)
+
+    def test_no_locks_folder_pulls(self):
+        target = self.advance()
+        self.check(Runner())
+        self.assertFalse((self.state / "locks").exists())
+        self.assertEqual(self.head(), target)
 
 
 class InstallTests(unittest.TestCase):
