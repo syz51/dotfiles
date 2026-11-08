@@ -1,5 +1,6 @@
 // The desktop MCP server: screenshots, mouse and keyboard on this Mac, behind four safeguards.
-// - The user approves each app in a native dialog before it can be controlled.
+// - Each app is approved before it can be controlled: at once, or in a native dialog when the
+//   approval policy (policy.json) says "dialog" or after the user pressed Stop.
 // - Banking, healthcare, government and password apps are refused, approved or not.
 // - One session at a time holds the lock file; another session's request_access is refused.
 // - A stop panel (button or Esc) ends the session at any time.
@@ -144,6 +145,38 @@ export class ToolError extends Error {}
 
 const appKey = (app) => (app.bundleId || app.name).toLowerCase();
 
+/** The plugin's own policy file, used when the user's file is missing. */
+export const BUNDLED_POLICY = join(import.meta.dir, "..", "policy.json");
+const APPROVALS = ["auto", "dialog"];
+
+/**
+ * The approval policy from the first of `paths` that exists: "auto" approves the asked apps
+ * without a dialog, "dialog" asks the user. It is read at each request_access, so an edit takes
+ * effect at once. With no file it is "dialog"; a broken file is an error, never a guess.
+ */
+export function readPolicy(paths) {
+  for (const path of paths) {
+    let text;
+    try {
+      text = readFileSync(path, "utf8");
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    let policy;
+    try {
+      policy = JSON.parse(text);
+    } catch (error) {
+      throw new ToolError(`The approval policy ${path} is not valid JSON (${error.message}); nothing was approved.`);
+    }
+    if (!APPROVALS.includes(policy?.approval)) {
+      throw new ToolError(`The approval policy ${path} must set "approval" to "auto" or "dialog"; nothing was approved.`);
+    }
+    return { approval: policy.approval };
+  }
+  return { approval: "dialog" };
+}
+
 /** The file the stop panel writes when the user stops the session of server `pid`. */
 export const stopPath = (stateDir, pid) => join(stateDir, `stop-${pid}`);
 
@@ -171,12 +204,14 @@ const DISPLAY = { type: "integer", minimum: 0, description: "Display index from 
 export const TOOLS = [
   {
     name: "request_access",
-    description: "Ask the user to approve controlling apps. Shows a dialog on the Mac. Banking, healthcare, government and password apps are refused. Only one session at a time can hold access.",
+    description: "Approve apps for control. By default the approval policy approves them at once, with no dialog and no wait for the user; "
+      + "when the policy asks for a dialog, or after the user pressed Stop, the user allows or denies them on the Mac. The reply says which. "
+      + "Only the named apps are approved. Banking, healthcare, government and password apps are refused. Only one session at a time can hold access.",
     inputSchema: {
       type: "object", additionalProperties: false, required: ["apps", "reason"],
       properties: {
         apps: { type: "array", minItems: 1, maxItems: 10, items: { type: "string" }, description: "App names or bundle ids, such as Safari or com.apple.Notes." },
-        reason: { type: "string", description: "One sentence the user reads in the dialog." },
+        reason: { type: "string", description: "One sentence on why; the user reads it when a dialog is shown." },
       },
     },
   },
@@ -247,16 +282,20 @@ export const TOOLS = [
  * helper(args) returns the helper's parsed JSON; dialog(text) resolves true when the user allows
  * and throws when the dialog could not be shown; startOverlay(text, stopFile, onExit) returns a
  * handle with stop(); open(app) brings an app forward; readImage(path) returns base64 and
- * deletes the file; holds(pid) says whether that pid still runs a desktop server.
+ * deletes the file; holds(pid) says whether that pid still runs a desktop server; policy()
+ * returns the approval policy, as readPolicy does.
  */
-export function createDesktop({ helper, dialog, startOverlay, open, readImage, stateDir, pid = process.pid, holds = holdsLock }) {
+export function createDesktop({ helper, dialog, startOverlay, open, readImage, policy, stateDir, pid = process.pid, holds = holdsLock }) {
   const lockPath = join(stateDir, "session.json");
   const stopFile = stopPath(stateDir, pid);
   const approved = new Map();
   const shots = new Map();
   let lastDisplay;
   let overlay;
+  // `stopped` reports a Stop once, to the next action. `userStopped` stays until the user allows
+  // apps in a dialog, so after a Stop request_access asks the user whatever the policy says.
   let stopped = false;
+  let userStopped = false;
 
   function lockHolder() {
     try {
@@ -313,14 +352,19 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
 
   // The stop file is checked as well as the panel's exit event, because the event waits for
   // the event loop while queued actions run.
-  function requireSession() {
+  function noticeStop() {
     if (overlay && existsSync(stopFile)) {
       endSession();
       stopped = true;
+      userStopped = true;
     }
+  }
+
+  function requireSession() {
+    noticeStop();
     if (stopped) {
       stopped = false;
-      throw new ToolError("The user stopped computer use. Ask the user before calling request_access again.");
+      throw new ToolError("The user stopped computer use. Ask the user before calling request_access again; it will show the user a dialog.");
     }
     if (!overlay) throw new ToolError("Call request_access first.");
     if (lockHolder() !== pid) {
@@ -361,6 +405,7 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
       if (overlay !== handle) return; // a panel this session already closed
       overlay = undefined;
       stopped = true;
+      userStopped = true;
       approved.clear();
       dropLock();
     });
@@ -372,6 +417,7 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
       throw new ToolError("apps must be a list of 1 to 10 app names or bundle ids.");
     }
     if (typeof reason !== "string" || reason.trim() === "") throw new ToolError("Give a reason the user reads in the dialog.");
+    noticeStop();
     const notFound = [];
     const refused = [];
     const wanted = [];
@@ -385,22 +431,27 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
     if (notFound.length) lines.push(`Not found: ${notFound.join(", ")}.`);
     if (refused.length) lines.push(`Refused: ${refused.join("; ")}.`);
     if (wanted.length) {
+      // Read before the lock is taken, so a broken policy file leaves nothing held.
+      const ask = userStopped || policy().approval === "dialog";
       holdLock();
       const names = wanted.map((app) => app.name).join(", ");
-      let allowed;
-      try {
-        allowed = await dialog(`Claude wants to control: ${names}.\n\nReason: ${reason}\n\nIt can click and type in these apps until you press Stop or Esc, or the session ends.`);
-      } finally {
-        if (!allowed && !overlay) dropLock();
+      let allowed = !ask;
+      if (ask) {
+        try {
+          allowed = await dialog(`Claude wants to control: ${names}.\n\nReason: ${reason}\n\nIt can click and type in these apps until you press Stop or Esc, or the session ends.`);
+        } finally {
+          if (!allowed && !overlay) dropLock();
+        }
       }
       if (allowed) {
         // Stop during the dialog dropped the lock and the approvals; the Allow is the newer answer.
         holdLock();
         stopped = false;
+        if (ask) userStopped = false;
         rmSync(stopFile, { force: true });
         for (const app of wanted) approved.set(appKey(app), app);
         if (!overlay) startPanel();
-        lines.push(`Approved: ${names}.`);
+        lines.push(ask ? `Approved: ${names}.` : `Approved: ${names}. No dialog was shown: the approval policy approves apps at once.`);
       } else {
         lines.push(`The user denied: ${names}.`);
       }
@@ -513,8 +564,10 @@ export function createDesktop({ helper, dialog, startOverlay, open, readImage, s
 
   return { call, release };
 }
-const INSTRUCTIONS = "Controls this Mac's screen, mouse and keyboard. Call request_access with the apps you need; "
-  + "the user approves them in a dialog and can stop you at any time. Take a screenshot before pointing; coordinates "
+export const INSTRUCTIONS = "Controls this Mac's screen, mouse and keyboard. Call request_access with the apps you need. "
+  + "By default they are approved at once with no dialog, so do not wait for the user; a dialog appears only when the "
+  + "approval policy asks for one or after the user pressed Stop. Banking, healthcare, government and password apps are "
+  + "always refused, and the user can stop you at any time. Take a screenshot before pointing; coordinates "
   + "are pixels in the latest screenshot of that display. Prefer keyboard shortcuts. Call release when done.";
 
 /** Answers one JSON-RPC message; undefined for notifications. */
@@ -568,7 +621,11 @@ function realDependencies(stateDir) {
   let binary;
   const bin = () => (binary ??= helperBinary(stateDir));
   const env = { ...process.env, DESKTOP_STOP_FILE: stopPath(stateDir, process.pid) };
+  // .mcp.json points DESKTOP_MCP_POLICY at the dotfiles checkout's copy, which the user can edit;
+  // an empty variable counts as unset.
+  const policyPaths = [process.env.DESKTOP_MCP_POLICY, BUNDLED_POLICY].filter(Boolean);
   return {
+    policy: () => readPolicy(policyPaths),
     helper(args) {
       const result = spawnSync(bin(), args, { encoding: "utf8", timeout: 20_000, env });
       if (result.error) throw result.error;

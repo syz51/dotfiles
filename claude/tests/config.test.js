@@ -754,10 +754,16 @@ describe("computer-use plugin", () => {
     expect(settings.enabledPlugins["computer-use@dotfiles"]).toBe(true);
   });
 
-  test("its only MCP server is desktop, run by bun from the plugin", () => {
+  // The approval policy comes from the dotfiles checkout, which the user can edit at any time.
+  test("its only MCP server is desktop, run by bun from the plugin with the checkout's policy", () => {
     const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
     expect(Object.keys(servers)).toEqual(["desktop"]);
-    expect(servers.desktop).toEqual({ command: "${HOME}/.bun/bin/bun", args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"] });
+    expect(servers.desktop).toEqual({
+      command: "${HOME}/.bun/bin/bun",
+      args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"],
+      env: { DESKTOP_MCP_POLICY: "${HOME}/.config/claude/marketplace/computer-use/policy.json" },
+    });
+    expect(JSON.parse(read("claude/marketplace/computer-use/policy.json"))).toEqual({ approval: "auto" });
   });
 
   test("its tests run in the verification suites and CI", () => {
