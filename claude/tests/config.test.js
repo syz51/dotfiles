@@ -143,6 +143,12 @@ describe("global instructions", () => {
   // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
   // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
   // T3 tools.
+  // Most of the user's repositories have no branch protection, so the hook enforces the merge
+  // condition the Autonomy section grants (dotfiles-259).
+  test("the merge rule names the hook that enforces it", () => {
+    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed.");
+  });
+
   test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
     expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
   });
@@ -224,6 +230,7 @@ describe("settings", () => {
     ["claude/settings.json", "guard-git-push.js"],
     ["claude/settings.json", "guard-runtimes.js"],
     ["claude/settings.json", "guard-main-checkout.js"],
+    ["claude/settings.json", "guard-pr-merge.js"],
     ["codex/hooks.json", "guard-git-push.js"],
     ["codex/hooks.json", "guard-runtimes.js"],
   ])("%s registers the %s guard for Bash PreToolUse", (path, script) => {
@@ -232,6 +239,14 @@ describe("settings", () => {
       && group.hooks.some((hook) => hook.type === "command"
         && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
     expect(guard).toHaveLength(1);
+  });
+
+  // A hook that times out is a non-blocking error, so the merge would run unchecked; the guard
+  // stops querying gh after 35 seconds and refuses.
+  test("the pr-merge guard's timeout covers its gh calls", () => {
+    const hook = handlers.find((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    expect(hook.timeout).toBe(45);
+    expect(read("claude/hooks/guard-pr-merge.js")).toContain("const BUDGET_MS = 35000;");
   });
 
   test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {

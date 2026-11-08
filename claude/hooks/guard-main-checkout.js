@@ -4,7 +4,7 @@
 // main checkout (its git dir is the common git dir) it blocks commands that switch, move or
 // reset the checked-out branch or set work aside: git switch, checkout of a branch, a
 // discarding checkout -f, reset to another commit or with --hard/--keep/--merge/--soft,
-// merge, rebase, pull, stash, bisect and gh pr checkout. Their read-only, continue and abort
+// merge, rebase, pull, stash, bisect, gh pr checkout and gh pr merge. Their read-only, continue and abort
 // forms, file restores, fast-forward-only merges and pulls (see fastForwardOnly), a switch to
 // the default branch with no tracked changes, every command in a linked worktree and every
 // repository in a temporary directory still run. When the user asked for the change in that
@@ -264,6 +264,11 @@ const GH_ROUTE = "If the user's own message asked for this pull request here, ch
   + "for a pull request from a fork you will push to, add the fork as a remote, fetch its branch and switch with `--track`. "
   + "Never ask the user to run it.";
 
+// The Workflow rule keeps merges out of a main checkout; `gh pr merge` also switches and pulls the
+// local checkout when it deletes the branch, so it runs from the agent's own worktree.
+const mergeReason = (top) => `it merges a pull request from ${top}, a main checkout other threads share, and gh may switch or pull its branch. `
+  + "Run it from your own worktree (EnterWorktree in Claude Code, a worktree thread in T3). Do not run it from a script to get past this guard.";
+
 /**
  * Returns why `command` run from `cwd` must not run, or undefined when it may. Repositories under
  * `tempRoots` (absolute, resolved paths) are never treated as shared.
@@ -274,9 +279,13 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     const name = basename(words[0]).toLowerCase();
     let reason;
     if (name === "git") reason = gitCommand(words, dir, git, tempRoots);
-    else if (name === "gh" && words[1] === "pr" && ["checkout", "co"].includes(words[2]) && dir !== undefined) {
-      const top = sharedMainCheckout(dir, git, tempRoots);
-      if (top !== undefined) reason = blockReason(top, "", GH_ROUTE);
+    else if (name === "gh" && words[1] === "pr" && dir !== undefined) {
+      // gh takes -R/--repo before the pr subcommand too.
+      let i = 2;
+      while (/^(?:-R|--repo)(?:$|(?<=-R).|=)/.test(words[i] ?? "")) i += /^(?:-R|--repo)$/.test(words[i]) ? 2 : 1;
+      const subcommand = words[i];
+      const top = ["checkout", "co", "merge"].includes(subcommand) ? sharedMainCheckout(dir, git, tempRoots) : undefined;
+      if (top !== undefined) reason = subcommand === "merge" ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
     }
     return reason && `\`${words.join(" ")}\`: ${reason}`;
   });

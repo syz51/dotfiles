@@ -117,6 +117,9 @@ describe("in a main checkout it blocks", () => {
     ["git bisect good"],
     ["gh pr checkout 12"],
     ["gh pr co 12"],
+    ["gh pr merge 12 --squash"],
+    ["gh pr -R owner/repo merge 12"],
+    ["gh pr --repo=owner/repo merge"],
     // the program name ignores case, as macOS volumes do
     ["GIT switch feature"],
     ["Git reset --hard"],
@@ -160,6 +163,13 @@ describe("in a main checkout it blocks", () => {
     expect(verdict("git pull")).toContain("A fast-forward, `git pull --ff-only`, may run here.");
     expect(verdict("git checkout feature")).toContain("use `git restore <path>` or `git checkout -- <path>`");
     expect(verdict("git reset file.txt")).toContain("use `git restore --staged <path>` or `git reset -- <path>`");
+  });
+
+  test("sends gh pr merge to the agent's own worktree", () => {
+    const reason = verdict("gh pr merge 12 --squash");
+    expect(reason).toStartWith("`gh pr merge 12 --squash`: it merges a pull request from /main, a main checkout other threads share");
+    expect(reason).toContain("Run it from your own worktree");
+    expect(reason).not.toContain("claude.mainCheckout=allow");
   });
 
   test("gives gh pr checkout its route through git", () => {
@@ -224,6 +234,8 @@ describe("it allows", () => {
     ["git worktree add ../wt -b feature"],
     ["git branch feature"],
     ["gh pr view 12"],
+    ["gh pr view merge"],
+    ["gh pr create --title merge"],
     ["git config --get claude.mainCheckout"],
     ["git config get claude.mainCheckout"],
     ["git config --get-all claude.mainCheckout"],
@@ -249,6 +261,7 @@ describe("it allows", () => {
     ["git rebase origin/main", "/linked"],
     ["git -C /linked stash", "/main"],
     ["gh pr checkout 12", "/linked"],
+    ["gh pr merge 12 --squash", "/linked"],
     ["git checkout -b feature", "/allowed"],
     ["git checkout -b repro", "/scratch/repo"],
     ["git stash", "/scratch/repo"],

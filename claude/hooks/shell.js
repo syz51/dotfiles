@@ -12,6 +12,11 @@ const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
 /** git's global options that take the next word as their value, for the guards that read git commands. */
 export const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"]);
+/**
+ * Whether the shell fills in part of `word` from a variable, a command substitution or a brace
+ * expansion, so its value is unknown to a guard. parseScript drops quoting, so a quoted `$` counts too.
+ */
+export const expands = (word) => /[$`]|\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(word);
 // Commands that run another command, with their options that take a value.
 const WRAPPERS = {
   arch: ["-e", "-arch"],
