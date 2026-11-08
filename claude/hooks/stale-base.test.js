@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { staleBase } from "./stale-base.js";
@@ -90,18 +90,24 @@ describe("staleBase", () => {
     git(tree, "fetch", "-q", "origin");
     git(tree, "remote", "set-url", "origin", join(root, "gone.git"));
     advance("later");
-    expect(check(tree)).toMatch(new RegExp(`is 1 commit\\(s\\) behind origin/main \\(${tip.slice(0, 12)}\\) \\(the fetch failed, so this is the last fetched origin/main\\)\\.`));
+    expect(check(tree)).toMatch(new RegExp(`is 1 commit\\(s\\) behind origin/main \\(${tip.slice(0, 12)}\\) \\(as last fetched: this session's fetch failed or timed out\\)\\.`));
   });
 
   test("a hung fetch is cut off at the timeout and the session goes on", () => {
     const { tree, advance } = setup();
     advance();
-    // An ssh remote whose ssh command hangs stands in for an unreachable network.
+    // An ssh remote whose ssh command hangs stands in for an unreachable network. The fake ssh
+    // records its pid: the timeout stops git, not its ssh, so the test stops it.
     git(tree, "remote", "set-url", "origin", "ssh://example.invalid/repo.git");
-    git(tree, "config", "core.sshCommand", "sleep 2;");
+    const pidFile = join(tree, "..", "ssh-pid");
+    git(tree, "config", "core.sshCommand", `echo $$ >${pidFile}; exec sleep 30;`);
     const started = Date.now();
-    expect(check(tree, { fetchTimeout: 300 })).toBeUndefined();
-    expect(Date.now() - started).toBeLessThan(5_000);
+    try {
+      expect(check(tree, { fetchTimeout: 300 })).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(1_500);
+    } finally {
+      process.kill(Number(readFileSync(pidFile, "utf8")));
+    }
   });
 
   test("ssh gives up connecting within the fetch timeout, without prompting", () => {
@@ -112,6 +118,40 @@ describe("staleBase", () => {
     git(tree, "config", "core.sshCommand", `echo >${log}`);
     check(tree, { fetchTimeout: 2_500 });
     expect(readFileSync(log, "utf8")).toMatch(/^-o BatchMode=yes -o ConnectTimeout=3 /);
+  });
+
+  test("a worktree with tracked changes has started work on its base and has no note", () => {
+    const { tree, advance } = setup();
+    advance();
+    writeFileSync(join(tree, "first.txt"), "edited");
+    expect(check(tree)).toBeUndefined();
+  });
+
+  test("a branch that tracks local main, as `git worktree add --track` sets, is compared with origin", () => {
+    const { main, root, advance } = setup();
+    const tree = join(root, "tracked");
+    git(main, "worktree", "add", "-q", "--track", "-b", "t3/tracked", tree, "main");
+    expect(git(tree, "config", "--get", "branch.t3/tracked.remote")).toBe(".");
+    advance();
+    expect(check(tree)).toMatch(/its branch t3\/tracked has no commits of its own and is 1 commit\(s\) behind origin\/main/);
+  });
+
+  test("a branch that tracks another branch, such as a release branch, has no note", () => {
+    const { tree, root, advance } = setup();
+    const upstream = join(root, "upstream");
+    git(upstream, "push", "-q", "origin", "HEAD:release");
+    git(tree, "fetch", "-q", "origin");
+    git(tree, "branch", "-q", "--set-upstream-to", "origin/release");
+    advance();
+    expect(check(tree)).toBeUndefined();
+  });
+
+  test("a narrow remote.origin.fetch still updates origin's default branch", () => {
+    const { tree, main, advance } = setup();
+    git(main, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other");
+    advance("a");
+    const tip = advance("b");
+    expect(check(tree)).toMatch(new RegExp(`is 2 commit\\(s\\) behind origin/main \\(${tip.slice(0, 12)}\\)\\. `));
   });
 
   test("without origin/HEAD, main still counts as the default branch", () => {
@@ -141,6 +181,30 @@ describe("staleBase", () => {
 
 describe("hook process", () => {
   const run = (input) => spawnSync(process.execPath, [HOOK], { input: JSON.stringify(input), encoding: "utf8", env: ENV });
+  const runAsync = (input) => new Promise((resolve) => {
+    const child = spawn(process.execPath, [HOOK], { env: ENV });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.on("close", (status) => resolve({ status, stdout }));
+    child.stdin.end(JSON.stringify(input));
+  });
+
+  // T3 starts several delegate threads at once; unlocked, their fetches of one ref fail each other.
+  test("sessions starting together in sibling worktrees all fetch, and the lock is released", async () => {
+    const { main, root, tree, advance } = setup();
+    const trees = [tree, ...[1, 2, 3].map((n) => {
+      const path = join(root, `tree${n}`);
+      git(main, "worktree", "add", "-q", "-b", `t3/child${n}`, path);
+      return path;
+    })];
+    const tip = advance();
+    const results = await Promise.all(trees.map((cwd) => runAsync({ hook_event_name: "SessionStart", source: "startup", cwd })));
+    expect(results.map((result) => result.status)).toEqual([0, 0, 0, 0]);
+    for (const result of results) {
+      expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toMatch(new RegExp(`behind origin/main \\(${tip.slice(0, 12)}\\)\\. Before`));
+    }
+    expect(existsSync(join(main, ".git", "freshen-base.lock"))).toBe(false);
+  });
 
   test("gives Claude the note as SessionStart context and exits 0", () => {
     const { tree, advance } = setup();
