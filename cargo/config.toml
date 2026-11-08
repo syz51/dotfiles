@@ -1,0 +1,15 @@
+# User-wide Cargo settings, linked from ~/.cargo/config.toml (SETUP.md, "Rust build
+# size"). They shrink the dev and test builds that every agent worktree makes in its own
+# target/ folder. Release builds keep each project's settings.
+#
+# A [profile] here overrides the same setting in a project's Cargo.toml; a project's
+# .cargo/config.toml or a CARGO_PROFILE_DEV_DEBUG variable overrides it again.
+
+[profile.dev]
+# Files and line numbers for panics and backtraces, without the variable and type
+# information a debugger needs. For a debugging session: CARGO_PROFILE_DEV_DEBUG=true.
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+# Dependencies, which agents do not step through, keep no debug information.
+debug = false
