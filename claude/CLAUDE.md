@@ -2,7 +2,7 @@
 
 ## Working preferences
 
-- Run all Python through `uv run`, including one-off scripts and inline snippets; never invoke a Python interpreter, `pip` or `pytest` directly. Run JavaScript/TypeScript scripts, checks, tooling and package queries with `bun` or `bunx`, never `node`, including for fallbacks; use npm, npx, pnpm or yarn only where the project's lockfiles select them. Respect project runtimes.
+- Run all Python through `uv run`, including one-off scripts and inline snippets; never invoke a Python interpreter, `pip` or `pytest` directly. Run JavaScript/TypeScript scripts, checks, tooling, installs and package queries with `bun` or `bunx` only, never `node`, including for fallbacks, and never npm, npx, pnpm, yarn, corepack or Vite+ (`vp`), even where a project's lockfiles or `packageManager` field select them. To install a project's packages, convert it to bun: run `bun install`, which migrates the lockfiles, keep `bun.lock`, delete the old lockfiles, and say so. Where the project's CI or scripts require another package manager, stop and ask me. Respect a project's other runtime settings, such as its Python version.
 - Reuse project conventions and existing code. Add dependencies or abstractions only when justified; keep single-use logic inline unless extraction clarifies a complex boundary or meaningful concept.
 - Validate unknown inputs at their owning boundary, then pass validated, typed values inward. Do not recheck invariants established by validation, constructors, or trusted internal contracts.
 - Let errors propagate unless this layer can recover, add useful context, or translate them at a boundary. Keep `try`/`catch` narrow; never silently swallow errors.

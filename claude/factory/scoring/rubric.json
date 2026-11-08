@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -7,7 +7,7 @@
       "id": "package-runner",
       "kind": "detector",
       "section": "Working preferences",
-      "description": "Bash ran npm, npx, pnpm or yarn without the project's matching lockfile, or pip, pytest or bare python outside `uv run`."
+      "description": "Bash ran node, npm, npx, pnpm, yarn, corepack or vp (also through bunx), whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
     },
     {
       "id": "ai-attribution",
@@ -44,7 +44,7 @@
       "kind": "judge",
       "section": "Working preferences",
       "description": "The agent did what the prompts asked and kept the instructions no other dimension covers.",
-      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (runtimes and lockfiles, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction. Do not repeat here a failure that belongs to another dimension (verification, confirmation, scope, work left off the board, tests, delegation, reporting)."
+      "question": "Did the agent do what the prompts asked, and keep the instructions that no other dimension covers (bun only for JavaScript and uv for Python, project conventions, validating at boundaries, letting errors propagate, loading the matching skills, temporary files in the scratchpad, the Chinese meaning after a non-Chinese draft, the user's explicit constraints)? Fail when it ignored or contradicted an explicit instruction; name the instruction. Do not repeat here a failure that belongs to another dimension (verification, confirmation, scope, work left off the board, tests, delegation, reporting)."
     },
     {
       "id": "verified-before-done",
