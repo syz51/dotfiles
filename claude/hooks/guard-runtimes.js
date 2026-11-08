@@ -2,10 +2,12 @@
 // ~/.claude/CLAUDE.md: Python runs through `uv run` and JavaScript through `bun` or
 // `bunx`, so a command that starts python (ipython, pypy), pip, pytest, node or another
 // JavaScript package manager (npm, npx, pnpm, pnpx, yarn, corepack, Vite+'s vp) is
-// blocked, here or over `ssh`, and so is `bunx` or `bun x` running such a tool. BUN_OPTIONS=--bun
+// blocked, here or over `ssh`, and so is `bunx` or `bun x` running such a tool. The
+// `codex` CLI is blocked the same way: the user has only a Claude plan, so no session may
+// start Codex or its models. BUN_OPTIONS=--bun
 // (set in ~/.zshenv) makes bun run and bunx use bun for tools whose shebang names node.
 // `uv run python`, `uv pip`, `bun run` and words that only mention a runtime (`grep
-// python`, `command -v node`) still run. Exit 2 blocks the command and shows stderr to
+// python`, `command -v node`, `ls ~/.codex`) still run. Exit 2 blocks the command and shows stderr to
 // Claude; a crash is a non-blocking hook error, so the guard fails open. shell.js follows
 // the shell syntax around a command (wrappers, `sh -c`, `find -exec`, `ssh`) but cannot see
 // into script files, package scripts or expanded variables.
@@ -17,9 +19,11 @@ import { visitCommands } from "./shell.js";
 const PYTHON = /^(?:python|pip|pypy|ipython)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/i;
 // node and every JavaScript package manager but bun, including Vite+.
 const JS_TOOL = /^(?:node|nodejs|npm|npx|pnpm|pnpx|yarn|yarnpkg|corepack|vp|vpx|vite-plus)$/i;
+// The Codex CLI, by its name or, through bunx, its npm package.
+const CODEX = /^(?:@openai\/)?codex$/i;
 // A cheap prefilter: commands that never name a runtime, even split by quotes or
 // backslashes ("no"de, n\ode), are not parsed.
-const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus/i;
+const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus|codex/i;
 // Options of bun and `bun x` that take the next word as their value.
 const BUN_VALUE_OPTIONS = new Set(["--cwd", "--env-file", "--registry", "--ca", "--cafile", "--minimum-release-age",
   "-c", "--config", "-r", "--preload", "--import", "--require", "--port", "--conditions", "-e", "--eval", "-p", "--print"]);
@@ -51,8 +55,8 @@ function bunxTools(words) {
 /** The runtime the command `words` must not start, as { tool, viaBunx }, or undefined. */
 export function blockedRuntime(words) {
   const name = basename(words[0]);
-  if (PYTHON.test(name) || JS_TOOL.test(name)) return { tool: name, viaBunx: false };
-  const tool = bunxTools(words).find((candidate) => JS_TOOL.test(candidate));
+  if (PYTHON.test(name) || JS_TOOL.test(name) || CODEX.test(name)) return { tool: name, viaBunx: false };
+  const tool = bunxTools(words).find((candidate) => JS_TOOL.test(candidate) || CODEX.test(candidate));
   return tool ? { tool, viaBunx: true } : undefined;
 }
 
@@ -67,6 +71,10 @@ export function runtimeViolation(words) {
       + "`uv run --with pytest pytest …` or `uv pip …`.";
   }
   const runs = `${command} runs ${tool}${viaBunx ? " through bunx" : ""}.`;
+  if (CODEX.test(tool)) {
+    return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Use Claude instead: `
+      + "do the work yourself, spawn a Claude subagent, or delegate on the Claude provider.";
+  }
   if (/^node(?:js)?$/i.test(tool)) return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead.`;
   return `${runs} Use \`bun\` or \`bunx\` instead (\`bun install\`, \`bun run <script>\`, \`bunx <tool>\`), even where a `
     + "project's lockfile selects another package manager.";

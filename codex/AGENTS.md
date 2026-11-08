@@ -3,6 +3,7 @@
 ## Working preferences
 
 - Run all Python through `uv run`, including one-off scripts and inline snippets; never invoke a Python interpreter, `pip` or `pytest` directly. Run JavaScript/TypeScript scripts, checks, tooling, installs and package queries with `bun` or `bunx` only, never `node`, including for fallbacks, and never npm, npx, pnpm, yarn, corepack or Vite+ (`vp`), even where a project's lockfiles or `packageManager` field select them. To install a project's packages, convert it to bun: run `bun install`, which migrates the lockfiles, keep `bun.lock`, delete the old lockfiles, and say so. Where the project's CI or scripts require another package manager, stop and ask me. Respect a project's other runtime settings, such as its Python version.
+- Use Claude models only; I have no Codex subscription. Never start the `codex` CLI or a `gpt-*` model, even to test, and never delegate to the Codex provider: work yourself, spawn a Claude subagent, or delegate on the Claude provider. Reading past Codex session files is fine.
 
 ## Workflow
 
