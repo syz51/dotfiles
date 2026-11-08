@@ -716,13 +716,21 @@ describe("computer-use plugin", () => {
 });
 
 // Since 2026-11-08 the user allows only Opus or Haiku models. Pricing keeps the other rows
-// to price past sessions; tests may name any model as data.
+// to price past sessions; tests may name any model as data. Installed packages, such as the
+// headless-browser skill's Playwright, are not ours to change, so the scan skips node_modules.
 describe("models", () => {
+  const exempt = /(?:^|\/)node_modules\/|\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/;
+
   test("no default, agent or skill template selects Sonnet or Fable", () => {
     const glob = new Bun.Glob("claude/{factory,agents,skills,bin,hooks}/**/*.{js,md,json,toml}");
     const offenders = [...glob.scanSync({ cwd: REPO })].filter((path) =>
-      !/\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/.test(path)
-      && /\b(?:claude-)?(?:sonnet|fable)\b/i.test(read(path)));
+      !exempt.test(path) && /\b(?:claude-)?(?:sonnet|fable)\b/i.test(read(path)));
     expect(offenders).toEqual([]);
+  });
+
+  test("the scan skips installed packages but not our own files", () => {
+    expect(exempt.test("claude/skills/headless-browser/node_modules/playwright/lib/agents/playwright-test-planner.agent.md")).toBe(true);
+    expect(exempt.test("claude/skills/headless-browser/SKILL.md")).toBe(false);
+    expect(exempt.test("claude/factory/ui/node_modules_notes.md")).toBe(false);
   });
 });

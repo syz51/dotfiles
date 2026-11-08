@@ -586,6 +586,7 @@ describe("rounds", () => {
 // and page checks in headless Chromium and the fake judge.
 const browse = [join(import.meta.dir, "..", "..", "skills", "headless-browser", "scripts", "browse.ts")]
   .find((file) => existsSync(join(file, "..", "..", "node_modules", "playwright")));
+if (!browse) console.warn("ui command end to end: skipped, Playwright is missing. Run claude/skills/headless-browser/scripts/setup.sh first.");
 
 describe.skipIf(!browse)("ui command end to end", () => {
   const SERVER = `const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
