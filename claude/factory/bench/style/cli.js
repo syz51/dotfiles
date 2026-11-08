@@ -17,7 +17,7 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js bench style <subcommand> [opt
       --trials N             Trials per case and variant (default 3)
       --model M              Report model (default claude-opus-5-5)
       --effort E             Report effort (default high, the configured effort)
-      --judge-model M        Judge model (default claude-sonnet-5-5)
+      --judge-model M        Judge model (default claude-opus-5-5)
       --parallel N           Runs at the same time (default 4)
       --max-total-usd X      Stop starting runs that could take spending past X (default 20)
       --dry-run              Print the matrix and its worst-case cost
@@ -36,7 +36,7 @@ const OPTIONS = {
   trials: { type: "string", default: "3" },
   model: { type: "string", default: "claude-opus-5-5" },
   effort: { type: "string", default: "high" },
-  "judge-model": { type: "string", default: "claude-sonnet-5-5" },
+  "judge-model": { type: "string", default: "claude-opus-5-5" },
   parallel: { type: "string", default: "4" },
   "max-total-usd": { type: "string", default: "20" },
   "dry-run": { type: "boolean", default: false },
@@ -71,7 +71,7 @@ async function runCommand(values) {
   const variants = list(values.variants);
   if (!variants.length || variants.some((variant) => !VARIANTS.includes(variant))) throw new UsageError(`--variants must be from ${VARIANTS.join(", ")}`);
   for (const flag of ["model", "judge-model"])
-    if (!/^claude-[a-z0-9-]+$/.test(values[flag])) throw new UsageError(`--${flag} needs a full model ID such as claude-sonnet-5-5`);
+    if (!/^claude-[a-z0-9-]+$/.test(values[flag])) throw new UsageError(`--${flag} needs a full model ID such as claude-opus-5-5`);
   const trials = number(values.trials, "--trials");
   const parallel = number(values.parallel, "--parallel");
   const maxTotalUsd = Number(values["max-total-usd"]);

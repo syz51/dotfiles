@@ -9,7 +9,7 @@ import { aggregate, markdown } from "./report.js";
 import { cliVersion, runMatrix, runOne } from "./runner.js";
 import { appendJsonl, readJsonl, statePath, writeJsonAtomic } from "../lib/state.js";
 
-const DEFAULT_MODELS = "claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5";
+const DEFAULT_MODELS = "claude-haiku-5-5,claude-opus-5-5";
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 export const resultsPath = () => statePath("bench", "results.jsonl");
 
@@ -96,7 +96,7 @@ async function runCommand(values) {
   const efforts = list(values.efforts);
   // Full IDs, so the model each session reports can be checked against the request.
   if (!models.length || models.some((model) => !/^claude-[a-z0-9-]+$/.test(model)))
-    throw new UsageError("--models needs full model IDs such as claude-sonnet-5-5");
+    throw new UsageError("--models needs full model IDs such as claude-opus-5-5");
   const badEffort = efforts.find((effort) => !EFFORTS.includes(effort));
   if (!efforts.length || badEffort) throw new UsageError(`--efforts must be from ${EFFORTS.join(", ")}`);
   const trials = number(values.trials, "--trials", { integer: true });
