@@ -83,6 +83,15 @@ change = "A PR on dotfiles; screenshot a page with it after the change"
 verify = ["bun claude/skills/headless-browser/scripts/browse.ts --help"]
 
 [[setup]]
+id = "cheat-sheets"
+title = "Cheat sheets skill (cheat-sheets.org)"
+covers = ["claude/skills/cheat-sheets", "the cheat-sheets skill: finding and fetching sheets from cheat-sheets.org into ~/.cache/cheat-sheets"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; its test uses a synthetic page, never a copy of cheat-sheets.org"
+verify = ["bun test claude/tests/cheatsheets.test.js"]
+
+[[setup]]
 id = "ui-climb"
 title = "UI design climbs: the ui-climb skill and the factory's ui command"
 covers = ["claude/skills/ui-climb", "claude/factory/ui"]
