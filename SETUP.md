@@ -578,8 +578,11 @@ The server keeps these safeguards:
   typing check the app with keyboard focus (Accessibility). An app that is not approved
   is refused.
 - The app under the pointer is the topmost visible app window's. Invisible (alpha 0)
-  windows, Window Server surfaces other than the menu bar, and windows of processes that
-  are not apps are passed over. Of app windows, only the Dock's full-display layer (bundle
+  windows and Window Server surfaces other than the menu bar are passed over. The helper
+  knows the Window Server by its executable path, not by its name. A visible window of
+  any other process that is not an app (no running application) is refused, naming its
+  owner and pid, past the Dock's layer too. Its owner name, which the process chooses,
+  never goes to the approval check. Of app windows, only the Dock's full-display layer (bundle
   id `com.apple.dock` at the Dock window level) is passed over, and only when the
   Accessibility hit-test reaches another app through it. The window below must then
   belong to that app, or the click is refused. The Dock's tiles, its menus, Mission
