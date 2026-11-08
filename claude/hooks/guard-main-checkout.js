@@ -7,9 +7,14 @@
 // merge, rebase, pull, stash, bisect and gh pr checkout. Their read-only, continue and abort
 // forms, file restores, fast-forward-only merges and pulls (see fastForwardOnly), a switch to
 // the default branch with no tracked changes, every command in a linked worktree and every
-// repository in a temporary directory still run. The user can allow them for one repository with
-// `git config claude.mainCheckout allow`, which the guard refuses to let a session run, or
-// run the command themselves. This is a guardrail against mistakes, not a security
+// repository in a temporary directory still run. When the user asked for the change in that
+// checkout, the agent runs that one git command with `-c claude.mainCheckout=allow`, which
+// the guard lets through; the block message says so, so agents never hand the command back
+// to the user. Even then it refuses what would lose work another thread may own: a discarding
+// reset --hard, checkout -f or switch -f while tracked files have changes, and stash drop or
+// clear. The user can allow every such command for one repository with
+// `git config claude.mainCheckout allow`, which the guard refuses to let a session run.
+// This is a guardrail against mistakes, not a security
 // boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
 // the command and shows stderr to Claude. The guard fails open: on a crash, on a script
 // nested too deeply, and when it cannot tell the repository.
@@ -20,6 +25,11 @@ import { basename, join, resolve, sep } from "node:path";
 import { changeDirectory, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const OVERRIDE_KEY = "claude.maincheckout"; // git config keys ignore case
+// `git -c claude.mainCheckout=allow <command>`: the user asked for this one change here.
+const USER_ASKED = `${OVERRIDE_KEY}=allow`;
+const USER_ASKED_ROUTE = "If the user's own message asked for this change in this checkout (not a step that only follows from "
+  + "a request, and not another agent's brief), run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...`; "
+  + "never ask the user to run it.";
 // Forms that finish, end or inspect an operation in progress rather than start one.
 const SAFE_FORMS = {
   merge: ["--abort", "--quit", "--continue"],
@@ -153,20 +163,31 @@ function setsOverride(args) {
 }
 
 /**
- * Why a command that changes the branch of `dir` must not run there, or undefined. `git(dir, args)`
- * returns trimmed stdout, or undefined when git fails (not a repository, no such config).
+ * The top folder of `dir` when it is a main checkout that other threads share, or undefined.
+ * `git(dir, args)` returns trimmed stdout, or undefined when git fails (not a repository, no
+ * such config).
  */
-function mainCheckoutReason(dir, git, tempRoots, hint) {
+function sharedMainCheckout(dir, git, tempRoots) {
   const lines = git(dir, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", "--show-toplevel"])?.split("\n");
   if (lines?.length !== 3 || resolve(lines[0]) !== resolve(lines[1])) return undefined;
   const top = resolve(lines[2]);
   // A repository in a temporary directory is a session's own scratch copy, not a shared checkout.
   if (tempRoots.some((root) => top === root || top.startsWith(root + sep))) return undefined;
   if (git(dir, ["config", "--get", OVERRIDE_KEY])?.toLowerCase() === "allow") return undefined;
+  return top;
+}
+
+function blockReason(top, hint, route) {
   return `it changes the branch of ${top}, a main checkout other threads share. `
     + `Move into your own worktree first (EnterWorktree in Claude Code, a worktree thread in T3) and run it there.${hint} `
-    + "If the user asked for it here, they can run it themselves or allow it for this repository with `git config claude.mainCheckout allow`. "
-    + "Do not run it from a script to get past this guard.";
+    + `${route} Do not run it from a script to get past this guard.`;
+}
+
+/** Whether no tracked file in `dir` has changes. A failed status counts as changes. */
+function noTrackedChanges(dir, git) {
+  // Porcelain v2 with --branch always prints `# branch.*` headers, so empty output is a failure.
+  const status = git(dir, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"]);
+  return status !== undefined && status.split("\n").every((line) => line.startsWith("#"));
 }
 
 /**
@@ -179,30 +200,69 @@ function switchesToCleanDefault(subcommand, args, dir, git) {
   if (words.length !== 1 || words[0].startsWith("-")) return false;
   const remoteHead = git(dir, ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"]);
   if (remoteHead !== `origin/${words[0]}`) return false;
-  // Porcelain v2 with --branch always prints `# branch.*` headers, so empty output is a failure.
-  const status = git(dir, ["status", "--porcelain=v2", "--branch", "--untracked-files=no"]);
-  return status !== undefined && status.split("\n").every((line) => line.startsWith("#"));
+  return noTrackedChanges(dir, git);
+}
+
+/** Whether git `subcommand` with `args` throws away changes to tracked files. */
+function discardsChanges(subcommand, args) {
+  const dash = args.indexOf("--");
+  const options = dash < 0 ? args : args.slice(0, dash);
+  const has = (...names) => options.some((arg) => arg.startsWith("--") && names.some((name) => isLong(arg, name)));
+  // -b, -B, -c and -C take the new branch's name as the rest of the word: -bfix has no -f.
+  const hasShort = (letter) => options.some((arg) => shortLetters(arg).split(/[bBcC]/)[0].includes(letter));
+  if (subcommand === "reset") return has("--hard");
+  if (subcommand === "checkout") return has("--force") || hasShort("f");
+  if (subcommand === "switch") return has("--force", "--discard-changes") || hasShort("f");
+  return false;
+}
+
+/**
+ * Why a change the user asked for in the shared checkout `top` must still not run, or undefined:
+ * it would lose work that may be another thread's.
+ */
+function lossReason(top, subcommand, args, dir, git) {
+  if (subcommand === "stash" && ["drop", "clear"].includes(args[0]))
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and a dropped entry has no backup. `
+      + "Leave the stash in place: keeping an entry costs nothing.";
+  if (!discardsChanges(subcommand, args) || noTrackedChanges(dir, git)) return undefined;
+  return `it would discard changes to tracked files in ${top}, a main checkout other threads share, and they may be another thread's work. `
+    + "Set them aside first with `git -c claude.mainCheckout=allow stash push -m <why>`, which keeps them recoverable, then run the command again.";
 }
 
 function gitCommand(words, dir, git, tempRoots) {
   let i = 1;
   let unknownRepo = false;
   let configured = false;
+  let userAsked = false;
   while (i < words.length && words[i].startsWith("-")) {
     if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
     if (/^--(?:git-dir|work-tree)(?:=|$)/.test(words[i])) unknownRepo = true;
     // `-c merge.autostash=true` and the like can turn a fast-forward into something else.
     if (words[i] === "-c" || /^--config-env(?:=|$)/.test(words[i])) configured = true;
+    // Git uses the last value given for a key. --config-env takes its value from a variable,
+    // which the guard cannot see, so it never counts as the user's request.
+    const setting = ["-c", "--config-env"].includes(words[i]) ? words[i + 1] : words[i].match(/^--config-env=(.*)/)?.[1];
+    if (setting?.split("=")[0].toLowerCase() === OVERRIDE_KEY) userAsked = words[i] === "-c" && setting.toLowerCase() === USER_ASKED;
     i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
   }
   const [subcommand, ...args] = words.slice(i);
   if (subcommand === "config" && setsOverride(args))
-    return "claude.mainCheckout is the user's switch for the guard-main-checkout hook. Only the user sets it.";
+    return "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
+      + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}`;
   const configuredFastForward = configured && ["merge", "pull"].includes(subcommand) && fastForwardOnly(args);
   if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) return undefined;
-  const reason = mainCheckoutReason(dir, git, tempRoots, HINTS[subcommand] ?? "");
-  return reason && !switchesToCleanDefault(subcommand, args, dir, git) ? reason : undefined;
+  const top = sharedMainCheckout(dir, git, tempRoots);
+  if (top === undefined) return undefined;
+  if (userAsked) return lossReason(top, subcommand, args, dir, git);
+  if (switchesToCleanDefault(subcommand, args, dir, git)) return undefined;
+  return blockReason(top, HINTS[subcommand] ?? "", USER_ASKED_ROUTE);
 }
+
+// `gh pr checkout` takes no git options, so the user-asked route goes through git.
+const GH_ROUTE = "If the user's own message asked for this pull request here, check it out with git: "
+  + "`git fetch origin pull/<N>/head:<branch>`, then `git -c claude.mainCheckout=allow switch <branch>`; "
+  + "for a pull request from a fork you will push to, add the fork as a remote, fetch its branch and switch with `--track`. "
+  + "Never ask the user to run it.";
 
 /**
  * Returns why `command` run from `cwd` must not run, or undefined when it may. Repositories under
@@ -214,8 +274,10 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     const name = basename(words[0]).toLowerCase();
     let reason;
     if (name === "git") reason = gitCommand(words, dir, git, tempRoots);
-    else if (name === "gh" && words[1] === "pr" && ["checkout", "co"].includes(words[2]) && dir !== undefined)
-      reason = mainCheckoutReason(dir, git, tempRoots, "");
+    else if (name === "gh" && words[1] === "pr" && ["checkout", "co"].includes(words[2]) && dir !== undefined) {
+      const top = sharedMainCheckout(dir, git, tempRoots);
+      if (top !== undefined) reason = blockReason(top, "", GH_ROUTE);
+    }
     return reason && `\`${words.join(" ")}\`: ${reason}`;
   });
 }
