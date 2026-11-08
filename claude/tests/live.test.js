@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
-import { EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
+import { AT_INSTALLED, EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL } from "./lib/live.js";
 import {
   agentSpawns, concurrentSpawns, finalText, mainBashPrinted, printedFrom, spawnEnds, subagentMessages, toolResults, toolUses,
 } from "./lib/stream.js";
@@ -87,11 +87,13 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   beforeAll(() => suite.setup());
   afterAll(() => suite.teardown());
 
-  test("~/.claude resolves to this checkout's claude directory", () => {
+  // Run outside the installed checkout, sessions load its configuration, not this one's,
+  // so these location checks cannot pass there; setup prints a notice instead.
+  test.skipIf(!AT_INSTALLED)("~/.claude resolves to this checkout's claude directory", () => {
     expect(realpathSync(HOME_CLAUDE)).toBe(realpathSync(CLAUDE));
   });
 
-  describe("a session started in a repository subdirectory", () => {
+  describe.skipIf(!AT_INSTALLED)("a session started in a repository subdirectory", () => {
     let session;
 
     beforeAll(async () => {

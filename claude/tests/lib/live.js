@@ -29,6 +29,17 @@ const HOOKS = join(import.meta.dir, "hooks");
 
 export const HOME_CLAUDE = join(homedir(), ".claude");
 const PROJECTS = join(HOME_CLAUDE, "projects");
+// Sessions load the installed checkout's claude/ folder, which ~/.claude links to. Run
+// from another checkout, such as a worktree, they do not load this checkout's
+// configuration, so the checks of where it loads from are skipped. bun test loads this
+// module once per run, so the notice prints once, before any session.
+const CHECKOUT_CLAUDE = realpathSync(join(import.meta.dir, "..", ".."));
+const INSTALLED_CLAUDE = existsSync(HOME_CLAUDE) ? realpathSync(HOME_CLAUDE) : HOME_CLAUDE;
+export const AT_INSTALLED = INSTALLED_CLAUDE === CHECKOUT_CLAUDE;
+if (LIVE && !AT_INSTALLED)
+  console.log(`Live sessions use the installed checkout ${dirname(INSTALLED_CLAUDE)} (~/.claude is ${INSTALLED_CLAUDE}), `
+    + `not this checkout ${dirname(CHECKOUT_CLAUDE)}. Configuration changes are live-tested only after merge and `
+    + "config-sync; the checks of where sessions load configuration from are skipped.");
 
 // Configuration a session must not change. Installed skills are compared through their
 // links, so a retargeted or edited skill fails the run.

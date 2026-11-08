@@ -271,3 +271,36 @@ describe("reports", () => {
     expect(readdirSync(join(root, "tmp")).filter((name) => name.startsWith("claude-live-"))).toEqual([]);
   }, 30_000);
 });
+
+// Sessions load ~/.claude, which links to the installed checkout. From another checkout
+// they cannot load this one's configuration, so the location checks are skipped with one
+// notice before any session; from the installed checkout they run.
+describe("location checks", () => {
+  const location = "resolves to this checkout|repository subdirectory";
+  const notice = "Live sessions use the installed checkout ";
+
+  // The notice prints when lib/live.js loads, before any test, so before any session.
+  test("are skipped with one notice when ~/.claude is another checkout", async () => {
+    // The background review scenario runs a fake session alongside: the other tests still run.
+    const run = await runLive("live.test.js", `${location}|background while the session answers`, "review-background");
+    const text = output(run);
+    expect(run.code, text).toBe(0);
+    expect(text.split(notice)).toHaveLength(2);
+    expect(text).toContain(`${notice}${home} (~/.claude is ${join(home, ".claude")}), not this checkout ${realpathSync(join(TESTS, "..", ".."))}.`);
+    expect(text).toContain("live-tested only after merge and config-sync");
+    expect(text).toContain("(pass) live Claude Code > a high-impact review runs in the background while the session answers");
+    expect(text).toMatch(/ 1 pass\n 3 skip\n/);
+    expect(text).toMatch(/\(skip\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
+    assertCleanedUp();
+  }, 30_000);
+
+  test("run without the notice when ~/.claude is this checkout", async () => {
+    rmSync(join(home, ".claude"), { recursive: true });
+    symlinkSync(join(TESTS, ".."), join(home, ".claude"));
+    const run = await runLive("live.test.js", "resolves to this checkout", "unused");
+    expect(run.code, output(run)).toBe(0);
+    expect(output(run)).not.toContain(notice);
+    expect(output(run)).toMatch(/\(pass\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
+    expect(output(run)).toMatch(/ 1 pass\n/);
+  }, 30_000);
+});
