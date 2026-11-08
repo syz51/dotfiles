@@ -633,6 +633,12 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise/);
   });
 
+  // t3_thread_launch with a prompt and a worktree sometimes made the thread but started no
+  // run (runId null); t3_thread_send started one each time (board-feedback-369, dotfiles-204).
+  test("Delegation checks that a launched T3 thread started a run, else sends the brief", () => {
+    expect(section("Delegation")).toContain("After `t3_thread_launch`, check the result's `runId`; when it is null, no run started, so send the brief with `t3_thread_send`.");
+  });
+
   // git checks a branch out in one worktree at a time, so a brief that said to check out a
   // branch another thread's worktree held failed (board-feedback-40).
   test("both instruction files continue a held branch from origin, for agents and their briefs", () => {
