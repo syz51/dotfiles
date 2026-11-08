@@ -767,12 +767,13 @@ describe("computer-use plugin", () => {
 });
 
 // On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
-// before any test ran. Retries cover short failures of this download; the cache covers
-// long ones. setup-uv also downloads from that host and has no cache.
-describe("CI gitleaks download", () => {
+// before any test ran. Retries cover short failures of the gitleaks download; the cache
+// covers long ones. setup-uv uses the Astral mirror, and setup-bun caches Bun itself.
+describe("CI release downloads", () => {
   const workflow = read(".github/workflows/checks.yml");
   const steps = Bun.YAML.parse(workflow).jobs.tests.steps;
-  const step = (name) => steps.find((entry) => entry.name === name);
+  // A step by its name, or by its action for an unnamed one, such as "astral-sh/setup-uv".
+  const step = (name) => steps.find((entry) => entry.name === name || entry.uses?.split("@")[0] === name);
   const fetch = step("Fetch and check gitleaks").run;
   const download = /^ *curl (?:[^\n]*\\\n)*[^\n]*\n/m.exec(fetch)?.[0] ?? "";
   const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
@@ -816,6 +817,23 @@ describe("CI gitleaks download", () => {
     const names = steps.map((entry) => entry.name);
     expect(names.indexOf("Save the gitleaks archive")).toBe(names.indexOf("Fetch and check gitleaks") + 1);
     expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save the gitleaks archive"));
+  });
+
+  // setup-uv v10.3.2 added the known checksums for uv 0.13.5; v10 downloads from the
+  // Astral mirror and falls back to GitHub's release host.
+  test("setup-uv is the mirror release and keeps uv pinned", () => {
+    const setup = step("astral-sh/setup-uv");
+    expect(setup.uses).toBe("astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2");
+    expect(workflow).toContain("- uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3\n");
+    expect(setup.with).toEqual({ version: "0.13.5", "enable-cache": false });
+  });
+
+  test("setup-bun keeps its Bun cache on a pinned version, and a slow cache cannot stall the job", () => {
+    const bun = step("oven-sh/setup-bun");
+    // A pinned version turns on setup-bun's own cache of the Bun binary.
+    expect(bun.with).toEqual({ "bun-version": "1.4.4" });
+    expect(bun.env).toEqual({ SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1 });
+    expect(bun["timeout-minutes"]).toBe(3);
   });
 });
 
