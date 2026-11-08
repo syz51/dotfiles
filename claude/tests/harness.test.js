@@ -32,6 +32,10 @@ beforeEach(() => {
     mkdirSync(join(home, "releases", release), { recursive: true });
     writeFileSync(join(home, "releases", release, "SKILL.md"), "# TypeScript\n");
   }
+  for (const [path, content] of [["rust/notes/old.md", "# Old note\n"], ["rust/verifications/old.json", "{}\n"]]) {
+    mkdirSync(join(home, ".codex", "skill-feedback", path, ".."), { recursive: true });
+    writeFileSync(join(home, ".codex", "skill-feedback", path), content);
+  }
   mkdirSync(join(home, ".claude", "skills"));
   symlinkSync(join(home, "releases", "typescript"), join(home, ".claude", "skills", "typescript"));
   mkdirSync(join(root, "bin"));
@@ -132,10 +136,20 @@ describe("configuration must not change during a run", () => {
     assertCleanedUp();
   }, 30_000);
 
+  test("skill feedback records appended by other sessions pass", async () => {
+    const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-feedback-append");
+    expect(run.code, output(run)).toBe(0);
+    expect(existsSync(join(home, ".codex", "skill-feedback", "tauri", "verifications", "first.json"))).toBe(true);
+    assertCleanedUp();
+  }, 30_000);
+
   for (const [mode, message] of [
     ["chinese-drift", "CLAUDE.md"],
     ["chinese-retarget", "skills/typescript"],
     ["chinese-skill-edit", "skills/typescript: Unauthorized content change: SKILL.md"],
+    ["chinese-feedback-edit", "skill-feedback: Unauthorized content change: rust/notes/old.md"],
+    ["chinese-feedback-remove", "skill-feedback: Inventory changed: added [], removed [\"rust/verifications/old.json\"]"],
+    ["chinese-feedback-other", "skill-feedback: Inventory changed: added [\"rust/README.md\"]"],
   ])
     test(mode, async () => {
       const run = await runLive("live-policy.test.js", "Chinese-only", mode);

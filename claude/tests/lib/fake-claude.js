@@ -114,6 +114,21 @@ if (mode.startsWith("chinese-")) {
     symlinkSync(join(home, "releases", "typescript-b"), link);
   }
   if (mode === "chinese-skill-edit") appendFileSync(join(home, "releases", "typescript", "SKILL.md"), "edited\n");
+  // Skill feedback written meanwhile: records appended by other sessions' jobs, an
+  // existing record edited or removed, and a file added outside notes/ and verifications/.
+  const feedback = join(home, ".codex", "skill-feedback");
+  const write = (path, content) => {
+    mkdirSync(join(feedback, path, ".."), { recursive: true });
+    writeFileSync(join(feedback, path), content);
+  };
+  if (mode === "chinese-feedback-append") {
+    write("rust/verifications/new.json", "{}\n");
+    write("rust/notes/new.md", "# New note\n");
+    write("tauri/verifications/first.json", "{}\n");
+  }
+  if (mode === "chinese-feedback-edit") appendFileSync(join(feedback, "rust", "notes", "old.md"), "edited\n");
+  if (mode === "chinese-feedback-remove") rmSync(join(feedback, "rust", "verifications", "old.json"));
+  if (mode === "chinese-feedback-other") write("rust/README.md", "# Rust\n");
   answer = "我会参加明天的会议。";
 }
 if (mode.startsWith("review-")) {

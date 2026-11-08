@@ -717,7 +717,9 @@ in CI:
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
   check that tampers with the fixture when re-run fails, and so do a single-track task
   handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
-  too, as does a claimed but unsaved artifact or an unwritable report. So do a review
+  too. Under `~/.codex/skill-feedback`, records that other sessions append to a skill's
+  `notes/` or `verifications/` pass, but an edited, removed or other added file fails.
+  A claimed but unsaved artifact or an unwritable report fails too. So do a review
   the main session runs itself, a follow-up answered only after the background review,
   and a review whose outcomes are never recorded. Outcomes recorded before the review
   ends, a real finding recorded as no change needed, and a finding without a category
