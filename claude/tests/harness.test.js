@@ -38,6 +38,19 @@ beforeEach(() => {
   }
   mkdirSync(join(home, ".claude", "skills"));
   symlinkSync(join(home, "releases", "typescript"), join(home, ".claude", "skills", "typescript"));
+  // codex-skills releases as installed: skill links reach `current`, find-skills by way of
+  // ~/.agents/skills. release-b, the next release, changes rust.
+  const codex = join(home, ".local", "share", "codex-skills");
+  for (const [release, rust] of [["release-a", "# Rust\n"], ["release-b", "# Rust, revised\n"]])
+    for (const [skill, content] of [["rust", rust], ["find-skills", "# Find skills\n"]]) {
+      mkdirSync(join(codex, "releases", release, "skills", skill), { recursive: true });
+      writeFileSync(join(codex, "releases", release, "skills", skill, "SKILL.md"), content);
+    }
+  symlinkSync(join(codex, "releases", "release-a"), join(codex, "current"));
+  mkdirSync(join(home, ".agents", "skills"), { recursive: true });
+  symlinkSync(join(codex, "current", "skills", "find-skills"), join(home, ".agents", "skills", "find-skills"));
+  symlinkSync(join(codex, "current", "skills", "rust"), join(home, ".claude", "skills", "rust"));
+  symlinkSync(join(home, ".agents", "skills", "find-skills"), join(home, ".claude", "skills", "find-skills"));
   mkdirSync(join(root, "bin"));
   writeFileSync(join(root, "bin", "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(TESTS, "lib", "fake-claude.js")}" "$@"\n`);
   chmodSync(join(root, "bin", "claude"), 0o755);
@@ -143,9 +156,19 @@ describe("configuration must not change during a run", () => {
     assertCleanedUp();
   }, 30_000);
 
+  test("a codex-skills release that moves current passes, through ~/.agents/skills too", async () => {
+    const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-release-switch");
+    expect(run.code, output(run)).toBe(0);
+    expect(realpathSync(join(home, ".claude", "skills", "find-skills"))).toContain("/release-b/");
+    expect(readFileSync(join(home, ".claude", "skills", "rust", "SKILL.md"), "utf8")).toBe("# Rust, revised\n");
+    assertCleanedUp();
+  }, 30_000);
+
   for (const [mode, message] of [
     ["chinese-drift", "CLAUDE.md"],
     ["chinese-retarget", "skills/typescript"],
+    ["chinese-agents-retarget", "skills/find-skills: Type, mode or link changed: ."],
+    ["chinese-release-old-edit", "skills/rust: Unauthorized content change: SKILL.md"],
     ["chinese-skill-edit", "skills/typescript: Unauthorized content change: SKILL.md"],
     ["chinese-feedback-edit", "skill-feedback: Unauthorized content change: rust/notes/old.md"],
     ["chinese-feedback-remove", "skill-feedback: Inventory changed: added [], removed [\"rust/verifications/old.json\"]"],
