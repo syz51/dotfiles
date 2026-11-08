@@ -690,3 +690,15 @@ describe("computer-use plugin", () => {
     expect(read(".github/workflows/checks.yml")).toMatch(/^\s+bun test .* claude\/marketplace$/m);
   });
 });
+
+// Since 2026-11-08 the user allows only Opus or Haiku models. Pricing keeps the other rows
+// to price past sessions; tests may name any model as data.
+describe("models", () => {
+  test("no default, agent or skill template selects Sonnet or Fable", () => {
+    const glob = new Bun.Glob("claude/{factory,agents,skills,bin,hooks}/**/*.{js,md,json,toml}");
+    const offenders = [...glob.scanSync({ cwd: REPO })].filter((path) =>
+      !/\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/.test(path)
+      && /\b(?:claude-)?(?:sonnet|fable)\b/i.test(read(path)));
+    expect(offenders).toEqual([]);
+  });
+});

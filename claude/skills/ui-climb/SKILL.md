@@ -49,7 +49,7 @@ relative to its folder. Start from:
     { "id": "peer", "title": "A product people admire for this kind of screen", "url": "https://example.com/public-page", "views": ["desktop-light"], "steps": [{ "wait": 1500 }] }
   ],
   "judges": [
-    { "model": "claude-sonnet-5-5", "effort": "medium", "samples": 2 },
+    { "model": "claude-opus-5-5", "effort": "medium", "samples": 2 },
     { "model": "claude-opus-5-5", "effort": "high", "samples": 2 }
   ],
   "pass": { "min": 8, "gain": 0.5 },

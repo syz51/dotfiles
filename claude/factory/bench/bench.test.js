@@ -466,8 +466,10 @@ describe("bench run command", () => {
     writeCase(caseValue({ budgetUsd: 0.75 }));
     const { code, out } = await capture(() => main(["bench", "run", "--cases", casesDir, "--dry-run", "--max-total-usd", "2"]));
     expect(code).toBe(0);
+    // The default models are Haiku and Opus only.
     expect(out).toContain("| sample | main | claude-opus-5-5 | high | 1 | $0.75 |");
-    expect(out).toContain("6 runs, worst case $4.50 (limit $2.00; at least the first 2 runs fit)");
+    expect(out).not.toContain("sonnet");
+    expect(out).toContain("4 runs, worst case $3.00 (limit $2.00; at least the first 2 runs fit)");
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
   });
 
