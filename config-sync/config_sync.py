@@ -6,7 +6,9 @@ the checkout when it is on main with no tracked changes and no commits of its ow
 It never stashes, resets or merges: a checkout that is off main, has tracked changes,
 has diverged or fails to fast-forward is left as it is and reported. Untracked files
 are left alone; one that a fast-forward would overwrite makes the pull fail, which is
-reported too.
+reported too. One change it undoes: a tracked `.json` file that is only reformatted (it
+parses to the same JSON as HEAD, as when a Claude Code plugin install rewrites
+claude/settings.json) gets its committed text back, so it does not block the pull.
 
 After every check it also verifies the links that install the instructions from this
 checkout (`~/.claude` and Codex's AGENTS.md); a copy instead of a link stops pulls from
@@ -18,8 +20,8 @@ plain `board feedback` where the installed CLI lacks those options, or a macOS
 notification when the board cannot be reached. A fetch that keeps failing (the Mac
 offline, say) is reported only after 24 hours.
 
-State lives in `~/.local/state/config-sync/state.json` and each check that pulled or
-reported adds a line to `events.jsonl` there. `status` prints the state, `install`
+State lives in `~/.local/state/config-sync/state.json` and each check that pulled,
+restored or reported adds a line to `events.jsonl` there. `status` prints the state, `install`
 writes and loads the LaunchAgent.
 """
 
@@ -113,6 +115,20 @@ class Outcome:
     pulled: Optional[tuple] = None  # (old head, new head)
     fetch_failed: bool = False
     head: Optional[str] = None
+    restored: list = field(default_factory=list)  # tracked paths put back to their committed text
+
+
+def same_json(path: Path, committed: subprocess.CompletedProcess) -> bool:
+    """Whether the file parses to the same JSON as the committed text (`git show HEAD:path`)."""
+    if committed.returncode != 0:
+        return False
+    try:
+        ours = json.loads(path.read_text())
+        theirs = json.loads(committed.stdout)
+    except (OSError, ValueError):
+        return False
+    # Canonical text, not ==: in Python 1 == 1.0 == true, which JSON readers tell apart.
+    return json.dumps(ours, sort_keys=True) == json.dumps(theirs, sort_keys=True)
 
 
 def sync(repo: Path, run: Runner) -> Outcome:
@@ -124,7 +140,18 @@ def sync(repo: Path, run: Runner) -> Outcome:
     branch = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     head = git("rev-parse", "HEAD").stdout.strip()
     target = git("rev-parse", f"{REMOTE}/{BRANCH}").stdout.strip()
-    changed = [line[3:] for line in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if line.strip()]
+    changed = [line for line in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if line.strip()]
+    restored = []
+    if branch == BRANCH:
+        # Claude Code rewrites claude/settings.json in its own key order and layout on every
+        # plugin install or update. Put the committed text back when the parsed JSON is
+        # unchanged, so a reformat does not stop pulls; any real change stays and is reported.
+        for line in changed:
+            path = line[3:]
+            if line[:2] == " M" and path.endswith(".json") and same_json(repo / path, git("show", f"HEAD:{path}")):
+                if git("checkout", "--quiet", "--", path).returncode == 0:
+                    restored.append(path)
+    changed = [line[3:] for line in changed if line[3:] not in restored]
     if branch != BRANCH:
         problems.append(("off-main", f"the checkout is on {branch or 'a detached HEAD'}, not {BRANCH}"))
     if changed:
@@ -149,7 +176,7 @@ def sync(repo: Path, run: Runner) -> Outcome:
         if link.resolve() != target_path.resolve():
             kind = "a copy" if link.exists() else "missing"
             problems.append(("link", f"{short(link)} is {kind}, not a link to {short(target_path)}"))
-    return Outcome(problems, pulled, fetch_failed, head)
+    return Outcome(problems, pulled, fetch_failed, head, restored)
 
 
 def report_text(host: str, repo: Path, problems: list) -> str:
@@ -188,6 +215,8 @@ def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: d
     event = {"at": now.isoformat(), "head": outcome.head}
     if outcome.pulled:
         event["pulled"] = list(outcome.pulled)
+    if outcome.restored:
+        event["restored"] = outcome.restored
     signature = sorted({f"{kind}: {detail}" for kind, detail in problems})
     if signature and signature != state.reported:
         kinds = "+".join(sorted({kind for kind, _ in problems}))
@@ -197,10 +226,12 @@ def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: d
     state.last_check = now.isoformat()
     state.head = outcome.head
     save_state(state_path, state)
-    if outcome.pulled or "reported" in event:
+    if outcome.pulled or outcome.restored or "reported" in event:
         append_event(state_dir, event)
     for kind, detail in problems:
         print(f"{kind}: {detail}", file=sys.stderr)
+    for path in outcome.restored:
+        print(f"restored the committed text of {path} (same JSON)")
     if outcome.pulled:
         print(f"pulled {outcome.pulled[0][:12]}..{outcome.pulled[1][:12]}")
     return 0

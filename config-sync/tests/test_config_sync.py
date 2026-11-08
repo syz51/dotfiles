@@ -193,6 +193,84 @@ class BlockedTests(Sandbox):
         self.assertIn("AGENTS.md is a copy, not a link to ", text)
 
 
+class ReformatTests(Sandbox):
+    """A Claude Code plugin install rewrites claude/settings.json in its own layout (dotfiles-281)."""
+
+    COMMITTED = '{\n  "a": 1,\n  "market": {"source": {"sparsePaths": [".x", "y"]}, "autoUpdate": true},\n  "enabledPlugins": {"p@dotfiles": true}\n}\n'
+
+    def setUp(self):
+        super().setUp()
+        (self.upstream / "claude" / "settings.json").write_text(self.COMMITTED)
+        git(self.upstream, "add", ".")
+        git(self.upstream, "commit", "-m", "settings")
+        git(self.upstream, "push", "origin", "HEAD:main")
+        git(self.repo, "pull", "-q", "--ff-only")
+        self.settings = self.repo / "claude" / "settings.json"
+
+    def rewrite(self, **changes):
+        # As the plugin installer writes it: keys moved, arrays expanded, two-space indent.
+        data = json.loads(self.COMMITTED)
+        data = {"enabledPlugins": data["enabledPlugins"], "market": data["market"], "a": data["a"]}
+        data.update(changes)
+        self.settings.write_text(json.dumps(data, indent=2))
+
+    def test_a_reformatted_settings_file_gets_its_committed_text_and_pulls(self):
+        self.rewrite()
+        target = self.advance()
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.settings.read_text(), self.COMMITTED)
+        self.assertEqual(self.head(), target)
+        self.assertEqual(runner.reports(), [])
+        event = json.loads((self.state / "events.jsonl").read_text())
+        self.assertEqual(event["restored"], ["claude/settings.json"])
+
+    def test_a_reformat_is_restored_with_nothing_to_pull(self):
+        self.rewrite()
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.settings.read_text(), self.COMMITTED)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+        self.assertEqual(runner.reports(), [])
+
+    def assert_kept_and_reported(self, text):
+        before = self.head()
+        self.advance()
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.settings.read_text(), text)
+        self.assertEqual(self.head(), before)
+        self.assertIn("claude/settings.json", runner.reports()[0][11])
+        self.assertFalse(any("restored" in json.loads(line) for line in (self.state / "events.jsonl").read_text().splitlines()))
+
+    def test_a_changed_value_is_kept_and_reported(self):
+        # An install that enables a plugin main does not enable is a real change.
+        self.rewrite(enabledPlugins={"p@dotfiles": True, "other@dotfiles": True})
+        self.assert_kept_and_reported(self.settings.read_text())
+
+    def test_a_value_of_another_json_type_counts_as_a_change(self):
+        self.rewrite(a=True)
+        self.assert_kept_and_reported(self.settings.read_text())
+
+    def test_unparsable_json_is_kept_and_reported(self):
+        self.settings.write_text(self.COMMITTED + "}")
+        self.assert_kept_and_reported(self.COMMITTED + "}")
+
+    def test_a_staged_reformat_is_kept_and_reported(self):
+        self.rewrite()
+        git(self.repo, "add", "claude/settings.json")
+        self.assert_kept_and_reported(self.settings.read_text())
+
+    def test_a_reformat_off_main_is_left_alone(self):
+        git(self.repo, "checkout", "-q", "-b", "work")
+        self.rewrite()
+        text = self.settings.read_text()
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.settings.read_text(), text)
+        self.assertIn("- off-main:", runner.reports()[0][11])
+
+
 class ReportTests(Sandbox):
     def make_dirty(self):
         (self.repo / "claude" / "CLAUDE.md").write_text("edit\n")
