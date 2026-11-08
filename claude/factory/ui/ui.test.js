@@ -256,6 +256,13 @@ describe("council", () => {
     expect(systemPrompt(config, ["Avoid pill-shaped tabs."])).toContain("- No gradients on buttons.\n- Avoid pill-shaped tabs.");
   });
 
+  test("the judge prompt points to the anchors without naming a typical range or capping scores", () => {
+    const prompt = systemPrompt(config, []);
+    expect(prompt).not.toMatch(/reserve 9|6 to 8|most real products/i);
+    expect(prompt).toContain("- Use the whole scale and score each category against the anchors above.");
+    for (const [score, meaning] of RUBRIC.scale) expect(prompt).toContain(`- ${score}: ${meaning}`);
+  });
+
   test("reads the owner's declined patterns from the avoid list", () => {
     const file = join(scratch, "avoid.md");
     writeFileSync(file, "# Avoid\n\nIntro.\n\n## Patterns\n\n- Purple gradients.\n* Glass cards.\n\n## Later\n- not this\n");
