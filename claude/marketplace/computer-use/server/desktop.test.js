@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chooseApp, createDesktop, fitScreenshot, handle, modifierList, parseKey, SERVER_NAME, sensitiveReason, stopPath, toGlobal, TOOLS } from "./desktop.js";
+import {
+  approvalLogPath, BUNDLED_POLICY, chooseApp, createDesktop, dialogReason, fitScreenshot, handle, INSTRUCTIONS, modifierList, parseKey, policyPaths, readPolicy,
+  panelExit, SERVER_NAME, sensitiveReason, stateDirFor, stopPath, toGlobal, ToolError, TOOLS, userStopPath,
+} from "./desktop.js";
 
 // A Retina laptop as the main display and a 1080p display to its left, one point above.
 const RETINA = { index: 0, id: 1, main: true, x: 0, y: 0, width: 1470, height: 956, pixelWidth: 2940, pixelHeight: 1912, scale: 2 };
@@ -17,6 +20,8 @@ const DOCK = { name: "程序坞", bundleId: "com.apple.dock", pid: 30 };
 const SCREENCAPTURE = { name: "screencaptureui", bundleId: "com.apple.screencaptureui", pid: 40 };
 const FINDER = { name: "Finder", bundleId: "com.apple.finder", pid: 20 };
 const DOCK_LEVEL = 20;
+const TERMINAL = { name: "Terminal", bundleId: "com.apple.Terminal" };
+const T3 = { name: "T3 Code (Alpha)", bundleId: "com.t3tools.t3code" };
 
 // A window of `app` at a point; by default an ordinary window at layer 0.
 const win = (app, { layer = 0, alpha = 1, bounds = { x: 0, y: 30, width: 1470, height: 875 }, owner = app.name, name = "" } = {}) =>
@@ -191,6 +196,8 @@ describe("the app under the pointer", () => {
   });
 });
 
+const STOPPED = "The user stopped computer use. Ask the user before calling request_access again; it will show the user a dialog.";
+
 describe("session", () => {
   let stateDir;
   beforeEach(() => {
@@ -202,8 +209,9 @@ describe("session", () => {
   // helper calls that change something.
   // `under` gives an app, which becomes a one-window scene, or a whole scene. `focus` is the
   // helper's focused reply; `front` is the focused app when `focus` is not given.
-  function fakeMac({ under = () => SAFARI, front = SAFARI, focus, frontmost = front, allow = true, pid = 100, holds = () => true } = {}) {
-    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK, Helium: HELIUM };
+  // `approval` is the policy's mode, or a function returning it (read at each request_access).
+  function fakeMac({ under = () => SAFARI, front = SAFARI, focus, frontmost = front, allow = true, approval = "dialog", pid = 100, holds = () => true } = {}) {
+    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK, Helium: HELIUM, Terminal: TERMINAL, T3: T3 };
     const toScene = (value) => (value === null ? { ...scene([]), finder: null } : "windows" in value ? value : scene([win(value)]));
     const mac = { actions: [], dialogs: [], overlays: [] };
     mac.desktop = createDesktop({
@@ -233,6 +241,8 @@ describe("session", () => {
       },
       open: (app) => mac.actions.push(["open", app.bundleId]),
       readImage: () => "aW1n",
+      policy: () => (typeof approval === "function" ? approval() : { approval }),
+      now: () => new Date("2026-11-08T12:00:00Z"),
     });
     mac.call = async (name, args) => {
       const result = await mac.desktop.call(name, args);
@@ -263,7 +273,7 @@ describe("session", () => {
 
   test("a denied dialog approves nothing and frees the lock", async () => {
     const mac = fakeMac({ allow: false });
-    expect((await mac.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("The user denied: Safari.");
+    expect((await mac.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Not approved: Safari. A dialog was shown, because the approval policy asks for a dialog; the user denied it or did not answer within 2 minutes.");
     expect(mac.overlays).toHaveLength(0);
     expect(existsSync(join(stateDir, "session.json"))).toBe(false);
     expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
@@ -324,7 +334,11 @@ describe("session", () => {
     await mac.call("request_access", { apps: ["Notes"], reason: "r" });
     expect((await mac.call("key", { combo: "cmd+t" })).text).toBe("Pressed cmd+t in Notes.");
     expect(mac.actions).toEqual([["key", "17", "cmd"]]);
-    expect(mac.overlays).toHaveLength(1);
+    // The panel names the approved apps, so a longer list replaces it.
+    expect(mac.overlays.map((overlay) => [overlay.label, overlay.stopped])).toEqual([
+      ["Claude controls: Safari", true],
+      ["Claude controls: Safari, Notes", false],
+    ]);
   });
 
   test("with only Helium approved, a click passes the Dock's layer but not its tiles or a screenshot overlay", async () => {
@@ -396,9 +410,9 @@ describe("session", () => {
     const mac = fakeMac();
     await mac.call("request_access", { apps: ["Safari"], reason: "r" });
     await mac.call("screenshot", {});
-    mac.overlays[0].onExit(0);
+    mac.overlays[0].onExit();
     expect(existsSync(join(stateDir, "session.json"))).toBe(false);
-    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("The user stopped computer use. Ask the user before calling request_access again.");
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe(STOPPED);
     expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Call request_access first.");
     expect(mac.actions).toEqual([]);
     // Asking again shows a new dialog; nothing stays approved from before.
@@ -426,7 +440,7 @@ describe("session", () => {
     // The panel writes the stop file before its exit event reaches the server.
     expect(mac.overlays[0].stopFile).toBe(stopPath(stateDir, 100));
     writeFileSync(mac.overlays[0].stopFile, "");
-    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("The user stopped computer use. Ask the user before calling request_access again.");
+    expect((await mac.call("click", { x: 10, y: 10 })).text).toBe(STOPPED);
     expect(mac.overlays[0].stopped).toBe(true);
     expect(existsSync(join(stateDir, "session.json"))).toBe(false);
     expect(mac.actions).toEqual([]);
@@ -441,7 +455,7 @@ describe("session", () => {
     const mac = fakeMac({
       allow: (m) => {
         // The user presses Stop on the open panel, then answers Allow in the second dialog.
-        if (m.dialogs.length === 2) m.overlays[0].onExit(0);
+        if (m.dialogs.length === 2) m.overlays[0].onExit();
         return true;
       },
     });
@@ -495,6 +509,382 @@ describe("session", () => {
     expect((await second.call("request_access", { apps: ["Safari"], reason: "r" })).text).toContain("Approved: Safari.");
     expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 200 });
   });
+
+  describe("with the auto approval policy", () => {
+    const AUTO = "Approved: Helium. No dialog was shown: the approval policy approves apps at once.";
+
+    test("request_access approves without a dialog, still refuses a bank app, and starts the stop panel", async () => {
+      const mac = fakeMac({ approval: "auto" });
+      const result = await mac.call("request_access", { apps: ["Helium", "Chase", "Nope"], reason: "r" });
+      expect(result.text).toBe(`Not found: Nope.\nRefused: Chase: it is a finance app.\n${AUTO}\nApproved apps: Helium.`);
+      expect(mac.dialogs).toEqual([]);
+      expect(mac.overlays).toHaveLength(1);
+      expect(JSON.parse(readFileSync(join(stateDir, "session.json"), "utf8"))).toEqual({ pid: 100 });
+      // Only refused apps asked: nothing is approved and the lock stays free.
+      const other = fakeMac({ approval: "auto", pid: 200, holds: () => false });
+      await mac.call("release", {});
+      expect((await other.call("request_access", { apps: ["Chase"], reason: "r" })).text).toBe("Refused: Chase: it is a finance app.\nApproved apps: none.");
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    });
+
+    test("only the asked apps are approved; others and sensitive apps are still refused", async () => {
+      let under = scene([dockLayer(), win(HELIUM)], HELIUM.pid);
+      const mac = fakeMac({ approval: "auto", under: () => under, front: HELIUM });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      await mac.call("screenshot", {});
+      expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Clicked in Helium.");
+      expect((await mac.call("type", { text: "hi" })).text).toBe("Typed into Helium.");
+      under = scene([dockLayer(), win(HELIUM)], DOCK.pid);
+      expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("程序坞 (under the pointer) is not approved. Call request_access with it first.");
+      under = BANK;
+      expect((await mac.call("click", { x: 10, y: 10 })).text).toBe("Chase is refused: it is a finance app.");
+      expect((await mac.call("open_app", { app: "Notes" })).error).toBe(true);
+      expect(mac.actions.map((action) => action[0])).toEqual(["click", "type"]);
+      expect(mac.dialogs).toEqual([]);
+    });
+
+    test("after the user presses Stop, request_access asks in a dialog until the user allows", async () => {
+      let allow = false;
+      const mac = fakeMac({ approval: "auto", allow: () => allow });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      mac.overlays[0].onExit();
+      expect((await mac.call("screenshot", {})).text).toBe(STOPPED);
+      // The model's release does not clear the user's Stop.
+      await mac.call("release", {});
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("Not approved: Helium. A dialog was shown, because the user pressed Stop and has not allowed apps in a dialog since;");
+      expect(mac.dialogs).toHaveLength(1);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      allow = true;
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("Approved: Helium. A dialog was shown, because the user pressed Stop and has not allowed apps in a dialog since, and the user allowed them.");
+      expect(mac.dialogs).toHaveLength(2);
+      // Once the user allowed in a dialog, the policy applies again.
+      expect((await mac.call("request_access", { apps: ["Notes"], reason: "r" })).text).toContain("Approved: Notes. No dialog was shown");
+      expect(mac.dialogs).toHaveLength(2);
+    });
+
+    test("a Stop seen only through the stop file also brings the dialog back", async () => {
+      const mac = fakeMac({ approval: "auto", allow: false });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      writeFileSync(mac.overlays[0].stopFile, "");
+      expect((await mac.call("request_access", { apps: ["Notes"], reason: "r" })).text).toBe([
+        "The user pressed Stop, which ended the last session.",
+        "Not approved: Notes. A dialog was shown, because the user pressed Stop and has not allowed apps in a dialog since; the user denied it or did not answer within 2 minutes.",
+        "Approved apps: none.",
+      ].join("\n"));
+      expect(mac.dialogs).toHaveLength(1);
+      expect(mac.overlays[0].stopped).toBe(true);
+      // request_access reported the Stop, so the next action does not report it again.
+      expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+    });
+
+    test("a second session is still refused while the first holds the lock", async () => {
+      const first = fakeMac({ approval: "auto", pid: 100 });
+      const second = fakeMac({ approval: "auto", pid: 200 });
+      await first.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect((await second.call("request_access", { apps: ["Helium"], reason: "r" })).text).toBe("Another session (pid 100) is controlling this computer. Try again after it releases.");
+      expect(second.overlays).toHaveLength(0);
+    });
+
+    test("the policy is read at each request_access, so switching to dialog takes effect at once", async () => {
+      let approval = "auto";
+      const mac = fakeMac({ approval: () => ({ approval }) });
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain(AUTO);
+      approval = "dialog";
+      expect((await mac.call("request_access", { apps: ["Notes"], reason: "Read a note." })).text).toContain("Approved: Notes. A dialog was shown, because the approval policy asks for a dialog, and the user allowed them.");
+      expect(mac.dialogs).toEqual([expect.stringContaining("Claude wants to control: Notes.\n\nReason: Read a note.")]);
+    });
+
+    test("a broken policy is a tool error that approves nothing and holds no lock", async () => {
+      const mac = fakeMac({ approval: () => { throw new ToolError("The approval policy p must set \"approval\" to \"auto\" or \"dialog\"; nothing was approved."); } });
+      const result = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(result.error).toBe(true);
+      expect(result.text).toContain("must set \"approval\"");
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      expect(mac.overlays).toHaveLength(0);
+    });
+
+    test("apps that reach past Claude Code's permission rules always need the dialog", async () => {
+      let allow = false;
+      const mac = fakeMac({ approval: "auto", allow: () => allow });
+      expect((await mac.call("request_access", { apps: ["Terminal"], reason: "Run a build." })).text).toBe(
+        "Not approved: Terminal. A dialog was shown, because Terminal always needs the user: it runs shell commands; "
+        + "the user denied it or did not answer within 2 minutes.\nApproved apps: none.");
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      expect(mac.overlays).toHaveLength(0);
+      // With an ordinary app in the same request, the whole request goes to the dialog.
+      allow = true;
+      expect((await mac.call("request_access", { apps: ["Helium", "T3"], reason: "r" })).text).toContain(
+        "Approved: Helium, T3 Code (Alpha). A dialog was shown, because T3 Code (Alpha) always needs the user: it runs agents and their permission prompts, and the user allowed them.");
+      expect(mac.dialogs).toHaveLength(2);
+      // An app approved in the dialog stays approved for the session.
+      expect((await mac.call("request_access", { apps: ["T3", "Notes"], reason: "r" })).text).toContain("Approved: Notes. No dialog was shown");
+      expect(mac.dialogs).toHaveLength(2);
+    });
+
+    test("a Stop makes every session and a restarted server ask until the user allows in a dialog", async () => {
+      const first = fakeMac({ approval: "auto", pid: 100, holds: () => false });
+      await first.call("request_access", { apps: ["Helium"], reason: "r" });
+      first.overlays[0].onExit();
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+      // Another session, and a server restarted with the same pid, both ask.
+      const other = fakeMac({ approval: "auto", pid: 200, allow: false });
+      expect((await other.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("A dialog was shown, because the user pressed Stop");
+      const restarted = fakeMac({ approval: "auto", pid: 100, allow: false });
+      expect((await restarted.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("A dialog was shown, because the user pressed Stop");
+      // Neither a denial nor a release clears it.
+      await restarted.call("release", {});
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+      // An Allow in any session's dialog does, for all of them.
+      const allowing = fakeMac({ approval: "auto", pid: 300 });
+      expect((await allowing.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("and the user allowed them.");
+      expect(existsSync(userStopPath(stateDir))).toBe(false);
+      await allowing.call("release", {});
+      expect((await other.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("No dialog was shown");
+    });
+
+    test("a release notices a Stop whose panel exit event has not run yet", async () => {
+      const mac = fakeMac({ approval: "auto" });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      writeFileSync(mac.overlays[0].stopFile, "");
+      expect((await mac.call("release", {})).text).toBe(`Released: no apps are approved and the lock is free. ${STOPPED}`);
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+      expect(existsSync(mac.overlays[0].stopFile)).toBe(false);
+      // The server's exit handler calls release too.
+      const other = fakeMac({ approval: "auto", pid: 200 });
+      rmSync(userStopPath(stateDir));
+      await other.call("request_access", { apps: ["Helium"], reason: "r" });
+      writeFileSync(other.overlays[0].stopFile, "");
+      other.desktop.release();
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+    });
+
+    test("a panel that crashes or fails to start ends the session but is not the user's Stop", async () => {
+      const mac = fakeMac({ approval: "auto" });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      mac.overlays[0].onExit("crashed with SIGSEGV");
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      expect((await mac.call("screenshot", {})).text).toBe("The stop panel failed (crashed with SIGSEGV), so the session ended. Call request_access again.");
+      expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+      expect(existsSync(userStopPath(stateDir))).toBe(false);
+      // The next request needs no dialog; a failure seen first by request_access is reported there.
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toContain("No dialog was shown");
+      mac.overlays[1].onExit("could not start: spawn ENOENT");
+      const again = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(again.text).toStartWith("The stop panel failed (could not start: spawn ENOENT), so the session ended. Call request_access again.\nApproved: Helium. No dialog");
+      expect(mac.dialogs).toEqual([]);
+    });
+
+    test("each approval is logged with its time, apps, reason and mode, and the panel names the apps", async () => {
+      let approval = "auto";
+      const mac = fakeMac({ approval: () => ({ approval }) });
+      await mac.call("request_access", { apps: ["Helium"], reason: "Read the docs." });
+      approval = "dialog";
+      await mac.call("request_access", { apps: ["Notes", "Safari"], reason: "Copy a note." });
+      const log = readFileSync(approvalLogPath(stateDir), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+      expect(log).toEqual([
+        { time: "2026-11-08T12:00:00.000Z", mode: "auto", apps: [{ name: "Helium", bundleId: "net.imput.helium" }], reason: "Read the docs." },
+        { time: "2026-11-08T12:00:00.000Z", mode: "dialog", apps: [{ name: "Notes", bundleId: "com.apple.Notes" }, { name: "Safari", bundleId: "com.apple.Safari" }], reason: "Copy a note." },
+      ]);
+      expect(mac.overlays.map((overlay) => overlay.label)).toEqual(["Claude controls: Helium", "Claude controls: Helium, Notes, Safari"]);
+      // A denial is not an approval and logs nothing.
+      const denied = fakeMac({ approval: "dialog", allow: false, pid: 200, holds: () => false });
+      await mac.call("release", {});
+      await denied.call("request_access", { apps: ["Notes"], reason: "r" });
+      expect(readFileSync(approvalLogPath(stateDir), "utf8").trim().split("\n")).toHaveLength(2);
+    });
+
+    test("the panel gets every approved name; the helper cuts a long label short", async () => {
+      const mac = fakeMac({ approval: "auto" });
+      await mac.call("request_access", { apps: ["Helium", "Notes", "Safari", "Terminal", "T3"], reason: "r" });
+      expect(mac.overlays.at(-1).label).toBe("Claude controls: Helium, Notes, Safari, Terminal, T3 Code (Alpha)");
+    });
+
+    test("a Stop that a killed server with this pid never saw counts, and does not end the next session", async () => {
+      writeFileSync(stopPath(stateDir, 100), "");
+      const mac = fakeMac({ approval: "auto", allow: false });
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toStartWith(
+        "The user pressed Stop, which ended the last session.\nNot approved: Helium. A dialog was shown, because the user pressed Stop");
+      expect(existsSync(stopPath(stateDir, 100))).toBe(false);
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+    });
+
+    test("a request that fails still reports how the last session ended", async () => {
+      let approval = "auto";
+      const mac = fakeMac({ approval: () => {
+        if (approval === "broken") throw new ToolError("The approval policy p is not valid JSON; nothing was approved.");
+        return { approval };
+      } });
+      await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      mac.overlays[0].onExit();
+      approval = "broken";
+      const failed = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(failed.error).toBe(true);
+      expect(failed.text).toBe("The user pressed Stop, which ended the last session.\nThe approval policy p is not valid JSON; nothing was approved.");
+      // Reported once, in that error.
+      expect((await mac.call("screenshot", {})).text).toBe("Call request_access first.");
+    });
+
+    test("an approval that cannot be logged approves nothing, frees the lock and keeps the user's Stop", async () => {
+      mkdirSync(approvalLogPath(stateDir));
+      const mac = fakeMac({ approval: "auto" });
+      const result = await mac.call("request_access", { apps: ["Helium"], reason: "r" });
+      expect(result.error).toBe(true);
+      expect(result.text).toBe(`Could not write the approval log ${approvalLogPath(stateDir)} (EISDIR); nothing was approved.`);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+      expect(mac.overlays).toHaveLength(0);
+      writeFileSync(userStopPath(stateDir), "");
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).error).toBe(true);
+      expect(mac.dialogs).toHaveLength(1);
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    });
+
+    test("an Allow keeps the user's Stop when another session took the lock during the dialog", async () => {
+      writeFileSync(userStopPath(stateDir), "");
+      const mac = fakeMac({
+        approval: "auto",
+        allow: () => {
+          writeFileSync(join(stateDir, "session.json"), JSON.stringify({ pid: 300 }));
+          return true;
+        },
+      });
+      expect((await mac.call("request_access", { apps: ["Helium"], reason: "r" })).text).toBe("Another session (pid 300) is controlling this computer. Try again after it releases.");
+      expect(existsSync(userStopPath(stateDir))).toBe(true);
+    });
+  });
+});
+
+describe("apps that always need the dialog", () => {
+  test.each([
+    [{ name: "Terminal", bundleId: "com.apple.Terminal" }],
+    [{ name: "iTerm2", bundleId: "com.googlecode.iterm2" }],
+    [{ name: "Ghostty", bundleId: "com.mitchellh.ghostty" }],
+    [{ name: "Warp", bundleId: "dev.warp.Warp-Stable" }],
+    [{ name: "Alacritty", bundleId: "org.alacritty" }],
+    [{ name: "kitty", bundleId: "net.kovidgoyal.kitty" }],
+    [{ name: "WezTerm", bundleId: "com.github.wez.wezterm" }],
+    [{ name: "T3 Code (Alpha)", bundleId: "com.t3tools.t3code" }],
+    [{ name: "Claude", bundleId: "com.anthropic.claudefordesktop" }],
+    [{ name: "System Settings", bundleId: "com.apple.systempreferences" }],
+    [{ name: "Script Editor", bundleId: "com.apple.ScriptEditor2" }],
+    [{ name: "Shortcuts", bundleId: "com.apple.shortcuts" }],
+    [{ name: "Automator", bundleId: "com.apple.Automator" }],
+    [{ name: "Activity Monitor", bundleId: "com.apple.ActivityMonitor" }],
+    [{ name: "ChatGPT", bundleId: "com.openai.codex" }],
+    [{ name: "Visual Studio Code", bundleId: "com.microsoft.VSCode" }],
+    [{ name: "Cursor", bundleId: "com.todesktop.230313mzl4w4u92" }],
+    [{ name: "Zed", bundleId: "dev.zed.Zed" }],
+    [{ name: "Xcode", bundleId: "com.apple.dt.Xcode" }],
+    [{ name: "Raycast", bundleId: "com.raycast.macos" }],
+    [{ name: "Alfred 5", bundleId: "com.runningwithcrayons.Alfred" }],
+    [{ name: "控制中心", bundleId: "com.apple.controlcenter" }],
+    [{ name: "CoreServicesUIAgent", bundleId: "com.apple.coreservices.uiagent" }],
+    [{ name: "UserNotificationCenter", bundleId: "com.apple.UserNotificationCenter" }],
+    [{ name: "loginwindow", bundleId: "com.apple.loginwindow" }],
+    [{ name: "程序坞", bundleId: "com.apple.dock" }],
+    [{ name: "Installer", bundleId: "com.apple.installer" }],
+    // By bundle id alone, whatever the name, and by name alone.
+    [{ name: "终端", bundleId: "com.apple.terminal" }],
+    [{ name: "Claude Code", bundleId: "" }],
+    [{ name: "ghostty", bundleId: "com.example.renamed" }],
+  ])("%o", (app) => {
+    expect(dialogReason(app)).toBeString();
+  });
+
+  test.each([[SAFARI], [NOTES], [HELIUM], [{ name: "Terminal Notes", bundleId: "com.example.terminalnotes" }], [{ name: "Claudette", bundleId: "com.anthropicish.app" }]])(
+    "%o does not", (app) => {
+      expect(dialogReason(app)).toBeUndefined();
+    });
+
+  // Keychain Access is a password app: refused outright, so it has no dialog entry.
+  test("Keychain Access is refused, not offered in a dialog", () => {
+    const keychain = { name: "Keychain Access", bundleId: "com.apple.keychainaccess" };
+    expect(sensitiveReason(keychain)).toContain("keychain");
+    expect(dialogReason(keychain)).toBeUndefined();
+  });
+});
+
+describe("the stop panel's exit", () => {
+  test.each([
+    [0, null, undefined],
+    [null, "SIGKILL", undefined],
+    [null, "SIGTERM", undefined],
+    [null, "SIGINT", undefined],
+    [null, "SIGHUP", undefined],
+    [null, "SIGQUIT", undefined],
+    [1, null, "exit 1"],
+    [3, null, "exit 3"],
+    [null, "SIGSEGV", "crashed with SIGSEGV"],
+    [null, "SIGABRT", "crashed with SIGABRT"],
+  ])("exit %p, signal %p: %p", (code, signal, failure) => {
+    expect(panelExit(code, signal)).toBe(failure);
+  });
+});
+
+describe("approval policy file", () => {
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "desktop-policy-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const file = (name, text) => {
+    const path = join(dir, name);
+    writeFileSync(path, text);
+    return path;
+  };
+
+  test("the plugin ships the auto policy", () => {
+    expect(readPolicy([BUNDLED_POLICY])).toEqual({ approval: "auto" });
+  });
+
+  test("the first file that exists wins", () => {
+    const user = file("user.json", JSON.stringify({ approval: "dialog" }));
+    const bundled = file("bundled.json", JSON.stringify({ approval: "auto" }));
+    expect(readPolicy([user, bundled])).toEqual({ approval: "dialog" });
+    expect(readPolicy([join(dir, "missing.json"), bundled])).toEqual({ approval: "auto" });
+  });
+
+  test("with no file the user is asked in a dialog", () => {
+    expect(readPolicy([join(dir, "missing.json")])).toEqual({ approval: "dialog" });
+    expect(readPolicy([])).toEqual({ approval: "dialog" });
+  });
+
+  test.each([
+    ["not JSON", "{approval: auto", "is not valid JSON"],
+    ["an unknown mode", JSON.stringify({ approval: "always" }), 'must set "approval" to "auto" or "dialog"'],
+    ["no mode", "{}", 'must set "approval"'],
+    ["null", "null", 'must set "approval"'],
+  ])("a policy with %s is an error, not a fallback", (_, text, message) => {
+    const broken = file("broken.json", text);
+    const bundled = file("bundled.json", JSON.stringify({ approval: "auto" }));
+    expect(() => readPolicy([broken, bundled])).toThrow(ToolError);
+    expect(() => readPolicy([broken, bundled])).toThrow(message);
+  });
+
+  test("a policy path that cannot be read is a tool error naming the file", () => {
+    const folder = join(dir, "policy.json");
+    mkdirSync(folder);
+    expect(() => readPolicy([folder, BUNDLED_POLICY])).toThrow(ToolError);
+    expect(() => readPolicy([folder, BUNDLED_POLICY])).toThrow(`Could not read the approval policy ${folder} (EISDIR); nothing was approved.`);
+  });
+
+  // The paths the server reads in production: the user's file, then the plugin's.
+  test("the user's file in the state folder comes first and the plugin's file second", () => {
+    expect(policyPaths({}, dir)).toEqual([join(dir, "policy.json"), BUNDLED_POLICY]);
+    expect(policyPaths({ DESKTOP_MCP_POLICY: "" }, dir)).toEqual([join(dir, "policy.json"), BUNDLED_POLICY]);
+    expect(policyPaths({ DESKTOP_MCP_POLICY: "/elsewhere/policy.json" }, dir)).toEqual(["/elsewhere/policy.json", BUNDLED_POLICY]);
+    // With no user file the plugin's auto policy applies; the user's file overrides it.
+    expect(readPolicy(policyPaths({}, dir))).toEqual({ approval: "auto" });
+    file("policy.json", JSON.stringify({ approval: "dialog" }));
+    expect(readPolicy(policyPaths({ DESKTOP_MCP_POLICY: "" }, dir))).toEqual({ approval: "dialog" });
+  });
+
+  test("the state folder honors DESKTOP_MCP_STATE, then XDG_STATE_HOME, and ignores empty values", () => {
+    expect(stateDirFor({ DESKTOP_MCP_STATE: "/s", XDG_STATE_HOME: "/x" })).toBe("/s");
+    expect(stateDirFor({ DESKTOP_MCP_STATE: "", XDG_STATE_HOME: "/x" })).toBe("/x/desktop-mcp");
+    expect(stateDirFor({ DESKTOP_MCP_STATE: "", XDG_STATE_HOME: "" })).toMatch(/\/\.local\/state\/desktop-mcp$/);
+    expect(stateDirFor({})).toStartWith("/");
+  });
 });
 
 describe("MCP protocol", () => {
@@ -506,6 +896,27 @@ describe("MCP protocol", () => {
     expect(response.result.serverInfo.name).toBe("desktop");
     expect(response.result.protocolVersion).toBe("2025-06-18");
     expect(response.result.capabilities).toEqual({ tools: {} });
+  });
+
+  // The instructions are fixed at initialize, so they hold under either policy.
+  test("the instructions and request_access say when a dialog shows and that the reply tells", async () => {
+    const response = await handle(desktop, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+    expect(response.result.instructions).toBe(INSTRUCTIONS);
+    expect(INSTRUCTIONS).toContain("Its reply says whether a dialog was shown.");
+    expect(INSTRUCTIONS).toContain("When a dialog may show, tell the user to look at the Mac");
+    expect(INSTRUCTIONS).not.toContain("no dialog, so do not wait");
+    expect(INSTRUCTIONS).toContain("Banking, healthcare, government and password apps are always refused");
+    const description = TOOLS.find((tool) => tool.name === "request_access").description;
+    expect(description).toContain("approves them at once, with no dialog and no wait for the user");
+    expect(description).toContain("after the user pressed Stop");
+    expect(description).toContain("terminals, agent apps such as T3 Code or Claude, System Settings");
+    expect(description).toContain("The reply says whether a dialog was shown.");
+  });
+
+  test("a missing reason asks for one without claiming a dialog shows it", async () => {
+    const mac = createDesktop({ helper: () => SAFARI, stateDir: tmpdir(), policy: () => ({ approval: "auto" }) });
+    const result = await mac.call("request_access", { apps: ["Safari"], reason: " " });
+    expect(result.content[0].text).toBe("Give a reason: one sentence on why. It is logged, and the user reads it when a dialog is shown.");
   });
 
   test("it lists the tools and calls them", async () => {
