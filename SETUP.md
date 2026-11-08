@@ -44,15 +44,16 @@ so a merge reaches both within the hour. `config-sync/config_sync.py check` fetc
 `origin/main` and fast-forwards the checkout only when it is on `main` with no tracked
 changes and no commits of its own; it never stashes, resets or merges. One exception:
 a Claude Code plugin install, update or enable rewrites `claude/settings.json` in its own
-key order and layout, so a tracked `.json` file whose parsed JSON still equals `HEAD`'s
-gets its committed text back (logged as `restored`); a real change stays. Otherwise it
-leaves the checkout as it is and files one Feedback report about `config-sync` per
-distinct set of problems: off `main`, tracked changes, diverged, a fast-forward that
-failed (an untracked file in the way, say), a fetch failing for over 24 hours, or an
-instruction link (`~/.claude`, Codex's `AGENTS.md`) that is a copy or missing. It uses
-plain `board feedback` where the installed CLI lacks `--about`, and a macOS notification
-when the board is unreachable. State is in `~/.local/state/config-sync/state.json`, each
-pull or report adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
+key order and layout. When that unstaged rewrite on `main` is the only tracked change and
+its parsed JSON still equals `HEAD`'s, config-sync writes the committed text back; any
+other change stays. Otherwise it leaves the checkout as it is and files one Feedback
+report about `config-sync` per distinct set of problems: off `main`, tracked changes,
+diverged, a fast-forward that failed (an untracked file in the way, say), a failed
+restore, a fetch failing for over 24 hours, or an instruction link (`~/.claude`, Codex's
+`AGENTS.md`) that is a copy or missing. It uses plain `board feedback` where the
+installed CLI lacks `--about`, and a macOS notification when the board is unreachable.
+State is in `~/.local/state/config-sync/state.json`, each pull, restore or report adds a
+line to `events.jsonl` there, and launchd writes to `launchd.log`.
 Install it on each Mac and check it:
 
 ```sh

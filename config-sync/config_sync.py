@@ -6,9 +6,10 @@ the checkout when it is on main with no tracked changes and no commits of its ow
 It never stashes, resets or merges: a checkout that is off main, has tracked changes,
 has diverged or fails to fast-forward is left as it is and reported. Untracked files
 are left alone; one that a fast-forward would overwrite makes the pull fail, which is
-reported too. One change it undoes: a tracked `.json` file that is only reformatted (it
-parses to the same JSON as HEAD, as when a Claude Code plugin install rewrites
-claude/settings.json) gets its committed text back, so it does not block the pull.
+reported too. One change it undoes: a Claude Code plugin install, update or enable
+rewrites claude/settings.json in its own key order and layout. When that file is the
+only tracked change, unstaged, on main, and parses to the same JSON as HEAD, it gets its
+committed text back, so the reformat does not block the pull.
 
 After every check it also verifies the links that install the instructions from this
 checkout (`~/.claude` and Codex's AGENTS.md); a copy instead of a link stops pulls from
@@ -21,8 +22,8 @@ notification when the board cannot be reached. A fetch that keeps failing (the M
 offline, say) is reported only after 24 hours.
 
 State lives in `~/.local/state/config-sync/state.json` and each check that pulled,
-restored or reported adds a line to `events.jsonl` there. `status` prints the state, `install`
-writes and loads the LaunchAgent.
+restored or reported adds a line to `events.jsonl` there. `status` prints the state,
+`install` writes and loads the LaunchAgent.
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ DEFAULT_STATE_DIR = HOME / ".local" / "state" / "config-sync"
 LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 REMOTE = "origin"
 BRANCH = "main"
+SETTINGS = "claude/settings.json"
 # The board agent reports file as: launchd's environment names no session, and the board
 # takes only t3, claude or codex agent ids (as the factory's friction capture does).
 AGENT = "claude:config-sync"
@@ -118,17 +120,37 @@ class Outcome:
     restored: list = field(default_factory=list)  # tracked paths put back to their committed text
 
 
-def same_json(path: Path, committed: subprocess.CompletedProcess) -> bool:
-    """Whether the file parses to the same JSON as the committed text (`git show HEAD:path`)."""
-    if committed.returncode != 0:
-        return False
+def canonical(value):
+    """JSON value comparable with ==: dicts ignore key order and numbers compare by value
+    (1000 == 1e3), but Python's True == 1 must not hold, so booleans are tagged."""
+    if isinstance(value, dict):
+        return {key: canonical(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [canonical(item) for item in value]
+    if isinstance(value, bool):
+        return ("bool", value)
+    return value
+
+
+def restore_reformat(path: Path, committed: str) -> bool:
+    """Write the committed text back when the file parses to the same JSON; False when it does not."""
+    text = path.read_text()
     try:
-        ours = json.loads(path.read_text())
-        theirs = json.loads(committed.stdout)
-    except (OSError, ValueError):
+        if canonical(json.loads(text)) != canonical(json.loads(committed)):
+            return False
+    except ValueError:  # unparsable JSON is a real change
         return False
-    # Canonical text, not ==: in Python 1 == 1.0 == true, which JSON readers tell apart.
-    return json.dumps(ours, sort_keys=True) == json.dumps(theirs, sort_keys=True)
+    temp = path.with_name(f".{path.name}.config-sync")
+    try:
+        temp.write_text(committed)
+        shutil.copymode(path, temp)
+        # A session may have written the file since it was read: keep that write.
+        if path.read_text() != text:
+            return False
+        temp.replace(path)
+        return True
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def sync(repo: Path, run: Runner) -> Outcome:
@@ -142,16 +164,22 @@ def sync(repo: Path, run: Runner) -> Outcome:
     target = git("rev-parse", f"{REMOTE}/{BRANCH}").stdout.strip()
     changed = [line for line in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if line.strip()]
     restored = []
-    if branch == BRANCH:
-        # Claude Code rewrites claude/settings.json in its own key order and layout on every
-        # plugin install or update. Put the committed text back when the parsed JSON is
-        # unchanged, so a reformat does not stop pulls; any real change stays and is reported.
-        for line in changed:
-            path = line[3:]
-            if line[:2] == " M" and path.endswith(".json") and same_json(repo / path, git("show", f"HEAD:{path}")):
-                if git("checkout", "--quiet", "--", path).returncode == 0:
-                    restored.append(path)
-    changed = [line[3:] for line in changed if line[3:] not in restored]
+    # Claude Code rewrites claude/settings.json in its own key order and layout on a plugin
+    # install, update or enable. When that unstaged rewrite is the only change and the parsed
+    # JSON matches HEAD, put the committed text back so it does not stop pulls. Any other
+    # change stays and is reported. Only this file: key order matters in others (package.json).
+    if branch == BRANCH and changed == [f" M {SETTINGS}"]:
+        committed = git("show", f"HEAD:{SETTINGS}")
+        if committed.returncode != 0:
+            problems.append(("restore-failed", f"git show HEAD:{SETTINGS} failed: {committed.stderr.strip()[:300]}"))
+        else:
+            try:
+                if restore_reformat(repo / SETTINGS, committed.stdout):
+                    restored.append(SETTINGS)
+                    changed = []
+            except OSError as error:
+                problems.append(("restore-failed", f"could not restore the committed text of {SETTINGS}: {error}"))
+    changed = [line[3:] for line in changed]
     if branch != BRANCH:
         problems.append(("off-main", f"the checkout is on {branch or 'a detached HEAD'}, not {BRANCH}"))
     if changed:
@@ -179,10 +207,11 @@ def sync(repo: Path, run: Runner) -> Outcome:
     return Outcome(problems, pulled, fetch_failed, head, restored)
 
 
-def report_text(host: str, repo: Path, problems: list) -> str:
+def report_text(host: str, repo: Path, problems: list, restored: list) -> str:
     lines = [f"config-sync on {host}: {short(repo)} is not kept current"]
     lines += [f"- {kind}: {detail}" for kind, detail in problems]
-    lines.append("Nothing was changed; fix the checkout by hand, then the next check pulls.")
+    done = f"Only the committed text of {', '.join(restored)} (same JSON) was restored" if restored else "Nothing was changed"
+    lines.append(f"{done}; fix the checkout by hand, then the next check pulls.")
     return "\n".join(lines)
 
 
@@ -220,7 +249,7 @@ def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: d
     signature = sorted({f"{kind}: {detail}" for kind, detail in problems})
     if signature and signature != state.reported:
         kinds = "+".join(sorted({kind for kind, _ in problems}))
-        event["reported"] = report(run, board, report_text(host, repo, problems), f"config-sync:{kinds}")
+        event["reported"] = report(run, board, report_text(host, repo, problems, outcome.restored), f"config-sync:{kinds}")
         event["problems"] = signature
     state.reported = signature
     state.last_check = now.isoformat()
