@@ -42,6 +42,16 @@
         ]
       },
       {
+        "matcher": "^mcp__board__ask_user$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-asks.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "^(EnterWorktree|Agent|Task)$",
         "hooks": [
           {
