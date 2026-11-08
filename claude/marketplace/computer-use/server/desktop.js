@@ -101,26 +101,32 @@ const covers = (outer, inner) => outer.x <= inner.x && outer.y <= inner.y
  * front to back, the pid the Accessibility hit-test found there (null when it failed), the
  * Dock's window level and the display bounds. This decides which app the approval check
  * sees, so a window is passed over only when it cannot take the input:
- * - a window with alpha 0, and a Window Server surface (its menu bar is the frontmost app's);
+ * - a window with alpha 0, and a Window Server surface, known by the owner's executable path,
+ *   never by its name (its menu bar is the frontmost app's);
  * - the Dock's full-display window at the Dock level, matched by bundle id, never by its
  *   localized name, when the hit-test reaches another app through it. The window that then
  *   decides must belong to the app the hit-test found, or no app is chosen.
  * Every other window decides, including the Dock's tiles, menus and Mission Control, a failed
- * hit-test, and screencaptureui, whose buttons take the click. A deciding window of a process
- * with no running app is refused with a ToolError.
+ * hit-test, and screencaptureui, whose buttons take the click. The first other visible window
+ * of a process with no running app is refused with a ToolError, past the Dock's layer too,
+ * whatever the hit-test found.
  */
 export function chooseApp({ windows, hitPid, dockLevel, displays, frontmost, finder }) {
   let passedDock = false;
   const decide = (window, app) => (!passedDock || window.pid === hitPid ? app : null);
   for (const window of windows) {
     if (window.alpha === 0) continue;
-    if (window.owner === "Window Server") {
+    if (window.windowServer) {
       if (window.name === "Menubar") return decide(window, frontmost);
       continue;
     }
     // Refused here, never sent to check(): appKey falls back to the name, which a process
-    // chooses, so a window named like an approved app would pass the approval lookup.
-    if (!window.app) throw new ToolError(`A window of ${window.owner || "an unnamed process"} (pid ${window.pid ?? "unknown"}) is at the point, and it is not an app; nothing was done.`);
+    // chooses, so a window named like an approved app would pass the approval lookup. The
+    // name is untrusted text in the model's tool result, so it is quoted and cut short.
+    if (!window.app) {
+      const owner = JSON.stringify((window.owner ?? "").slice(0, 40));
+      throw new ToolError(`A window of the process ${owner} (pid ${window.pid ?? "unknown"}), which is not an app, is at the point; nothing was done.`);
+    }
     if (window.app.bundleId === DOCK && window.layer === dockLevel
       && displays.some((display) => covers(window.bounds, display))
       && Number.isInteger(hitPid) && hitPid !== window.pid) {
