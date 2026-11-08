@@ -749,12 +749,13 @@ describe("computer-use plugin", () => {
 });
 
 // On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
-// before any test ran. Retries cover short failures of this download; the cache covers
-// long ones. The uv and Bun installs below have caches of their own.
-describe("CI gitleaks download", () => {
+// before any test ran. Retries cover short failures of the gitleaks download; the cache
+// covers long ones. setup-uv uses the Astral mirror, and setup-bun caches Bun itself.
+describe("CI release downloads", () => {
   const workflow = read(".github/workflows/checks.yml");
   const steps = Bun.YAML.parse(workflow).jobs.tests.steps;
-  const step = (name) => steps.find((entry) => entry.name === name);
+  // A step by its name, or by its action for an unnamed one, such as "astral-sh/setup-uv".
+  const step = (name) => steps.find((entry) => entry.name === name || entry.uses?.split("@")[0] === name);
   const fetch = step("Fetch and check gitleaks").run;
   const download = /^ *curl (?:[^\n]*\\\n)*[^\n]*\n/m.exec(fetch)?.[0] ?? "";
   const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
@@ -799,47 +800,22 @@ describe("CI gitleaks download", () => {
     expect(names.indexOf("Save the gitleaks archive")).toBe(names.indexOf("Fetch and check gitleaks") + 1);
     expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save the gitleaks archive"));
   });
-});
 
-// The same outage failed setup-uv on several runs before any test ran. setup-uv takes uv
-// from the runner tool cache when it is there, so a restored tool-cache folder needs no
-// download. setup-bun already caches Bun by its download URL unless no-cache is set.
-describe("CI uv and Bun installs", () => {
-  const steps = Bun.YAML.parse(read(".github/workflows/checks.yml")).jobs.tests.steps;
-  const names = steps.map((entry) => entry.name ?? entry.uses);
-  const step = (name) => steps.find((entry) => entry.name === name);
-  const setup = steps.find((entry) => entry.uses?.startsWith("astral-sh/setup-uv@"));
-  const bun = steps.find((entry) => entry.uses?.startsWith("oven-sh/setup-bun@"));
-  const restore = step("Restore uv");
-  const save = step("Save uv");
-  const check = step("Check uv");
-
-  test("uv stays pinned and setup-uv finds it in a restored tool cache", () => {
+  // setup-uv v10.3.2 added the known checksums for uv 0.13.5; v10 downloads from the
+  // Astral mirror and falls back to GitHub's release host.
+  test("setup-uv is the mirror release and keeps uv pinned", () => {
+    const setup = step("astral-sh/setup-uv");
+    expect(setup.uses).toBe("astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2");
+    expect(workflow).toContain("- uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3\n");
     expect(setup.with).toEqual({ version: "0.13.5", "enable-cache": false });
-    // setup-uv looks for <tool cache>/uv/<version>/<arch> with its .complete marker.
-    expect(restore.with).toEqual({ path: "${{ runner.tool_cache }}/uv/0.13.5", key: "uv-0.13.5-${{ runner.os }}-${{ runner.arch }}" });
-    expect(restore.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
-    expect(save.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
-    expect(save.with).toEqual(restore.with);
-    expect(save.if).toBe(`steps.${restore.id}.outputs.cache-hit != 'true'`);
-    // A failing cache service falls through to setup-uv's download instead of failing the job.
-    for (const entry of [restore, save]) expect(entry["continue-on-error"]).toBe(true);
-    expect(restore.env.SEGMENT_DOWNLOAD_TIMEOUT_MINS).toBe(1);
-    expect(names.indexOf("Restore uv")).toBe(names.indexOf(setup.uses) - 1);
   });
 
-  test("both uv binaries are checked before saving and before the tests", () => {
-    expect(check.env).toEqual({ UV_PATH: `\${{ steps.${setup.id}.outputs.uv-path }}`, UVX_PATH: `\${{ steps.${setup.id}.outputs.uvx-path }}` });
-    for (const arch of ["arm64", "x86_64"]) expect(check.run).toMatch(new RegExp(`^ *${arch}\\)\\n *uv_sum=[0-9a-f]{64}\\n *uvx_sum=[0-9a-f]{64}$`, "m"));
-    expect(check.run).toContain(`printf '%s  %s\\n%s  %s\\n' "$uv_sum" "$UV_PATH" "$uvx_sum" "$UVX_PATH" | shasum -a 256 --check`);
-    expect(check.run).toContain(`[[ "$version" == "uv 0.13.5 "* ]]`);
-    expect(names.indexOf("Check uv")).toBe(names.indexOf(setup.uses) + 1);
-    expect(names.indexOf("Save uv")).toBe(names.indexOf("Check uv") + 1);
-    expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save uv"));
-  });
-
-  test("setup-bun keeps its own binary cache on a pinned version", () => {
+  test("setup-bun keeps its Bun cache on a pinned version, and a slow cache cannot stall the job", () => {
+    const bun = step("oven-sh/setup-bun");
+    // A pinned version turns on setup-bun's own cache of the Bun binary.
     expect(bun.with).toEqual({ "bun-version": "1.4.4" });
+    expect(bun.env).toEqual({ SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1 });
+    expect(bun["timeout-minutes"]).toBe(3);
   });
 });
 

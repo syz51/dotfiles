@@ -19,66 +19,23 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # setup-bun caches the Bun binary itself with actions/cache, keyed by its download
-      # URL, which holds the version, OS and architecture. It checks the cached binary's
-      # version and downloads only on a cache miss.
+      # setup-bun caches Bun with actions/cache, keyed by its download URL, which holds
+      # the version, OS and architecture, and downloads only on a miss. As for gitleaks,
+      # a slow cache service gives up after one minute, and the step timeout bounds a
+      # stalled download, so neither uses up the job.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: 1.4.4
-      # setup-uv looks in the runner tool cache before it downloads, and enable-cache
-      # caches only uv's package cache, not uv itself. So restore uv's tool-cache folder,
-      # and a warm cache needs no download when GitHub's release host fails. As for
-      # gitleaks, a slow cache service gives up after one minute and setup-uv downloads.
-      - name: Restore uv
-        id: uv-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        timeout-minutes: 2
-        continue-on-error: true
+        timeout-minutes: 3
         env:
           SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
         with:
-          path: ${{ runner.tool_cache }}/uv/0.13.5
-          key: uv-0.13.5-${{ runner.os }}-${{ runner.arch }}
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
-        id: setup-uv
+          bun-version: 1.4.4
+      # This release downloads uv from the Astral mirror and falls back to GitHub's
+      # release host, so one host's outage does not fail CI. It checks the archive
+      # against its own known checksum for uv 0.13.5.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: 0.13.5
           enable-cache: false
-      # This setup-uv release has no checksum for uv 0.13.5, so it checks neither a
-      # download nor a cached copy. Check both binaries against the release archives'
-      # contents, whose archive checksums match the ones uv publishes.
-      - name: Check uv
-        shell: bash
-        env:
-          UV_PATH: ${{ steps.setup-uv.outputs.uv-path }}
-          UVX_PATH: ${{ steps.setup-uv.outputs.uvx-path }}
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            arm64)
-              uv_sum=7dad6047467a9d6b081c033cb3efed9ba39a4799c698d09e6cd598f3a6a32338
-              uvx_sum=e34502e6f7204735483527b722dbff2a505fc28a19d8026d2eb3d179fa4a8ad9
-              ;;
-            x86_64)
-              uv_sum=7ed737e90584ec4f77edb50f64a9c420f8f878c4e3328ca9a2ba4585ca3b80f8
-              uvx_sum=504b76b1de370f21aa8738ad1784623f892ffec62252c93ac6f466f26b6cf856
-              ;;
-            *) echo "Unsupported runner architecture" >&2; exit 1 ;;
-          esac
-          printf '%s  %s\n%s  %s\n' "$uv_sum" "$UV_PATH" "$uvx_sum" "$UVX_PATH" | shasum -a 256 --check
-          version=$("$UV_PATH" --version)
-          echo "$version"
-          [[ "$version" == "uv 0.13.5 "* ]]
-      # Saved only after the check, so a bad binary never reaches the cache, and before
-      # the tests, so a failing test does not stop a good one from reaching it.
-      - name: Save uv
-        if: steps.uv-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        timeout-minutes: 2
-        continue-on-error: true
-        with:
-          path: ${{ runner.tool_cache }}/uv/0.13.5
-          key: uv-0.13.5-${{ runner.os }}-${{ runner.arch }}
       # The archive name and checksum key the cache, so a warm cache needs no download
       # when GitHub's release host fails. The checksum check runs on a cached archive too.
       - name: Pick the gitleaks archive
