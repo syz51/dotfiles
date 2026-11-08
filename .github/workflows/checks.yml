@@ -26,14 +26,13 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: false
-      - name: Scan history and run isolated tests
+      # The archive name and checksum key the cache, so a warm cache needs no download
+      # when GitHub's release host fails. The checksum check runs on a cached archive too.
+      - name: Pick the gitleaks archive
+        id: gitleaks
         shell: bash
         run: |
           set -euo pipefail
-          scratch=$(mktemp -d "${TMPDIR%/}/dotfiles-checks.XXXXXX")
-          trap 'rm -rf "$scratch"' EXIT
-          export TMPDIR="$scratch"
-          export PYTHONDONTWRITEBYTECODE=1
           case "$(uname -m)" in
             arm64)
               archive=gitleaks_8.30.1_darwin_arm64.tar.gz
@@ -45,12 +44,71 @@ jobs:
               ;;
             *) echo "Unsupported runner architecture" >&2; exit 1 ;;
           esac
-          curl --fail --silent --show-error --location \
-            "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$archive" \
-            --output "$scratch/$archive"
-          (cd "$scratch" && printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 --check)
-          tar -xzf "$scratch/$archive" -C "$scratch" gitleaks
-          "$scratch/gitleaks" git --redact=100 --max-decode-depth=2 --log-opts="--all"
+          {
+            echo "archive=$archive"
+            echo "checksum=$checksum"
+            echo "cache=$RUNNER_TEMP/gitleaks-cache"
+            echo "bin=$RUNNER_TEMP/gitleaks-bin"
+          } >> "$GITHUB_OUTPUT"
+      # A slow or failing cache service must not use up the job: past one minute the
+      # restore gives up with a warning, and the next step downloads instead.
+      - name: Restore the gitleaks archive
+        id: gitleaks-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 2
+        continue-on-error: true
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
+        with:
+          path: ${{ steps.gitleaks.outputs.cache }}
+          key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}
+      - name: Fetch and check gitleaks
+        shell: bash
+        env:
+          archive: ${{ steps.gitleaks.outputs.archive }}
+          checksum: ${{ steps.gitleaks.outputs.checksum }}
+          cache: ${{ steps.gitleaks.outputs.cache }}
+          bin: ${{ steps.gitleaks.outputs.bin }}
+        run: |
+          set -euo pipefail
+          # A 504 can end curl with exit 56 over HTTP/2, which plain --retry does not
+          # retry, so retry every error. The download takes at most 225 seconds
+          # (retry-max-time + retry-delay + max-time), which leaves the tests 6 minutes.
+          if [ -f "$cache/$archive" ]; then
+            echo "gitleaks archive: cache hit"
+          else
+            echo "gitleaks archive: cache miss, downloading"
+            mkdir -p "$cache"
+            curl --fail --silent --show-error --location \
+              --retry 6 --retry-delay 15 --retry-max-time 90 --retry-all-errors \
+              --connect-timeout 15 --speed-limit 100000 --speed-time 20 --max-time 120 \
+              "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$archive" \
+              --output "$cache/$archive"
+          fi
+          (cd "$cache" && printf '%s  %s\n' "$checksum" "$archive" | shasum -a 256 --check)
+          mkdir -p "$bin"
+          tar -xzf "$cache/$archive" -C "$bin" gitleaks
+      # Saved right after the checksum check, so a failing test later in the job does
+      # not stop a good archive from reaching the cache.
+      - name: Save the gitleaks archive
+        if: steps.gitleaks-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        timeout-minutes: 2
+        continue-on-error: true
+        with:
+          path: ${{ steps.gitleaks.outputs.cache }}
+          key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}
+      - name: Scan history and run isolated tests
+        shell: bash
+        env:
+          GITLEAKS: ${{ steps.gitleaks.outputs.bin }}/gitleaks
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "${TMPDIR%/}/dotfiles-checks.XXXXXX")
+          trap 'rm -rf "$scratch"' EXIT
+          export TMPDIR="$scratch"
+          export PYTHONDONTWRITEBYTECODE=1
+          "$GITLEAKS" git --redact=100 --max-decode-depth=2 --log-opts="--all"
           uv python install 3.13
           bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
           uv run --offline --no-project --python 3.13 python -B -m unittest discover -s tuios/tests -v
