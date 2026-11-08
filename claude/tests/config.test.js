@@ -219,6 +219,14 @@ describe("settings", () => {
         && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
     expect(guard).toHaveLength(1);
   });
+
+  test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {
+    const groups = settings.hooks.PreToolUse.filter((group) =>
+      group.hooks.some((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/guard-asks.js"'));
+    expect(groups).toHaveLength(1);
+    expect(new RegExp(groups[0].matcher).test("mcp__board__ask_user")).toBe(true);
+    for (const tool of ["Bash", "mcp__board__task_add", "AskUserQuestion"]) expect(new RegExp(groups[0].matcher).test(tool)).toBe(false);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
