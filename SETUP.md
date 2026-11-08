@@ -235,7 +235,15 @@ checkout's branch or set its work aside: git `switch`, `checkout` of a branch,
 `checkout -f`, `reset` to another commit or with `--hard`, `--keep`, `--merge` or
 `--soft`, `merge`, `rebase`, `pull`, `stash`, `bisect` and `gh pr checkout`. Their
 continue, abort, list and show forms, file restores (`git checkout -- <path>`,
-`git reset -- <path>`) and every command in a linked worktree still run. A main checkout
+`git reset -- <path>`), fast-forwards, a clean switch back to the default branch and
+every command in a linked worktree still run. A fast-forward is a `merge` or `pull` whose
+last of `--ff`, `--no-ff` and `--ff-only` is `--ff-only`, with only output options,
+`--no-edit`, `--no-autostash`, `--no-rebase` or `--rebase=false` beside it, spelled out,
+no refspec that forces (`+a`) or names a destination (`a:b`), and no global `-c`. Any
+other option, such as `-s ours` or `--autostash`, makes it an ordinary merge or pull. A
+switch back is `git switch <name>` or `git checkout <name>` (with `-q` at most) where
+`origin/HEAD` names that branch and no tracked file has changes. Neither loses work, so
+agents may update a shared checkout without asking the user again. A main checkout
 is one whose git directory is the common git directory. Repositories in the temporary
 directory or Claude Code's `/tmp/claude-<uid>` scratch folder are a session's own and
 are not guarded. To allow these commands in one repository, run
