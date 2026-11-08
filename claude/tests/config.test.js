@@ -522,6 +522,22 @@ describe("work stages", () => {
   });
 });
 
+// Without its own id, an agent may report a skill's guidance problem as `skills`, which
+// routes to codex-skills, the wrong owner.
+describe("in-repo skills' feedback channels", () => {
+  const SKILLS = ["cheat-sheets", "headless-browser", "ui-climb"];
+
+  test.each(SKILLS)("%s ends with a feedback section naming its registered setup id", (id) => {
+    expect(Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id)).toContain(id);
+    const { meta, body } = frontmatter(`claude/skills/${id}/SKILL.md`);
+    expect(meta.name).toBe(id);
+    const feedback = body.slice(body.lastIndexOf("\n## ") + 1);
+    expect(feedback).toMatch(new RegExp(`^## Feedback on this skill\\n\\nReport it with \`feedback\` and \`about\` \`${id}\`\\.`));
+    expect(feedback).toContain(`\`${id}\` and the dotfiles tasks they were routed to`);
+    expect(tracked(`claude/skills/${id}/SKILL.md`)).toBe(true);
+  });
+});
+
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {
@@ -729,6 +745,59 @@ describe("computer-use plugin", () => {
   test("its tests run in the verification suites and CI", () => {
     expect(read("SETUP.md")).toMatch(/^bun test .* claude\/marketplace$/m);
     expect(read(".github/workflows/checks.yml")).toMatch(/^\s+bun test .* claude\/marketplace$/m);
+  });
+});
+
+// On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
+// before any test ran. Retries cover short failures of this download; the cache covers
+// long ones. setup-uv also downloads from that host and has no cache.
+describe("CI gitleaks download", () => {
+  const workflow = read(".github/workflows/checks.yml");
+  const steps = Bun.YAML.parse(workflow).jobs.tests.steps;
+  const step = (name) => steps.find((entry) => entry.name === name);
+  const fetch = step("Fetch and check gitleaks").run;
+  const download = /^ *curl (?:[^\n]*\\\n)*[^\n]*\n/m.exec(fetch)?.[0] ?? "";
+  const flag = (name) => Number(new RegExp(`--${name} (\\d+)`).exec(download)?.[1]);
+  const key = "${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}";
+
+  test("the download retries every error within the job's timeout", () => {
+    expect(download).toMatch(/releases\/download\/v[\d.]+\/\$archive"/);
+    // A 504 can end curl with exit 56 over HTTP/2, which plain --retry does not retry.
+    expect(download).toContain("--retry-all-errors");
+    expect(flag("retry")).toBeGreaterThanOrEqual(5);
+    expect(Bun.YAML.parse(workflow).jobs.tests["timeout-minutes"]).toBe(10);
+    // curl checks --retry-max-time before it waits --retry-delay, and the last attempt
+    // runs up to --max-time, which leaves the tests at least 6 of the job's 10 minutes.
+    expect(flag("retry-max-time") + flag("retry-delay") + flag("max-time")).toBeLessThanOrEqual(240);
+  });
+
+  test("a pinned cache keyed by archive and checksum skips the download", () => {
+    const restore = step("Restore the gitleaks archive");
+    const save = step("Save the gitleaks archive");
+    expect(restore.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
+    expect(save.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
+    expect(restore.with).toEqual({ path: "${{ steps.gitleaks.outputs.cache }}", key });
+    expect(save.with).toEqual(restore.with);
+    expect(save.if).toBe(`steps.${restore.id}.outputs.cache-hit != 'true'`);
+    // A failing cache service falls through to the download instead of failing the job.
+    for (const entry of [restore, save]) expect(entry["continue-on-error"]).toBe(true);
+    expect(step("Fetch and check gitleaks").env.cache).toBe(restore.with.path);
+    expect(fetch).toMatch(/^if \[ -f "\$cache\/\$archive" \]; then$/m);
+  });
+
+  test("the checksum check runs on a downloaded or cached archive before extraction and saving", () => {
+    const end = fetch.search(/^fi$/m);
+    const check = fetch.indexOf(`(cd "$cache" && printf '%s  %s\\n' "$checksum" "$archive" | shasum -a 256 --check)`);
+    const extract = fetch.indexOf(`tar -xzf "$cache/$archive" -C "$bin" gitleaks`);
+    expect(download).not.toBe("");
+    expect(fetch.indexOf(download)).toBeLessThan(end);
+    // The check follows the if's closing fi, so both the hit and the miss reach it.
+    expect(end).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(end);
+    expect(extract).toBeGreaterThan(check);
+    const names = steps.map((entry) => entry.name);
+    expect(names.indexOf("Save the gitleaks archive")).toBe(names.indexOf("Fetch and check gitleaks") + 1);
+    expect(names.indexOf("Scan history and run isolated tests")).toBeGreaterThan(names.indexOf("Save the gitleaks archive"));
   });
 });
 
