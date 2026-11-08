@@ -806,10 +806,23 @@ describe("computer-use plugin", () => {
     expect(settings.enabledPlugins["computer-use@dotfiles"]).toBe(true);
   });
 
-  test("its only MCP server is desktop, run by bun from the plugin", () => {
+  // GitHub marketplaces do not auto-update by default, so installed plugins stayed at old
+  // commits after merges (dotfiles-281). This makes Claude Code refresh the marketplace and
+  // update its installed plugins on its own.
+  test("the tracked settings auto-update the dotfiles marketplace", () => {
+    expect(settings.extraKnownMarketplaces.dotfiles.autoUpdate).toBe(true);
+  });
+
+  // No policy path from a checkout: agents edit tracked files and branch switches reset them.
+  // The user's policy lives in the server's untracked state folder; the plugin's is the fallback.
+  test("its only MCP server is desktop, run by bun from the plugin, with the auto policy bundled", () => {
     const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
     expect(Object.keys(servers)).toEqual(["desktop"]);
-    expect(servers.desktop).toEqual({ command: "${HOME}/.bun/bin/bun", args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"] });
+    expect(servers.desktop).toEqual({
+      command: "${HOME}/.bun/bin/bun",
+      args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"],
+    });
+    expect(JSON.parse(read("claude/marketplace/computer-use/policy.json"))).toEqual({ approval: "auto" });
   });
 
   test("its tests run in the verification suites and CI", () => {
