@@ -66,6 +66,7 @@ describe("check invocations", () => {
   test("bun and npm run their check", () => {
     expect(checkInvocation(["bun", "check.js"], bunCheck)).toBe(true);
     expect(checkInvocation(["bun", "run", "./check.js"], bunCheck)).toBe(true);
+    expect(checkInvocation(["bun", "run", "test"], bunCheck)).toBe(true);
     expect(checkInvocation(["node", "check.js"], bunCheck)).toBe(false);
     for (const words of [["npm", "test"], ["npm", "t"], ["npm", "run", "test"]]) expect(checkInvocation(words, npm)).toBe(true);
     expect(checkInvocation(["bun", "run", "test"], npm)).toBe(false);

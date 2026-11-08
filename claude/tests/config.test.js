@@ -522,12 +522,14 @@ describe("rules the live suites test", () => {
     expect(globalInstructions).not.toContain("frontend-avoid");
   });
 
-  test("Working preferences keep uv and bun with project lockfiles", () => {
+  test("Working preferences keep uv, and bun only even over project lockfiles", () => {
     const preferences = section("Working preferences");
     expect(preferences).toMatch(/`uv run`/);
     expect(preferences).toMatch(/`bun`/);
     expect(preferences).toContain("never `node`, including for fallbacks");
-    expect(preferences).toMatch(/lockfiles/);
+    expect(preferences).toMatch(/never npm, npx, pnpm, yarn, corepack or Vite\+ \(`vp`\), even where a project's lockfiles/);
+    expect(preferences).toMatch(/require another package manager, stop and ask me/);
+    expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${preferences.split("\n").find((line) => line.startsWith("- Run all Python"))}\n`);
   });
 
   test("Workflow stops background work before finishing", () => {

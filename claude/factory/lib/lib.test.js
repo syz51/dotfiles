@@ -449,6 +449,20 @@ describe("claude runner", () => {
     await runTask({ prompt: "do it", cwd, strictMcp: true });
     expect(calls()[1].args).toContain("--strict-mcp-config");
     expect(calls()[1].args).not.toContain("--mcp-config");
+    // Without a schema there is no structured output to return.
+    expect(run.output).toBeUndefined();
+    expect(call.args).not.toContain("--json-schema");
+  });
+
+  test("runTask with a schema passes it and returns the structured output, or null without one", async () => {
+    const schema = { type: "object", properties: { n: { type: "number" } } };
+    fake("structured", { FAKE_CLAUDE_OUTPUT: '{"n":3}' });
+    const cwd = mkdtempSync(join(scratch, "task-"));
+    const run = await runTask({ prompt: "check", cwd, tools: ["Read"], schema });
+    expect([run.ok, run.output]).toEqual([true, { n: 3 }]);
+    expect(JSON.parse(calls()[0].args[calls()[0].args.indexOf("--json-schema") + 1])).toEqual(schema);
+    fake("task");
+    expect((await runTask({ prompt: "check", cwd, schema })).output).toBeNull();
   });
 
   test("runTask with readEffort reads the effort from the transcript, then deletes it", async () => {

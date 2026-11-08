@@ -7,8 +7,9 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { blockedRuntime } from "../../hooks/guard-runtimes.js";
+import { visitCommands } from "../../hooks/shell.js";
 import { mayInvoke } from "../../tests/lib/command.js";
-import { readFilesWithDeadline } from "../lib/probe.js";
 import { isCodeReview, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
 import { boardCheckouts, gitIgnored, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
@@ -73,31 +74,15 @@ const bashCommands = (actions) => actions.calls.filter((call) => call.name === "
 const hit = (call, evidence, extra = {}) => ({ evidence: clip(evidence), at: call.at, agent: call.agent, ...extra });
 const verdictOf = (applies, hits) => ({ verdict: hits.length ? "fail" : applies ? "pass" : "na", hits });
 
-// npm and its runners are fine where the project's lockfile says the project uses them.
-const NODE_TOOLS = {
-  npm: ["package-lock.json", "npm-shrinkwrap.json"],
-  npx: ["package-lock.json", "npm-shrinkwrap.json"],
-  pnpm: ["pnpm-lock.yaml"],
-  pnpx: ["pnpm-lock.yaml"],
-  yarn: ["yarn.lock"],
-};
-const PYTHON_TOOLS = ["pip", "pip3", "pytest", "python", "python3", ...["10", "11", "12", "13", "14"].map((minor) => `python3.${minor}`)];
-
-// A command runs a tool when the tool is the program in command position of one of its
-// simple commands, after wrappers and shell keywords.
+// Bash ran a runtime the guard-runtimes hook blocks: Python outside `uv run`, node, or a
+// JavaScript package manager other than bun, whatever lockfile the project has. The hook's
+// own matcher and shell walker decide, so scoring and enforcement agree.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
-  // Which lockfiles the project has, read with a deadline (see lib/probe.js). When the
-  // reads cannot finish, npm, pnpm and yarn are not judged: the lockfile is unknown.
-  const lockfiles = actions.cwd ? readFilesWithDeadline([...new Set(Object.values(NODE_TOOLS).flat())].map((name) => join(actions.cwd, name)), { maxChars: 0 }) : new Map();
-  const hasLockfile = (name) => Boolean(actions.cwd) && (lockfiles === null || typeof lockfiles.get(join(actions.cwd, name)) === "string");
   const hits = [];
   for (const call of commands) {
     const { command } = call.input;
-    const programs = new Set(simpleCommands(command).map((words) => basename(words[0])));
-    const runs = (name) => programs.has(name);
-    const tool = Object.entries(NODE_TOOLS).find(([name, names]) => runs(name) && !names.some(hasLockfile))?.[0]
-      ?? PYTHON_TOOLS.find(runs);
+    const tool = visitCommands(command, actions.cwd ?? "/", (words) => blockedRuntime(words)?.tool);
     if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }
   return verdictOf(commands.length > 0, hits);

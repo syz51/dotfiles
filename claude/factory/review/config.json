@@ -1,0 +1,11 @@
+{
+  "boards": ["dotfiles", "agent-board"],
+  "days": 7,
+  "branch": "main",
+  "model": "claude-opus-5-5",
+  "level": "high",
+  "verifyModel": "claude-opus-5-5",
+  "verifyEffort": "high",
+  "reviewBudgetUsd": 5,
+  "verifyBudgetUsd": 2
+}

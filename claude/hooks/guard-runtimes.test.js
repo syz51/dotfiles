@@ -19,6 +19,35 @@ describe("blocks", () => {
     ["node check.js"],
     ["nodejs server.js"],
     ["/opt/homebrew/bin/node --version"],
+    // other JavaScript package managers, also through bunx, even where a lockfile selects them
+    ["npm test"],
+    ["npm install"],
+    ["npx vitest run"],
+    ["pnpm install"],
+    ["pnpx create-vite"],
+    ["yarn build"],
+    ["yarnpkg add x"],
+    ["corepack enable"],
+    ["vp run build"],
+    ["vpx tsc"],
+    ["sudo npm i -g pnpm"],
+    ["cd app && PNPM_HOME=x pnpm store prune"],
+    ["bunx pnpm@11 store prune"],
+    ["bunx --bun npm install"],
+    ["bun x yarn"],
+    ["bunx node@22 check.js"],
+    ["bunx --cwd app npm install"],
+    ["bunx --env-file .env pnpm i"],
+    ["bunx --registry https://r.example yarn"],
+    ["bunx -p left-pad npm install"],
+    ["bunx --package=pnpm@9 pnpm"],
+    ["bun --bun x npm install"],
+    ["bun --cwd app x pnpm i"],
+    ["BUNX pnpm install"],
+    ["NPM install"],
+    ["Node check.js"],
+    ["bunx vite-plus"],
+    ["ssh host 'cd app && npm ci'"],
     // shells, wrappers, substitutions and inputs
     ["cd src && python3 check.py"],
     ["FOO=1 python3 check.py"],
@@ -93,8 +122,18 @@ describe("allows", () => {
     ["uvx ruff check ."],
     ["bun check.js"],
     ["bunx tsc --noEmit"],
-    ["npm test"],
-    ["npx vitest run"],
+    ["bun install"],
+    ["bun run test"],
+    ["bunx vitest run"],
+    ["bunx @vitejs/plugin-react"],
+    ["bun x tsc"],
+    ["bunx --cwd npm tsc"],
+    ["bunx -p npm-check-updates ncu"],
+    ["bun --cwd node x tsc"],
+    ["grep -rn pnpm ."],
+    ["cat pnpm-lock.yaml"],
+    ["rm -rf ~/Library/pnpm"],
+    ["brew uninstall pnpm yarn"],
     ["pipx list"],
     ["nodemon --version"],
     ["grep -rn python ."],
@@ -133,7 +172,10 @@ test("scripts nested too deeply to follow are skipped, not blocked", () => {
 
 test("the reason names the command and the replacement", () => {
   expect(verdict("python3 check.py")).toContain("`uv run python");
-  expect(verdict("node check.js")).toContain("`bun`");
+  expect(verdict("node check.js")).toContain("`bun <file>`");
+  expect(verdict("node check.js")).not.toContain("lockfile");
+  expect(verdict("pnpm install")).toContain("`bun install`");
+  expect(verdict("bunx pnpm@11 store prune")).toContain("runs pnpm through bunx");
 });
 
 describe("hook process", () => {

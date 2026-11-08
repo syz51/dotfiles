@@ -11,6 +11,7 @@ const COMMANDS = {
   evolve: ["./evolve/cli.js", "Report the feedback loop per setup: intake, triage, owner tasks and fixes"],
   setups: ["./setups/cli.js", "List and check the setup registry agents report friction about"],
   friction: ["./friction/cli.js", "File friction found in recent sessions as board feedback, and schedule it hourly"],
+  review: ["./review/cli.js", "Review the last week of main per board repository and file confirmed findings"],
   weekly: ["./weekly/cli.js", "Run the whole loop weekly, and schedule it"],
   ui: ["./ui/cli.js", "Hill-climb a web UI's design: captures, gates, a Claude judge council, reports"],
 };

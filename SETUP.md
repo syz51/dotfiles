@@ -151,6 +151,14 @@ ignores. For example, put `font-size = 17.0` there to override the shared size.
 
 ## Shell startup
 
+JavaScript runs on bun only, so `bun run` and `bunx` must not start Node for a tool
+whose shebang names `node`. A global bunfig `[run] bun = true` does not cover that, so
+add this to `~/.zshenv` on each Mac:
+
+```sh
+export BUN_OPTIONS=--bun
+```
+
 Review and apply the targeted startup changes to `~/.zshrc` and `~/.bashrc` with:
 
 ```sh
@@ -282,6 +290,7 @@ bun ~/.claude/factory/cli.js score --dry-run    # sessions the judge would score
 bun ~/.claude/factory/cli.js propose --list     # repeated failures that qualify
 bun ~/.claude/factory/cli.js board              # the work board's week: stats, open feedback
 bun ~/.claude/factory/cli.js evolve             # the feedback loop per setup this week
+bun ~/.claude/factory/cli.js review --dry-run   # review last week of main, file nothing (bills)
 bun ~/.claude/factory/cli.js bench list         # benchmark cases
 bun ~/.claude/factory/cli.js bench board report # agent-board text format benchmark
 bun ~/.claude/factory/cli.js bench review report # /code-review level benchmark
@@ -747,7 +756,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   order, and an Effect review reads only its routed reference. A README fix in a
   TypeScript and Rust repository loads no skill, and the article run saves its draft.
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
-  `bun` unless the project's lockfile names another tool. Fixes are re-checked
+  `bun`, also in a project whose lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
   rename across several files whose check proves from its own output that it passed
   in the fixture, spawn no subagent. No scenario leaves a process running in its
