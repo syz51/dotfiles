@@ -10,7 +10,7 @@ import { climbNoise, plateau, run as runCli, scoreLine } from "./cli.js";
 import { ConfigError, DEFAULT_CONTROL_CSS, MAX_IMAGES, productShots, referenceShots, validateConfig } from "./config.js";
 import {
   avoidList, barReach, buildContent, calibrationOf, checkRequestSize, combine, councilVersion, JudgeFailedError, JudgeOutputError, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
-  readOutput, RUBRIC, runJudge, shuffle, systemPrompt, topIssues, verdict,
+  readOutput, RUBRIC, runJudge, shuffle, suggestBar, systemPrompt, topIssues, verdict,
 } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { endLabels, escape, renderReport } from "./report.js";
@@ -340,10 +340,27 @@ describe("council", () => {
     expect(reach.share).toBe(0);
     expect(reach.beyond).toHaveLength(CATEGORIES.length - 1);
     expect(reach.warnings).toEqual([expect.stringContaining("above the best reference in hierarchy (8.50)"), "0% of its scores of main and the references reach 9"]);
+    // With the warning comes a bar the judge gives: lead the references, floor at their level.
+    expect(reach.suggestion).toEqual({ min: 8.5, references: 0.25 });
     // Within the reference's reach, and given often enough: no warning. The control's low scores do not count.
-    expect(barReach(result, { min: 8.5, references: ["ref:a"], sigmaCategory: 0.1 }).warnings).toEqual([]);
+    expect(barReach(result, { min: 8.5, references: ["ref:a"], sigmaCategory: 0.1 })).toMatchObject({ warnings: [], suggestion: null });
     // A bar a little over the best reference, inside twice the noise, is not beyond it.
     expect(barReach(result, { min: 8.75, references: ["ref:a"], sigmaCategory: 0.2 }).beyond).toEqual([]);
+  });
+
+  test("the suggested bar comes from calibration's reference scores and noise", () => {
+    // The best of two references per category; their mean is about 7.93, which rounds down to 7.75.
+    const ids = CATEGORIES.filter((id) => id !== "responsive");
+    const scores = (offset) => Object.fromEntries(CATEGORIES.map((id, index) => [id, id === "responsive" ? null : 7 + offset + (index % 2) * 0.4]));
+    const result = { samples: [{ scores: { baseline: scores(0), "ref:a": scores(0.5), "ref:b": scores(0.7) } }], scores: { "ref:a": scores(0.5), "ref:b": scores(0.7) } };
+    const reach = barReach(result, { min: 9, references: ["ref:a", "ref:b"], sigmaCategory: 0.33 });
+    const level = ids.reduce((sum, id) => sum + result.scores["ref:b"][id], 0) / ids.length;
+    expect(reach.suggestion).toEqual({ min: Math.floor(4 * level) / 4, references: 0.35 });
+    // Other reference scores give another floor: it is not a fixed number.
+    expect(suggestBar({ min: 9, bestReference: { hierarchy: 8.4, color: 8.6 }, sigmaCategory: 0 })).toEqual({ min: 8.5, references: 0.25 });
+    // Never above the current bar, and nothing to lead without references.
+    expect(suggestBar({ min: 8, bestReference: { hierarchy: 8.6 }, sigmaCategory: 0.1 }).min).toBe(8);
+    expect(suggestBar({ min: 9, bestReference: {}, sigmaCategory: 0.1 })).toBeNull();
   });
 
   test("a change to what the judges are asked changes the council version and the run's identity", () => {
@@ -667,7 +684,11 @@ button { font: inherit; padding: 8px 16px; }
     expect(Object.values(calls()[0].order).sort()).toEqual(["baseline", "control", "references"]);
     // The reference scores 8 and main 7, so a bar of 8.5 is out of the judge's reach.
     expect(result.stdout).toContain("Bar reach: the bar 8.5 may be out of the judges' range.");
-    expect(calibration.judges["claude-sonnet-5-5@medium"].barReach).toMatchObject({ min: 8.5, share: 0 });
+    expect(calibration.judges["claude-sonnet-5-5@medium"].barReach).toMatchObject({ min: 8.5, share: 0, suggestion: { min: 8, references: 0.25 } });
+    // It suggests a bar from the reference's score (8): lead it, with its level as the floor.
+    expect(result.stdout).toContain("lead the best reference by 0.25 in every category, with 8 (about the best reference's level) as the floor");
+    expect(result.stdout).toContain('  "pass": { "min": 8, "gain": 0.5, "references": 0.25 }');
+    expect(result.stdout).toContain("ask the owner whether to use the suggested lead over the references, go on as is");
 
     // Round 1: a change the judges rate below the bar.
     write("web/home.html", page("This week", "<p>Due soon</p>"));

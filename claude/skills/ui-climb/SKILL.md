@@ -66,7 +66,8 @@ relative to its folder. Start from:
 - References are public pages of products of the same kind (or `files` of PNGs with a
   `view`), so judges score on a shared scale; check that each renders logged out with
   `capture`. `pass.references` (optional) also requires every category to beat the best
-  reference by that margin; leave it out unless the owner asks for it.
+  reference by that margin; leave it out unless the owner asks for it or picks the
+  suggested lead at calibration (below).
 - Judges run in order and a round stops at the first that fails, so put the cheapest
   first. Until a round has heard from every judge, rounds run them all, so you learn
   whether they agree.
@@ -91,9 +92,18 @@ calibrate again. Rounds refuse to run without a passing calibration.
 
 Calibration also prints a **bar reach** warning when a judge almost never gives the bar:
 the bar is above the best reference by more than twice its noise, or under 5% of its scores of
-main and the references reach it. Then put the warning in a note and ask the owner
-(`ask_user`) before round 1: go on as is, add a reference they rate at the bar, put a
-judge that uses the top of the scale first, or lower the bar.
+main and the references reach it. With references, it also prints a suggested `pass`
+that leads the best reference in every category (`pass.references`, at least 0.25 or the
+judges' noise) with `pass.min` at about the best reference's level, both from the
+calibration's own scores. Then put the warning and the suggestion in a note and ask the
+owner (`ask_user`) before round 1, with these options in this order:
+
+1. Lead the references: use the suggested `pass` (recommended; judges give it, and it is
+   the real goal of beating products of the same kind). Start it with `--new-run`.
+2. Go on as is.
+3. Add a reference they rate at the bar.
+4. Put a judge that uses the top of the scale first.
+5. Lower the bar.
 
 ## 3. Climb
 

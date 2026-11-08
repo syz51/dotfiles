@@ -372,7 +372,8 @@ export function calibrationOf(result, { baseline = "baseline", control = "contro
 // of its scores of main and the references (not the control) at or above min. Warns when the
 // bar is above the best reference by more than twice the judge's category noise, or when
 // fewer than 5% of its scores reach it: a climb would then spend rounds against a score the
-// judge almost never gives.
+// judge almost never gives. With a warning it also suggests a bar relative to the references
+// (see suggestBar).
 export function barReach(result, { min, references, sigmaCategory }) {
   const keys = ["baseline", ...references];
   const all = result.samples.flatMap((sample) => keys.flatMap((key) => Object.values(sample.scores[key] ?? {}))).filter((value) => typeof value === "number");
@@ -386,5 +387,18 @@ export function barReach(result, { min, references, sigmaCategory }) {
   const warnings = [];
   if (beyond.length) warnings.push(`the bar ${min} is above the best reference in ${beyond.map((id) => `${id} (${bestReference[id].toFixed(2)})`).join(", ")}`);
   if (share < 0.05) warnings.push(`${Math.round(share * 100)}% of its scores of main and the references reach ${min}`);
-  return { min, share, bestReference, beyond, warnings };
+  const suggestion = warnings.length ? suggestBar({ min, bestReference, sigmaCategory }) : null;
+  return { min, share, bestReference, beyond, warnings, suggestion };
+}
+
+// A bar the judge gives, from its calibration scores: lead the best reference in every
+// category (pass.references) by at least 0.25 or the judge's category noise, rounded up to
+// 0.05, and keep pass.min as a floor at the best reference's level (its mean over the
+// categories, rounded down to 0.25 and never above the current bar). Null without references.
+export function suggestBar({ min, bestReference, sigmaCategory }) {
+  const scores = Object.values(bestReference);
+  if (!scores.length) return null;
+  // The small epsilons keep float error such as 8.2499999 from moving a step.
+  const level = Math.floor((4 * scores.reduce((sum, value) => sum + value, 0)) / scores.length + 1e-9) / 4;
+  return { min: Math.max(1, Math.min(min, level)), references: Math.max(0.25, Math.ceil(20 * (sigmaCategory || 0) - 1e-9) / 20) };
 }

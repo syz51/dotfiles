@@ -262,7 +262,15 @@ async function calibrateCommand(config, values) {
       console.log(`\nBar reach: the bar ${config.pass.min} may be out of the judges' range.`);
       for (const [key, result] of unreachable)
         console.log(`- ${key}: ${result.barReach.warnings.join("; ")}. Best reference per category: ${Object.entries(result.barReach.bestReference).map(([id, score]) => `${id} ${fixed(score)}`).join(", ") || "none"}.`);
-      console.log("Before round 1, put this in a note and ask the owner whether to go on as is, add a reference they rate at the bar, put a judge that uses the top of the scale first, or lower the bar.");
+      // One bar every warned judge gives: the lowest floor and the largest lead.
+      const suggestions = unreachable.map(([, result]) => result.barReach.suggestion).filter(Boolean);
+      if (suggestions.length) {
+        const min = Math.min(...suggestions.map((item) => item.min));
+        const lead = Math.max(...suggestions.map((item) => item.references));
+        console.log(`Suggested bar, from these reference scores: lead the best reference by ${lead} in every category, with ${min} (about the best reference's level) as the floor. In the configuration (with --new-run):`);
+        console.log(`  "pass": { "min": ${min}, "gain": ${config.pass.gain}, "references": ${lead} }`);
+      }
+      console.log(`Before round 1, put this in a note and ask the owner whether to ${suggestions.length ? "use the suggested lead over the references, " : ""}go on as is, add a reference they rate at the bar, put a judge that uses the top of the scale first, or lower the bar.`);
     }
     if (errored) {
       console.log("\nA judge could not finish its calls (its cost is counted): see the reason in the table, then calibrate again.");
