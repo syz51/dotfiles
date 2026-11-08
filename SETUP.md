@@ -159,6 +159,9 @@ add this to `~/.zshenv` on each Mac:
 export BUN_OPTIONS=--bun
 ```
 
+`~/.zshenv` on each Mac also puts `$HOME/.bun/bin` on `PATH`, so non-interactive shells,
+such as `ssh` commands, find `bun` and `bunx`.
+
 Review and apply the targeted startup changes to `~/.zshrc` and `~/.bashrc` with:
 
 ```sh
