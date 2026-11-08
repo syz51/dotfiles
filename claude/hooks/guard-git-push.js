@@ -12,7 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { changeDirectory, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
+import { changeDirectory, expands, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
 
 const DEFAULT_BRANCHES = ["main", "master"];
 const TOO_DEEP = "it nests shell commands too deeply to check.";
@@ -35,11 +35,6 @@ function longOption(name) {
   return matches.find((option) => REWRITING_OPTIONS.includes(option)) ?? name;
 }
 
-/**
- * Whether the shell fills in part of `word` from a variable, a command substitution or a brace
- * expansion, so its value is unknown here. shell.js drops quoting, so a quoted `$` counts too.
- */
-const expands = (word) => /[$`]|\{[^{}]*(?:,|\.\.)[^{}]*\}/.test(word);
 // Configuration that decides what a push without refspecs sends, and to which remote.
 const PUSH_CONFIG = "^(remote\\..+\\.(push|mirror)|remote\\.pushdefault|branch\\..+\\.(pushremote|remote))$";
 const isPushConfig = (key) => new RegExp(PUSH_CONFIG, "i").test(key);

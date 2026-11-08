@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { CATEGORIES, OUTCOMES } from "../factory/metrics/reviews.js";
 import { REQUIRED } from "../factory/setups/cli.js";
 import { configuredEffort } from "./lib/live.js";
+import { BUDGET_MS, CALL_TIMEOUT_MS } from "../hooks/guard-pr-merge.js";
 
 const CLAUDE = join(import.meta.dir, "..");
 const REPO = join(CLAUDE, "..");
@@ -139,6 +140,12 @@ describe("global instructions", () => {
     expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
 
+  // Most of the user's repositories have no branch protection, so the hook enforces the merge
+  // condition the Autonomy section grants (dotfiles-259).
+  test("the merge rule names the hook that enforces it", () => {
+    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks.");
+  });
+
   // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
   // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
   // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
@@ -224,6 +231,7 @@ describe("settings", () => {
     ["claude/settings.json", "guard-git-push.js"],
     ["claude/settings.json", "guard-runtimes.js"],
     ["claude/settings.json", "guard-main-checkout.js"],
+    ["claude/settings.json", "guard-pr-merge.js"],
     ["codex/hooks.json", "guard-git-push.js"],
     ["codex/hooks.json", "guard-runtimes.js"],
   ])("%s registers the %s guard for Bash PreToolUse", (path, script) => {
@@ -232,6 +240,15 @@ describe("settings", () => {
       && group.hooks.some((hook) => hook.type === "command"
         && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
     expect(guard).toHaveLength(1);
+  });
+
+  // A hook that times out is a non-blocking error, so the merge would run unchecked. Each gh
+  // call is capped at the budget left, so all of them end within BUDGET_MS; the rest of the
+  // hook timeout covers bun's start and the parse.
+  test("the pr-merge guard's timeout covers its gh calls", () => {
+    const hook = handlers.find((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    expect(CALL_TIMEOUT_MS).toBeLessThanOrEqual(BUDGET_MS);
+    expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
   });
 
   test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {

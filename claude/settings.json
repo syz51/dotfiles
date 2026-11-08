@@ -28,6 +28,11 @@
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-main-checkout.js\""
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-pr-merge.js\"",
+            "timeout": 45
           }
         ]
       },

@@ -117,6 +117,14 @@ describe("in a main checkout it blocks", () => {
     ["git bisect good"],
     ["gh pr checkout 12"],
     ["gh pr co 12"],
+    ["gh pr merge 12 --squash"],
+    ["gh pr -R owner/repo merge 12"],
+    ["gh pr --repo=owner/repo merge"],
+    // gh reads -R and other options before the subcommand
+    ["gh -R owner/repo pr checkout 12"],
+    ["gh --repo=owner/repo pr co 12"],
+    ["gh -R owner/repo pr merge 12"],
+    ["gh --foo=bar pr merge -d"],
     // the program name ignores case, as macOS volumes do
     ["GIT switch feature"],
     ["Git reset --hard"],
@@ -125,6 +133,21 @@ describe("in a main checkout it blocks", () => {
     ["git -C sub checkout feature", "/main"],
     ["cd /main && git merge feature", "/elsewhere"],
     ["cd /main && gh pr checkout 12", "/elsewhere"],
+    // zsh runs a pipeline's last part in the current shell, so its cd moves later commands
+    ["true | cd /main; git reset --hard HEAD~1", "/linked"],
+    ["true | cat | cd /main && git reset --hard HEAD~1", "/linked"],
+    ["true | { cd /main; }; git reset --hard HEAD~1", "/linked"],
+    ["true | pushd /main; gh pr merge 12", "/linked"],
+    // a cd still moves the commands after it in its own subshell or background job
+    ["(cd /main && git switch feature)", "/linked"],
+    ["cd /main && git switch feature &", "/linked"],
+    ["(cd /main; echo \"$(git reset --hard HEAD~1)\") | cat", "/linked"],
+    ["(cd /main; x=$(git stash)) | cat", "/linked"],
+    // a case pattern's ) does not end the subshell
+    ["(cd /main; case a in a) ;; esac; git reset --hard HEAD~1)", "/linked"],
+    // a cd inside ( ) leaves the commands after the subshell in the main checkout
+    ["(cd /tmp); git switch feature"],
+    ["noglob git switch feature"],
     ["git switch feature", "/main/sub"],
     ["sh -c 'git switch feature'"],
     ["sudo git reset --hard"],
@@ -160,6 +183,13 @@ describe("in a main checkout it blocks", () => {
     expect(verdict("git pull")).toContain("A fast-forward, `git pull --ff-only`, may run here.");
     expect(verdict("git checkout feature")).toContain("use `git restore <path>` or `git checkout -- <path>`");
     expect(verdict("git reset file.txt")).toContain("use `git restore --staged <path>` or `git reset -- <path>`");
+  });
+
+  test("sends gh pr merge to the agent's own worktree", () => {
+    const reason = verdict("gh pr merge 12 --squash");
+    expect(reason).toStartWith("`gh pr merge 12 --squash`: it merges a pull request from /main, a main checkout other threads share");
+    expect(reason).toContain("Run it from your own worktree");
+    expect(reason).not.toContain("claude.mainCheckout=allow");
   });
 
   test("gives gh pr checkout its route through git", () => {
@@ -224,6 +254,8 @@ describe("it allows", () => {
     ["git worktree add ../wt -b feature"],
     ["git branch feature"],
     ["gh pr view 12"],
+    ["gh pr view merge"],
+    ["gh pr create --title merge"],
     ["git config --get claude.mainCheckout"],
     ["git config get claude.mainCheckout"],
     ["git config --get-all claude.mainCheckout"],
@@ -249,6 +281,17 @@ describe("it allows", () => {
     ["git rebase origin/main", "/linked"],
     ["git -C /linked stash", "/main"],
     ["gh pr checkout 12", "/linked"],
+    ["gh pr merge 12 --squash", "/linked"],
+    // a cd in a subshell, a background job or an earlier pipeline part moves nothing after it,
+    // in zsh and bash alike
+    ["cd /main | true; git reset --hard HEAD~1", "/linked"],
+    ["cd /main |& true; git reset --hard HEAD~1", "/linked"],
+    ["cd /main | git switch feature", "/linked"],
+    ["(cd /main); git reset --hard HEAD~1", "/linked"],
+    ["true | (cd /main); git reset --hard HEAD~1", "/linked"],
+    ["cd /main & git reset --hard HEAD~1", "/linked"],
+    ["{ cd /main; } | true; git reset --hard HEAD~1", "/linked"],
+    ["(case a in a) cd /main;; esac); git reset --hard HEAD~1", "/linked"],
     ["git checkout -b feature", "/allowed"],
     ["git checkout -b repro", "/scratch/repo"],
     ["git stash", "/scratch/repo"],
