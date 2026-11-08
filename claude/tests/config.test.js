@@ -124,6 +124,14 @@ describe("global instructions", () => {
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
     expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
+
+  // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
+  // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
+  // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
+  // T3 tools.
+  test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
+    expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
+  });
 });
 
 describe("settings", () => {
@@ -631,12 +639,6 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/A new worktree never has uncommitted changes/);
     expect(delegation).toMatch(/transfer required inputs explicitly and have the child verify them in its checkout/);
     expect(delegation).toMatch(/bring its changes into this checkout and remove the worktree and its branch, unless I say otherwise/);
-  });
-
-  // t3_thread_launch with a prompt and a worktree sometimes made the thread but started no
-  // run (runId null); t3_thread_send started one each time (board-feedback-369, dotfiles-204).
-  test("Delegation checks that a launched T3 thread started a run, else sends the brief", () => {
-    expect(section("Delegation")).toContain("After `t3_thread_launch`, check the result's `runId`; when it is null, no run started, so send the brief with `t3_thread_send`.");
   });
 
   // git checks a branch out in one worktree at a time, so a brief that said to check out a
