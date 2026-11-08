@@ -29,6 +29,13 @@ describe("setups", () => {
     expect(loadSetups().find((entry) => entry.id === "skills").channel).toBe("skill-notes");
     // CI friction goes to the board of the repository whose workflows or branch rules got in the way.
     expect(loadSetups().find((entry) => entry.id === "ci").owner).toEqual({ repo: "<project>", board: "<project>" });
+    // In-repo skills route to the dotfiles board, not to codex-skills' skill notes.
+    expect(loadSetups().find((entry) => entry.id === "cheat-sheets")).toMatchObject({
+      covers: expect.arrayContaining(["claude/skills/cheat-sheets"]),
+      owner: { repo: "github.com/syz51/dotfiles", board: "dotfiles" },
+      channel: "board",
+      verify: expect.arrayContaining(["bun test claude/tests/cheatsheets.test.js"]),
+    });
   });
 
   test("--check exits 1 on a broken registry and names each problem", async () => {

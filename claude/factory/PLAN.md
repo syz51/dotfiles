@@ -679,3 +679,5 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-07: Compared the review setup with Anthropic's code review post (dotfiles-99).
   Reviews take 11.7% of spend, all at xhigh without verification, with a median of 15
   findings. The user chose a revert-rate circuit breaker. Section 8 has the details.
+- 2026-11-08: Registered the `cheat-sheets` skill in `setups.toml` (dotfiles-200), so its
+  feedback routes to the dotfiles board instead of `other`. The registry now has 28 setups.
