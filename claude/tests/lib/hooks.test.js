@@ -13,7 +13,7 @@ test("installs, downloads and web access are blocked", () => {
     "npm install", "npm i left-pad", "bun add zod", "bunx tsc", "npx playwright test", "pnpm dlx x", "uvx ruff",
     "pip install requests", "uv add httpx", "uv pip install x", "cargo add serde", "cargo install ripgrep",
     "curl -sL https://example.com", "wget x", "git clone https://x", "sh ~/.claude/skills/headless-browser/scripts/setup.sh",
-    "bunx playwright install chromium",
+    "bunx playwright install chromium", "vp install", "vp add zod", "vp dlx create-vite", "vpx tsc",
   ]) {
     const run = bash(command);
     expect(run.status, command).toBe(2);

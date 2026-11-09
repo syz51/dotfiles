@@ -72,7 +72,7 @@ describe("rubric", () => {
   test("the judge's prompt is pinned to the rubric version", () => {
     // A changed prompt judges differently, so it needs a new rubric version (see rubric.js):
     // bump rubric.json's version and record the new hash under it here.
-    const PROMPTS = { 4: "c818fa55373efbea", 5: "c818fa55373efbea", 6: "fca60587ba85bd81", 7: "e1e4cb1eb271d652", 8: "e1e4cb1eb271d652", 9: "fbc7fe0d2f1dd7be", 10: "397a5f7f1dc20e9a" };
+    const PROMPTS = { 4: "c818fa55373efbea", 5: "c818fa55373efbea", 6: "fca60587ba85bd81", 7: "e1e4cb1eb271d652", 8: "e1e4cb1eb271d652", 9: "fbc7fe0d2f1dd7be", 10: "397a5f7f1dc20e9a", 11: "397a5f7f1dc20e9a" };
     const parts = score.judgeParts({ digest: "DIGEST", globalInstructions: "GLOBAL", projectFiles: [{ file: "CLAUDE.md", text: "PROJECT" }] });
     expect(createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16)).toBe(PROMPTS[RUBRIC.version]);
   });
