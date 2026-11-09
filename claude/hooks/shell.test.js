@@ -131,6 +131,21 @@ test("ssh runs its command remotely, in an unknown directory", () => {
   expect(commands("ssh host")).toEqual([]);
 });
 
+test("visit learns which commands run on the remote host over ssh", () => {
+  const remote = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (words, _dir, { remote: onRemote }) => {
+      seen.push([words.join(" "), onRemote]);
+    });
+    return seen;
+  };
+  expect(remote("ssh host 'make; bash -c \"make test\"'; make")).toEqual([["make", true], ["make test", true], ["bash -c make test", true], ["make", false]]);
+  expect(remote("echo make | ssh host")).toEqual([["make", true], ["echo make", false]]);
+  expect(remote("ssh -o ProxyCommand='nc proxy' host ls")).toEqual([["ls", true], ["nc proxy", false]]);
+  expect(remote("echo $(ssh host cat x) | make")).toEqual([["cat x", true], ["echo $(ssh host cat x)", false], ["make", false]]);
+  expect(remote("ssh a ssh b make")).toEqual([["make", true]]);
+});
+
 test("ssh reads options as getopt does, before and after the host", () => {
   expect(commands("ssh -lme host make")).toEqual([["make", undefined]]);
   expect(commands("ssh -lpi host make")).toEqual([["make", undefined]]);

@@ -265,6 +265,33 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });
 
+// uv may be missing on a remote host, so the reason there names jq for JSON and uv only where
+// it is installed. A python3 that runs here keeps the local reason, also beside an ssh command.
+test("python over ssh stays blocked, and its reason names what works on the remote host", () => {
+  const remote = [
+    "ssh host python3 -c 'import json'",
+    "ssh host 'sudo python3 -c \"print(1)\"'",
+    "ssh -p 22 host 'cd app && python3 check.py'",
+    "echo 'python3 x.py' | ssh host",
+    "ssh host bash -s <<'EOF'\npython3 x.py\nEOF",
+    "ssh host 'bash -c \"pytest -q\"'",
+    "sudo ssh host 'echo $(python3 -V)'",
+  ];
+  for (const command of remote) {
+    const reason = verdict(command);
+    expect(reason).toContain("on the remote host over ssh");
+    expect(reason).toContain("`jq`");
+    expect(reason).toContain("`uv run --no-project python …` where uv is on that host");
+    expect(reason).not.toContain("`uv pip …`");
+  }
+  expect(verdict("ssh host 'cd app && npm ci'")).toContain("`bun install`");
+  for (const command of ["python3 -c 'import json'", "ssh host ls; python3 check.py", "ssh -o ProxyCommand='python3 proxy.py' host ls",
+    "ssh host cat x.json | python3 -c 'import json'", "python3 -c \"$(ssh host cat x.py)\""]) {
+    expect(verdict(command)).toContain("Run Python through uv instead: `uv run python …`");
+    expect(verdict(command)).not.toContain("remote host");
+  }
+});
+
 // node may run in a checkout of a repository node-repos.json lists, such as T3 Code, whose
 // server needs Node.js; real git repositories stand in for the checkouts, so the remote
 // lookup runs as in the hook. They are built in beforeAll, after the cleanup is registered.
@@ -410,6 +437,13 @@ describe("hook process", () => {
     const result = bash("python3 check.py");
     expect(result.code).toBe(2);
     expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `python3 check.py` runs python3 directly.");
+  });
+
+  test("blocks python over ssh with exit 2 and names jq and uv run for the remote host", () => {
+    const result = bash("ssh host python3 -c 'import json'");
+    expect(result.code).toBe(2);
+    expect(result.stderr).toBe("Blocked by the guard-runtimes hook: `python3 -c import json` runs python3 on the remote host over ssh. "
+      + "Python runs through uv there too. Read JSON there with `jq` instead, or run `uv run --no-project python …` where uv is on that host.\n");
   });
 
   test("blocks the Codex CLI with exit 2 before it starts", () => {

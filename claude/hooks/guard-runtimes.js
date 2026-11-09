@@ -13,7 +13,8 @@
 // still run. Exit 2 blocks the command and shows stderr to Claude; a crash is a
 // non-blocking hook error, so the guard fails open. shell.js follows the shell syntax
 // around a command (wrappers, `sh -c`, `find -exec`, `ssh`) but cannot see into script
-// files, package scripts or expanded variables.
+// files, package scripts or expanded variables. A Python block over ssh names what works on
+// a remote host instead: `jq` for JSON, or `uv run --no-project python` where uv is there.
 // One exception: node, also through these launchers, may run in a checkout of a repository
 // that node-repos.json lists, such as T3 Code, whose server needs Node.js. A checkout is a
 // git repository whose origin or upstream remote is such a repository, decided from each
@@ -177,12 +178,19 @@ export const blockedRuntime = (words, dir, allowsNode = nodeCheckout) => find(wo
   || (JS_TOOL.test(tool) && !(NODE.test(tool) && !run?.slice(1).some((word) => PACKAGE_MANAGER_SCRIPT.test(word)) && allowsNode(where))), true);
 export const codexLaunch = (words) => find(words, undefined, (tool) => CODEX.test(tool), false);
 
-/** Why the command `words`, run in the directory `dir`, must not run, or undefined when it may. */
-export function runtimeViolation(words, dir) {
+/**
+ * Why the command `words`, run in the directory `dir`, here or on another host when `remote`,
+ * must not run, or undefined when it may.
+ */
+export function runtimeViolation(words, dir, { remote = false } = {}) {
   const blocked = blockedRuntime(words, dir) ?? codexLaunch(words);
   if (!blocked) return undefined;
   const { tool, via } = blocked;
   const command = `\`${words.join(" ")}\``;
+  if (PYTHON.test(tool) && remote) {
+    return `${command} runs ${tool}${via ? ` through ${via}` : ""} on the remote host over ssh. Python runs through uv there too. `
+      + "Read JSON there with `jq` instead, or run `uv run --no-project python …` where uv is on that host.";
+  }
   if (PYTHON.test(tool)) {
     return `${command} runs ${tool}${via ? ` through ${via}` : " directly"}. Run Python through uv instead: \`uv run python …\`, `
       + "`uv run --with pytest pytest …` or `uv pip …`.";
