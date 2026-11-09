@@ -159,7 +159,7 @@ describe("global instructions", () => {
   // or left a cross-repo board task undispatched because the T3 rules reserve t3_thread_launch
   // for user-requested threads (board-feedback-188 to -550, dotfiles-120).
   test("Delegation names one route for local delegates and cross-repo board work", () => {
-    expect(section("Delegation")).toContain("A local `delegate_task` omits `target`, or sets only its provider and model fields; T3 refuses a `target.projectId` for another project, even with a local `target.environmentId`. For board work in another repository, use `t3_thread_launch` with that project's `projectId`, `workspaceStrategy: \"worktree\"` and the brief in `message`; board dispatch is my standing request for such a thread.");
+    expect(section("Delegation")).toContain("A local `delegate_task` leaves out `target.projectId`; T3 refuses another project's id, even with a local `target.environmentId`. To dispatch a board task whose code is in another repository, call `t3_thread_launch` with that project's `projectId` and `workspaceStrategy` `{type: \"worktree\", baseRef: \"origin/<default branch>\", startFromOrigin: true}`. That thread opens its own PR there. Dispatching a board task counts as my standing request for such a thread; work you find in another repository still becomes a proposal.");
   });
 });
 
