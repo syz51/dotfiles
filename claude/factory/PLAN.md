@@ -505,12 +505,13 @@ first climb is agent-board's web view (`agent-board-21`).
   and `~/.claude/frontend-avoid.md`.
 - Board integration: one `score:` note per round; stop on pass, budget or plateau (two
   judged rounds in which neither the lowest category nor a gain still under its bar moved
-  beyond the noise), after one structural round and one round that fixes its issues when
-  the bar is far and budget is left; friction goes to `board feedback --about ui-climb`;
+  beyond the noise), after one structural round and one round on a new commit that fixes
+  its issues when the bar is far and budget is left; friction goes to `board feedback --about ui-climb`;
   the owner decides the merge through an ask.
 - Issue ledger (`ui/ledger.js`): issues match across rounds by screen and category. A
   round marks an issue still reported as unfixed since its first round, and one reported
-  again after a round resolved it as returning. Each round fixes every issue or says in a
+  again after a round resolved it as returning; only a round on a new commit that no longer
+  reports an issue resolves it. Each round fixes every issue or says in a
   note why it keeps one. The fixes that resolved an issue go into the judges' system prompt
   as design decisions already made, without words that tell a climb runs. When judges
   alternate on one element, the climber keeps the best-scoring version and records the

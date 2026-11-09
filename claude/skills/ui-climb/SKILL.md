@@ -117,7 +117,7 @@ Repeat:
 1. Commit the change. A round judges HEAD, extracted and set up fresh; uncommitted changes
    are refused.
 2. `$UI round`. Read the whole output: gate failures, the per-judge table, the category
-   table, the top issues, and the last line, which starts `score:`.
+   table, every issue with its ledger marks, and the last line, which starts `score:`.
 3. Record the round on the task: `task_note` with the `score:` line as printed, then
    update your handoff.
 4. Stop when the round passes, when the run's budget is spent (exit 3), after 10
@@ -127,8 +127,9 @@ Repeat:
    the budget left, status says so: first make one structural round aimed at the lowest
    category (a new type scale, layout system or component set, not more local fixes),
    judge it with `$UI round --structural` and note what it changes. Then fix the issues
-   that round reported in one more round, and stop when status says the two did not move
-   it either; status never says to stop right after the structural round itself. Status
+   that round reported in one more round on a new commit, and stop when status says the
+   two did not move it either; status never says to stop right after the structural round
+   itself, nor after a re-run of its commit. Status
    says so for every structural round since a metric last moved; a structural round that
    moved one earns a new one at the next plateau. Say why you stopped in the last note,
    with the calibration's bar-reach warning when status repeats it.
@@ -144,7 +145,8 @@ Repeat:
 The round keeps a ledger of issues across the run, matched by screen and category.
 `[unfixed since round N]` means the judges still report an issue that earlier rounds did
 not fix: try a different fix, not the same one again. `[returns after round N]` means an
-issue came back after round N's fix resolved it. The fixes that resolved an issue go to
+issue came back after round N's fix resolved it; it keeps that mark while it stays. An
+issue counts as resolved only when a round on a new commit no longer reports it. The fixes that resolved an issue go to
 the judges as decisions already made, so they stop asking to undo them. The ledger sends
 the fix the issue asked for, so apply that fix; when yours differs, say how in the note.
 

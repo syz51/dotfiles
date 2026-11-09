@@ -218,7 +218,12 @@ export function readOutput(output, labels, versions) {
   if (seen.size !== labels.size) throw new JudgeOutputError(`scored ${seen.size} of ${labels.size} designs`);
   const overall = Object.fromEntries(Object.entries(scores).map(([key, values]) => [key, mean(Object.values(values).filter((value) => value !== null))]));
   const known = (design) => labels.get(design);
-  const issues = (output.issues ?? []).filter((issue) => known(issue.design)).map((issue) => ({ ...issue, version: known(issue.design) }));
+  // A judge may write a screenshot's identifier as "[home.desktop-light]" or "home
+  // (desktop-light)"; the identifier it names is the screen, so one issue keeps one key.
+  const canonical = (text) => String(text).toLowerCase().replace(/[^a-z0-9-]+/g, " ").trim();
+  const shown = new Map(versions.flatMap((version) => version.shots.map((shot) => [canonical(shotLabel(shot)), shotLabel(shot)])));
+  const screenOf = (text) => shown.get(canonical(text)) ?? text;
+  const issues = (output.issues ?? []).filter((issue) => known(issue.design)).map((issue) => ({ ...issue, screen: screenOf(issue.screen), version: known(issue.design) }));
   const strengths = (output.strengths ?? []).filter((item) => known(item.design)).map((item) => ({ ...item, version: known(item.design) }));
   return { scores, overall, issues, strengths, summaries };
 }
@@ -338,6 +343,10 @@ export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 export const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
 export const money = (value) => `$${(value ?? 0).toFixed(2)}`;
 
+// What makes two issues the same: their screen and category. topIssues groups by it and the
+// climb's ledger follows issues across rounds by it.
+export const issueKey = (issue) => `${issue.screen}|${issue.category}`;
+
 // The candidate's issues over every judge and sample, grouped by screen and category. Those
 // in a category under the bar come first, the furthest under first (deficits: { category:
 // points under the bar }, only categories under it); then the most weighty: severity
@@ -348,7 +357,7 @@ export function topIssues(results, key = "candidate", limit = 20, deficits = {})
     for (const sample of result.samples)
       for (const issue of sample.issues) {
         if (issue.version !== key) continue;
-        const id = `${issue.screen}|${issue.category}`;
+        const id = issueKey(issue);
         const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: issue.category in deficits, weight: 0, count: 0, severity: "low", problems: [], fixes: [], judges: [] };
         group.weight += SEVERITY[issue.severity] ?? 1;
         group.count++;

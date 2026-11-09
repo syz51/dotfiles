@@ -869,7 +869,8 @@ describe("lean prompt", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
     expect(skill).toContain("fix every issue the round reported, `×1` included");
     expect(skill).toContain("say in the round's `note:` which issues you kept and why");
-    expect(skill).toContain("Then fix the issues that round reported in one more round, and stop when status says the two did not move it either");
+    expect(skill).toContain("Then fix the issues that round reported in one more round on a new commit, and stop when status says the two did not move it either");
+    expect(skill).toContain("An issue counts as resolved only when a round on a new commit no longer reports it");
     expect(skill).toContain("`[unfixed since round N]` means the judges still report an issue");
     expect(skill).toContain("`[returns after round N]` means an issue came back after round N's fix resolved it");
     expect(skill).toContain("The fixes that resolved an issue go to the judges as decisions already made");

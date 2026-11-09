@@ -170,12 +170,13 @@ export function plateau(list, { min, references = null, noise }) {
 // The structural round a plateau has tried: the latest one after the metrics last moved
 // (movedAt), as { round, followed }, or null. One that moved them has not stopped the climb,
 // and a later plateau earns a new one. followed: a judged round came after it, the round
-// that fixes the structural round's own issues; until then the climb is not told to stop.
+// that judged another commit, the one that fixes the structural round's own issues (a re-run
+// of the same commit fixes nothing); until then the climb is not told to stop.
 export function structuralTried(list, movedAt) {
   const since = movedAt ?? -Infinity;
   const structural = list.findLast((round) => round.verdicts?.length && round.structural && round.round > since);
   if (!structural) return null;
-  return { round: structural.round, followed: list.some((round) => round.verdicts?.length && round.round > structural.round) };
+  return { round: structural.round, followed: list.some((round) => round.verdicts?.length && round.round > structural.round && round.sha !== structural.sha) };
 }
 
 function printGates(gates, dir) {
@@ -388,7 +389,8 @@ async function roundCommand(config, values) {
       // Every issue, so the round can fix them all and the ledger misses none.
       result = {
         ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
-        issues: markIssues(topIssues(judged, "candidate", Infinity, deficits), entries), settled,
+        // The settled fixes the judges were told, when any judge was asked.
+        issues: markIssues(topIssues(judged, "candidate", Infinity, deficits), entries), settled: verdicts.length || error ? settled : [],
         samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
       };
     }
@@ -500,9 +502,9 @@ function statusCommand(config, values) {
     console.log(`Plateau (${status.plateau.judge}): in the last two judged rounds nothing the bar needs moved beyond the noise: ${describeMetrics(status.plateau.metrics)}.`);
     const structural = structuralTried(list, status.plateau.movedAt);
     if (structural && !structural.followed) {
-      console.log(`Structural round ${structural.round} is the latest judged round: fix the issues it reported in one more round (not --structural) before you decide. Stop if that round does not move it either.`);
+      console.log(`Structural round ${structural.round} has no fix round yet: fix the issues it reported in one more round on a new commit (not --structural) before you decide. Stop if that round does not move it either.`);
     } else if (structural) {
-      console.log(`Structural round ${structural.round} did not move it either: stop the climb and say so in the last note.`);
+      console.log(`Structural round ${structural.round} and the round that fixed its issues did not move it either: stop the climb and say so in the last note.`);
       const unreachable = barWarnings(calibration?.judges);
       if (unreachable.length) {
         console.log(`Calibration warned that the bar ${config.pass.min} may be out of the judges' range: say so in that note too.`);
