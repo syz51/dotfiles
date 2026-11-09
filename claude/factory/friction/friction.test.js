@@ -133,7 +133,7 @@ describe("turns", () => {
     expect([sessionId, cwd, turns.length]).toEqual([transcript.sessionId, PROJECT, 2]);
     expect(turns[0].calls.map((call) => [call.name, call.ok])).toEqual([["mcp__board__task_claim", false], ["mcp__board__task_claim", false]]);
     expect(turns[1].hooks).toEqual([{ event: "Stop", blocking: true, message: "board: handoff is stale" }]);
-    expect(signals(turns[0])).toEqual({ toolErrors: 2, boardErrors: 2, hookBlocks: 0, retries: 1, phrases: 2, score: 6 + 2 + 2 + 2 });
+    expect(signals(turns[0])).toEqual({ toolErrors: 2, boardErrors: 2, serverErrors: 0, hookBlocks: 0, retries: 1, phrases: 2, score: 6 + 2 + 2 + 2 });
     expect(signals(turns[1]).score).toBe(2);
     expect(turns.map((turn) => turn.complete)).toEqual([true, true]);
   });
@@ -206,6 +206,32 @@ describe("turns", () => {
     expect(score(bash("~/.cargo/bin/board claim x-1", false, "refused"), bash("git log", true, ""))).toMatchObject({ boardErrors: 1, score: 4 });
     expect(score(bash("rg needle", false), bash("rg other", false, ""), bash("grep -q x f", false, "Exit code 1\n"))).toMatchObject({ toolErrors: 0, score: 0 });
     expect(score(bash("rg needle", false, "rg: bad regex"))).toMatchObject({ toolErrors: 1 });
+  });
+
+  test("board errors the server counts are friction only beside other friction; refusals it never sees always are", () => {
+    const turnOf = (calls, texts = [], hooks = []) => ({ prompt: "", texts, calls, hooks });
+    const note = { name: "mcp__board__task_note", input: { id: "x-1", text: "long" } };
+    const tooLong = { ...note, ok: false, output: "error: invalid: text is 501 characters; the limit is 500\nnext: shorten it" };
+    const claimRefused = { name: "Bash", input: { command: "board claim x-2" }, ok: false, output: "Exit code 1\nboard: claim_refused: you already have x-1 in doing\nnext: finish x-1" };
+    const cliRefused = { name: "Bash", input: { command: "board note x-1 'long'" }, ok: false, output: "Exit code 1\nboard: text is 501 characters; the limit is 500 (not sent)\nnext: shorten it" };
+    // Server-coded errors alone, retries included: not judged.
+    expect(signals(turnOf([tooLong, { ...tooLong }, { ...note, ok: true }, claimRefused, cliRefused]))).toMatchObject({ toolErrors: 4, boardErrors: 4, serverErrors: 4, retries: 3, score: 0 });
+    // The same error with other friction in the turn: scored as before.
+    const failedTest = { name: "Bash", input: { command: "bun test" }, ok: false, output: "1 fail" };
+    expect(signals(turnOf([tooLong, failedTest]))).toMatchObject({ serverErrors: 1, score: 3 + 2 });
+    expect(signals(turnOf([tooLong], ["I had to work around the board."]))).toMatchObject({ serverErrors: 1, phrases: 2, score: 3 + 1 + 2 });
+    expect(signals(turnOf([tooLong], [], [{ event: "Stop", blocking: true, message: "x" }]))).toMatchObject({ serverErrors: 1, score: 3 + 2 + 1 });
+    // Refusals no server saw: the runtime's schema check, `board mcp` rejecting an argument,
+    // a check of the client's own, an answer it could not read.
+    for (const output of [
+      "<tool_use_error>InputValidationError: mcp__board__task_note failed: text is too long (maxLength 500)</tool_use_error>",
+      "error: invalid arguments: missing field `globs`",
+      "error: done needs evidence: a check with its exit code",
+      "error: server answered 502 Bad Gateway:",
+    ])
+      expect(signals(turnOf([{ ...note, ok: false, output }]))).toMatchObject({ boardErrors: 1, serverErrors: 0, score: 3 + 1 });
+    // A code-like line from a call that is not the board's stays friction.
+    expect(signals(turnOf([{ name: "Bash", input: { command: "bun test" }, ok: false, output: "error: invalid: bad input" }]))).toMatchObject({ serverErrors: 0, score: 1 });
   });
 
   test("a long turn's digest keeps the failures and their neighbours and marks what it left out", () => {
@@ -390,6 +416,27 @@ describe("friction run", () => {
     expect(await run(["run", "--dry-run"], context(roots))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length, existsSync(join(scratch, "state", "friction-state.json"))]).toEqual([0, 0, false]);
     expect(console.log.mock.calls.flat().join("\n")).toContain(`claude ${roots.person.sessionId} turn 1: score 12`);
+  });
+
+  test("a turn whose only friction is board errors the server counts is not judged; a schema-check refusal is", async () => {
+    const tooLong = "error: invalid: text is 501 characters; the limit is 500\nnext: shorten it";
+    const schema = "<tool_use_error>InputValidationError: text is too long (maxLength 500)</tool_use_error>";
+    const transcript = new Transcript({ cwd: PROJECT })
+      .prompt("Note it")
+      .tool("mcp__board__task_note", { id: "x-1", text: "long" }, tooLong, { isError: true })
+      .tool("mcp__board__task_note", { id: "x-1", text: "long" }, tooLong, { isError: true })
+      .stop()
+      .prompt("Note it again")
+      .tool("mcp__board__task_note", { id: "x-1", text: "long" }, schema, { isError: true })
+      .tool("mcp__board__task_note", { id: "x-1", text: "long" }, schema, { isError: true })
+      .stop();
+    const claudeRoot = writeProjects([{ transcript }], join(scratch, "projects"));
+    expect(await run(["run", "--dry-run"], context({ claudeRoot, codexRoot: join(scratch, "no-codex") }))).toBe(0);
+    const out = console.log.mock.calls.flat().join("\n");
+    expect(out).toContain("2 completed turns");
+    expect(out).toContain("1 show friction");
+    expect(out).toContain(`claude ${transcript.sessionId} turn 2: score 10`);
+    expect(out).not.toContain(`claude ${transcript.sessionId} turn 1:`);
   });
 });
 
