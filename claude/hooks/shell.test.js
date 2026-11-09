@@ -80,6 +80,9 @@ test("wrappers are skipped, reading options as getopt does", () => {
   expect(commands("env - make")).toEqual([["make", "/repo"]]);
   expect(commands("env -C sub FOO=1 make")).toEqual([["make", "/repo/sub"]]);
   expect(commands("env -Csub make")).toEqual([["make", "/repo/sub"]]);
+  expect(commands("sudo -D sub make")).toEqual([["make", "/repo/sub"]]);
+  expect(commands("sudo -u me --chdir /tmp make")).toEqual([["make", "/tmp"]]);
+  expect(commands("sudo --chdir=sub make")).toEqual([["make", "/repo/sub"]]);
   expect(commands("env -S 'make all'")).toEqual([["make all", "/repo"]]);
   expect(commands("env -Smake")).toEqual([["make", "/repo"]]);
   expect(commands("coproc job { make; }")).toEqual([["make", "/repo"]]);

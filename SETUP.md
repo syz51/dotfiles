@@ -172,6 +172,11 @@ add this to `~/.zshenv` on each Mac:
 export BUN_OPTIONS=--bun
 ```
 
+One exception: `node` may run in a checkout of a repository that
+`claude/hooks/node-repos.json` lists, such as T3 Code, whose server needs Node.js. There,
+`BUN_OPTIONS=--bun` still makes `bun run` start bun for a script that calls `node`, so run
+its scripts with `node` directly or with `BUN_OPTIONS= bun run <script>`.
+
 `~/.zshenv` on each Mac also puts `$HOME/.bun/bin` on `PATH`, so non-interactive shells,
 such as `ssh` commands, find `bun` and `bunx`.
 
