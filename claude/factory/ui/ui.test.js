@@ -40,7 +40,7 @@ const base = (extra = {}) => ({
     { id: "home", title: "Home", path: "/", views: ["desktop-light", "phone-dark"] },
     { id: "task", title: "Task", path: "/tasks/1", views: ["desktop-dark"], steps: [{ click: "text=Open" }, { wait: 100 }], before: ["/__dev/x"] },
   ],
-  judges: [{ model: "claude-sonnet-5-5" }, { model: "claude-opus-5-5", effort: "high", samples: 3 }],
+  judges: [{ model: "claude-haiku-5-5" }, { model: "claude-opus-5-5", effort: "high", samples: 3 }],
   ...extra,
 });
 
@@ -49,7 +49,7 @@ describe("config", () => {
     const config = validateConfig(base(), FILE);
     expect(config.rootDir).toBe("/project");
     expect(config.serve).toEqual({ command: ["bun", "server.ts", "--port", "{port}"], ready: "/healthz", timeoutMs: 60_000 });
-    expect(config.judges).toEqual([{ model: "claude-sonnet-5-5", effort: "medium", samples: 2 }, { model: "claude-opus-5-5", effort: "high", samples: 3 }]);
+    expect(config.judges).toEqual([{ model: "claude-haiku-5-5", effort: "medium", samples: 2 }, { model: "claude-opus-5-5", effort: "high", samples: 3 }]);
     expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null });
     expect(config.budgetUsd).toEqual({ call: 2, round: 15, run: 100 });
     expect(config.baseline).toBe("origin/main");
@@ -309,7 +309,7 @@ describe("council", () => {
     const orders = [];
     let spentUsd = 0;
     const call = async ({ content, system, model, budgetUsd }) => {
-      expect([model, budgetUsd]).toEqual(["claude-sonnet-5-5", 2]);
+      expect([model, budgetUsd]).toEqual(["claude-haiku-5-5", 2]);
       expect(system).toContain("senior product designer");
       const map = new Map();
       let design = 0;
@@ -324,7 +324,7 @@ describe("council", () => {
       const candidate = [...map].find(([, key]) => key === "candidate")[0];
       return { output: output(map, (key) => (key === "candidate" ? 9 : key === "baseline" ? 7.5 : 8), [{ design: candidate, screen: "home.x", category: "color", severity: "high", problem: "p", fix: "f" }]), costUSD: 0.2 };
     };
-    const result = await runJudge({ judge: { model: "claude-sonnet-5-5", effort: "medium", samples: 3 }, versions, config, seed: "seed", budgetUsd: 2, spend: (usd) => (spentUsd += usd), call });
+    const result = await runJudge({ judge: { model: "claude-haiku-5-5", effort: "medium", samples: 3 }, versions, config, seed: "seed", budgetUsd: 2, spend: (usd) => (spentUsd += usd), call });
     expect(orders).toHaveLength(4);
     expect(new Set(orders).size).toBeGreaterThan(1);
     expect(spentUsd).toBeCloseTo(0.7);
@@ -558,16 +558,16 @@ describe("gates", () => {
 
 describe("rounds", () => {
   const config = validateConfig(base(), FILE);
-  const judged = (round, gain, extra = {}, lowest = 8.25) => ({ round, sha: "abcdef1234567890", dirty: false, pass: false, stage: "judges", costUSD: 1.234, verdicts: [{ judge: "claude-sonnet-5-5@medium", lowest, gain, gainBar: 0.5, referenceMargin: null, overall: 8.6 }], ...extra });
+  const judged = (round, gain, extra = {}, lowest = 8.25) => ({ round, sha: "abcdef1234567890", dirty: false, pass: false, stage: "judges", costUSD: 1.234, verdicts: [{ judge: "claude-haiku-5-5@medium", lowest, gain, gainBar: 0.5, referenceMargin: null, overall: 8.6 }], ...extra });
 
   test("the score line names the round, result, bar, gain, cost and commit", () => {
-    expect(scoreLine(judged(3, 0.75, { pass: true }), config)).toBe("score: round 3 pass · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.75 vs main · $1.23 · abcdef123456");
+    expect(scoreLine(judged(3, 0.75, { pass: true }), config)).toBe("score: round 3 pass · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.75 vs main · $1.23 · abcdef123456");
     expect(scoreLine({ round: 4, sha: "abcdef1234567890", dirty: true, pass: false, stage: "gates", costUSD: 0, verdicts: [], gates: { failures: ["check `bun test` exited 1:\nlots"] } }, config))
       .toBe("score: round 4 fail · gates: check `bun test` exited 1 · $0.00 · abcdef123456+dirty");
     expect(scoreLine(judged(5, 0.2, { stage: "error", error: "claude-opus-5-5@high sample 2 failed twice: timed out\nmore" }), config))
-      .toBe("score: round 5 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.20 vs main · error: claude-opus-5-5@high sample 2 failed twice: timed out · $1.23 · abcdef123456");
-    expect(scoreLine(judged(6, 0.9, { calibrated: false }), config)).toBe("score: round 6 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · uncalibrated · $1.23 · abcdef123456");
-    expect(scoreLine(judged(7, 0.9, { structural: true }), config)).toBe("score: round 7 fail · claude-sonnet-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · structural · $1.23 · abcdef123456");
+      .toBe("score: round 5 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.20 vs main · error: claude-opus-5-5@high sample 2 failed twice: timed out · $1.23 · abcdef123456");
+    expect(scoreLine(judged(6, 0.9, { calibrated: false }), config)).toBe("score: round 6 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · uncalibrated · $1.23 · abcdef123456");
+    expect(scoreLine(judged(7, 0.9, { structural: true }), config)).toBe("score: round 7 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · structural · $1.23 · abcdef123456");
   });
 
   test("a stray argument is a usage error, exit 2", async () => {
@@ -634,10 +634,10 @@ describe("rounds", () => {
   });
 
   test("a climb's noise includes how much main's score moves between rounds", () => {
-    const judge = { model: "claude-sonnet-5-5", effort: "medium", samples: 2 };
+    const judge = { model: "claude-haiku-5-5", effort: "medium", samples: 2 };
     const calibration = { sigmaOverall: 0.036, sigmaCategory: 0.1, calibrated: true };
     expect(climbNoise(calibration, judge, [])).toMatchObject({ sigmaOverall: 0.036 / Math.sqrt(2), sigmaLowest: 0.1 / Math.sqrt(2), calibrated: true });
-    const round = (baseline, baselineLowest) => ({ verdicts: [{ judge: "claude-sonnet-5-5@medium", baseline, baselineLowest }, { judge: "claude-opus-5-5@high", baseline: 1 }] });
+    const round = (baseline, baselineLowest) => ({ verdicts: [{ judge: "claude-haiku-5-5@medium", baseline, baselineLowest }, { judge: "claude-opus-5-5@high", baseline: 1 }] });
     const noise = climbNoise(calibration, judge, [round(6.91, 6.5), round(7.0, 6.5), round(6.72, 6), round(6.91, 6.5)]);
     expect(noise.sigmaOverall).toBeCloseTo(0.118, 3);
     expect(noise.sigmaLowest).toBeCloseTo(0.25, 3);
@@ -748,7 +748,7 @@ button { font: inherit; padding: 8px 16px; }
         { id: "other", title: "Other", path: "/other", views: ["desktop-dark"] },
       ],
       references: [{ id: "ref", title: "Reference app", files: [{ path: "ref.png", view: "desktop-light" }] }],
-      judges: [{ model: "claude-sonnet-5-5", samples: 2 }],
+      judges: [{ model: "claude-haiku-5-5", samples: 2 }],
       pass: { min: 8.5, gain: 0.5, references: 0.5 },
       budgetUsd: { call: 0.5, round: 5, run: 20 },
       baseline: "main", settleMs: 0,
@@ -778,13 +778,13 @@ button { font: inherit; padding: 8px 16px; }
     result = await ui(["calibrate", "--samples", "2"]);
     expect(result.code).toBe(0);
     const calibration = JSON.parse(readFileSync(join(run, "calibration.json"), "utf8"));
-    expect(calibration.judges["claude-sonnet-5-5@medium"]).toMatchObject({ pass: true, baseline: 7, control: 3, sigmaCategory: 0 });
+    expect(calibration.judges["claude-haiku-5-5@medium"]).toMatchObject({ pass: true, baseline: 7, control: 3, sigmaCategory: 0 });
     expect(readdirSync(join(run, "versions", "control")).some((name) => name.endsWith(".png"))).toBe(true);
     expect(calls()).toHaveLength(2);
     expect(Object.values(calls()[0].order).sort()).toEqual(["baseline", "control", "references"]);
     // The reference scores 8 and main 7, so a bar of 8.5 is out of the judge's reach.
     expect(result.stdout).toContain("Bar reach: the bar 8.5 may be out of the judges' range.");
-    expect(calibration.judges["claude-sonnet-5-5@medium"].barReach).toMatchObject({ min: 8.5, share: 0, suggestion: { min: 8, references: 0.25 } });
+    expect(calibration.judges["claude-haiku-5-5@medium"].barReach).toMatchObject({ min: 8.5, share: 0, suggestion: { min: 8, references: 0.25 } });
     // It suggests a bar from the reference's score (8): lead it, with its level as the floor.
     expect(result.stdout).toContain("lead the best reference by 0.25 in every category, with 8 (about the best reference's level) as the floor");
     expect(result.stdout).toContain('  "pass": { "min": 8, "gain": 0.5, "references": 0.25 }');
@@ -795,7 +795,7 @@ button { font: inherit; padding: 8px 16px; }
     const first = await commit("tweak");
     result = await ui(["round"], { candidate: 8 });
     expect(result.code).toBe(1);
-    expect(result.stdout).toContain(`score: round 1 fail · claude-sonnet-5-5@medium min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · $0.10 · ${first.slice(0, 12)}`);
+    expect(result.stdout).toContain(`score: round 1 fail · claude-haiku-5-5@medium min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · $0.10 · ${first.slice(0, 12)}`);
     expect(result.stdout).toContain("1. [under bar] home.desktop-light · color · high ×2: <b>low contrast</b>");
     // Every category is under the bar and only color has issues: the judges' summaries follow.
     expect(result.stdout).toContain("Under the bar with few issues named: hierarchy (8.00)");
@@ -805,7 +805,7 @@ button { font: inherit; padding: 8px 16px; }
     // Round 2: the judges rate it above the bar, ahead of main and the reference.
     result = await ui(["round"], { candidate: 9 });
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("score: round 2 pass · claude-sonnet-5-5@medium min 9.00 (bar 8.5) · +2.00 vs main · +1.00 vs refs");
+    expect(result.stdout).toContain("score: round 2 pass · claude-haiku-5-5@medium min 9.00 (bar 8.5) · +2.00 vs main · +1.00 vs refs");
 
     // Round 3: an unlabeled control, faint text and a console error fail the gates; no judge runs.
     const judgeCalls = calls().length;
@@ -840,7 +840,7 @@ button { font: inherit; padding: 8px 16px; }
     const fifth = await commit("fix the checks");
     result = await ui(["round"], { broken: true });
     expect(result.code).toBe(2);
-    expect(result.stdout).toContain(`score: round 5 fail · error: claude-sonnet-5-5@medium sample 1 failed twice: scored Design 99, which was not shown · $0.20 · ${fifth.slice(0, 12)}`);
+    expect(result.stdout).toContain(`score: round 5 fail · error: claude-haiku-5-5@medium sample 1 failed twice: scored Design 99, which was not shown · $0.20 · ${fifth.slice(0, 12)}`);
     expect(JSON.parse(readFileSync(join(run, "rounds", "round-5.json"), "utf8"))).toMatchObject({ stage: "error", pass: false, costUSD: 0.2 });
 
     result = await ui(["status", "--json"]);
@@ -884,14 +884,14 @@ button { font: inherit; padding: 8px 16px; }
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("UNCALIBRATED");
     expect(result.stdout).toContain("a trial and does not pass");
-    expect(result.stdout).toMatch(/score: round 1 fail · claude-sonnet-5-5@medium min 9\.50 \(bar 8\) · \+2\.50 vs main · \+1\.50 vs refs · uncalibrated · /);
+    expect(result.stdout).toMatch(/score: round 1 fail · claude-haiku-5-5@medium min 9\.50 \(bar 8\) · \+2\.50 vs main · \+1\.50 vs refs · uncalibrated · /);
     const status = JSON.parse((await runProcess(["bun", CLI, "ui", "status", "--json", "--config", join(repo, "trial.json")], { cwd: repo, env, timeout: 60_000 })).stdout);
     expect(status).toMatchObject({ passed: false, calibrated: false });
   }, 300_000);
 
   test("a run's first judged round hears from every judge; later rounds stop at the first that fails", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
-    write("pair.json", JSON.stringify({ ...config, name: "pair", judges: [{ model: "claude-sonnet-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }] }));
+    write("pair.json", JSON.stringify({ ...config, name: "pair", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }] }));
     write("web/home.html", page("This week", "<p>Pair</p>"));
     await commit("pair");
     const round = () => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", "--config", join(repo, "pair.json")], {
@@ -901,18 +901,18 @@ button { font: inherit; padding: 8px 16px; }
     const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "pair.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
     const before = calls().length;
     expect((await round()).code).toBe(1);
-    expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5"]);
+    expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
     const second = await round();
     expect(second.code).toBe(1);
-    expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5", "claude-sonnet-5-5"]);
+    expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5", "claude-haiku-5-5"]);
     let text = await status();
-    expect(text).toContain("Main scored 7.00–7.00 over 2 judged rounds (claude-sonnet-5-5@medium; scores are comparative).");
+    expect(text).toContain("Main scored 7.00–7.00 over 2 judged rounds (claude-haiku-5-5@medium; scores are comparative).");
     expect(text).toContain("It was judged by 1 of 2 judges: run `ui round --all-judges` on the commit you hand over.");
     expect(text).toContain("Latest judged round 2: lowest hierarchy 7.50, 0.50 under the bar 8;");
     // Rounds that move nothing: a plateau. The bar is close, so no structural round is asked for.
     expect((await round()).code).toBe(1);
     text = await status();
-    expect(text).toContain("Plateau (claude-sonnet-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: lowest category best 7.50 vs 7.50 before");
+    expect(text).toContain("Plateau (claude-haiku-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: lowest category best 7.50 vs 7.50 before");
     expect(text).not.toContain("structural round");
   }, 300_000);
 
@@ -952,7 +952,7 @@ button { font: inherit; padding: 8px 16px; }
 
   test("a structural round is asked for once, far from the bar, and a judge the round's budget cannot cover is skipped", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
-    write("far.json", JSON.stringify({ ...config, name: "far", judges: [{ model: "claude-sonnet-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }], budgetUsd: { call: 0.5, round: 0.9, run: 20 } }));
+    write("far.json", JSON.stringify({ ...config, name: "far", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }], budgetUsd: { call: 0.5, round: 0.9, run: 20 } }));
     write("web/home.html", page("This week", "<p>Far</p>"));
     await commit("far");
     const round = (...flags) => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", ...flags, "--config", join(repo, "far.json")], {
@@ -998,7 +998,7 @@ button { font: inherit; padding: 8px 16px; }
 
   test("a structural round that moved a metric earns a new one at the next plateau", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
-    write("moved.json", JSON.stringify({ ...config, name: "moved", judges: [{ model: "claude-sonnet-5-5", samples: 1 }], pass: { ...config.pass, min: 8 } }));
+    write("moved.json", JSON.stringify({ ...config, name: "moved", judges: [{ model: "claude-haiku-5-5", samples: 1 }], pass: { ...config.pass, min: 8 } }));
     write("web/home.html", page("This week", "<p>Moved</p>"));
     await commit("moved");
     const runs = join(state, "ui", "moved", "runs");
@@ -1013,7 +1013,7 @@ button { font: inherit; padding: 8px 16px; }
     expect((await round(7, "--structural")).code).toBe(1);
     for (let index = 0; index < 2; index++) expect((await round(7)).code).toBe(1);
     let text = await status();
-    expect(text).toContain("Plateau (claude-sonnet-5-5@medium)");
+    expect(text).toContain("Plateau (claude-haiku-5-5@medium)");
     expect(text).toContain("The bar is 1.00 away with");
     expect(text).not.toContain("Structural round 4");
     // A second structural round and its fix round that move nothing stop the climb, with the calibration's bar-reach warning.
@@ -1023,10 +1023,10 @@ button { font: inherit; padding: 8px 16px; }
     await commit("fix the structural round's issues");
     expect((await round(7)).code).toBe(1);
     const [runId] = readdirSync(runs);
-    writeFileSync(join(runs, runId, "calibration.json"), JSON.stringify({ judges: { "claude-sonnet-5-5@medium": { pass: false, barReach: { warnings: ["the bar 8 is above the best reference in hierarchy (7.00)"] } } } }));
+    writeFileSync(join(runs, runId, "calibration.json"), JSON.stringify({ judges: { "claude-haiku-5-5@medium": { pass: false, barReach: { warnings: ["the bar 8 is above the best reference in hierarchy (7.00)"] } } } }));
     text = await status();
     expect(text).toContain("Structural round 7 and the round that fixed its issues did not move it either: stop the climb");
-    expect(text).toContain("Calibration warned that the bar 8 may be out of the judges' range: say so in that note too.\n- claude-sonnet-5-5@medium: the bar 8 is above the best reference in hierarchy (7.00).");
+    expect(text).toContain("Calibration warned that the bar 8 may be out of the judges' range: say so in that note too.\n- claude-haiku-5-5@medium: the bar 8 is above the best reference in hierarchy (7.00).");
     expect(text).not.toContain("The bar is 1.00 away");
   }, 300_000);
 

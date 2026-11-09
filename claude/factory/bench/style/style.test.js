@@ -52,7 +52,7 @@ async function capture(fn) {
 }
 
 const CASE = { id: "one", title: "One", task: "Do one thing.", notes: ["did it", "checked it"], facts: ["It was done.", "It was checked.", "Nothing is left."] };
-const options = { model: "claude-opus-5-5", effort: "high", judgeModel: "claude-sonnet-5-5", trial: 1, batch: "b", budgetUsd: 1, judgeBudgetUsd: 0.5 };
+const options = { model: "claude-opus-5-5", effort: "high", judgeModel: "claude-haiku-5-5", trial: 1, batch: "b", budgetUsd: 1, judgeBudgetUsd: 0.5 };
 const record = (variant, caseId, kept, facts, sentences, words, extra = {}) =>
   ({ variant, caseId, kept, facts, stats: { sentences, words, over25: 0, chars: 100 }, costUSD: 0.1, infra: false, ...extra });
 
