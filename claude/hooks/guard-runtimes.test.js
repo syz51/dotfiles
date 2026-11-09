@@ -276,17 +276,19 @@ test("python over ssh stays blocked, and its reason names what works on the remo
     "ssh host bash -s <<'EOF'\npython3 x.py\nEOF",
     "ssh host 'bash -c \"pytest -q\"'",
     "sudo ssh host 'echo $(python3 -V)'",
+    "ssh host pip install requests",
+    "ssh host pytest -q",
+    "vpx -c 'ssh host python3 x.py'",
   ];
   for (const command of remote) {
     const reason = verdict(command);
     expect(reason).toContain("on the remote host over ssh");
     expect(reason).toContain("`jq`");
-    expect(reason).toContain("`uv run --no-project python …` where uv is on that host");
-    expect(reason).not.toContain("`uv pip …`");
+    expect(reason).toContain("`uv run --no-project python …`, `uv pip …` or `uv run --no-project --with pytest pytest …` where uv is on that host");
   }
   expect(verdict("ssh host 'cd app && npm ci'")).toContain("`bun install`");
   for (const command of ["python3 -c 'import json'", "ssh host ls; python3 check.py", "ssh -o ProxyCommand='python3 proxy.py' host ls",
-    "ssh host cat x.json | python3 -c 'import json'", "python3 -c \"$(ssh host cat x.py)\""]) {
+    "ssh host cat x.json | python3 -c 'import json'", "python3 -c \"$(ssh host cat x.py)\"", "vpx -c 'python3 x.py; ssh host ls'"]) {
     expect(verdict(command)).toContain("Run Python through uv instead: `uv run python …`");
     expect(verdict(command)).not.toContain("remote host");
   }
@@ -443,7 +445,8 @@ describe("hook process", () => {
     const result = bash("ssh host python3 -c 'import json'");
     expect(result.code).toBe(2);
     expect(result.stderr).toBe("Blocked by the guard-runtimes hook: `python3 -c import json` runs python3 on the remote host over ssh. "
-      + "Python runs through uv there too. Read JSON there with `jq` instead, or run `uv run --no-project python …` where uv is on that host.\n");
+      + "Python runs through uv there too. Read JSON there with `jq` instead, or run `uv run --no-project python …`, `uv pip …` or "
+      + "`uv run --no-project --with pytest pytest …` where uv is on that host.\n");
   });
 
   test("blocks the Codex CLI with exit 2 before it starts", () => {

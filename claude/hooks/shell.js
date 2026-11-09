@@ -522,6 +522,8 @@ function printed(words, depth = 0) {
 
 function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
+  // Whether this script runs on another host, over ssh.
+  const here = state.remote === true;
   const { commands } = parseScript(source);
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
@@ -572,15 +574,14 @@ function inspect(source, state, visit, depth, tooDeep) {
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
       // run on the remote host; its local options' commands run here.
-      const here = state.remote === true;
-      const scripts = [...substitutions.map((script) => [script, before, here]), ...nested.map((script) => [script, dir, here || remote === true]),
+      const scripts = [...substitutions.map((script) => [script, before, here]), ...nested.map((script) => [script, dir, here || Boolean(remote)]),
         ...(local ?? []).map(([script, where]) => [script, where, here])];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir, here]));
       if (name === "eval") scripts.push([words.slice(1).join(" "), dir, here]);
       if (name === "find") scripts.push(...findScripts(words, dir).map(([script, where]) => [script, where, here]));
       if (reader !== -1) {
         const piped = index < reader ? [...inputs, ...text] : inputs;
-        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir, here || pipeline[reader].run.remote === true]));
+        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir, here || Boolean(pipeline[reader].run.remote)]));
       }
       for (const [script, where, onRemote] of scripts) {
         const violation = script === undefined ? undefined : inspect(script, { dir: where, remote: onRemote }, visit, depth + 1, tooDeep);

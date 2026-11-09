@@ -119,8 +119,8 @@ function handOff(words) {
   return undefined;
 }
 
-// Both return the tool `words`, run in `dir`, must not start, as { tool, via }, or
-// undefined; via names the launcher that starts it, and `pattern(tool, dir, words)` says
+// Both return the tool `words`, run in `dir`, must not start, as { tool, via, remote }, or
+// undefined; via names the launcher that starts it, remote says a launcher's shell script runs it over ssh, and `pattern(tool, dir, words)` says
 // whether a tool is banned there (words is undefined for a `-p` package). The scoring's package-runner detector reuses blockedRuntime for
 // the uv and bun rule, so the Codex check stays separate, and only blockedRuntime counts a Vite+ command that runs the project's package manager.
 function find(words, dir, pattern, packageManagers) {
@@ -137,8 +137,11 @@ function find(words, dir, pattern, packageManagers) {
     const tool = next.packages.find((name) => pattern(name, dir, undefined));
     if (tool) return { tool, via };
     if (next.script !== undefined) {
-      const inner = visitCommands(next.script, dir, (command, where) => find(command, where, pattern, packageManagers));
-      return inner && { tool: inner.tool, via: inner.via ?? via };
+      const inner = visitCommands(next.script, dir, (command, where, { remote }) => {
+        const found = find(command, where, pattern, packageManagers);
+        return found && { ...found, remote: found.remote || remote };
+      });
+      return inner && { tool: inner.tool, via: inner.via ?? via, remote: inner.remote };
     }
     ({ words, isPackage } = next);
   }
@@ -187,9 +190,10 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
   if (!blocked) return undefined;
   const { tool, via } = blocked;
   const command = `\`${words.join(" ")}\``;
-  if (PYTHON.test(tool) && remote) {
+  if (PYTHON.test(tool) && (remote || blocked.remote)) {
     return `${command} runs ${tool}${via ? ` through ${via}` : ""} on the remote host over ssh. Python runs through uv there too. `
-      + "Read JSON there with `jq` instead, or run `uv run --no-project python …` where uv is on that host.";
+      + "Read JSON there with `jq` instead, or run `uv run --no-project python …`, `uv pip …` or "
+      + "`uv run --no-project --with pytest pytest …` where uv is on that host.";
   }
   if (PYTHON.test(tool)) {
     return `${command} runs ${tool}${via ? ` through ${via}` : " directly"}. Run Python through uv instead: \`uv run python …\`, `
