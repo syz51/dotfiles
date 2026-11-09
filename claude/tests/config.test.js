@@ -632,6 +632,8 @@ describe("rules the live suites test", () => {
     expect(preferences).toMatch(/`bun`/);
     expect(preferences).toContain("Never run `node`, including for fallbacks or through `vp node`");
     expect(preferences).toMatch(/never npm, npx, pnpm, yarn or corepack, even where a project's lockfiles/);
+    // guard-runtimes allows node in a T3 Code fork checkout only, and the package managers nowhere.
+    expect(preferences).toContain("One exception: `node` may run in a checkout of my T3 Code fork (syz51/t3code), because its server needs Node; the npm, npx, pnpm, yarn and corepack ban holds there too.");
     // Vite+ may run checks and tools; installs and package queries stay on bun, as guard-runtimes enforces.
     expect(preferences).toContain("checks and tooling with `bun`, `bunx` or Vite+ (`vp`), and installs and package queries with `bun` only");
     expect(preferences).toMatch(/require another package manager, stop and ask me/);

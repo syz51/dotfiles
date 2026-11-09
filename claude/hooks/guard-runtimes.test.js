@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findRuntimeViolation } from "./guard-runtimes.js";
 
@@ -262,12 +265,110 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });
 
+// node may run in a checkout of the T3 Code fork, whose server needs Node.js; real git
+// repositories stand in for the checkouts, so the remote lookup runs as in the hook.
+const root = realpathSync(mkdtempSync(join(tmpdir(), "guard-runtimes-")));
+const git = (...args) => {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+};
+const repo = (name, remotes) => {
+  const dir = join(root, name);
+  git("init", "-q", dir);
+  for (const [remote, url] of Object.entries(remotes)) git("-C", dir, "remote", "add", remote, url);
+  return dir;
+};
+const fork = repo("t3code", { origin: "https://github.com/syz51/t3code.git" });
+mkdirSync(join(fork, "apps", "server"), { recursive: true });
+git("-C", fork, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "--no-verify", "-m", "init");
+const worktree = join(root, "t3code-worktree");
+git("-C", fork, "worktree", "add", "-q", worktree);
+const checkouts = {
+  fork,
+  worktree,
+  scp: repo("scp", { origin: "git@github.com:syz51/t3code" }),
+  upstream: repo("upstream", { origin: "https://github.com/someone/elsewhere.git", upstream: "ssh://git@github.com/pingdotgg/t3code.git" }),
+};
+const others = {
+  dotfiles: repo("dotfiles", { origin: "https://github.com/syz51/dotfiles.git" }),
+  lookalike: repo("lookalike", { origin: "https://github.com/syz51/t3code-notes.git" }),
+  stranger: repo("stranger", { origin: "https://github.com/someone/t3code.git" }),
+  otherRemote: repo("other-remote", { origin: "https://github.com/syz51/dotfiles.git", mirror: "https://github.com/syz51/t3code.git" }),
+  noRepo: mkdtempSync(join(root, "plain-")),
+};
+afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+describe("node in a T3 Code fork checkout", () => {
+  describe.each(Object.entries(checkouts))("allowed in %s", (_, dir) => {
+    test.each([
+      ["node scripts/dev-runner.ts dev:server"],
+      ["node --version"],
+      ["vp node x.js"],
+      ["bunx node@22 x.js"],
+      ["vpx scripts/build.ts"],
+      ["vp exec node x.js"],
+      ["timeout 30 node server.js"],
+      ["bun run dev"],
+      ["vp run dev"],
+    ])("%s", (command) => {
+      expect(findRuntimeViolation(command, dir)).toBeUndefined();
+    });
+  });
+
+  test.each([
+    ["npx x"],
+    ["pnpm i"],
+    ["npm test"],
+    ["yarn build"],
+    ["corepack enable"],
+    ["bunx pnpm i"],
+    ["vp install"],
+    ["vpx npm install"],
+    ["python3 x.py"],
+    ["codex exec hi"],
+    ["ssh host node x.js"],
+    ["node x.js && pnpm i"],
+  ])("still blocks %s there", (command) => {
+    expect(findRuntimeViolation(command, fork)).toBeDefined();
+  });
+
+  describe.each(Object.entries(others))("refused in %s", (_, dir) => {
+    test.each([["node x.js"], ["vp node x.js"], ["vpx check.js"], ["bunx node x.js"]])("%s", (command) => {
+      expect(findRuntimeViolation(command, dir)).toBeDefined();
+    });
+  });
+
+  test("follows cd into and out of a checkout", () => {
+    expect(findRuntimeViolation(`cd ${fork} && node x.js`, others.dotfiles)).toBeUndefined();
+    expect(findRuntimeViolation("cd apps/server && node x.js", fork)).toBeUndefined();
+    expect(findRuntimeViolation(`cd ${others.dotfiles} && node x.js`, fork)).toBeDefined();
+    expect(findRuntimeViolation(`(cd ${fork} && node x.js); node y.js`, others.dotfiles)).toContain("`node y.js`");
+    expect(findRuntimeViolation(`vpx -c 'cd ${others.dotfiles} && node x.js'`, fork)).toBeDefined();
+    expect(findRuntimeViolation(`vpx -c 'cd ${fork} && node x.js'`, others.dotfiles)).toBeUndefined();
+  });
+
+  test("a command whose directory is unknown gets no exception", () => {
+    expect(findRuntimeViolation("node x.js", undefined)).toBeDefined();
+    expect(findRuntimeViolation("cd $DIR && node x.js", fork)).toBeDefined();
+  });
+
+  test("the reason names the exception", () => {
+    expect(findRuntimeViolation("node x.js", others.dotfiles)).toContain("node runs only in a T3 Code fork checkout");
+  });
+});
+
 describe("hook process", () => {
   const run = (stdin) => {
     const result = Bun.spawnSync({ cmd: [process.execPath, HOOK], stdin: Buffer.from(stdin) });
     return { code: result.exitCode, stderr: result.stderr.toString() };
   };
-  const bash = (command) => run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: "/tmp" }));
+  const bash = (command, cwd = "/tmp") => run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }));
+
+  test("allows node in a T3 Code fork checkout and blocks it elsewhere", () => {
+    expect(bash("node --version", fork)).toEqual({ code: 0, stderr: "" });
+    expect(bash("node --version", others.dotfiles).code).toBe(2);
+    expect(bash("pnpm i", fork).code).toBe(2);
+  });
 
   test("blocks a bare runtime with exit 2 and the reason on stderr", () => {
     const result = bash("python3 check.py");

@@ -14,6 +14,12 @@
 // non-blocking hook error, so the guard fails open. shell.js follows the shell syntax
 // around a command (wrappers, `sh -c`, `find -exec`, `ssh`) but cannot see into script
 // files, package scripts or expanded variables.
+// One exception: node, also through these launchers, may run in a checkout of the T3 Code
+// fork, whose server needs Node.js (node:sea, node:sqlite, node-pty). A checkout is a
+// directory whose git origin or upstream remote is github.com/syz51/t3code or
+// github.com/pingdotgg/t3code, decided from each command's directory as shell.js follows it
+// through `cd`; a command whose directory is unknown, such as one over ssh, gets no exception.
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { visitCommands } from "./shell.js";
@@ -22,6 +28,9 @@ import { visitCommands } from "./shell.js";
 const PYTHON = /^(?:python|pip|pypy|ipython)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/i;
 // node and every JavaScript package manager but bun. Vite+ is a launcher, handled below.
 const JS_TOOL = /^(?:node|nodejs|npm|npx|pnpm|pnpx|yarn|yarnpkg|corepack)$/i;
+const NODE = /^node(?:js)?$/i;
+// The T3 Code fork and its upstream, by an https, ssh or scp-style GitHub remote URL.
+const T3CODE_REMOTE = /^(?:(?:https?|ssh|git):\/\/)?(?:[^@/\s]+@)?github\.com[:/](?:syz51|pingdotgg)\/t3code(?:\.git)?\/?$/i;
 // The Codex CLI, by its name or, through bunx, its npm package.
 const CODEX = /^(?:@openai\/)?codex$/i;
 // A cheap prefilter: commands that never name a runtime or a launcher, even split by
@@ -93,36 +102,51 @@ function handOff(words) {
   return undefined;
 }
 
-// Both return the tool `words` must not start, as { tool, via }, or undefined; via names
-// the launcher that starts it. The scoring's package-runner detector reuses
-// blockedRuntime for the uv and bun rule, so the Codex check stays separate, and only
-// blockedRuntime counts a Vite+ command that runs the project's package manager.
-function find(words, pattern, packageManagers) {
+// Both return the tool `words`, run in `dir`, must not start, as { tool, via }, or
+// undefined; via names the launcher that starts it, and `pattern(tool, dir)` says whether
+// a tool is banned there. The scoring's package-runner detector reuses blockedRuntime for
+// the uv and bun rule, so the Codex check stays separate, and only blockedRuntime counts a Vite+ command that runs the project's package manager.
+function find(words, dir, pattern, packageManagers) {
   let via;
   let isPackage = false;
   for (let depth = 0; words.length > 0 && depth < 8; depth++) {
     const name = isPackage ? words[0] : basename(words[0]);
-    if (pattern(name)) return { tool: name, via };
+    if (pattern(name, dir)) return { tool: name, via };
     const next = handOff(words);
     if (!next) return undefined;
     if (packageManagers && next.packageManager) return { tool: next.packageManager, via };
     via = next.via;
-    const tool = next.packages.find(pattern);
+    const tool = next.packages.find((name) => pattern(name, dir));
     if (tool) return { tool, via };
     if (next.script !== undefined) {
-      const inner = visitCommands(next.script, "/", (command) => find(command, pattern, packageManagers));
+      const inner = visitCommands(next.script, dir, (command, where) => find(command, where, pattern, packageManagers));
       return inner && { tool: inner.tool, via: inner.via ?? via };
     }
     ({ words, isPackage } = next);
   }
   return undefined;
 }
-export const blockedRuntime = (words) => find(words, (tool) => PYTHON.test(tool) || JS_TOOL.test(tool), true);
-export const codexLaunch = (words) => find(words, (tool) => CODEX.test(tool), false);
 
-/** Why the command `words` must not run, or undefined when it may. */
-export function runtimeViolation(words) {
-  const blocked = blockedRuntime(words) ?? codexLaunch(words);
+const checkouts = new Map();
+/** Whether `dir` is in a git checkout whose origin or upstream remote is the T3 Code fork or its upstream. */
+export function t3codeCheckout(dir) {
+  if (dir === undefined) return false;
+  if (!checkouts.has(dir)) {
+    const result = spawnSync("git", ["-C", dir, "config", "--local", "--get-regexp", "^remote\\.(origin|upstream)\\.url$"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 });
+    checkouts.set(dir, result.status === 0 && result.stdout.split("\n").some((line) => T3CODE_REMOTE.test(line.split(" ")[1] ?? "")));
+  }
+  return checkouts.get(dir);
+}
+
+/** The banned runtime `words` starts in the directory `dir`; node is allowed in a T3 Code checkout. */
+export const blockedRuntime = (words, dir) => find(words, dir,
+  (tool, where) => PYTHON.test(tool) || (JS_TOOL.test(tool) && !(NODE.test(tool) && t3codeCheckout(where))), true);
+export const codexLaunch = (words) => find(words, undefined, (tool) => CODEX.test(tool), false);
+
+/** Why the command `words`, run in the directory `dir`, must not run, or undefined when it may. */
+export function runtimeViolation(words, dir) {
+  const blocked = blockedRuntime(words, dir) ?? codexLaunch(words);
   if (!blocked) return undefined;
   const { tool, via } = blocked;
   const command = `\`${words.join(" ")}\``;
@@ -139,7 +163,9 @@ export function runtimeViolation(words) {
     return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Do the work `
       + "with Claude instead; in a Codex session, stop and ask the user to continue it in Claude.";
   }
-  if (/^node(?:js)?$/i.test(tool)) return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead.`;
+  if (NODE.test(tool)) {
+    return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead; node runs only in a T3 Code fork checkout.`;
+  }
   return `${runs} Use \`bun\` or \`bunx\` instead (\`bun install\`, \`bun run <script>\`, \`bunx <tool>\`), even where a `
     + "project's lockfile selects another package manager.";
 }

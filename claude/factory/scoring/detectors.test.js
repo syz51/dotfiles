@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,6 +103,18 @@ describe("package-runner", () => {
 
   test("is na without any Bash call", () => {
     expect(packageRunner(actions([call("Read", { file_path: "/a" })])).verdict).toBe("na");
+  });
+
+  // As guard-runtimes allows, node passes in a T3 Code fork checkout, and npm still fails there.
+  test("node passes in a T3 Code fork checkout only", () => {
+    const fork = realpathSync(mkdtempSync(join(tmpdir(), "detectors-t3code-")));
+    cleanup.push(fork);
+    expect(spawnSync("git", ["init", "-q", fork]).status).toBe(0);
+    expect(spawnSync("git", ["-C", fork, "remote", "add", "origin", "git@github.com:syz51/t3code.git"]).status).toBe(0);
+    expect(packageRunner(actions([bash("node scripts/dev-runner.ts dev")], { cwd: fork })).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("npx x")], { cwd: fork })).verdict).toBe("fail");
+    expect(packageRunner(actions([bash(`cd ${fork} && node x.js`)])).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("node x.js")], { cwd: tmpdir() })).verdict).toBe("fail");
   });
 
   // guard-runtimes also blocks the codex CLI, but this dimension scores the uv and bun rule only.

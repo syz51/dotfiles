@@ -74,15 +74,16 @@ const bashCommands = (actions) => actions.calls.filter((call) => call.name === "
 const hit = (call, evidence, extra = {}) => ({ evidence: clip(evidence), at: call.at, agent: call.agent, ...extra });
 const verdictOf = (applies, hits) => ({ verdict: hits.length ? "fail" : applies ? "pass" : "na", hits });
 
-// Bash ran a runtime the guard-runtimes hook blocks: Python outside `uv run`, node, or a
-// JavaScript package manager other than bun, whatever lockfile the project has. The hook's
-// own matcher and shell walker decide, so scoring and enforcement agree.
+// Bash ran a runtime the guard-runtimes hook blocks: Python outside `uv run`, node outside a
+// T3 Code fork checkout, or a JavaScript package manager other than bun, whatever lockfile
+// the project has. The hook's own matcher and shell walker decide, so scoring and
+// enforcement agree; a session whose checkout is gone gets no T3 Code exception.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
   const hits = [];
   for (const call of commands) {
     const { command } = call.input;
-    const tool = visitCommands(command, actions.cwd ?? "/", (words) => blockedRuntime(words)?.tool);
+    const tool = visitCommands(command, actions.cwd ?? "/", (words, dir) => blockedRuntime(words, dir)?.tool);
     if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }
   return verdictOf(commands.length > 0, hits);
