@@ -543,6 +543,7 @@ describe("xargs over ssh", () => {
     ["echo --admin | xargs ssh host bash -c \\''gh pr merge 12 -R owner/repo'\\'"],
     ["echo --admin | xargs watch gh pr merge 12 -R owner/repo"],
     ["echo --admin | xargs env -S 'gh pr merge 12 -R owner/repo'"],
+    ["echo --admin | xargs env -S 'gh pr merge 12 -R owner/repo --subject' ssh"],
     ["echo --admin | xargs sudo gh pr merge 12 -R owner/repo"],
     ["echo --admin | xargs env gh pr merge 12 -R owner/repo"],
   ])("refuses %s", (command) => {

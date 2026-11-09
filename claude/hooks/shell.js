@@ -429,7 +429,8 @@ function program(argv, dir) {
     }
     if (name === "ssh") {
       const remote = sshProgram(argv, i, dir);
-      return { ...remote, local: [...nested.map((script) => [script, dir]), ...remote.local], appended };
+      // A wrapper's `env -S` script runs here with ssh's words, and so with the words xargs adds.
+      return { ...remote, local: [...nested.map((script) => [script, dir, appended]), ...remote.local], appended };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`.
@@ -524,8 +525,9 @@ function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
   // Whether this script runs on another host, over ssh.
   const here = state.remote === true;
-  // Whether xargs adds arguments to the command that runs this script, such as `xargs ssh host
-  // 'gh pr merge 12'`: they land in it, so every command in it may get more words.
+  // Whether xargs adds words to the command that runs this script, such as `xargs ssh host
+  // 'gh pr merge 12'`. They join the script's text, which the shell parses again, so the guard
+  // cannot tell which command gets them and treats every command in it as getting more words.
   const added = state.appended === true;
   const { commands } = parseScript(source);
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
@@ -579,8 +581,8 @@ function inspect(source, state, visit, depth, tooDeep) {
       // run on the remote host; its local options' commands run here. The words xargs adds to
       // ssh, watch or `env -S` join the script they run.
       const scripts = [...substitutions.map((script) => [script, before, here]),
-        ...nested.map((script) => [script, dir, here || Boolean(remote), appended === true]),
-        ...(local ?? []).map(([script, where]) => [script, where, here])];
+        ...nested.map((script) => [script, dir, here || Boolean(remote), appended]),
+        ...(local ?? []).map(([script, where, adds]) => [script, where, here, adds])];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir, here]));
       if (name === "eval") scripts.push([words.slice(1).join(" "), dir, here]);
       if (name === "find") scripts.push(...findScripts(words, dir).map(([script, where]) => [script, where, here]));
@@ -598,7 +600,7 @@ function inspect(source, state, visit, depth, tooDeep) {
         if (name === "popd") state.dir = undefined;
         else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: added || appended === true, remote: here });
+        const violation = visit(words, dir, { appended: added || appended, remote: here });
         if (violation) return violation;
       }
     }

@@ -259,6 +259,8 @@ test("visit learns that xargs appends arguments to what ssh, watch and env -S ru
   expect(appended("echo 1 | xargs ssh -p 22 host -- gh pr merge 12 -R o/r")).toEqual(merge(true));
   expect(appended("echo 1 | xargs watch gh pr merge 12 -R o/r")).toEqual(merge(false));
   expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r'")).toEqual(merge(false));
+  // env -S runs its script here, with ssh and the words xargs adds after it
+  expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r' ssh")).toEqual(merge(false));
   // every command of the remote script and the scripts nested in it
   expect(appended("echo 1 | xargs ssh host 'git status; bash -c \"make\"'")).toEqual(
     [["echo 1", false, false], ["git status", true, true], ["make", true, true], ["bash -c make", true, true]]);
