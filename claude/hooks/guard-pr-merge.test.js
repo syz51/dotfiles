@@ -9,19 +9,31 @@ const HOOK = join(import.meta.dir, "guard-pr-merge.js");
 const run = (name, status, conclusion, extra = {}) => ({ __typename: "CheckRun", workflowName: "Checks", name, status, conclusion, ...extra });
 const context = (name, state) => ({ __typename: "StatusContext", context: name, state });
 const PASSING = [run("Portable tests", "COMPLETED", "SUCCESS")];
-const VIEW = { number: 12, url: "https://github.com/o/r/pull/12", state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN", baseRefName: "main", statusCheckRollup: PASSING };
+const VIEW = { number: 12, url: "https://github.com/o/r/pull/12", state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN", baseRefName: "main", headRefOid: "abc123", statusCheckRollup: PASSING };
 const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
 const NOT_FOUND = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
 const PROTECTED = { protection: { enabled: true, required_status_checks: { enforcement_level: "everyone", contexts: ["Portable tests"], checks: [] } } };
 const WORKFLOWS = { total_count: 1, workflows: [{ path: ".github/workflows/checks.yml", state: "active" }] };
 
-// A stubbed gh. `view` overrides the pull request fields; `branch`, `rules` and `workflows` are
-// the API answers (undefined: none). `calls` records { dir, args } for each call.
-function fakeGh({ view = {}, branch, rules, workflows, calls = [] } = {}) {
+// Actions jobs as the rollup and the GraphQL answer show them. GitHub records a job it never
+// started for billing as a failed run with no steps and one annotation on .github.
+const BILLING_TEXT = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
+const job = (name, id, conclusion = "FAILURE") => run(name, "COMPLETED", conclusion, { workflowName: "Checks", detailsUrl: `https://github.com/o/r/actions/runs/7/job/${id}` });
+const graphRun = (id, steps, annotations) => ({ databaseId: id, steps: { totalCount: steps }, annotations: { totalCount: annotations.length, nodes: annotations } });
+const billingRun = (id) => graphRun(id, 0, [{ path: ".github", message: BILLING_TEXT }]);
+const graph = (runs, slug = "github-actions") => ({ data: { repository: { object: { checkSuites: { nodes: [{ app: { slug: "vercel" }, checkRuns: { nodes: [] } }, { app: { slug }, checkRuns: { nodes: runs } }] } } } } });
+
+// A stubbed gh. `view` overrides the pull request fields; `branch`, `rules`, `workflows` and
+// `graphql` are the API answers (undefined: none). `calls` records { dir, args } for each call.
+function fakeGh({ view = {}, branch, rules, workflows, graphql, calls = [] } = {}) {
   return (dir, args) => {
     calls.push({ dir, args });
     if (args[0] === "pr") return ok({ ...VIEW, ...view });
     const path = args[3];
+    if (path === "graphql") {
+      if (graphql === undefined) throw new Error("unexpected GraphQL call");
+      return typeof graphql === "function" ? graphql() : ok(graphql);
+    }
     if (path.includes("/rules/branches/")) return rules === undefined ? ok([]) : ok(rules);
     if (path.includes("/branches/")) return ok(branch ?? { protection: { enabled: false } });
     if (path.includes("/actions/workflows")) return workflows === undefined ? ok({ total_count: 0, workflows: [] }) : ok(workflows);
@@ -219,7 +231,7 @@ describe("allows", () => {
     const passed = run("t", "COMPLETED", "SUCCESS", { completedAt: "2026-11-08T11:00:00Z" });
     expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [failed, passed] } })).toContain("checks failed");
     expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [passed, failed] } })).toContain("checks failed");
-    expect(classifyChecks([failed, run("t", "QUEUED", "")])).toEqual({ pending: ["Checks / t"], failed: ["Checks / t (FAILURE)"] });
+    expect(classifyChecks([failed, run("t", "QUEUED", "")])).toEqual({ pending: ["Checks / t"], failed: ["Checks / t (FAILURE)"], actionsFailed: 0 });
     // runs from different workflow runs, as a push run and a pull_request run are, all count
     const pushRun = run("t", "COMPLETED", "FAILURE", { detailsUrl: "https://github.com/o/r/actions/runs/1/job/10", startedAt: "2026-11-08T10:00:00Z" });
     const prRun = run("t", "COMPLETED", "SUCCESS", { detailsUrl: "https://github.com/o/r/actions/runs/2/job/20", startedAt: "2026-11-08T11:00:00Z" });
@@ -232,8 +244,8 @@ describe("allows", () => {
       run("t", status, conclusion, { detailsUrl: `https://github.com/o/r/actions/runs/7/job/${job}`, startedAt });
     const first = attempt("FAILURE", "2026-11-08T10:00:00Z", 1);
     const second = attempt("SUCCESS", "2026-11-08T11:00:00Z", 2);
-    expect(classifyChecks([first, second])).toEqual({ pending: [], failed: [] });
-    expect(classifyChecks([second, first])).toEqual({ pending: [], failed: [] });
+    expect(classifyChecks([first, second])).toEqual({ pending: [], failed: [], actionsFailed: 0 });
+    expect(classifyChecks([second, first])).toEqual({ pending: [], failed: [], actionsFailed: 0 });
     expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [first, second] } })).toBeUndefined();
     // a queued re-run has no start time yet, or GitHub's zero time, and is the latest
     expect(classifyChecks([first, attempt("", null, 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
@@ -258,7 +270,7 @@ describe("resolves the pull request", () => {
     expect(findMergeViolation(command, cwd, fakeGh({ calls }))).toBeUndefined();
     return calls[0];
   };
-  const json = ["--json", "number,url,state,isDraft,mergeStateStatus,baseRefName,statusCheckRollup"];
+  const json = ["--json", "number,url,state,isDraft,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup"];
 
   test.each([
     ["gh pr merge 12", ["pr", "view", "12", ...json]],
@@ -301,6 +313,128 @@ describe("resolves the pull request", () => {
       ["api", "--hostname", "ghe.example", "repos/team/app/branches/release%2F1"],
       ["api", "--hostname", "ghe.example", "repos/team/app/rules/branches/release%2F1"],
     ]);
+  });
+});
+
+// GitHub refused both Actions jobs for billing, and another CI ran them instead.
+describe("an Actions job GitHub never started for billing", () => {
+  const BUILD = job("build", 11);
+  const TEST = job("test", 12);
+  const FALLBACKS = [context("ci/circleci: build", "SUCCESS"), context("ci/circleci: test", "SUCCESS")];
+  const BOTH = graph([billingRun(11), billingRun(12)]);
+  const merge = (rollup, graphql, calls) => verdict("gh pr merge 12 --merge", { view: { statusCheckRollup: rollup }, graphql, calls });
+  const graphCalls = (calls) => calls.filter((call) => call.args[3] === "graphql");
+
+  test("passes when a non-Actions check of the same job passed, after one GraphQL call on the head commit", () => {
+    const calls = [];
+    expect(merge([BUILD, TEST, ...FALLBACKS], BOTH, calls)).toBeUndefined();
+    expect(graphCalls(calls)).toHaveLength(1);
+    const { args } = graphCalls(calls)[0];
+    expect(args.slice(0, 4)).toEqual(["api", "--hostname", "github.com", "graphql"]);
+    expect(args).toContain("owner=o");
+    expect(args).toContain("name=r");
+    expect(args).toContain("oid=abc123");
+    // only the Actions app's suites, in small pages, to keep the rate-limit cost low
+    expect(args.find((arg) => arg.startsWith("query="))).toContain("checkSuites(first: 20, filterBy: {appId: 15368})");
+    // a non-Actions check run counts as well as a status, and a pull_request run of the same workflow shares the fallback
+    const prRun = run("build", "COMPLETED", "FAILURE", { workflowName: "Checks", detailsUrl: "https://github.com/o/r/actions/runs/8/job/13" });
+    expect(merge([BUILD, prRun, run("ci/other: build", "COMPLETED", "SUCCESS", { workflowName: "", detailsUrl: "https://ci.example/1" })],
+      graph([billingRun(11), billingRun(13)]))).toBeUndefined();
+  });
+
+  test("makes no GraphQL call unless every failed check is a failed Actions job", () => {
+    const calls = [];
+    expect(merge([job("build", 11, "SUCCESS"), ...FALLBACKS], undefined, calls)).toBeUndefined();
+    // a failed attempt that a passing re-run replaced
+    const rerun = run("build", "COMPLETED", "SUCCESS", { workflowName: "Checks", detailsUrl: "https://github.com/o/r/actions/runs/7/job/21", startedAt: "2026-11-08T11:00:00Z" });
+    expect(merge([{ ...BUILD, startedAt: "2026-11-08T10:00:00Z" }, rerun], undefined, calls)).toBeUndefined();
+    // the merge is refused anyway: a failed status, a failed non-Actions check run, a cancelled Actions job
+    expect(merge([BUILD, ...FALLBACKS, context("ci/other", "FAILURE")], undefined, calls)).toContain("ci/other (FAILURE)");
+    expect(merge([BUILD, ...FALLBACKS, run("Lint", "COMPLETED", "FAILURE", { detailsUrl: "https://ci.example/2" })], undefined, calls)).toContain("Checks / Lint (FAILURE)");
+    expect(merge([BUILD, ...FALLBACKS, job("lint", 14, "CANCELLED")], undefined, calls)).toContain("Checks / lint (CANCELLED)");
+    expect(graphCalls(calls)).toHaveLength(0);
+  });
+
+  test("refuses a job with steps even when its annotation carries the billing text", () => {
+    // `::error file=.github,line=1::<text>` writes the same annotation from a job that ran
+    const violation = merge([BUILD, ...FALLBACKS], graph([graphRun(11, 3, [{ path: ".github", message: BILLING_TEXT }])]));
+    expect(violation).toContain("checks failed on pull request #12's head commit: Checks / build (FAILURE)");
+  });
+
+  test.each([
+    ["has no annotation", graphRun(11, 0, [])],
+    ["has another annotation", graphRun(11, 0, [{ path: ".github", message: "The workflow is not valid." }])],
+    ["quotes the billing text inside another message", graphRun(11, 0, [{ path: ".github", message: `Invalid input "${BILLING_TEXT}"` }])],
+    ["has the billing text on another path", graphRun(11, 0, [{ path: ".github/workflows/ci.yml", message: BILLING_TEXT }])],
+    ["has a second annotation", graphRun(11, 0, [{ path: ".github", message: BILLING_TEXT }, { path: ".github", message: "other" }])],
+    ["has more annotations than the call read", { ...billingRun(11), annotations: { totalCount: 3, nodes: billingRun(11).annotations.nodes } }],
+    ["has no step count", { ...billingRun(11), steps: undefined }],
+  ])("refuses a job that %s", (_, graphRunAnswer) => {
+    expect(merge([BUILD, ...FALLBACKS], graph([graphRunAnswer]))).toContain("Checks / build (FAILURE)");
+  });
+
+  test("refuses a run that another app reports, or that the call did not return", () => {
+    expect(merge([BUILD, ...FALLBACKS], graph([billingRun(11)], "some-app"))).toContain("Checks / build (FAILURE)");
+    expect(merge([BUILD, ...FALLBACKS], graph([billingRun(99)]))).toContain("Checks / build (FAILURE)");
+    expect(merge([BUILD, ...FALLBACKS], { data: { repository: { object: null } } })).toContain("Checks / build (FAILURE)");
+  });
+
+  test("refuses a skipped job without a passing non-Actions check of its name, and names it", () => {
+    const violation = merge([BUILD, TEST, FALLBACKS[0]], BOTH);
+    expect(violation).toContain("checks failed on pull request #12's head commit: Checks / test (not started for billing, and no passing non-Actions check is named \"<context>: test\")");
+    expect(violation).not.toContain("/ build");
+    // a failed fallback is a failed check of its own, so the guard refuses without the GraphQL call
+    expect(merge([BUILD, context("ci/circleci: build", "FAILURE")])).toContain("ci/circleci: build (FAILURE)");
+    // no fallback at all, a skipped one, a name that only ends the same, and an Actions job of that name
+    for (const others of [[], [run("ci/x: build", "COMPLETED", "SKIPPED", { workflowName: "" })],
+      [context("ci/circleci: prebuild", "SUCCESS")], [context("build", "SUCCESS")], [job("ci: build", 13, "SUCCESS")]]) {
+      expect(merge([BUILD, ...others], graph([billingRun(11)]))).toContain("Checks / build (not started for billing");
+    }
+  });
+
+  test("refuses skipped jobs of different workflows that share a name, since one check cannot stand for both", () => {
+    const docs = run("build", "COMPLETED", "FAILURE", { workflowName: "Docs", detailsUrl: "https://github.com/o/r/actions/runs/9/job/15" });
+    const violation = merge([BUILD, docs, ...FALLBACKS], graph([billingRun(11), billingRun(15)]));
+    expect(violation).toContain("Checks / build (not started for billing, and a skipped job of another workflow has the same name");
+    expect(violation).toContain("Docs / build (not started for billing, and a skipped job of another workflow has the same name");
+  });
+
+  test("waits while the non-Actions check of its name is pending", () => {
+    expect(merge([BUILD, context("ci/circleci: build", "PENDING")], graph([billingRun(11)])))
+      .toContain("checks are still running on pull request #12's head commit: ci/circleci: build.");
+    expect(merge([BUILD, run("ci/other: build", "IN_PROGRESS", "", { workflowName: "", detailsUrl: "https://ci.example/3" })], graph([billingRun(11)])))
+      .toContain("checks are still running on pull request #12's head commit: ci/other: build.");
+  });
+
+  test("refuses a real failed Actions job next to a skipped one", () => {
+    const violation = merge([BUILD, ...FALLBACKS, job("lint", 14)], graph([billingRun(11), graphRun(14, 5, [{ path: "src/a.js", message: "lint error" }])]));
+    expect(violation).toContain("Checks / lint (FAILURE)");
+    expect(violation).not.toContain("/ build");
+  });
+
+  test.each([
+    ["gh exits with an error", () => ({ code: 1, stdout: "", stderr: "GraphQL: Something went wrong" }), "gh could not read the failed Actions jobs' steps and annotations (GraphQL: Something went wrong)"],
+    ["gh times out", () => { throw new Error("spawnSync gh ETIMEDOUT"); }, "gh could not read the failed Actions jobs' steps and annotations (spawnSync gh ETIMEDOUT)"],
+    ["gh prints no JSON", () => ({ code: 0, stdout: "<html>", stderr: "" }), "not JSON when asked to read the failed Actions jobs' steps"],
+  ])("refuses when %s", (_, graphql, reason) => {
+    const violation = merge([BUILD, ...FALLBACKS], graphql);
+    expect(violation).toContain(reason);
+    expect(violation).toContain("The guard refuses a merge it cannot check");
+  });
+
+  test("refuses once the time budget is spent before the GraphQL call", () => {
+    let now = 1000;
+    const realNow = Date.now;
+    Date.now = () => now;
+    try {
+      const gh = (dir, args) => {
+        if (args[0] === "pr") { now += 50; return ok({ ...VIEW, statusCheckRollup: [BUILD, ...FALLBACKS] }); }
+        throw new Error("no call after the budget");
+      };
+      expect(findMergeViolation("gh pr merge 12", "/repo", gh, { budgetMs: 40 })).toContain("gh ran out of time to read the failed Actions jobs' steps and annotations.");
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 

@@ -15,7 +15,11 @@
 // that also runs, in any order, another merge or a git or gh command that is not read-only,
 // such as `git push`, `git switch` or `gh pr checkout`: it could move the head or change which
 // pull request gh merges after the check. Within one Actions workflow run only the latest
-// attempt of each job counts, so a passing re-run replaces a failed attempt. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// attempt of each job counts, so a passing re-run replaces a failed attempt. A failed Actions job
+// that GitHub never started for billing, with no steps and only the billing annotation, counts
+// as passed when a passing non-Actions check is named "<context>: <job name>", such as
+// "ci/circleci: build"; one GraphQL call reads those jobs' steps and annotations, and only
+// when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
 // block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
@@ -35,7 +39,20 @@ const FALSE = new Set(["0", "f", "F", "false", "FALSE", "False"]);
 const PASSED = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 // gh merges at once, without enabling auto-merge, when the pull request is in one of these states.
 const MERGEABLE_NOW = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
-const VIEW_FIELDS = "number,url,state,isDraft,mergeStateStatus,baseRefName,statusCheckRollup";
+const VIEW_FIELDS = "number,url,state,isDraft,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup";
+// An Actions job's check run links to its job page; the last number is the check run's id.
+const ACTIONS_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
+// GitHub records each Actions job it never started for billing as a failed check run with no
+// steps and one annotation, on path .github, whose message starts with this text.
+const BILLING = "The job was not started because recent account payments have failed or your spending limit";
+// The failed check runs in the head commit's Actions suites, with their steps and annotations.
+// 15368 is the github-actions app on github.com; on another host the call finds no suites, so
+// failed jobs stay failed. The page sizes keep the call at about 12 GraphQL rate-limit points.
+const FAILED_RUNS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!) {
+  repository(owner: $owner, name: $name) { object(oid: $oid) { ... on Commit {
+    checkSuites(first: 20, filterBy: {appId: 15368}) { nodes { app { slug }
+      checkRuns(first: 30, filterBy: {checkType: ALL, conclusions: [FAILURE]}) { nodes {
+        databaseId steps(first: 1) { totalCount } annotations(first: 2) { totalCount nodes { path message } } } } } } } } } }`;
 const MERGE_ENDPOINT = /(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
 const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // Each gh call gets at most this long, and the hook stops querying once the budget is spent,
@@ -98,35 +115,65 @@ export function parseMerge(args, repo) {
   return merge;
 }
 
+/** The id of the Actions job that check `check` reports, or undefined for any other check. */
+const actionsJob = (check) => (check.__typename === "CheckRun" ? ACTIONS_JOB.exec(check.detailsUrl ?? "")?.[2] : undefined);
+
 /**
- * The checks on the head commit that are still running and those that failed, as display names.
- * Runs of different workflow runs all count: a later run with the same name, say from
- * pull_request, does not hide a failed one from push. Within one Actions workflow run, which a
- * re-run reuses, only the latest attempt of each job counts.
+ * The checks on the head commit that count. Runs of different workflow runs all count: a later
+ * run with the same name, say from pull_request, does not hide a failed one from push. Within one
+ * Actions workflow run, which a re-run reuses, only the latest attempt of each job counts.
  */
-export function classifyChecks(rollup) {
-  const pending = [];
-  const failed = [];
+function latestChecks(rollup) {
   // A re-run attempt that has not started yet has no start time, or GitHub's zero time.
   const started = (check) => (!check.startedAt || check.startedAt.startsWith("0001-") ? "9999" : check.startedAt);
   const latest = new Map();
   for (const check of rollup) {
-    const run = check.__typename === "CheckRun" ? /\/actions\/runs\/(\d+)\/job\//.exec(check.detailsUrl ?? "")?.[1] : undefined;
+    const run = check.__typename === "CheckRun" ? ACTIONS_JOB.exec(check.detailsUrl ?? "")?.[1] : undefined;
     const key = run === undefined ? Symbol("check") : `${run}\0${check.workflowName}\0${check.name}`;
     if (!latest.has(key) || started(check) >= started(latest.get(key))) latest.set(key, check);
   }
-  for (const check of latest.values()) {
+  return [...latest.values()];
+}
+
+/**
+ * The checks on the head commit that are still running and those that failed, as display names,
+ * and how many of the failed ones are failed Actions jobs. `billingSkipped` holds the ids of
+ * failed Actions jobs that GitHub never started for billing. Such a job passes when a non-Actions
+ * check named "<context>: <job name>" succeeded, and waits while one is pending; without one it
+ * fails. It also fails when a skipped job of another workflow has the same name, because then
+ * the guard cannot tell which job the check stands for.
+ */
+export function classifyChecks(rollup, billingSkipped = new Set()) {
+  const pending = [];
+  const failed = [];
+  let actionsFailed = 0;
+  const checks = latestChecks(rollup);
+  const isSkipped = (check) => check.status === "COMPLETED" && check.conclusion === "FAILURE" && billingSkipped.has(actionsJob(check));
+  const workflowsOf = new Map();
+  for (const check of checks.filter(isSkipped)) workflowsOf.set(check.name, (workflowsOf.get(check.name) ?? new Set()).add(check.workflowName));
+  for (const check of checks) {
     if (check.__typename === "CheckRun") {
       const name = check.workflowName ? `${check.workflowName} / ${check.name}` : check.name;
       // An in-progress run has conclusion "", so the status decides whether it finished.
       if (check.status !== "COMPLETED") pending.push(name);
-      else if (!PASSED.has(check.conclusion)) failed.push(`${name} (${check.conclusion || "no conclusion"})`);
+      else if (isSkipped(check) && workflowsOf.get(check.name).size > 1) {
+        failed.push(`${name} (not started for billing, and a skipped job of another workflow has the same name, so no "<context>: ${check.name}" check can stand for it)`);
+      } else if (isSkipped(check)) {
+        const fallbacks = checks.filter((other) => actionsJob(other) === undefined && (other.context ?? other.name ?? "").endsWith(`: ${check.name}`));
+        const passed = fallbacks.some((other) => other.state === "SUCCESS" || (other.status === "COMPLETED" && other.conclusion === "SUCCESS"));
+        // A pending fallback is listed as pending itself.
+        const running = fallbacks.some((other) => other.state === "PENDING" || other.state === "EXPECTED" || (other.__typename === "CheckRun" && other.status !== "COMPLETED"));
+        if (!passed && !running) failed.push(`${name} (not started for billing, and no passing non-Actions check is named "<context>: ${check.name}")`);
+      } else if (!PASSED.has(check.conclusion)) {
+        failed.push(`${name} (${check.conclusion || "no conclusion"})`);
+        if (check.conclusion === "FAILURE" && actionsJob(check) !== undefined) actionsFailed += 1;
+      }
     } else if (check.__typename === "StatusContext") {
       if (check.state === "PENDING" || check.state === "EXPECTED") pending.push(check.context);
       else if (check.state !== "SUCCESS") failed.push(`${check.context} (${check.state})`);
     } else failed.push(`${check.name ?? check.context ?? "a check"} of unknown type ${check.__typename}`);
   }
-  return { pending, failed };
+  return { pending, failed, actionsFailed };
 }
 
 const list = (names) => (names.length > 5 ? `${names.slice(0, 5).join(", ")} and ${names.length - 5} more` : names.join(", "));
@@ -167,6 +214,27 @@ function requiresChecks(query, dir, api, repo, base) {
   return Array.isArray(rules) && rules.some((rule) => rule.type === "required_status_checks");
 }
 
+/**
+ * The ids of the failed Actions jobs on the head commit that GitHub never started for billing: a FAILURE
+ * check run of the github-actions app with no steps, whose annotations are all the billing one on
+ * path .github. A job with steps ran, so its annotation may be its own output. It reads them all
+ * in one GraphQL call on commit `oid` of `owner/name`.
+ */
+function billingSkippedJobs(query, dir, api, owner, name, oid) {
+  const answer = query(dir, [...api, "graphql", "-f", `query=${FAILED_RUNS_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `oid=${oid}`],
+    "read the failed Actions jobs' steps and annotations");
+  const skipped = new Set();
+  for (const suite of answer?.data?.repository?.object?.checkSuites?.nodes ?? []) {
+    if (suite?.app?.slug !== "github-actions") continue;
+    for (const run of suite.checkRuns?.nodes ?? []) {
+      const annotations = run?.annotations?.nodes ?? [];
+      if (run?.steps?.totalCount === 0 && annotations.length > 0 && annotations.length === run.annotations.totalCount
+        && annotations.every((annotation) => annotation?.path === ".github" && annotation.message?.startsWith(BILLING))) skipped.add(String(run.databaseId));
+    }
+  }
+  return skipped;
+}
+
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
 function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appended }) {
   if (merge.unresolved !== undefined) {
@@ -197,10 +265,17 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appende
   if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
   if (view.mergeStateStatus === "BEHIND") return `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.number}\`), then wait for its checks to pass.`;
   if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
-  const { pending, failed } = classifyChecks(view.statusCheckRollup ?? []);
+  const rollup = view.statusCheckRollup ?? [];
+  let checks = classifyChecks(rollup);
+  // The GraphQL call costs time and rate-limit points, so it runs only when billing can decide
+  // the merge: every failed check is a failed Actions job.
+  if (checks.failed.length > 0 && checks.failed.length === checks.actionsFailed) {
+    checks = classifyChecks(rollup, billingSkippedJobs(query, where, api, owner, name, view.headRefOid));
+  }
+  const { pending, failed } = checks;
   if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
   if (pending.length > 0) return `checks are still running on ${pr}'s head commit: ${list(pending)}. Wait until they finish and pass, then merge.`;
-  if ((view.statusCheckRollup ?? []).length === 0) {
+  if (rollup.length === 0) {
     const workflows = query(where, [...api, `${repo}/actions/workflows?per_page=100`], "list the repository's workflows", { workflows: [] });
     const active = (workflows.workflows ?? []).filter((workflow) => workflow.state === "active" && workflow.path?.startsWith(".github/workflows/"));
     if (active.length > 0) {
