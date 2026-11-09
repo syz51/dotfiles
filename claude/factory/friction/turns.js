@@ -164,6 +164,15 @@ export const filedFeedback = (turn) => turn.calls.some((call) => call.ok !== fal
 const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^board$/;
 const BOARD_COMMAND = /(?:^|[\s;&|(/"'])board\s+[a-z]/;
 const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(commandText(call));
+// A board error the server counts itself: an answer with its error code, as the board's
+// MCP tools ("error: <code>: …") and CLI ("board: <code>: …") print it, or text over a
+// limit that the CLI refused before sending and reported to the server. The server files
+// a signal once enough agents hit it, so capture leaves these alone. Other refusals reach
+// no server, such as a runtime's schema check or `board mcp` rejecting an argument, and
+// stay friction. See agent-board's docs/API.md "Errors" and docs/DESIGN.md "Client
+// refusals".
+const SERVER_ERROR = /^(?:error|board): (?:(?:invalid|evidence_required|invalid_transition|unauthorized|forbidden|not_found|version_conflict|claim_refused|internal): |\S+ is \d+ characters; the limit is \d+ \(not sent\)$)/m;
+const serverCounted = (call) => isBoard(call) && SERVER_ERROR.test(call.output);
 
 // The program a shell call runs first, to tell a retry from the next step.
 const program = (call) => commandText(call).trim().split(/\s+/)[0]?.split("/").pop() ?? "";
@@ -180,7 +189,9 @@ export const PHRASES = [
 
 // The friction signals of a turn, and a score to rank turns by. A retry is a failed call
 // followed by another call of the same tool running the same program. Phrases count in the
-// agent's own text, not in the prompt it was given.
+// agent's own text, not in the prompt it was given. A turn whose only friction is board
+// errors the server counts (serverErrors) scores 0; with any other friction it scores as
+// usual, those errors included.
 export function signals(turn) {
   const failedAt = (call) => call.ok === false && !quietMiss(call);
   const failed = turn.calls.filter(failedAt);
@@ -191,9 +202,11 @@ export function signals(turn) {
   });
   const hookBlocks = turn.hooks.length + failed.filter((call) => /\bhook\b/i.test(call.output)).length;
   const boardErrors = failed.filter(isBoard).length;
+  const serverErrors = failed.filter(serverCounted).length;
   const phrases = turn.texts.reduce((count, text) => count + PHRASES.filter((pattern) => pattern.test(text)).length, 0);
-  const score = 3 * boardErrors + 2 * hookBlocks + Math.min(failed.length, 5) + 2 * Math.min(retries, 3) + Math.min(phrases, 3);
-  return { toolErrors: failed.length, boardErrors, hookBlocks, retries, phrases, score };
+  const otherFriction = failed.length > serverErrors || turn.hooks.length > 0 || phrases > 0;
+  const score = otherFriction ? 3 * boardErrors + 2 * hookBlocks + Math.min(failed.length, 5) + 2 * Math.min(retries, 3) + Math.min(phrases, 3) : 0;
+  return { toolErrors: failed.length, boardErrors, serverErrors, hookBlocks, retries, phrases, score };
 }
 
 // The turn as the judge reads it, at most maxChars: the prompt, then the agent's text,

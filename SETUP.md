@@ -465,7 +465,10 @@ it end or Codex marks it complete; one with no such mark counts as ended after 6
 without activity, and until then holds the cursor. Turns with board or other failed calls
 (a search that found nothing does not count), hook blocks, retries of the same program, or
 phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
-points; up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
+points. A turn whose only friction is board errors the server counts itself scores
+nothing: answers with a server error code (`invalid: …`) and text the CLI refused before
+sending (`(not sent)`), which the board turns into `signal` items. Refusals no server saw,
+such as a runtime's schema check, still count. Up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
 $0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
 agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
 factual lines quoting at most one error line and naming the session, turn and project
