@@ -863,6 +863,23 @@ describe("lean prompt", () => {
     expect(read("claude/skills/ui-climb/SKILL.md")).toContain("load that tool with ToolSearch `select:Artifact`");
   });
 
+  // board tasks dotfiles-137 and dotfiles-93: rounds left x1 issues open, stopped right after a
+  // structural round, and judges sent the climber around loops on one element.
+  test("the ui-climb skill fixes every issue, gives a structural round a fix round, and keeps the best version when judges alternate", () => {
+    const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain("fix every issue the round reported, `×1` included");
+    expect(skill).toContain("say in the round's `note:` which issues you kept and why");
+    expect(skill).toContain("Then fix the issues that round reported in one more round, and stop when status says the two did not move it either");
+    expect(skill).toContain("`[unfixed since round N]` means the judges still report an issue");
+    expect(skill).toContain("`[returns after round N]` means an issue came back after round N's fix resolved it");
+    expect(skill).toContain("The fixes that resolved an issue go to the judges as decisions already made");
+    expect(skill).toContain("keep that element as it was in the best-scoring of those rounds, whatever the report counts");
+    expect(skill).toContain("Record the conflict with both round numbers in a `note:` and in the PR's Left open");
+    // The rule that let x1 issues stay open and only protected fixes for issues reported once is gone.
+    expect(skill).not.toContain("Act first on issues reported more than once");
+    expect(skill).not.toContain("for an issue reported once");
+  });
+
   // Skills with no skillUsage record in ~/.claude.json on 2026-11-08. A skill the model may
   // still need to load (a tool or the user asks for it) keeps its name in the listing; only
   // the two skills that just explain Claude Code to the user are hidden from the model. Their

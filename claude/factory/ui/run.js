@@ -101,6 +101,8 @@ export const record = (run, what, usd) => appendJsonl(ledgerPath(run), { at: new
 export const versionDir = (run, name) => join(run.dir, "versions", name);
 export const roundsPath = (run) => join(run.dir, "rounds.jsonl");
 export const rounds = (run) => readJsonl(roundsPath(run));
+// Each round's full record (issues and samples too), or its summary when the file is missing.
+export const fullRounds = (run, list = rounds(run)) => list.map((round) => readJson(join(run.dir, "rounds", `round-${round.round}.json`), round));
 export const calibrationPath = (run) => join(run.dir, "calibration.json");
 
 // Shot records with their metadata, as the council takes them.

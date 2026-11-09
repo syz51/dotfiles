@@ -505,9 +505,16 @@ first climb is agent-board's web view (`agent-board-21`).
   and `~/.claude/frontend-avoid.md`.
 - Board integration: one `score:` note per round; stop on pass, budget or plateau (two
   judged rounds in which neither the lowest category nor a gain still under its bar moved
-  beyond the noise), after one structural round when the bar is far and budget is left;
-  friction goes to `board feedback --about ui-climb`; the owner decides the merge through
-  an ask.
+  beyond the noise), after one structural round and one round that fixes its issues when
+  the bar is far and budget is left; friction goes to `board feedback --about ui-climb`;
+  the owner decides the merge through an ask.
+- Issue ledger (`ui/ledger.js`): issues match across rounds by screen and category. A
+  round marks an issue still reported as unfixed since its first round, and one reported
+  again after a round resolved it as returning. Each round fixes every issue or says in a
+  note why it keeps one. The fixes that resolved an issue go into the judges' system prompt
+  as design decisions already made, without words that tell a climb runs. When judges
+  alternate on one element, the climber keeps the best-scoring version and records the
+  conflict, whatever the report counts.
 
 ### 8. Code review (from Anthropic's post, `dotfiles-99`)
 
@@ -685,3 +692,12 @@ coordination). This file keeps the goal, evidence, decisions and log.
   ask #55; dotfiles-138). Haiku must pass a round before Opus scores it. Calibration is
   already per judge (noise, control drop, bar reach); the bar is shared, and a per-judge
   bar waits on evidence from Haiku's first real calibration.
+- 2026-11-09: UI climb issue ledger (dotfiles-137, dotfiles-93). Rounds print every issue,
+  mark unfixed and returning ones, and tell the judges which earlier fixes are settled.
+  This changes the council version, so open runs need `--new-run`. After a structural
+  round, status asks for one round that fixes its issues before it advises a stop. The
+  skill fixes every issue, `×1` included, and keeps the best-scoring version when judges
+  alternate. The bar needed no change: 2111247 removed the typical-range sentence from the
+  judge prompt, the template's `pass.min` is 8, and calibration warns on bar reach and
+  suggests a bar that leads the references (c50475a). Judge diversity was settled by
+  dotfiles-138.

@@ -126,17 +126,27 @@ Repeat:
    beyond the judges' noise. On a plateau with the bar more than 0.5 away and over half
    the budget left, status says so: first make one structural round aimed at the lowest
    category (a new type scale, layout system or component set, not more local fixes),
-   judge it with `$UI round --structural` and note what it changes, and stop when status
-   says that round did not move it either. Status says so for every structural round
-   since a metric last moved; a structural round that moved one earns a new one at the
-   next plateau. Say why you stopped in the last note, with the calibration's bar-reach
-   warning when status repeats it.
-5. Otherwise fix what the round reported: failed gates first, then the issues marked
-   `[under bar]` (in categories under the bar, furthest first), then the rest. When a
-   category under the bar has few issues, the round prints what the judges said of the
-   design; work from that. Fix causes, not screenshots: shared tokens, components and
-   layout rules, so a change helps every screen. Look at the screenshots of the round
-   (the output names the folder) before and after a change.
+   judge it with `$UI round --structural` and note what it changes. Then fix the issues
+   that round reported in one more round, and stop when status says the two did not move
+   it either; status never says to stop right after the structural round itself. Status
+   says so for every structural round since a metric last moved; a structural round that
+   moved one earns a new one at the next plateau. Say why you stopped in the last note,
+   with the calibration's bar-reach warning when status repeats it.
+5. Otherwise fix every issue the round reported, `×1` included: failed gates first, then
+   the issues marked `[under bar]` (in categories under the bar, furthest first), then
+   the rest. Keep an issue only when its fix would undo an earlier round's fix (see the
+   rules below) or contradict another issue, and say in the round's `note:` which issues
+   you kept and why. When a category under the bar has few issues, the round prints what
+   the judges said of the design; work from that. Fix causes, not screenshots: shared
+   tokens, components and layout rules, so a change helps every screen. Look at the
+   screenshots of the round (the output names the folder) before and after a change.
+
+The round keeps a ledger of issues across the run, matched by screen and category.
+`[unfixed since round N]` means the judges still report an issue that earlier rounds did
+not fix: try a different fix, not the same one again. `[returns after round N]` means an
+issue came back after round N's fix resolved it. The fixes that resolved an issue go to
+the judges as decisions already made, so they stop asking to undo them. The ledger sends
+the fix the issue asked for, so apply that fix; when yours differs, say how in the note.
 
 Rules:
 
@@ -148,9 +158,10 @@ Rules:
   sideways scrolling are no worse than main's. Keep them that way.
 - Keep the product's behavior and copy unless the judges' issue is about them, and keep
   each round's change reviewable.
-- Act first on issues reported more than once (`×2` or more) or of high severity. Do not
-  undo an earlier round's fix for an issue reported once: leave it, and record the
-  conflict with both round numbers in a `note:` and in the PR's Left open.
+- When the judges alternate on one element across rounds (an issue returns after an
+  earlier round's fix, or asks to undo it), keep that element as it was in the
+  best-scoring of those rounds, whatever the report counts. Record the conflict with
+  both round numbers in a `note:` and in the PR's Left open.
 - Report what in the process costs you a round, such as judges reversing a fix, an issue
   no change can satisfy, a bar that looks out of reach or a gate that misfires, with
   `board feedback --about ui-climb`, citing the round files and fields. Then carry on.
@@ -181,7 +192,8 @@ Rules:
   again (its `score:` line still goes in a note).
 - `--uncalibrated` runs a trial round that never passes; never hand one over.
 - State lives in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/ui/<name>/runs/<id>/`:
-  screenshots per version, `rounds/round-N.json` with every judge's scores and issues,
+  screenshots per version, `rounds/round-N.json` with every judge's scores and issues
+  (the ledger reads them) and the fixes the judges were told are settled,
   `calibration.json` and the spending ledger.
 
 ## Feedback on this skill

@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { runProcess } from "../../tests/lib/process.js";
 import { browseArgv, captureShots, prepareRevision, serve } from "./capture.js";
 import { checkTotals } from "./checks.js";
-import { climbNoise, plateau, run as runCli, scoreLine } from "./cli.js";
+import { climbNoise, plateau, run as runCli, scoreLine, structuralTried } from "./cli.js";
+import { ledger, markIssues, SETTLED_MAX, settledFixes } from "./ledger.js";
 import { ConfigError, DEFAULT_CONTROL_CSS, MAX_IMAGES, productShots, referenceShots, validateConfig } from "./config.js";
 import {
   avoidList, barReach, buildContent, calibrationOf, checkRequestSize, combine, councilVersion, JudgeFailedError, JudgeOutputError, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
@@ -340,6 +341,57 @@ describe("council", () => {
     expect(topIssues(results).map((item) => item.category)).toEqual(["layout", "hierarchy", "typography", "color"]);
     const ranked = topIssues(results, "candidate", 20, { typography: 0.25, color: 1, polish: 2 });
     expect(ranked.map((item) => [item.category, item.underBar])).toEqual([["color", true], ["typography", true], ["layout", false], ["hierarchy", false]]);
+    // Each group names the judges that reported it.
+    const two = [{ judge: "h", samples: [{ issues: [issue("layout", "high")] }] }, { judge: "o", samples: [{ issues: [issue("layout", "low"), issue("color", "low")] }] }];
+    expect(topIssues(two).map((item) => [item.category, item.judges])).toEqual([["layout", ["h", "o"]], ["color", ["o"]]]);
+  });
+
+  test("the ledger marks unfixed and returning issues, and settles the fixes that resolved one", () => {
+    const group = (screen, category, fix, judges = ["h"]) => ({ screen, category, problems: [`${screen} ${category}`], fixes: [fix], judges });
+    const round = (number, issues, judges = ["h"]) => ({ round: number, stage: "judges", verdicts: judges.map((judge) => ({ judge })), issues });
+    const list = [
+      round(1, [group("boards", "layout", "truncate the rows to one line"), group("nav", "color", "mute the count")]),
+      round(2, [group("boards", "layout", "truncate harder")]),
+      // A round whose gates failed has no verdicts: it changes nothing.
+      { round: 3, stage: "gates", verdicts: [] },
+      round(4, []),
+    ];
+    let entries = ledger(list);
+    expect(entries.get("boards|layout")).toMatchObject({ state: "resolved", since: 1, resolvedIn: 4, settled: { round: 4, fix: "truncate harder" } });
+    expect(entries.get("nav|color")).toMatchObject({ state: "resolved", resolvedIn: 2, settled: { round: 2, fix: "mute the count" } });
+    expect(settledFixes(entries)).toEqual([{ screen: "boards", fix: "truncate harder" }, { screen: "nav", fix: "mute the count" }]);
+    // The next round: an issue the judges reported before and no fix resolved is unfixed; one that
+    // comes back after a fix returns; a new one has no mark.
+    const next = [group("boards", "layout", "allow two lines"), group("nav", "color", "x"), group("home", "polish", "y")];
+    entries = ledger([...list.slice(0, 1), round(2, [group("boards", "layout", "truncate harder")])]);
+    expect(markIssues(next, entries).map(({ since, returns }) => ({ since, returns }))).toEqual([{ since: 1, returns: undefined }, { since: undefined, returns: { round: 2, fix: "mute the count" } }, { since: undefined, returns: undefined }]);
+    // A fix stays settled when its issue returns, until a later fix resolves the issue again.
+    entries = ledger([...list, round(5, [group("boards", "layout", "allow two lines")])]);
+    expect(entries.get("boards|layout")).toMatchObject({ state: "open", since: 5, settled: { round: 4, fix: "truncate harder" } });
+    expect(settledFixes(entries).map((item) => item.fix)).toEqual(["truncate harder", "mute the count"]);
+    entries = ledger([...list, round(5, [group("boards", "layout", "allow two lines")]), round(6, [])]);
+    expect(settledFixes(entries).map((item) => item.fix)).toEqual(["allow two lines", "mute the count"]);
+    // An issue only the second judge reported stays open through rounds that judge did not run.
+    entries = ledger([round(1, [group("ask", "typography", "f", ["o"])], ["h", "o"]), round(2, [], ["h"])]);
+    expect(entries.get("ask|typography").state).toBe("open");
+    entries = ledger([round(1, [group("ask", "typography", "f", ["o"])], ["h", "o"]), round(2, [], ["h"]), round(3, [], ["h", "o"])]);
+    expect(entries.get("ask|typography")).toMatchObject({ state: "resolved", resolvedIn: 3 });
+    // Design numbers belong to the call that wrote them; the latest settled fixes come first, at most SETTLED_MAX.
+    entries = ledger([round(1, [group("a", "color", "match Design 3's accent, as Designs 1, 2 and 4 do")]), round(2, [])]);
+    expect(settledFixes(entries)).toEqual([{ screen: "a", fix: "match another design's accent, as another design do" }]);
+    const many = Array.from({ length: SETTLED_MAX + 5 }, (_, index) => group(`s${index}`, "color", `f${index}`));
+    entries = ledger([round(1, many.slice(0, 5)), round(2, many.slice(5)), round(3, [])]);
+    // s0-s4 were resolved in round 2, the other 20 in round 3: the older five drop out.
+    expect(settledFixes(entries).map((item) => item.screen)).toEqual(many.slice(5).map((item) => item.screen));
+  });
+
+  test("the judges hear the settled fixes as the product's decisions, without being told a climb runs", () => {
+    const settled = [{ screen: "boards.desktop-light", fix: "Keep each waiting row on one line." }];
+    const prompt = systemPrompt(config, [], settled);
+    expect(prompt).toContain("Design decisions already made for the product, each on the screen in brackets. Do not report an issue that asks to undo one;");
+    expect(prompt).toContain("They do not raise or lower any design's scores:\n- [boards.desktop-light] Keep each waiting row on one line.");
+    expect(prompt).not.toMatch(/\b(baseline|candidate|control|round|main|target|threshold|climb|bar|sha|fixed|earlier)\b/i);
+    expect(systemPrompt(config, [])).not.toContain("Design decisions already made");
   });
 
   test("calibration warns when a judge almost never gives the bar", () => {
@@ -531,6 +583,18 @@ describe("rounds", () => {
     expect(at(8.5, [tied(1, 7.5, 2), tied(2, 7.5, 1.5), tied(3, 7.5, 1.5), tied(4, 7.5, 1.5)]).movedAt).toBe(2);
     expect(at(8.5, [low(1, 0.2, 7), low(2, 0.3, 7.5), { round: 3, stage: "gates", verdicts: [] }, low(4, 0.35, 7.55), low(5, 0.4, 7.5), low(6, 0.4, 7.5)]).movedAt).toBe(2);
     expect(at(8.5, [low(1, 0.2, 7.5), low(2, 0.3, 7.5), low(3, 0.35, 7.5)]).movedAt).toBeNull();
+  });
+
+  test("a structural round counts as tried only after a round has fixed its own issues", () => {
+    const at = (round, extra = {}) => ({ round, stage: "judges", verdicts: [{ judge: "h" }], ...extra });
+    expect(structuralTried([at(1), at(2), at(3)], null)).toBeNull();
+    // The structural round is the latest judged one: not followed, so the climb is not told to stop.
+    expect(structuralTried([at(1), at(2), at(3, { structural: true })], null)).toEqual({ round: 3, followed: false });
+    // A round whose gates failed does not count as the fix round.
+    expect(structuralTried([at(1), at(2, { structural: true }), { round: 3, stage: "gates", verdicts: [] }], null)).toEqual({ round: 2, followed: false });
+    expect(structuralTried([at(1), at(2, { structural: true }), at(3)], null)).toEqual({ round: 2, followed: true });
+    // One at or before the round the metrics last moved has earned a new one.
+    expect(structuralTried([at(1), at(2, { structural: true }), at(3)], 2)).toBeNull();
   });
 
   test("a plateau follows the judge that binds, not only the first", () => {
@@ -881,6 +945,12 @@ button { font: inherit; padding: 8px 16px; }
     const structural = await round("--structural");
     expect(structural.code).toBe(1);
     expect(structural.stdout).toMatch(/score: round 4 fail · .* · structural · /);
+    // The structural round's own issues get a fix round before the climb is told to stop.
+    text = await status();
+    expect(text).toContain("Structural round 4 is the latest judged round: fix the issues it reported in one more round (not --structural) before you decide.");
+    expect(text).not.toContain("stop the climb");
+    expect(text).not.toContain("The bar is 2.00 away");
+    expect((await round()).code).toBe(1);
     text = await status();
     expect(text).toContain("Structural round 4 did not move it either: stop the climb");
     expect(text).not.toContain("The bar is 2.00 away");
@@ -912,14 +982,45 @@ button { font: inherit; padding: 8px 16px; }
     expect(text).toContain("Plateau (claude-sonnet-5-5@medium)");
     expect(text).toContain("The bar is 1.00 away with");
     expect(text).not.toContain("Structural round 4");
-    // A second structural round that moves nothing stops the climb, with the calibration's bar-reach warning.
+    // A second structural round and its fix round that move nothing stop the climb, with the calibration's bar-reach warning.
     expect((await round(7, "--structural")).code).toBe(1);
+    expect(await status()).toContain("Structural round 7 is the latest judged round");
+    expect((await round(7)).code).toBe(1);
     const [runId] = readdirSync(runs);
     writeFileSync(join(runs, runId, "calibration.json"), JSON.stringify({ judges: { "claude-sonnet-5-5@medium": { pass: false, barReach: { warnings: ["the bar 8 is above the best reference in hierarchy (7.00)"] } } } }));
     text = await status();
     expect(text).toContain("Structural round 7 did not move it either: stop the climb");
     expect(text).toContain("Calibration warned that the bar 8 may be out of the judges' range: say so in that note too.\n- claude-sonnet-5-5@medium: the bar 8 is above the best reference in hierarchy (7.00).");
     expect(text).not.toContain("The bar is 1.00 away");
+  }, 300_000);
+
+  test("the ledger marks unfixed and returning issues and tells the judges which fixes are settled", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("ledger.json", JSON.stringify({ ...config, name: "ledger", judges: [{ model: "claude-haiku-5-5", samples: 1 }] }));
+    write("web/home.html", page("This week", "<p>Ledger</p>"));
+    await commit("ledger");
+    const round = (scores = {}) => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", "--config", join(repo, "ledger.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "ledger", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 7.5, references: 8, ...scores }) },
+    });
+    const settled = () => calls().at(-1).settled;
+    // Round 1 reports the contrast issue on home; round 2 reports it again: unfixed.
+    let result = await round();
+    expect(result.stdout).toContain("Fix every one, or say in the round's note why you keep it:\n1. [under bar] home.desktop-light · color · high ×1:");
+    expect(settled()).toEqual([]);
+    result = await round();
+    expect(result.stdout).toContain("1. [under bar] [unfixed since round 1] home.desktop-light · color");
+    expect(result.stdout).toContain("Ledger: 1 unfixed from an earlier round (try a different fix), 0 back after a fix.");
+    // Round 3 no longer reports it: the fix the judges asked for is settled for the next judges.
+    result = await round({ quiet: true });
+    expect(result.stdout).not.toContain("home.desktop-light · color");
+    result = await round();
+    expect(settled()).toEqual(["- [home.desktop-light] darken the <i>muted</i> text"]);
+    expect(result.stdout).toContain("1. [under bar] [returns after round 3] home.desktop-light · color");
+    expect(result.stdout).toContain("   Round 3 resolved it with: darken the <i>muted</i> text. If this undoes that fix, keep the better-scoring version and note the conflict.");
+    expect(result.stdout).toContain("The judges were told 1 earlier fix is settled.");
+    // Nothing in the settled list told a judge which design was which.
+    expect(existsSync(join(scratch, "leaks.txt")) ? readFileSync(join(scratch, "leaks.txt"), "utf8") : "").toBe("");
   }, 300_000);
 
   test("stops before spending past the run's budget", async () => {

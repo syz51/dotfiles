@@ -79,7 +79,7 @@ function categoryTable(round) {
 
 function issuesList(round) {
   if (!round?.issues?.length) return `<p class="muted">No issues recorded for this round.</p>`;
-  return `<ol class="issues">${round.issues.map((issue) => `<li><p>${issue.underBar ? `<span class="pill fail">under bar</span> ` : ""}<strong>${escape(issue.screen)}</strong> · ${escape(issue.category)} · <span class="sev ${escape(issue.severity)}">${escape(issue.severity)}</span> · reported ${issue.count}×</p>
+  return `<ol class="issues">${round.issues.map((issue) => `<li><p>${issue.underBar ? `<span class="pill fail">under bar</span> ` : ""}${issue.since ? `<span class="pill fail">unfixed since round ${issue.since}</span> ` : ""}${issue.returns ? `<span class="pill fail">returns after round ${issue.returns.round}</span> ` : ""}<strong>${escape(issue.screen)}</strong> · ${escape(issue.category)} · <span class="sev ${escape(issue.severity)}">${escape(issue.severity)}</span> · reported ${issue.count}×</p>
 <p>${escape(issue.problems[0])}</p><p class="muted">Fix: ${escape(issue.fixes[0])}</p></li>`).join("\n")}</ol>`;
 }
 
