@@ -1,5 +1,5 @@
 {
-  "version": 10,
+  "version": 11,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -7,7 +7,7 @@
       "id": "package-runner",
       "kind": "detector",
       "section": "Working preferences",
-      "description": "Bash ran node, npm, npx, pnpm, yarn, corepack or vp (also through bunx), whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
+      "description": "Bash ran node, npm, npx, pnpm, yarn or corepack (also through bunx), whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
     },
     {
       "id": "ai-attribution",

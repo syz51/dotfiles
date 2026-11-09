@@ -1,8 +1,8 @@
 // Claude Code PreToolUse hook for the Bash tool. Enforces the runtime rule in
 // ~/.claude/CLAUDE.md: Python runs through `uv run` and JavaScript through `bun` or
 // `bunx`, so a command that starts python (ipython, pypy), pip, pytest, node or another
-// JavaScript package manager (npm, npx, pnpm, pnpx, yarn, corepack, Vite+'s vp) is
-// blocked, here or over `ssh`, and so is `bunx` or `bun x` running such a tool. The
+// JavaScript package manager (npm, npx, pnpm, pnpx, yarn, corepack) is blocked, here or
+// over `ssh`, and so is `bunx` or `bun x` running such a tool. Vite+ (`vp`) may run. The
 // `codex` CLI is blocked the same way: the user has only a Claude plan, so no session may
 // start Codex or its models. BUN_OPTIONS=--bun
 // (set in ~/.zshenv) makes bun run and bunx use bun for tools whose shebang names node.
@@ -17,13 +17,13 @@ import { visitCommands } from "./shell.js";
 
 // Case-insensitive: the default macOS volume runs PYTHON3 as python3.
 const PYTHON = /^(?:python|pip|pypy|ipython)(?:\d+(?:\.\d+)*)?$|^(?:pytest|py\.test)$/i;
-// node and every JavaScript package manager but bun, including Vite+.
-const JS_TOOL = /^(?:node|nodejs|npm|npx|pnpm|pnpx|yarn|yarnpkg|corepack|vp|vpx|vite-plus)$/i;
+// node and every JavaScript package manager but bun. Vite+ (vp, vpx, vite-plus) is allowed.
+const JS_TOOL = /^(?:node|nodejs|npm|npx|pnpm|pnpx|yarn|yarnpkg|corepack)$/i;
 // The Codex CLI, by its name or, through bunx, its npm package.
 const CODEX = /^(?:@openai\/)?codex$/i;
 // A cheap prefilter: commands that never name a runtime, even split by quotes or
 // backslashes ("no"de, n\ode), are not parsed.
-const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus|codex/i;
+const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|codex/i;
 // Options of bun and `bun x` that take the next word as their value.
 const BUN_VALUE_OPTIONS = new Set(["--cwd", "--env-file", "--registry", "--ca", "--cafile", "--minimum-release-age",
   "-c", "--config", "-r", "--preload", "--import", "--require", "--port", "--conditions", "-e", "--eval", "-p", "--print"]);
