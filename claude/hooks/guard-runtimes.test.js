@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { findRuntimeViolation } from "./guard-runtimes.js";
 
@@ -262,12 +265,146 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });
 
+// node may run in a checkout of a repository node-repos.json lists, such as T3 Code, whose
+// server needs Node.js; real git repositories stand in for the checkouts, so the remote
+// lookup runs as in the hook. They are built in beforeAll, after the cleanup is registered.
+const dirs = {};
+const CHECKOUTS = ["fork", "worktree", "scp", "port", "gitSsh", "insteadOf", "upstream", "upstreamClone"];
+const OTHERS = ["dotfiles", "lookalike", "stranger", "otherRemote", "noRepo"];
+let root;
+afterAll(() => root && rmSync(root, { recursive: true, force: true }));
+beforeAll(() => {
+  root = realpathSync(mkdtempSync(join(tmpdir(), "guard-runtimes-")));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { encoding: "utf8" });
+    if (result.status !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
+  };
+  const repo = (name, remotes) => {
+    dirs[name] = join(root, name);
+    git("init", "-q", dirs[name]);
+    for (const [remote, url] of Object.entries(remotes)) git("-C", dirs[name], "remote", "add", remote, url);
+  };
+  repo("fork", { origin: "https://github.com/syz51/t3code.git" });
+  mkdirSync(join(dirs.fork, "apps", "server"), { recursive: true });
+  git("-C", dirs.fork, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+    "commit", "-q", "--allow-empty", "--no-verify", "-m", "init");
+  dirs.worktree = join(root, "worktree");
+  git("-C", dirs.fork, "-c", "core.hooksPath=/dev/null", "worktree", "add", "-q", dirs.worktree);
+  repo("scp", { origin: "git@github.com:syz51/t3code" });
+  repo("port", { origin: "ssh://git@ssh.github.com:443/syz51/t3code.git" });
+  repo("gitSsh", { origin: "git+ssh://git@github.com/SYZ51/T3Code.git" });
+  repo("insteadOf", { origin: "gh:syz51/t3code" });
+  git("-C", dirs.insteadOf, "config", "url.https://github.com/.insteadOf", "gh:");
+  repo("upstream", { origin: "https://github.com/someone/elsewhere.git", upstream: "ssh://git@github.com/pingdotgg/t3code.git" });
+  repo("upstreamClone", { origin: "https://github.com/pingdotgg/t3code" });
+  repo("dotfiles", { origin: "https://github.com/syz51/dotfiles.git" });
+  repo("lookalike", { origin: "https://github.com/syz51/t3code-notes.git" });
+  repo("stranger", { origin: "https://github.com/someone/t3code.git" });
+  repo("otherRemote", { origin: "https://github.com/syz51/dotfiles.git", mirror: "https://github.com/syz51/t3code.git" });
+  dirs.noRepo = mkdtempSync(join(root, "plain-"));
+});
+const verdictIn = (name, command) => findRuntimeViolation(command, dirs[name]);
+
+describe("node in a checkout of a repository node-repos.json lists", () => {
+  describe.each(CHECKOUTS)("allowed in %s", (name) => {
+    test.each([
+      ["node scripts/dev-runner.ts dev:server"],
+      ["node --version"],
+      ["vp node x.js"],
+      ["bunx node@22 x.js"],
+      ["vpx scripts/build.ts"],
+      ["vp exec node x.js"],
+      ["timeout 30 node server.js"],
+      ["BUN_OPTIONS= bun run dev"],
+      ["vp run dev"],
+      ["mkdir -p out && cd out && node ../build.js"],
+    ])("%s", (command) => {
+      expect(verdictIn(name, command)).toBeUndefined();
+    });
+  });
+
+  test.each([
+    ["npx x"],
+    ["pnpm i"],
+    ["npm test"],
+    ["yarn build"],
+    ["corepack enable"],
+    ["bunx pnpm i"],
+    ["vp install"],
+    ["vpx npm install"],
+    ["python3 x.py"],
+    ["codex exec hi"],
+    ["ssh host node x.js"],
+    ["node x.js && pnpm i"],
+    // node starting a banned package manager's script
+    ["node $(which pnpm) install"],
+    ["node `command -v npm` ci"],
+    ["node node_modules/pnpm/bin/pnpm.cjs i"],
+    ["node /opt/homebrew/lib/node_modules/npm/bin/npm-cli.js install"],
+    ["node ~/.bun/bin/yarn"],
+    ["vp node $(which corepack) enable"],
+  ])("still blocks %s there", (command) => {
+    expect(verdictIn("fork", command)).toBeDefined();
+  });
+
+  test("a script that only mentions a lockfile is no package manager", () => {
+    expect(verdictIn("fork", "node scripts/check.js pnpm-lock.yaml")).toBeUndefined();
+  });
+
+  describe.each(OTHERS)("refused in %s", (name) => {
+    test.each([["node x.js"], ["vp node x.js"], ["vpx check.js"], ["bunx node x.js"]])("%s", (command) => {
+      expect(verdictIn(name, command)).toBeDefined();
+    });
+  });
+
+  test("follows cd, sudo -D and bun --cwd into and out of a checkout", () => {
+    const { fork, dotfiles } = dirs;
+    expect(verdictIn("dotfiles", `cd ${fork} && node x.js`)).toBeUndefined();
+    expect(verdictIn("fork", "cd apps/server && node x.js")).toBeUndefined();
+    expect(verdictIn("fork", `cd ${dotfiles} && node x.js`)).toBeDefined();
+    expect(verdictIn("dotfiles", `(cd ${fork} && node x.js); node y.js`)).toContain("`node y.js`");
+    expect(verdictIn("fork", `vpx -c 'cd ${dotfiles} && node x.js'`)).toBeDefined();
+    expect(verdictIn("dotfiles", `vpx -c 'cd ${fork} && node x.js'`)).toBeUndefined();
+    expect(verdictIn("fork", `sudo -D ${dotfiles} node x.js`)).toBeDefined();
+    expect(verdictIn("dotfiles", `sudo -D ${fork} node x.js`)).toBeUndefined();
+    expect(verdictIn("fork", `bunx --cwd ${dotfiles} node x.js`)).toBeDefined();
+    expect(verdictIn("fork", `bunx --cwd=${dotfiles} node x.js`)).toBeDefined();
+    expect(verdictIn("fork", `bun --cwd ${dotfiles} x node x.js`)).toBeDefined();
+    expect(verdictIn("dotfiles", `bun --cwd ${fork} x node x.js`)).toBeUndefined();
+    expect(verdictIn("dotfiles", `bun --cwd ${fork} x --cwd apps/server node x.js`)).toBeUndefined();
+  });
+
+  test("a command whose directory is unknown gets no exception", () => {
+    expect(findRuntimeViolation("node x.js", undefined)).toBeDefined();
+    expect(verdictIn("fork", "cd $DIR && node x.js")).toBeDefined();
+  });
+
+  test("GIT_DIR in the hook's environment does not decide the checkout", () => {
+    const run = (cwd) => Bun.spawnSync({
+      cmd: [process.execPath, HOOK], env: { ...process.env, GIT_DIR: join(dirs.fork, ".git") },
+      stdin: Buffer.from(JSON.stringify({ tool_name: "Bash", tool_input: { command: "node --version" }, cwd })),
+    }).exitCode;
+    expect(run(dirs.dotfiles)).toBe(2);
+    expect(run(dirs.scp)).toBe(0);
+  });
+
+  test("the reason names the exception and its list", () => {
+    expect(verdictIn("dotfiles", "node x.js")).toContain("~/.claude/hooks/node-repos.json lists, such as T3 Code");
+  });
+});
+
 describe("hook process", () => {
   const run = (stdin) => {
     const result = Bun.spawnSync({ cmd: [process.execPath, HOOK], stdin: Buffer.from(stdin) });
     return { code: result.exitCode, stderr: result.stderr.toString() };
   };
-  const bash = (command) => run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: "/tmp" }));
+  const bash = (command, cwd = "/tmp") => run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }));
+
+  test("allows node in a T3 Code fork checkout and blocks it elsewhere", () => {
+    expect(bash("node --version", dirs.fork)).toEqual({ code: 0, stderr: "" });
+    expect(bash("node --version", dirs.dotfiles).code).toBe(2);
+    expect(bash("pnpm i", dirs.fork).code).toBe(2);
+  });
 
   test("blocks a bare runtime with exit 2 and the reason on stderr", () => {
     const result = bash("python3 check.py");

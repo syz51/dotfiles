@@ -7,7 +7,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { blockedRuntime } from "../../hooks/guard-runtimes.js";
+import { blockedRuntime, nodeCheckout } from "../../hooks/guard-runtimes.js";
 import { visitCommands } from "../../hooks/shell.js";
 import { mayInvoke } from "../../tests/lib/command.js";
 import { isCodeReview, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
@@ -45,10 +45,17 @@ export function sessionActions(session, records = sessionRecords(session)) {
   const collect = (list, agent) => {
     const seen = new Set();
     const results = new Map();
+    // Whether the guard-runtimes hook refused the call, from its message in the result.
+    const runtimeBlocked = new Set();
     for (const record of list) {
       const content = record.message?.content;
       if (record.type === "user" && Array.isArray(content))
-        for (const block of content) if (block?.type === "tool_result") results.set(block.tool_use_id, block.is_error !== true);
+        for (const block of content) {
+          if (block?.type !== "tool_result") continue;
+          results.set(block.tool_use_id, block.is_error !== true);
+          const text = typeof block.content === "string" ? block.content : Array.isArray(block.content) ? block.content.map((part) => part?.text ?? "").join("\n") : "";
+          if (text.includes(RUNTIME_BLOCK)) runtimeBlocked.add(block.tool_use_id);
+        }
     }
     for (const record of list) {
       const content = record.message?.content;
@@ -57,7 +64,7 @@ export function sessionActions(session, records = sessionRecords(session)) {
         for (const block of content)
           if (block?.type === "tool_use" && !seen.has(block.id)) {
             seen.add(block.id);
-            calls.push({ id: block.id, name: block.name, input: block.input ?? {}, at: record.timestamp ?? null, gitBranch: record.gitBranch ?? null, cwd: record.cwd ?? null, agent, ok: results.get(block.id) ?? null });
+            calls.push({ id: block.id, name: block.name, input: block.input ?? {}, at: record.timestamp ?? null, gitBranch: record.gitBranch ?? null, cwd: record.cwd ?? null, agent, ok: results.get(block.id) ?? null, runtimeBlocked: runtimeBlocked.has(block.id) });
           }
       } else if (agent === null && record.type === "user" && !record.isSidechain && typeof content === "string") {
         const name = COMMAND.exec(content)?.[1];
@@ -74,15 +81,21 @@ const bashCommands = (actions) => actions.calls.filter((call) => call.name === "
 const hit = (call, evidence, extra = {}) => ({ evidence: clip(evidence), at: call.at, agent: call.agent, ...extra });
 const verdictOf = (applies, hits) => ({ verdict: hits.length ? "fail" : applies ? "pass" : "na", hits });
 
-// Bash ran a runtime the guard-runtimes hook blocks: Python outside `uv run`, node, or a
-// JavaScript package manager other than bun, whatever lockfile the project has. The hook's
-// own matcher and shell walker decide, so scoring and enforcement agree.
+const RUNTIME_BLOCK = "Blocked by the guard-runtimes hook";
+
+// Bash ran a runtime the guard-runtimes hook blocks: Python outside `uv run`, node outside a
+// checkout of a repository the hook's node-repos.json lists, or a JavaScript package manager
+// other than bun, whatever lockfile the project has. The hook's own matcher and shell walker
+// decide, from each call's directory, so scoring and enforcement agree. Where that directory
+// is gone, as a T3 worktree is after its merge, or is on another device, the hook's own
+// verdict in the result decides whether node was allowed.
 export function packageRunner(actions) {
   const commands = bashCommands(actions);
   const hits = [];
   for (const call of commands) {
     const { command } = call.input;
-    const tool = visitCommands(command, actions.cwd ?? "/", (words) => blockedRuntime(words)?.tool);
+    const allowsNode = (dir) => dir !== undefined && (existsSync(dir) ? nodeCheckout(dir) : call.ok !== null && !call.runtimeBlocked);
+    const tool = visitCommands(command, call.cwd ?? actions.cwd ?? "/", (words, dir) => blockedRuntime(words, dir, allowsNode)?.tool);
     if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }
   return verdictOf(commands.length > 0, hits);

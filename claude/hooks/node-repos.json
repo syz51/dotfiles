@@ -1,0 +1,4 @@
+{
+  "why": "node may run in a checkout whose git origin or upstream remote is one of these repositories: T3 Code's server needs Node.js (node:sea, node:sqlite, node-pty). npm, npx, pnpm, yarn and corepack stay banned there. guard-runtimes.js and the scoring's package-runner detector read this list.",
+  "repos": ["github.com/syz51/t3code", "github.com/pingdotgg/t3code"]
+}

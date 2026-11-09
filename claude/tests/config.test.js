@@ -632,6 +632,11 @@ describe("rules the live suites test", () => {
     expect(preferences).toMatch(/`bun`/);
     expect(preferences).toContain("Never run `node`, including for fallbacks or through `vp node`");
     expect(preferences).toMatch(/never npm, npx, pnpm, yarn or corepack, even where a project's lockfiles/);
+    // guard-runtimes allows node only in checkouts of the repositories node-repos.json lists,
+    // and the package managers nowhere; BUN_OPTIONS=--bun would run node scripts on bun.
+    expect(preferences).toContain("One exception: `node` may run in a checkout of a repository that `~/.claude/hooks/node-repos.json` lists, such as T3 Code, whose server needs Node; run its scripts there with `node` or `BUN_OPTIONS= bun run`, and the npm, npx, pnpm, yarn and corepack ban still holds.");
+    expect(tracked("claude/hooks/node-repos.json")).toBe(true);
+    expect(JSON.parse(read("claude/hooks/node-repos.json")).repos).toEqual(["github.com/syz51/t3code", "github.com/pingdotgg/t3code"]);
     // Vite+ may run checks and tools; installs and package queries stay on bun, as guard-runtimes enforces.
     expect(preferences).toContain("checks and tooling with `bun`, `bunx` or Vite+ (`vp`), and installs and package queries with `bun` only");
     expect(preferences).toMatch(/require another package manager, stop and ask me/);

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
+import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, sessionActions, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
 import { boardCheckouts, gitIgnored, HIGH_IMPACT_FILE, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
 const cleanup = [];
@@ -102,6 +103,45 @@ describe("package-runner", () => {
 
   test("is na without any Bash call", () => {
     expect(packageRunner(actions([call("Read", { file_path: "/a" })])).verdict).toBe("na");
+  });
+
+  // As guard-runtimes allows, node passes in a T3 Code checkout, and npm still fails there.
+  test("node passes in a T3 Code checkout only, judged in each call's directory", () => {
+    const fork = realpathSync(mkdtempSync(join(tmpdir(), "detectors-t3code-")));
+    cleanup.push(fork);
+    expect(spawnSync("git", ["init", "-q", fork]).status).toBe(0);
+    expect(spawnSync("git", ["-C", fork, "remote", "add", "origin", "git@github.com:syz51/t3code.git"]).status).toBe(0);
+    expect(packageRunner(actions([bash("node scripts/dev-runner.ts dev")], { cwd: fork })).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("npx x")], { cwd: fork })).verdict).toBe("fail");
+    expect(packageRunner(actions([bash(`cd ${fork} && node x.js`)])).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("node x.js")], { cwd: tmpdir() })).verdict).toBe("fail");
+    // The session started elsewhere, and a later call ran in the checkout, or the reverse.
+    expect(packageRunner(actions([bash("node x.js", { cwd: fork })], { cwd: tmpdir() })).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("node x.js", { cwd: tmpdir() })], { cwd: fork })).verdict).toBe("fail");
+  });
+
+  // A T3 worktree is deleted after its merge, so the hook's verdict at the time decides.
+  test("node in a directory that is gone passes unless the hook refused it", () => {
+    const gone = join(tmpdir(), "detectors-gone-t3code-worktree", "x");
+    expect(packageRunner(actions([bash("node x.js", { cwd: gone })])).verdict).toBe("pass");
+    expect(packageRunner(actions([bash("node x.js", { cwd: gone, ok: false, runtimeBlocked: true })])).verdict).toBe("fail");
+    expect(packageRunner(actions([bash("node x.js", { cwd: gone, ok: null })])).verdict).toBe("fail");
+    expect(packageRunner(actions([bash("pnpm i", { cwd: gone })])).verdict).toBe("fail");
+  });
+
+  test("records whether the guard-runtimes hook refused a call", () => {
+    const records = [
+      { type: "assistant", message: { content: [{ type: "tool_use", id: "a", name: "Bash", input: { command: "node x.js" } }, { type: "tool_use", id: "b", name: "Bash", input: { command: "ls" } }] } },
+      { type: "user", message: { content: [
+        { type: "tool_result", tool_use_id: "a", is_error: true, content: [{ type: "text", text: "PreToolUse:Bash hook error: Blocked by the guard-runtimes hook: `node x.js` runs node." }] },
+        { type: "tool_result", tool_use_id: "b", content: "x.js" },
+      ] } },
+    ];
+    const { calls } = sessionActions({ inheritedPrompts: [], prompts: [], cwd: null }, { main: records, subagents: [] });
+    expect(calls.map(({ id, ok, runtimeBlocked }) => ({ id, ok, runtimeBlocked }))).toEqual([
+      { id: "a", ok: false, runtimeBlocked: true },
+      { id: "b", ok: true, runtimeBlocked: false },
+    ]);
   });
 
   // guard-runtimes also blocks the codex CLI, but this dimension scores the uv and bun rule only.

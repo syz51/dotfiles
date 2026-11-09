@@ -59,7 +59,7 @@ const WRAPPERS = {
   noglob: [],
   nohup: [],
   stdbuf: ["-i", "-o", "-e"],
-  sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"],
+  sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--chdir"],
   time: ["-f", "-o"],
   timeout: ["-s", "-k", "--signal", "--kill-after"],
   xargs: ["-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
@@ -453,6 +453,9 @@ function program(argv, dir) {
         if (option === "-S" || option === "--split-string") nested.push(value ?? "");
         else if (option === "-C" || option === "--chdir") dir = changeDirectory(dir, value);
       }
+    }
+    if (name === "sudo") {
+      for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = changeDirectory(dir, value);
     }
     if (name === "timeout") i += 1; // the duration
     if (name === "xargs") appended = true;
