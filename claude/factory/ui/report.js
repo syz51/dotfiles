@@ -58,7 +58,7 @@ function roundsTable(rounds, config) {
   return `<div class="scroll"><table>
 <thead><tr><th>Round</th><th>Commit</th><th>Result</th>${config.judges.map((judge) => `<th>${escape(judgeKey(judge))}<br><span class="muted">lowest · gain · refs</span></th>`).join("")}<th class="num">Cost</th></tr></thead>
 <tbody>${rounds.map((round) => `<tr><td>${round.round}</td><td><code>${escape(round.sha.slice(0, 12))}${round.dirty ? "+dirty" : ""}</code></td>
-<td>${round.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">${OUTCOME[round.stage] ?? "fail"}</span>`}${round.calibrated === false ? ` <span class="muted">uncalibrated</span>` : ""}</td>
+<td>${round.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">${round.provisional ? "provisional pass" : OUTCOME[round.stage] ?? "fail"}</span>`}${round.calibrated === false ? ` <span class="muted">uncalibrated</span>` : ""}${round.missingReferences?.length ? ` <span class="muted">without ${escape(round.missingReferences.join(", "))}</span>` : ""}</td>
 ${config.judges.map((judge) => {
     const v = round.verdicts?.find((item) => item.judge === judgeKey(judge));
     return v ? `<td class="num">${fixed(v.lowest)} · ${signed(v.gain)} · ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)}</td>` : `<td class="muted">not run</td>`;
@@ -128,7 +128,8 @@ export function renderReport({ config, run, rounds, calibration, spentUSD, versi
   const latest = rounds.at(-1);
   const judged = [...rounds].reverse().find((round) => round.verdicts?.length);
   const passed = rounds.find((round) => round.pass && !round.dirty);
-  const status = passed ? `Passed in round ${passed.round}` : latest ? `Not passed after ${rounds.length} round${rounds.length > 1 ? "s" : ""}` : "No rounds yet";
+  const provisional = rounds.find((round) => round.provisional && !round.dirty);
+  const status = passed ? `Passed in round ${passed.round}` : provisional ? `Provisional pass in round ${provisional.round}` : latest ? `Not passed after ${rounds.length} round${rounds.length > 1 ? "s" : ""}` : "No rounds yet";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -210,6 +211,7 @@ th { font-weight: 600; font-size: 13px; }
 <div><dt>Latest gain over main</dt><dd>${judged ? signed(judged.verdicts[0].gain) : "–"}</dd></div>
 <div><dt>Spent</dt><dd>${money(spentUSD)} of ${money(config.budgetUsd.run)}</dd></div>
 </dl>
+${latest?.missingReferences?.length ? `<p style="margin-top:12px"><span class="pill fail">${escape(latest.missingReferences.length === 1 ? "missing reference" : "missing references")}</span> Round ${latest.round} was judged without ${escape(latest.missingReferences.join(", "))}, which did not capture.${config.pass.allReferences ? " A pass without every reference is provisional, not final: judge the round again once it captures." : ""}</p>` : ""}
 ${judged && judged.verdicts.length < config.judges.length ? `<p style="margin-top:12px"><span class="pill fail">${judged.verdicts.length} of ${config.judges.length} judges</span> ${escape(partialReason(judged))}</p>` : ""}
 <p class="muted" style="margin-top:12px">A round passes when every judge scores each category at least ${config.pass.min}, the overall at least ${config.pass.gain} above main (or twice the judge's noise, if larger)${config.pass.references === null ? "" : `, and each category ${signed(config.pass.references)} or more over the best reference`}. Judges see every version unlabeled and shuffled.</p>
 <h2>Score by round</h2>

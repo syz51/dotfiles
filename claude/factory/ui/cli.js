@@ -27,7 +27,8 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js ui <subcommand> [options]
   round        Gate and judge the committed candidate (HEAD) against main. Judges run in
                order and stop at the first that fails, except until a round of the run
                has heard from every judge. Exit 0 when every judge passes the bar, 1 when
-               it fails, 3 when the budget ran out.
+               it fails, 3 when the budget ran out, 4 when every judge passes but a
+               reference did not capture (a provisional pass).
   status       Rounds so far, spending, and whether the climb has plateaued.
   report       Write the run's HTML report: scores per round, screenshots, issues.
 
@@ -45,7 +46,7 @@ Options
   --out PATH        report: where to write the HTML (default in the run folder)
   --json            status, round: print JSON
 
-Exit codes: 0 pass, 1 fail, 2 usage or setup error, 3 budget spent.`;
+Exit codes: 0 pass, 1 fail, 2 usage or setup error, 3 budget spent, 4 provisional pass.`;
 
 class UsageError extends Error {}
 
@@ -114,10 +115,14 @@ function calibrated(config, calibration) {
 // A short form of a judge's verdict for notes and tables.
 const verdictLine = (v, pass) => `${v.judge} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
 
+// The references a round was judged without, for notes and the report.
+export const missingLine = (ids) => `missing reference${ids.length === 1 ? "" : "s"}: ${ids.join(", ")}`;
+
 export function scoreLine(round, config) {
-  const parts = [`score: round ${round.round} ${round.pass ? "pass" : "fail"}`];
+  const parts = [`score: round ${round.round} ${round.pass ? "pass" : round.provisional ? "provisional pass" : "fail"}`];
   if (round.stage === "gates") parts.push(`gates: ${firstLine(round.gates.failures[0])}`);
   parts.push(...round.verdicts.map((v) => verdictLine(v, config.pass)));
+  if (round.missingReferences?.length) parts.push(missingLine(round.missingReferences));
   if (round.stage === "budget") parts.push("budget spent");
   if (round.stage === "error") parts.push(`error: ${firstLine(round.error)}`);
   if (round.calibrated === false) parts.push("uncalibrated");
@@ -179,6 +184,11 @@ export function structuralTried(list, movedAt) {
   return { round: structural.round, followed: list.some((round) => round.verdicts?.length && round.round > structural.round && round.sha !== structural.sha) };
 }
 
+// What a command says of the references that did not capture.
+function printMissing(missing) {
+  for (const ref of missing) console.log(`Reference ${ref.id} (${ref.title}) did not capture, so the judges compare without it: ${ref.error}`);
+}
+
 function printGates(gates, dir) {
   const { candidate, baseline } = gates.totals;
   console.log(`Page checks (this vs main): ${Object.keys(candidate).map((key) => `${key} ${candidate[key]}/${baseline[key]}`).join(", ")}`);
@@ -191,7 +201,7 @@ async function captureCommand(config, values) {
   const unlock = lockRun(run);
   try {
     const { baseline } = await baselineVersions(config, run, { log });
-    const references = await referenceVersions(config, run, { log });
+    const { references, missing } = await referenceVersions(config, run, { log });
     const name = `preview-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "")}`;
     let source;
     if (values.rev) {
@@ -212,6 +222,7 @@ async function captureCommand(config, values) {
       console.log(`Reference ${ref.title}:`);
       for (const shot of ref.shots) console.log(`  ${shot.file}`);
     }
+    printMissing(missing);
     printGates(gates, versionDir(run, name));
     return shots.some((shot) => shot.error) ? 1 : 0;
   } finally {
@@ -232,7 +243,7 @@ async function calibrateCommand(config, values) {
       return 3;
     }
     const { baseline, control } = await baselineVersions(config, run, { control: true, log });
-    const references = await referenceVersions(config, run, { log });
+    const { references, missing } = await referenceVersions(config, run, { log });
     const versions = [{ key: "baseline", kind: "product", shots: baseline }, { key: "control", kind: "product", shots: control }, ...references];
     const results = {};
     let cost = 0;
@@ -265,11 +276,15 @@ async function calibrateCommand(config, values) {
       };
     }
     const pass = Object.values(results).every((result) => result.pass);
-    writeJsonAtomic(calibrationPath(run), { at: new Date().toISOString(), samples, judges: results, costUSD: cost });
+    writeJsonAtomic(calibrationPath(run), { at: new Date().toISOString(), samples, judges: results, costUSD: cost, ...(missing.length ? { missingReferences: missing.map((ref) => ref.id) } : {}) });
     console.log(`Calibration, run ${run.id} · main ${short(run.baseline.sha)} · ${samples} calls per judge · ${money(cost)}`);
     console.log("| Judge | Main | Control | Drop | Lower in | σ category | σ overall | References | Result |\n|---|---|---|---|---|---|---|---|---|");
     for (const [key, result] of Object.entries(results))
       console.log(`| ${key} | ${fixed(result.baseline)} | ${fixed(result.control)} | ${fixed(result.drop)} | ${percent(result.lowerShare)} | ${fixed(result.sigmaCategory)} | ${fixed(result.sigmaOverall)} | ${Object.entries(result.references).map(([ref, score]) => `${ref.slice(4)} ${fixed(score)}`).join(", ") || "–"} | ${result.pass ? "pass" : `FAIL: ${result.reasons.join("; ")}`} |`);
+    if (missing.length) {
+      console.log("");
+      printMissing(missing);
+    }
     const unreachable = barWarnings(results);
     if (unreachable.length) {
       console.log(`\nBar reach: the bar ${config.pass.min} may be out of the judges' range.`);
@@ -323,14 +338,14 @@ async function roundCommand(config, values) {
     const everyJudge = values["all-judges"] || !previous.some((round) => round.verdicts?.length === config.judges.length);
     const name = `round-${number}`;
     const { baseline } = await baselineVersions(config, run, { log });
-    const references = await referenceVersions(config, run, { log });
+    const { references, missing } = await referenceVersions(config, run, { log });
     log(`Round ${number}: checks and capture of ${short(tree.commit)}${tree.dirty ? " with uncommitted changes" : ""}…`);
     const { checks, shots } = await withSource(config, tree.dirty ? { root: config.rootDir } : { sha: tree.commit }, async (root) => {
       const checks = await runChecks(config, root);
       return { checks, shots: checks.ok ? await candidateShots(config, run, name, root) : [] };
     });
     const gates = evaluateGates({ checks, candidate: shots, baseline });
-    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, ...(values.structural ? { structural: true } : {}), gates };
+    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, ...(values.structural ? { structural: true } : {}), ...(missing.length ? { missingReferences: missing.map((ref) => ref.id) } : {}), gates };
     let result;
     if (!gates.ok) {
       result = { ...base, stage: "gates", pass: false, verdicts: [], costUSD: 0 };
@@ -379,8 +394,11 @@ async function roundCommand(config, values) {
         verdicts.push({ ...v, calibrated: noise.calibrated !== false, references: Object.fromEntries(referenceKeys.map((key) => [key, outcome.overall[key]])), baseline: outcome.overall.baseline, scores: outcome.scores });
         if (!v.pass && !everyJudge) break;
       }
-      // An uncalibrated round is a trial: it never passes.
-      const pass = calibration.ok && stage === "judges" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
+      // An uncalibrated round is a trial: it never passes. A pass judged without a reference
+      // is provisional, unless the configuration accepts one (pass.allReferences false).
+      const passed = calibration.ok && stage === "judges" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
+      const provisional = passed && missing.length > 0 && config.pass.allReferences;
+      const pass = passed && !provisional;
       // How far each category is under the bar, by the judge that scores it lowest.
       const deficits = {};
       for (const v of verdicts)
@@ -388,7 +406,7 @@ async function roundCommand(config, values) {
           if (score !== null && score < config.pass.min) deficits[category] = Math.max(deficits[category] ?? 0, config.pass.min - score);
       // Every issue, so the round can fix them all and the ledger misses none.
       result = {
-        ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
+        ...base, stage, pass, ...(provisional ? { provisional: true } : {}), verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
         // The settled fixes the judges were told, when any judge was asked.
         issues: markIssues(topIssues(judged, "candidate", Infinity, deficits), entries), settled: verdicts.length || error ? settled : [],
         samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
@@ -400,6 +418,7 @@ async function roundCommand(config, values) {
     printRound(result, config, run, values.json);
     if (result.stage === "budget") return 3;
     if (result.stage === "error") return 2;
+    if (result.provisional) return 4;
     return result.pass ? 0 : 1;
   } finally {
     unlock();
@@ -451,6 +470,10 @@ function printRound(result, config, run, json) {
   if (result.skipped) console.log(`\nA judge failed, and the round's budget did not cover ${result.skipped.join(", ")}, so they did not run.`);
   if (result.stage === "error") console.log(`\nA judge could not finish, so the round has no verdict (its cost is counted): ${result.error}\nRun the round again.`);
   if (!result.calibrated) console.log("\nThis round ran without a passing calibration: it is a trial and does not pass.");
+  if (result.missingReferences?.length) {
+    console.log(`\nThe judges compared without ${result.missingReferences.join(", ")}, which did not capture.`);
+    if (result.provisional) console.log("Every judge passed the bar, but a pass needs every reference (pass.allReferences): this is a provisional pass, not a final one. Run the round again on this commit once the reference captures.");
+  }
   console.log(`\nScreenshots: ${versionDir(run, `round-${result.round}`)}`);
   console.log(`Spent this round ${money(result.costUSD)}; run total ${money(spent(run))} of ${money(config.budgetUsd.run)}.`);
   console.log(`\n${scoreLine(result, config)}`);
@@ -478,6 +501,7 @@ function statusCommand(config, values) {
     calibrated: calibrated(config, calibration).ok, rounds: list.map((round) => ({ ...round, scoreLine: scoreLine(round, config) })),
     plateau: plateau(list, { min: config.pass.min, references: config.pass.references, noise }),
     passed: list.some((round) => round.pass && !round.dirty && round.calibrated !== false),
+    provisional: list.some((round) => round.provisional && !round.dirty && round.calibrated !== false),
     barGap: latest ? config.pass.min - latest.verdicts[0].lowest : null,
     lowestCategory: latest?.verdicts[0].lowestCategory ?? null,
     judgesInLatest: latest ? { judged: latest.verdicts.length, of: config.judges.length } : null,

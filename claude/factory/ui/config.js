@@ -106,7 +106,7 @@ function uniqueIds(file, items, where) {
 export function validateConfig(raw, file) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) fail(file, "must hold a JSON object");
   if (raw.version !== 1) fail(file, `version must be 1 (got ${JSON.stringify(raw.version)})`);
-  const known = new Set(["version", "name", "product", "taste", "root", "setup", "checks", "serve", "viewports", "screens", "references", "judges", "pass", "budgetUsd", "baseline", "settleMs", "control"]);
+  const known = new Set(["version", "name", "product", "taste", "root", "setup", "checks", "serve", "viewports", "screens", "references", "referenceCapture", "judges", "pass", "budgetUsd", "baseline", "settleMs", "control"]);
   for (const key of Object.keys(raw)) if (!known.has(key)) fail(file, `unknown field "${key}"`);
   const dir = dirname(file);
   if (typeof raw.name !== "string" || !ID.test(raw.name)) fail(file, "name must be lowercase letters, digits and dashes (it names the run folder)");
@@ -173,6 +173,9 @@ export function validateConfig(raw, file) {
   if (new Set(judges.map((judge) => `${judge.model}@${judge.effort}`)).size !== judges.length) fail(file, "judges lists the same model and effort twice");
 
   const pass = raw.pass ?? {};
+  if (pass.allReferences !== undefined && typeof pass.allReferences !== "boolean") fail(file, "pass.allReferences must be true or false");
+  const referenceCapture = raw.referenceCapture ?? {};
+  if (typeof referenceCapture !== "object" || Array.isArray(referenceCapture)) fail(file, "referenceCapture must be { tries, delayMs }");
   const budget = raw.budgetUsd ?? {};
   const control = raw.control ?? {};
   const taste = raw.taste ?? [];
@@ -193,11 +196,19 @@ export function validateConfig(raw, file) {
     viewports,
     screens,
     references: refs,
+    // A reference page that fails to capture is tried again, waiting delayMs, then twice
+    // as long before each later try.
+    referenceCapture: {
+      tries: number(file, referenceCapture.tries, "referenceCapture.tries", { min: 1, max: 10, integer: true, fallback: 3 }),
+      delayMs: number(file, referenceCapture.delayMs, "referenceCapture.delayMs", { min: 0, max: 600_000, integer: true, fallback: 30_000 }),
+    },
     judges,
     pass: {
       min: number(file, pass.min, "pass.min", { min: 1, max: 10, fallback: 8.5 }),
       gain: number(file, pass.gain, "pass.gain", { min: 0, max: 9, fallback: 0.5 }),
       references: pass.references === null || pass.references === undefined ? null : number(file, pass.references, "pass.references", { min: -9, max: 9 }),
+      // A pass judged while a reference did not capture is provisional, not final.
+      allReferences: pass.allReferences ?? true,
     },
     budgetUsd: {
       call: number(file, budget.call, "budgetUsd.call", { min: 0.01, max: 100, fallback: 2 }),

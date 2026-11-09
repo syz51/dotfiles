@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "../../tests/lib/process.js";
-import { browseArgv, captureShots, prepareRevision, serve } from "./capture.js";
+import { browseArgv, CaptureError, captureShots, prepareRevision, serve } from "./capture.js";
 import { checkTotals } from "./checks.js";
 import { climbNoise, plateau, run as runCli, scoreLine, structuralTried } from "./cli.js";
 import { ledger, markIssues, SETTLED_MAX, settledFixes } from "./ledger.js";
@@ -15,7 +15,7 @@ import {
 } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { endLabels, escape, renderReport } from "./report.js";
-import { identity, lockRun, RunError } from "./run.js";
+import { identity, lockRun, referenceVersions, RunError } from "./run.js";
 
 const CLI = join(import.meta.dir, "..", "cli.js");
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
@@ -50,7 +50,8 @@ describe("config", () => {
     expect(config.rootDir).toBe("/project");
     expect(config.serve).toEqual({ command: ["bun", "server.ts", "--port", "{port}"], ready: "/healthz", timeoutMs: 60_000 });
     expect(config.judges).toEqual([{ model: "claude-haiku-5-5", effort: "medium", samples: 2 }, { model: "claude-opus-5-5", effort: "high", samples: 3 }]);
-    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null });
+    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null, allReferences: true });
+    expect(config.referenceCapture).toEqual({ tries: 3, delayMs: 30_000 });
     expect(config.budgetUsd).toEqual({ call: 2, round: 15, run: 100 });
     expect(config.baseline).toBe("origin/main");
     expect(config.controlCss).toBe(DEFAULT_CONTROL_CSS);
@@ -89,9 +90,19 @@ describe("config", () => {
     [{ judges: [{ model: "m" }, { model: "m" }] }, "same model and effort twice"],
     [{ budgetUsd: { call: 20, round: 10 } }, "call must not exceed"],
     [{ pass: { min: 11 } }, "pass.min must be"],
+    [{ pass: { allReferences: "yes" } }, "pass.allReferences must be true or false"],
+    [{ referenceCapture: { tries: 0 } }, "referenceCapture.tries must be an integer from 1 to 10"],
+    [{ referenceCapture: { delayMs: -1 } }, "referenceCapture.delayMs must be"],
+    [{ referenceCapture: [] }, "referenceCapture must be"],
   ])("rejects %j", (extra, message) => {
     expect(() => validateConfig(base(extra), FILE)).toThrow(ConfigError);
     expect(() => validateConfig(base(extra), FILE)).toThrow(message);
+  });
+
+  test("takes the reference retries and the provisional rule from the configuration", () => {
+    const config = validateConfig(base({ referenceCapture: { tries: 5, delayMs: 0 }, pass: { allReferences: false } }), FILE);
+    expect(config.referenceCapture).toEqual({ tries: 5, delayMs: 0 });
+    expect(config.pass.allReferences).toBe(false);
   });
 
   test("keeps a judge call within the API's image limit", () => {
@@ -220,6 +231,89 @@ describe("run", () => {
     utimesSync(file, old, old);
     lockRun(run)();
     expect(existsSync(file)).toBe(false);
+  });
+});
+
+describe("references", () => {
+  // Two URL references with two views each; capture is a fake that fails the shots named in
+  // failing (a set of ids, or a function of the try) and records each call.
+  const setup = (extra = {}) => {
+    const config = validateConfig(base({
+      references: [
+        { id: "alpha", title: "Alpha", url: "https://alpha.example.invalid", views: ["desktop-light", "phone-dark"] },
+        { id: "beta", title: "Beta", url: "https://beta.example.invalid", views: ["desktop-light"] },
+      ],
+      referenceCapture: { tries: 3, delayMs: 1000 },
+      ...extra,
+    }), FILE);
+    const run = { id: "r1", dir: mkdtempSync(join(scratch, "refs-run-")) };
+    const calls = [];
+    const sleeps = [];
+    const fake = (failing) => async (shots, { dir }) => {
+      calls.push(shots.map((shot) => shot.id));
+      const failed = typeof failing === "function" ? failing(calls.length) : failing;
+      mkdirSync(dir, { recursive: true });
+      return shots.map((shot) => {
+        const file = join(dir, `${shot.id}.png`);
+        if (failed.has(shot.id)) return { id: shot.id, file, error: "HTTP 504" };
+        writeFileSync(file, PNG);
+        return { id: shot.id, file, error: null };
+      });
+    };
+    const versions = (failing, log = () => {}) => referenceVersions(config, run, { capture: fake(failing), sleep: async (ms) => sleeps.push(ms), log });
+    return { config, run, calls, sleeps, versions };
+  };
+
+  test("a reference that fails once is tried again after the delay and used", async () => {
+    const { calls, sleeps, versions } = setup();
+    const { references, missing } = await versions((call) => new Set(call === 1 ? ["beta.desktop-light"] : []));
+    expect(missing).toEqual([]);
+    expect(references.map((ref) => [ref.key, ref.shots.map((shot) => shot.id)])).toEqual([
+      ["ref:alpha", ["alpha.desktop-light", "alpha.phone-dark"]], ["ref:beta", ["beta.desktop-light"]],
+    ]);
+    // Only the failed reference is captured again.
+    expect(calls).toEqual([["alpha.desktop-light", "alpha.phone-dark", "beta.desktop-light"], ["beta.desktop-light"]]);
+    expect(sleeps).toEqual([1000]);
+  });
+
+  test("a reference that keeps failing is tried the configured times with a doubling wait, then left out and named", async () => {
+    const { calls, sleeps, versions } = setup();
+    const lines = [];
+    // One view of alpha fails: the whole reference is left out.
+    const { references, missing } = await versions(new Set(["alpha.phone-dark"]), (line) => lines.push(line));
+    expect(references.map((ref) => ref.key)).toEqual(["ref:beta"]);
+    expect(missing).toEqual([{ id: "alpha", title: "Alpha", error: "alpha.phone-dark: HTTP 504" }]);
+    expect(calls).toHaveLength(3);
+    expect(calls.slice(1)).toEqual([["alpha.desktop-light", "alpha.phone-dark"], ["alpha.desktop-light", "alpha.phone-dark"]]);
+    expect(sleeps).toEqual([1000, 2000]);
+    expect(lines.at(-1)).toContain("Going on without a reference that did not capture after 3 tries: alpha.phone-dark: HTTP 504");
+  });
+
+  test("the next command keeps the captured references and tries the missing one again", async () => {
+    const { calls, versions } = setup({ referenceCapture: { tries: 1, delayMs: 0 } });
+    expect((await versions(new Set(["beta.desktop-light"]))).missing.map((ref) => ref.id)).toEqual(["beta"]);
+    expect(calls).toHaveLength(1);
+    const { references, missing } = await versions(new Set());
+    expect(missing).toEqual([]);
+    expect(references.map((ref) => ref.key)).toEqual(["ref:alpha", "ref:beta"]);
+    expect(calls.at(-1)).toEqual(["beta.desktop-light"]);
+    // Nothing left to capture: no call.
+    await versions(new Set(["alpha.desktop-light", "beta.desktop-light"]));
+    expect(calls).toHaveLength(2);
+  });
+
+  test("with no reference captured the command stops with a capture error", async () => {
+    const { calls, versions } = setup({ referenceCapture: { tries: 2, delayMs: 0 } });
+    const all = new Set(["alpha.desktop-light", "alpha.phone-dark", "beta.desktop-light"]);
+    const failed = versions(all);
+    await expect(failed).rejects.toThrow(CaptureError);
+    await expect(versions(all)).rejects.toThrow("no reference captured after 2 tries, so there is nothing to compare against: alpha.desktop-light: HTTP 504");
+    expect(calls).toHaveLength(4);
+  });
+
+  test("a configuration without references captures none", async () => {
+    const config = validateConfig(base(), FILE);
+    expect(await referenceVersions(config, { id: "r", dir: join(scratch, "none") }, { capture: () => { throw new Error("no capture expected"); } })).toEqual({ references: [], missing: [] });
   });
 });
 
@@ -568,6 +662,31 @@ describe("rounds", () => {
       .toBe("score: round 5 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.20 vs main · error: claude-opus-5-5@high sample 2 failed twice: timed out · $1.23 · abcdef123456");
     expect(scoreLine(judged(6, 0.9, { calibrated: false }), config)).toBe("score: round 6 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · uncalibrated · $1.23 · abcdef123456");
     expect(scoreLine(judged(7, 0.9, { structural: true }), config)).toBe("score: round 7 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · structural · $1.23 · abcdef123456");
+  });
+
+  test("the score line names the references a round was judged without, and marks a provisional pass", () => {
+    expect(scoreLine(judged(8, 0.9, { provisional: true, missingReferences: ["peer"] }), config))
+      .toBe("score: round 8 provisional pass · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · missing reference: peer · $1.23 · abcdef123456");
+    expect(scoreLine(judged(9, 0.9, { pass: true, missingReferences: ["peer", "other"] }), config))
+      .toBe("score: round 9 pass · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · missing references: peer, other · $1.23 · abcdef123456");
+  });
+
+  test("the report shows a provisional pass as not passed and names the missing reference", () => {
+    const gates = { failures: [], totals: { candidate: checkTotals([]), baseline: checkTotals([]) } };
+    const html = renderReport({
+      config, run: { id: "r1", baseline: { rev: "origin/main", sha: "abcdef1234567890" } }, calibration: null, spentUSD: 1, versions: {},
+      rounds: [{ ...judged(1, 0.9, { provisional: true, missingReferences: ["peer"] }), gates }],
+    });
+    expect(html).toContain("<dd>Provisional pass in round 1</dd>");
+    expect(html).not.toContain("Passed in round");
+    expect(html).toContain('<span class="pill fail">provisional pass</span> <span class="muted">without peer</span>');
+    expect(html).toContain("Round 1 was judged without peer, which did not capture. A pass without every reference is provisional, not final");
+    const accepted = renderReport({
+      config: { ...config, pass: { ...config.pass, allReferences: false } }, run: { id: "r1", baseline: { rev: "origin/main", sha: "abcdef1234567890" } }, calibration: null, spentUSD: 1, versions: {},
+      rounds: [{ ...judged(1, 0.9, { pass: true, missingReferences: ["peer"] }), gates }],
+    });
+    expect(accepted).toContain("<dd>Passed in round 1</dd>");
+    expect(accepted).toContain("Round 1 was judged without peer, which did not capture.</p>");
   });
 
   test("a stray argument is a usage error, exit 2", async () => {
@@ -1075,4 +1194,69 @@ button { font: inherit; padding: 8px 16px; }
     expect(result.code).toBe(3);
     expect(result.stdout).toContain("could cost up to $1.50");
   }, 60_000);
+
+  test("a reference that does not capture is named and left out; a pass without it is provisional; without any reference or main it stops", async () => {
+    // A reference product on loopback: /up renders, /down answers 503.
+    const site = Bun.serve({
+      hostname: "127.0.0.1", port: 0,
+      fetch: (request) => (new URL(request.url).pathname === "/down" ? new Response("down", { status: 503 }) : new Response("<!doctype html><h1>Peer</h1>", { headers: { "content-type": "text/html" } })),
+    });
+    try {
+      const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+      const peer = (path) => ({ id: "peer", title: "Peer app", url: `http://127.0.0.1:${site.port}${path}`, views: ["desktop-light"] });
+      const climb = (name, extra) => {
+        write(`${name}.json`, JSON.stringify({ ...config, name, references: [config.references[0], peer("/down")], referenceCapture: { tries: 2, delayMs: 0 }, pass: { min: 8, gain: 0.5 }, ...extra }));
+        return (args) => runProcess(["bun", CLI, "ui", ...args, "--config", join(repo, `${name}.json`)], {
+          cwd: repo, timeout: 300_000,
+          env: { ...env, FAKE_UI_RUNS: join(state, "ui", name, "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, control: 3, candidate: 9, references: 8 }) },
+        });
+      };
+      write("web/home.html", page("This week", "<p>Partial</p>"));
+      const partial = climb("partial", {});
+      const accepted = climb("accepted", { pass: { min: 8, gain: 0.5, allReferences: false } });
+      const lone = climb("lone", { references: [peer("/down")] });
+      await commit("partial");
+
+      // Calibration goes on with the reference that captured and names the other.
+      let result = await partial(["calibrate", "--samples", "2"]);
+      expect(result.code).toBe(0);
+      expect(result.stderr).toContain("peer did not capture; trying again in 0 s (try 2 of 2)");
+      expect(result.stdout).toContain("Reference peer (Peer app) did not capture, so the judges compare without it: peer.desktop-light: HTTP 503");
+      expect(Object.values(calls().at(-1).order).sort()).toEqual(["baseline", "control", "references"]);
+
+      // Every judge passes, but without the reference: a provisional pass, exit 4.
+      result = await partial(["round"]);
+      expect(result.code).toBe(4);
+      expect(result.stdout).toMatch(/score: round 1 provisional pass · claude-haiku-5-5@medium min 9\.00 \(bar 8\) · \+2\.00 vs main · \+1\.00 vs refs · missing reference: peer · /);
+      expect(result.stdout).toContain("this is a provisional pass, not a final one");
+      const status = JSON.parse((await partial(["status", "--json"])).stdout);
+      expect(status).toMatchObject({ passed: false, provisional: true });
+      expect(status.rounds[0]).toMatchObject({ pass: false, provisional: true, missingReferences: ["peer"] });
+      await partial(["report", "--out", join(scratch, "partial.html")]);
+      const html = readFileSync(join(scratch, "partial.html"), "utf8");
+      expect(html).toContain("Provisional pass in round 1");
+      expect(html).toContain("Round 1 was judged without peer, which did not capture.");
+
+      // An owner who accepts a pass without every reference: it passes, still naming it.
+      expect((await accepted(["calibrate", "--samples", "2"])).code).toBe(0);
+      result = await accepted(["round"]);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toMatch(/score: round 1 pass · .* · missing reference: peer · /);
+
+      // No reference captured: nothing to compare against, exit 2.
+      result = await lone(["capture"]);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("no reference captured after 2 tries, so there is nothing to compare against: peer.desktop-light: HTTP 503");
+    } finally {
+      site.stop(true);
+    }
+    // Main that does not capture still stops the command, exit 2.
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    const broken = "Bun.serve({ hostname: '127.0.0.1', port: {port}, fetch: (r) => new URL(r.url).pathname === '/healthz' ? new Response('ok') : new Response('broken', { status: 500 }) })";
+    write("broken.json", JSON.stringify({ ...config, name: "broken", serve: { command: ["bun", "-e", broken], ready: "/healthz" } }));
+    await commit("broken main");
+    const result = await runProcess(["bun", CLI, "ui", "capture", "--config", join(repo, "broken.json")], { cwd: repo, env, timeout: 120_000 });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toMatch(/main \([0-9a-f]{12}\) did not capture, so there is nothing to compare against: home\.desktop-light: HTTP 500/);
+  }, 600_000);
 });
