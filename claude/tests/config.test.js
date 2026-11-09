@@ -147,8 +147,8 @@ describe("global instructions", () => {
   });
 
   // Strict up-to-date protection makes a pull request fall behind while its CI runs; auto-merge
-  // stops agents re-waiting by hand, and it can lag about a minute after the checks pass, as on
-  // dotfiles PR #152 (dotfiles-282).
+  // stops agents re-waiting by hand. It can lag after the checks pass: 70 seconds on dotfiles
+  // PR #152 (dotfiles-282).
   test("the merge rule tells agents to update a behind pull request and let auto-merge land it", () => {
     expect(section("Autonomy")).toContain("When a pull request is BEHIND a base branch that requires checks, run `gh pr update-branch`, then, as a separate command, `gh pr merge --auto` with a merge-method flag, and watch the pull request instead of waiting for each run by hand; update the branch again whenever it falls behind. Auto-merge can lag a minute or two after the checks pass; if the pull request then still sits at CLEAN, merge it directly.");
   });

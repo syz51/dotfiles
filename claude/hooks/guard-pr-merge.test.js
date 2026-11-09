@@ -49,9 +49,13 @@ describe("refuses", () => {
     ["gh pr merge 12 --squash --admin=true", {}, "--admin bypasses"],
     ["gh pr merge 12 --auto --admin", { branch: PROTECTED }, "--admin bypasses"],
     ["gh pr merge 12", { view: { isDraft: true } }, "is a draft"],
-    ["gh pr merge 12", { view: { mergeStateStatus: "BEHIND" } }, "is behind main"],
-    // the refusal points at auto-merge, so an agent stops re-waiting by hand (dotfiles-282)
-    ["gh pr merge 12", { view: { mergeStateStatus: "BEHIND" } }, "where main requires checks, enable auto-merge in a separate command (`gh pr merge 12 --auto` with a merge-method flag)"],
+    // without required checks, only an update and a wait help, also for an --auto merge that just got here
+    ["gh pr merge 12", { view: { mergeStateStatus: "BEHIND" } }, "is behind main. Update it first (`gh pr update-branch https://github.com/o/r/pull/12`), then wait for its checks to pass."],
+    ["gh pr merge 12 --auto --squash", { view: { mergeStateStatus: "BEHIND" } }, "then wait for its checks to pass."],
+    // with required checks, the refusal points at auto-merge, so an agent stops re-waiting by hand (dotfiles-282);
+    // the update names the URL, so it reaches the pull request that -R chose from any directory
+    ["gh pr merge 12 --squash", { view: { mergeStateStatus: "BEHIND" }, branch: PROTECTED }, "Update it first (`gh pr update-branch https://github.com/o/r/pull/12`), then, in a separate command, rerun this merge with --auto and watch the pull request; GitHub merges it once main's required checks pass."],
+    ["gh pr merge 12 -R o/r --squash", { view: { mergeStateStatus: "BEHIND" }, rules: [{ type: "required_status_checks" }] }, "`gh pr update-branch https://github.com/o/r/pull/12`), then, in a separate command, rerun this merge with --auto"],
     ["gh pr merge 12", { view: { mergeStateStatus: "DIRTY" } }, "conflicts with main"],
     // an in-progress run has conclusion "", so its status decides
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],
