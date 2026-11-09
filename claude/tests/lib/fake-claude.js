@@ -89,11 +89,19 @@ if (process.env.FAKE_REFUSE_ONCE && !existsSync(process.env.FAKE_REFUSE_ONCE)) {
 }
 // With FAKE_LINGER, a background task outlives the session and writes to Claude Code's
 // temporary folder under CLAUDE_CODE_TMPDIR, as Claude Code's task output does: once
-// after 2 s ("late"), or every 200 ms until killed ("stuck"). It works outside the fixture
-// and does not name it, so only the processes tracked during the session lead to it.
+// after 2 s ("late"), every 200 ms until killed ("stuck"), or back to back until killed
+// ("busy"). Eight busy loops fork subshells of writes so often that one nearly always
+// starts after the harness lists the processes, and it keeps writing for a while if only
+// the processes listed die. It
+// works outside the fixture and does not name it, so only the processes tracked during
+// the session lead to it.
 if (process.env.FAKE_LINGER) {
   const write = 'mkdir -p "$CLAUDE_CODE_TMPDIR/claude-$(id -u)/late-task/tasks"';
-  const script = process.env.FAKE_LINGER === "stuck" ? `while :; do ${write}; sleep 0.2; done` : `sleep 2; ${write}; sleep 0.3`;
+  const script = {
+    late: `sleep 2; ${write}; sleep 0.3`,
+    stuck: `while :; do ${write}; sleep 0.2; done`,
+    busy: `for loop in 1 2 3 4 5 6 7 8; do (while :; do (for i in 1 2 3 4 5 6 7 8 9 10; do ${write}; done); done) & done; wait`,
+  }[process.env.FAKE_LINGER];
   spawn("sh", ["-c", script], { cwd: "/", detached: true, stdio: "ignore" }).unref();
   // Long enough for the harness to see the task while the session runs.
   await Bun.sleep(800);

@@ -954,8 +954,9 @@ afterwards. Each suite, including the factory's sandbox suite, holds a config-sy
 until teardown ends, so config-sync does not fast-forward the installed checkout under
 the run. A session's background task can outlive it and write to the root, its
 `TMPDIR`. So teardown first waits up to 60 seconds (`CLAUDE_LIVE_SETTLE_MS`) for every
-process the sessions started to exit, then removes the root. Processes still running
-then are killed, and the suite fails with the root's path. Every session passes an explicit `--model` and `--effort`. Behavioral
+process the sessions started to exit. Processes still running then are killed with
+their whole process groups, and teardown scans and kills again until none is left. Only
+then does it remove the root, and the suite fails with the root's path. Every session passes an explicit `--model` and `--effort`. Behavioral
 scenarios use `claude-opus-5-5` at the effort `claude/settings.json` configures for it
 (`high`), because skill and tool choices at lower effort don't reflect real sessions;
 override with `CLAUDE_LIVE_MODEL` and `CLAUDE_LIVE_EFFORT`. Configuration checks use
