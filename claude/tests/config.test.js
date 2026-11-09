@@ -146,6 +146,13 @@ describe("global instructions", () => {
     expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed.");
   });
 
+  // Strict up-to-date protection makes a pull request fall behind while its CI runs; auto-merge
+  // stops agents re-waiting by hand. It can lag after the checks pass: 70 seconds on dotfiles
+  // PR #152 (dotfiles-282).
+  test("the merge rule tells agents to update a behind pull request and let auto-merge land it", () => {
+    expect(section("Autonomy")).toContain("When a pull request is BEHIND a base branch that requires checks, run `gh pr update-branch`, then, as a separate command, `gh pr merge --auto` with a merge-method flag, and watch the pull request instead of waiting for each run by hand; update the branch again whenever it falls behind. Auto-merge can lag a minute or two after the checks pass; if the pull request then still sits at CLEAN, merge it directly.");
+  });
+
   // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
   // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
   // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no

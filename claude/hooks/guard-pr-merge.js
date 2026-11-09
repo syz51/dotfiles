@@ -263,7 +263,14 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appende
   const pr = `pull request #${view.number}`;
   if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
   if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
-  if (view.mergeStateStatus === "BEHIND") return `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.number}\`), then wait for its checks to pass.`;
+  if (view.mergeStateStatus === "BEHIND") {
+    // The URL names the pull request from any directory, whatever -R or selector the merge used.
+    const update = `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.url}\`)`;
+    // A required check makes GitHub wait, so auto-merge saves re-waiting each time the branch falls behind.
+    return !merge.auto && requiresChecks(query, where, api, repo, view.baseRefName)
+      ? `${update}, then, in a separate command, rerun this merge with --auto and watch the pull request; GitHub merges it once ${view.baseRefName}'s required checks pass.`
+      : `${update}, then wait for its checks to pass.`;
+  }
   if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
   const rollup = view.statusCheckRollup ?? [];
   let checks = classifyChecks(rollup);
