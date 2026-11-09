@@ -50,6 +50,8 @@ describe("refuses", () => {
     ["gh pr merge 12 --auto --admin", { branch: PROTECTED }, "--admin bypasses"],
     ["gh pr merge 12", { view: { isDraft: true } }, "is a draft"],
     ["gh pr merge 12", { view: { mergeStateStatus: "BEHIND" } }, "is behind main"],
+    // the refusal points at auto-merge, so an agent stops re-waiting by hand (dotfiles-282)
+    ["gh pr merge 12", { view: { mergeStateStatus: "BEHIND" } }, "where main requires checks, enable auto-merge in a separate command (`gh pr merge 12 --auto` with a merge-method flag)"],
     ["gh pr merge 12", { view: { mergeStateStatus: "DIRTY" } }, "conflicts with main"],
     // an in-progress run has conclusion "", so its status decides
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],

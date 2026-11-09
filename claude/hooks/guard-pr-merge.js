@@ -263,7 +263,7 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appende
   const pr = `pull request #${view.number}`;
   if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
   if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
-  if (view.mergeStateStatus === "BEHIND") return `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.number}\`), then wait for its checks to pass.`;
+  if (view.mergeStateStatus === "BEHIND") return `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.number}\`), then wait for its checks to pass, or, where ${view.baseRefName} requires checks, enable auto-merge in a separate command (\`gh pr merge ${view.number} --auto\` with a merge-method flag).`;
   if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
   const rollup = view.statusCheckRollup ?? [];
   let checks = classifyChecks(rollup);
