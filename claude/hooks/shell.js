@@ -429,20 +429,20 @@ function program(argv, dir) {
     }
     if (name === "ssh") {
       const remote = sshProgram(argv, i, dir);
-      return { ...remote, local: [...nested.map((script) => [script, dir]), ...remote.local] };
+      return { ...remote, local: [...nested.map((script) => [script, dir]), ...remote.local], appended };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`.
       i += 1;
       while (i < argv.length && argv[i].startsWith("-")) i += ["-n", "--interval", "-q", "--equexit"].includes(argv[i]) ? 2 : 1;
       nested.push(argv.slice(i).join(" "));
-      return { words: [], nested, dir };
+      return { words: [], nested, dir, appended };
     }
     if (name === "command") {
       // `command -v NAME` and `command -V NAME` look a command up without running it.
       let j = i + 1;
       while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested, dir };
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested, dir, appended };
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     const values = WRAPPERS[name];
@@ -524,6 +524,9 @@ function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
   // Whether this script runs on another host, over ssh.
   const here = state.remote === true;
+  // Whether xargs adds arguments to the command that runs this script, such as `xargs ssh host
+  // 'gh pr merge 12'`: they land in it, so every command in it may get more words.
+  const added = state.appended === true;
   const { commands } = parseScript(source);
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
@@ -573,8 +576,10 @@ function inspect(source, state, visit, depth, tooDeep) {
       const name = words.length > 0 ? basename(words[0]) : "";
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
-      // run on the remote host; its local options' commands run here.
-      const scripts = [...substitutions.map((script) => [script, before, here]), ...nested.map((script) => [script, dir, here || Boolean(remote)]),
+      // run on the remote host; its local options' commands run here. The words xargs adds to
+      // ssh, watch or `env -S` join the script they run.
+      const scripts = [...substitutions.map((script) => [script, before, here]),
+        ...nested.map((script) => [script, dir, here || Boolean(remote), appended === true]),
         ...(local ?? []).map(([script, where]) => [script, where, here])];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir, here]));
       if (name === "eval") scripts.push([words.slice(1).join(" "), dir, here]);
@@ -583,8 +588,9 @@ function inspect(source, state, visit, depth, tooDeep) {
         const piped = index < reader ? [...inputs, ...text] : inputs;
         scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir, here || Boolean(pipeline[reader].run.remote)]));
       }
-      for (const [script, where, onRemote] of scripts) {
-        const violation = script === undefined ? undefined : inspect(script, { dir: where, remote: onRemote }, visit, depth + 1, tooDeep);
+      for (const [script, where, onRemote, adds] of scripts) {
+        const violation = script === undefined ? undefined
+          : inspect(script, { dir: where, remote: onRemote, appended: added || adds === true }, visit, depth + 1, tooDeep);
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
@@ -592,7 +598,7 @@ function inspect(source, state, visit, depth, tooDeep) {
         if (name === "popd") state.dir = undefined;
         else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: appended === true, remote: here });
+        const violation = visit(words, dir, { appended: added || appended === true, remote: here });
         if (violation) return violation;
       }
     }

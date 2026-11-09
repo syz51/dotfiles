@@ -533,3 +533,25 @@ describe("the hook", () => {
     expect(() => readFileSync(join(root, "log"))).toThrow();
   });
 });
+
+describe("xargs over ssh", () => {
+  // The remote shell runs ssh's words joined, so the words xargs adds land in the merge.
+  test.each([
+    ["echo --admin | xargs ssh host gh pr merge 12 -R owner/repo"],
+    ["echo --admin | xargs ssh host 'gh pr merge 12 -R owner/repo'"],
+    ["echo --admin | xargs nice ssh host gh pr merge 12 -R owner/repo"],
+    ["echo --admin | xargs ssh host bash -c \\''gh pr merge 12 -R owner/repo'\\'"],
+    ["echo --admin | xargs watch gh pr merge 12 -R owner/repo"],
+    ["echo --admin | xargs env -S 'gh pr merge 12 -R owner/repo'"],
+    ["echo --admin | xargs sudo gh pr merge 12 -R owner/repo"],
+    ["echo --admin | xargs env gh pr merge 12 -R owner/repo"],
+  ])("refuses %s", (command) => {
+    const calls = [];
+    expect(verdict(command, { calls })).toContain("xargs adds arguments");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("still checks a merge over ssh without xargs", () => {
+    expect(verdict("ssh host gh pr merge 12 -R owner/repo", { view: { isDraft: true } })).toContain("is a draft");
+  });
+});

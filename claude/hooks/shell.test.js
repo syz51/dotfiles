@@ -244,6 +244,32 @@ test("visit learns that xargs appends arguments", () => {
   expect(seen).toEqual([["echo 1", false], ["make", true], ["make", false]]);
 });
 
+test("visit learns that xargs appends arguments to what ssh, watch and env -S run", () => {
+  const appended = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (words, dir, { appended: adds, remote }) => {
+      seen.push([words.join(" "), adds, remote]);
+    });
+    return seen;
+  };
+  const merge = (remote) => [["echo 1", false, false], ["gh pr merge 12 -R o/r", true, remote]];
+  expect(appended("echo 1 | xargs ssh host gh pr merge 12 -R o/r")).toEqual(merge(true));
+  expect(appended("echo 1 | xargs ssh host 'gh pr merge 12 -R o/r'")).toEqual(merge(true));
+  expect(appended("echo 1 | xargs nice ssh host gh pr merge 12 -R o/r")).toEqual(merge(true));
+  expect(appended("echo 1 | xargs ssh -p 22 host -- gh pr merge 12 -R o/r")).toEqual(merge(true));
+  expect(appended("echo 1 | xargs watch gh pr merge 12 -R o/r")).toEqual(merge(false));
+  expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r'")).toEqual(merge(false));
+  // every command of the remote script and the scripts nested in it
+  expect(appended("echo 1 | xargs ssh host 'git status; bash -c \"make\"'")).toEqual(
+    [["echo 1", false, false], ["git status", true, true], ["make", true, true], ["bash -c make", true, true]]);
+  // xargs sudo and xargs env keep it; ssh without xargs, and a local ProxyCommand, do not get it
+  expect(appended("echo 1 | xargs sudo gh pr merge 12")).toEqual([["echo 1", false, false], ["gh pr merge 12", true, false]]);
+  expect(appended("echo 1 | xargs env gh pr merge 12")).toEqual([["echo 1", false, false], ["gh pr merge 12", true, false]]);
+  expect(appended("ssh host gh pr merge 12")).toEqual([["gh pr merge 12", false, true]]);
+  expect(appended("echo 1 | xargs ssh -o ProxyCommand='nc %h %p' host make")).toEqual(
+    [["echo 1", false, false], ["make", true, true], ["nc %h %p", false, false]]);
+});
+
 test("ghSubcommands skips options and reports -R and others before the subcommand", () => {
   expect(ghSubcommands(["gh", "pr", "merge", "12"], 2)).toEqual({ path: ["pr", "merge"], next: 3, repo: undefined, other: undefined });
   expect(ghSubcommands(["gh", "-R", "o/r", "pr", "--repo=a/b", "merge", "-R", "x/y"], 2)).toEqual({ path: ["pr", "merge"], next: 6, repo: "a/b", other: undefined });
