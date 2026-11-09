@@ -7,7 +7,7 @@
       "id": "package-runner",
       "kind": "detector",
       "section": "Working preferences",
-      "description": "Bash ran node outside a T3 Code fork checkout, npm, npx, pnpm, yarn or corepack (also through bunx, vpx or `vp exec`), Vite+'s package-management commands or `vp node`, whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
+      "description": "Bash ran node outside a checkout of a repository that node-repos.json lists (such as T3 Code), npm, npx, pnpm, yarn or corepack (also through bunx, vpx or `vp exec`), Vite+'s package-management commands or `vp node`, whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
     },
     {
       "id": "ai-attribution",
