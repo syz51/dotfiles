@@ -403,12 +403,12 @@ function sshProgram(argv, i, dir) {
     .filter((command) => command !== undefined && command.trim().toLowerCase() !== "none")
     .map((command) => [command, dir]);
   const remote = argv.slice(after.next).join(" ");
-  if (remote === "") return { words: [], nested: [], local, dir: undefined, reads: () => hasHost };
+  if (remote === "") return { words: [], nested: [], local, dir: undefined, remote: true, reads: () => hasHost };
   const reads = () => parseScript(remote).commands.some((command) => {
     const inner = program(command.argv, undefined);
     return readsStdin(inner.words) || inner.reads?.() === true;
   });
-  return { words: [], nested: [remote], local, dir: undefined, reads };
+  return { words: [], nested: [remote], local, dir: undefined, remote: true, reads };
 }
 
 /** Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run. */
@@ -522,6 +522,8 @@ function printed(words, depth = 0) {
 
 function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
+  // Whether this script runs on another host, over ssh.
+  const here = state.remote === true;
   const { commands } = parseScript(source);
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
@@ -567,20 +569,22 @@ function inspect(source, state, visit, depth, tooDeep) {
     // there moves nothing after it. zsh, the shell Claude Code runs commands in, runs the last
     // part in the current shell, so a `cd` there moves later commands; bash would not.
     const background = pipeline.at(-1).command.next === "&";
-    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, printed: text, appended }, before }] of pipeline.entries()) {
+    for (const [index, { command: { inputs, substitutions }, run: { words, nested, local, dir, remote, printed: text, appended }, before }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       // Its substitutions, which the shell running it expands first, scripts this command runs
-      // itself, and scripts the reading shell runs in its directory.
-      const scripts = [...substitutions.map((script) => [script, before]), ...nested.map((script) => [script, dir]), ...(local ?? [])];
-      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir]));
-      if (name === "eval") scripts.push([words.slice(1).join(" "), dir]);
-      if (name === "find") scripts.push(...findScripts(words, dir));
+      // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
+      // run on the remote host; its local options' commands run here.
+      const scripts = [...substitutions.map((script) => [script, before, here]), ...nested.map((script) => [script, dir, here || Boolean(remote)]),
+        ...(local ?? []).map(([script, where]) => [script, where, here])];
+      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir, here]));
+      if (name === "eval") scripts.push([words.slice(1).join(" "), dir, here]);
+      if (name === "find") scripts.push(...findScripts(words, dir).map(([script, where]) => [script, where, here]));
       if (reader !== -1) {
         const piped = index < reader ? [...inputs, ...text] : inputs;
-        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir]));
+        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir, here || Boolean(pipeline[reader].run.remote)]));
       }
-      for (const [script, where] of scripts) {
-        const violation = script === undefined ? undefined : inspect(script, { dir: where }, visit, depth + 1, tooDeep);
+      for (const [script, where, onRemote] of scripts) {
+        const violation = script === undefined ? undefined : inspect(script, { dir: where, remote: onRemote }, visit, depth + 1, tooDeep);
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
@@ -588,7 +592,7 @@ function inspect(source, state, visit, depth, tooDeep) {
         if (name === "popd") state.dir = undefined;
         else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: appended === true });
+        const violation = visit(words, dir, { appended: appended === true, remote: here });
         if (violation) return violation;
       }
     }
@@ -599,9 +603,10 @@ function inspect(source, state, visit, depth, tooDeep) {
 }
 
 /**
- * Calls `visit(words, dir, { appended })` for every command `source` would run, after wrappers,
- * through shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its directory when
- * known, and `appended` says that xargs adds arguments the guard cannot see.
+ * Calls `visit(words, dir, { appended, remote })` for every command `source` would run, after
+ * wrappers, through shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its directory
+ * when known, `appended` says that xargs adds arguments the guard cannot see, and `remote` says
+ * that it runs on another host over `ssh`.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.
  */
