@@ -50,8 +50,8 @@ describe("pricing", () => {
     expect(requestCost("unknown-model", tokens)).toBeNull();
   });
 
-  test("Sonnet 5.5 cache reads cost 0.05x input, per Anthropic's pricing page", () => {
-    expect(requestCost("claude-sonnet-5-5", { input: 0, output: 0, cacheRead: 1e6, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo(0.1);
+  test("Opus 5.5 cache reads cost 0.05x input, per Anthropic's pricing page", () => {
+    expect(requestCost("claude-opus-5-5", { input: 0, output: 0, cacheRead: 1e6, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo(0.2);
   });
 });
 
@@ -64,7 +64,7 @@ describe("LiteLLM fallback prices", () => {
       input_cost_per_token_above_1000k_tokens: perToken(8),
     },
     "bare-test": { input_cost_per_token: perToken(1), output_cost_per_token: perToken(3) },
-    "claude-sonnet-5-5": { input_cost_per_token: perToken(99), output_cost_per_token: perToken(99) },
+    "claude-opus-5-5": { input_cost_per_token: perToken(99), output_cost_per_token: perToken(99) },
     "embedding-test": { input_cost_per_token: perToken(1), mode: "embedding" },
   };
   const tokens = (fields) => ({ input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, ...fields });
@@ -90,8 +90,8 @@ describe("LiteLLM fallback prices", () => {
     expect(requestCost("gpt-test", tokens({ input: 50_000, output: 50_000, cacheRead: 50_000, cacheWrite5m: 50_000 }))).toBeCloseTo(0.05 * (2 + 10 + 0.1 + 2.5));
     // A prompt over 272K tokens, cache reads included, takes the long-prompt price.
     expect(requestCost("gpt-test", tokens({ input: 100_000, cacheRead: 200_000, output: 100_000 }))).toBeCloseTo(0.1 * 4 + 0.2 * 0.2 + 0.1 * 15);
-    expect(requestCost("claude-sonnet-5-5", tokens({ input: 1e6 }))).toBeCloseTo(2);
-    expect([priceSource("gpt-test"), priceSource("claude-sonnet-5-5"), priceSource("embedding-test"), priceSource("toString")]).toEqual(["litellm", "table", null, null]);
+    expect(requestCost("claude-opus-5-5", tokens({ input: 1e6 }))).toBeCloseTo(4);
+    expect([priceSource("gpt-test"), priceSource("claude-opus-5-5"), priceSource("embedding-test"), priceSource("toString")]).toEqual(["litellm", "table", null, null]);
     expect(litellmFetchedAt()).toBe("2026-11-07T00:00:00.000Z");
   });
 
@@ -164,7 +164,7 @@ describe("transcripts", () => {
       .apiError(429)
       .compact()
       .prompt("no, that's the wrong file")
-      .text("Fixed", { model: "claude-sonnet-5-5", use: usage(1, 10, { cacheRead: 0, cacheWrite: 0 }) })
+      .text("Fixed", { model: "claude-haiku-5-5", use: usage(1, 10, { cacheRead: 0, cacheWrite: 0 }) })
       .title("Fix login")
       .prLink("https://github.com/o/r/pull/7")
       .prLink("https://github.com/o/r/pull/7")
@@ -180,7 +180,7 @@ describe("transcripts", () => {
       expect(session.prompts.map((prompt) => prompt.text)).toEqual(["Fix the login bug", "no, that's the wrong file"]);
       // The two-block message counts once; so does each tool-use message.
       expect(session.assistantMessages).toBe(4);
-      expect(session.models).toEqual({ "claude-opus-5-5": 3, "claude-sonnet-5-5": 1 });
+      expect(session.models).toEqual({ "claude-opus-5-5": 3, "claude-haiku-5-5": 1 });
       expect(session.usage["claude-opus-5-5"].output).toBe(300);
       expect(session.toolCalls.map((call) => [call.name, call.ok, call.output])).toEqual([["Bash", false, "1 fail"], ["Read", true, "x"]]);
       expect(session.interrupts).toBe(1);
@@ -355,7 +355,7 @@ describe("claude runner", () => {
 
   test("judge sends the prompt on stdin in a restricted, unsaved session", async () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
-    const { output, costUSD } = await judge({ prompt: "Grade this 中文", schema, model: "claude-sonnet-5-5", budgetUsd: 0.3 });
+    const { output, costUSD } = await judge({ prompt: "Grade this 中文", schema, model: "claude-haiku-5-5", budgetUsd: 0.3 });
     expect(output).toEqual({ verdict: "pass" });
     expect(costUSD).toBe(0.02);
     const [call] = calls();
