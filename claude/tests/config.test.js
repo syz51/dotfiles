@@ -160,6 +160,14 @@ describe("global instructions", () => {
   test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
     expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
   });
+
+  // T3 refuses delegate_task with another project's target.projectId, and its error suggests
+  // target.environmentId, which only helps for a remote environment. Agents retried, gave up,
+  // or left a cross-repo board task undispatched because the T3 rules reserve t3_thread_launch
+  // for user-requested threads (board-feedback-188 to -550, dotfiles-120).
+  test("Delegation names one route for local delegates and cross-repo board work", () => {
+    expect(section("Delegation")).toContain("A local `delegate_task` leaves out `target.projectId`; T3 refuses another project's id, even with a local `target.environmentId`. To dispatch a board task whose code is in another repository, call `t3_thread_launch` with that project's `projectId` and `workspaceStrategy` `{type: \"worktree\", baseRef: \"origin/<default branch>\", startFromOrigin: true}`. That thread opens its own PR there. Dispatching a board task counts as my standing request for such a thread; work you find in another repository still becomes a proposal.");
+  });
 });
 
 describe("settings", () => {
