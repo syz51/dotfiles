@@ -48,7 +48,9 @@ export function shuffle(items, seed) {
   return out;
 }
 
-export function systemPrompt(config, avoid = avoidList()) {
+// settled: [{ screen, fix }], fixes already made to the product (the climb's ledger), which
+// judges should not ask to undo. They are framed as the product's decisions, not as rounds.
+export function systemPrompt(config, avoid = avoidList(), settled = []) {
   const lines = [
     "You are a senior product designer reviewing screenshots of web interfaces. Score each design you are shown against the rubric below, and name the problems a strong designer would fix first.",
     "",
@@ -67,6 +69,12 @@ export function systemPrompt(config, avoid = avoidList()) {
   ];
   const taste = [...config.taste, ...avoid];
   if (taste.length) lines.push("", "The product owner's preferences, which count toward the scores of the product's designs:", ...taste.map((item) => `- ${item}`));
+  if (settled.length)
+    lines.push(
+      "",
+      "Design decisions already made for the product, each on the screen in brackets. Do not report an issue that asks to undo one; report a problem with how one is done only with a fix that keeps it. They do not raise or lower any design's scores:",
+      ...settled.map((item) => `- [${item.screen}] ${item.fix}`),
+    );
   lines.push("", `The product: ${config.product}`);
   return lines.join("\n");
 }
@@ -168,7 +176,7 @@ export function councilVersion() {
   const product = (key) => ({ key, kind: "product", shots: [shot, phone] });
   const reference = (key) => ({ key, kind: "reference", title: "R", shots: [shot] });
   const framing = (versions) => buildContent(versions, new Map()).content.filter((block) => block.type === "text").map((block) => block.text);
-  const prompts = [systemPrompt({ taste: [], product: "" }, []), systemPrompt({ taste: ["t"], product: "p" }, ["a"])];
+  const prompts = [systemPrompt({ taste: [], product: "" }, []), systemPrompt({ taste: ["t"], product: "p" }, ["a"], [{ screen: "s", fix: "f" }])];
   const calls = [framing([product("a"), product("b"), reference("r")]), framing([product("a"), product("b"), reference("r"), reference("q")])];
   return createHash("sha256").update(JSON.stringify([RUBRIC, prompts, outputSchema(), calls])).digest("hex").slice(0, 12);
 }
@@ -210,7 +218,12 @@ export function readOutput(output, labels, versions) {
   if (seen.size !== labels.size) throw new JudgeOutputError(`scored ${seen.size} of ${labels.size} designs`);
   const overall = Object.fromEntries(Object.entries(scores).map(([key, values]) => [key, mean(Object.values(values).filter((value) => value !== null))]));
   const known = (design) => labels.get(design);
-  const issues = (output.issues ?? []).filter((issue) => known(issue.design)).map((issue) => ({ ...issue, version: known(issue.design) }));
+  // A judge may write a screenshot's identifier as "[home.desktop-light]" or "home
+  // (desktop-light)"; the identifier it names is the screen, so one issue keeps one key.
+  const canonical = (text) => String(text).toLowerCase().replace(/[^a-z0-9-]+/g, " ").trim();
+  const shown = new Map(versions.flatMap((version) => version.shots.map((shot) => [canonical(shotLabel(shot)), shotLabel(shot)])));
+  const screenOf = (text) => shown.get(canonical(text)) ?? text;
+  const issues = (output.issues ?? []).filter((issue) => known(issue.design)).map((issue) => ({ ...issue, screen: screenOf(issue.screen), version: known(issue.design) }));
   const strengths = (output.strengths ?? []).filter((item) => known(item.design)).map((item) => ({ ...item, version: known(item.design) }));
   return { scores, overall, issues, strengths, summaries };
 }
@@ -256,9 +269,9 @@ export function checkRequestSize(images) {
 // Runs one judge: samples calls in parallel, each with its own order of the designs. A
 // call that fails or whose output does not fit is retried once, when room() (the money
 // left for this judge) covers the retry beside the calls still running. budgetUsd caps
-// each call; spend(usd) reports each call's cost.
-export async function runJudge({ judge, versions, config, seed, budgetUsd, spend, room = () => Infinity, call = callJudge, avoid }) {
-  const system = systemPrompt(config, avoid);
+// each call; spend(usd) reports each call's cost. settled goes to the system prompt.
+export async function runJudge({ judge, versions, config, seed, budgetUsd, spend, room = () => Infinity, call = callJudge, avoid, settled = [] }) {
+  const system = systemPrompt(config, avoid, settled);
   const schema = outputSchema();
   const images = encodeImages(versions);
   checkRequestSize(images);
@@ -292,10 +305,10 @@ export async function runJudge({ judge, versions, config, seed, budgetUsd, spend
     throw new JudgeFailedError(`${judgeKey(judge)} sample ${index + 1} failed twice: ${lastError.message}`);
   };
   // Every call finishes, and records its cost, before a failure is reported.
-  const settled = await Promise.allSettled(Array.from({ length: judge.samples }, (_, index) => sample(index)));
-  const failed = settled.find((item) => item.status === "rejected");
+  const outcomes = await Promise.allSettled(Array.from({ length: judge.samples }, (_, index) => sample(index)));
+  const failed = outcomes.find((item) => item.status === "rejected");
   if (failed) throw failed.reason;
-  const samples = settled.map((item) => item.value);
+  const samples = outcomes.map((item) => item.value);
   return { judge: judgeKey(judge), samples, ...combine(samples) };
 }
 
@@ -330,20 +343,25 @@ export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 export const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
 export const money = (value) => `$${(value ?? 0).toFixed(2)}`;
 
+// What makes two issues the same: their screen and category. topIssues groups by it and the
+// climb's ledger follows issues across rounds by it.
+export const issueKey = (issue) => `${issue.screen}|${issue.category}`;
+
 // The candidate's issues over every judge and sample, grouped by screen and category. Those
 // in a category under the bar come first, the furthest under first (deficits: { category:
 // points under the bar }, only categories under it); then the most weighty: severity
-// counts 3, 2, 1, and repeats across calls add up.
+// counts 3, 2, 1, and repeats across calls add up. Each group names the judges that reported it.
 export function topIssues(results, key = "candidate", limit = 20, deficits = {}) {
   const groups = new Map();
   for (const result of results)
     for (const sample of result.samples)
       for (const issue of sample.issues) {
         if (issue.version !== key) continue;
-        const id = `${issue.screen}|${issue.category}`;
-        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: issue.category in deficits, weight: 0, count: 0, severity: "low", problems: [], fixes: [] };
+        const id = issueKey(issue);
+        const group = groups.get(id) ?? { screen: issue.screen, category: issue.category, underBar: issue.category in deficits, weight: 0, count: 0, severity: "low", problems: [], fixes: [], judges: [] };
         group.weight += SEVERITY[issue.severity] ?? 1;
         group.count++;
+        if (!group.judges.includes(result.judge)) group.judges.push(result.judge);
         if ((SEVERITY[issue.severity] ?? 1) > SEVERITY[group.severity]) group.severity = issue.severity;
         if (group.problems.length < 3) group.problems.push(issue.problem);
         if (group.fixes.length < 3) group.fixes.push(issue.fix);
