@@ -3,8 +3,10 @@
 // designs apart the only honest way a fake can, by matching each image's bytes against
 // the run's captured versions (the newest run under FAKE_UI_RUNS), and scores them from
 // FAKE_UI_SCORES ({ baseline, control, candidate, references }, with models: { model:
-// scores } for one judge's own, or broken: true for output that never fits). It appends to FAKE_UI_LEAKS any word in the prompts that would tell a
-// judge which version is which, and to FAKE_UI_CALLS the version behind each design number.
+// scores } for one judge's own, broken: true for output that never fits, or quiet: true for no
+// issues). It appends to FAKE_UI_LEAKS any word in the prompts that would tell a judge which
+// version is which, and to FAKE_UI_CALLS the version behind each design number and the
+// settled fixes the system prompt lists.
 import { createHash } from "node:crypto";
 import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,10 +67,10 @@ export default async function ({ stdin, emit, option }) {
     order[design] = version;
     const score = scores[version] ?? 5;
     output.designs.push({ design, scores: Object.fromEntries(CATEGORIES.map((id) => [id, id === "responsive" && !entry.phone ? null : score])), summary: `${version} summary` });
-    output.issues.push({ design, screen: entry.shots[0], category: "color", severity: "high", problem: `<b>low contrast</b> in ${entry.shots[0]}`, fix: "darken the <i>muted</i> text" });
+    if (!scores.quiet) output.issues.push({ design, screen: entry.shots[0], category: "color", severity: "high", problem: `<b>low contrast</b> in ${entry.shots[0]}`, fix: "darken the <i>muted</i> text" });
     output.strengths.push({ design, text: "clear layout" });
   }
-  if (env.FAKE_UI_CALLS) appendFileSync(env.FAKE_UI_CALLS, `${JSON.stringify({ model: option("--model"), order })}\n`);
+  if (env.FAKE_UI_CALLS) appendFileSync(env.FAKE_UI_CALLS, `${JSON.stringify({ model: option("--model"), order, settled: system.split("\n").filter((line) => line.startsWith("- [")) })}\n`);
   emit({ type: "system", subtype: "init", model: option("--model"), tools: ["StructuredOutput"], mcp_servers: [] });
   emit({ type: "result", subtype: "success", is_error: false, total_cost_usd: Number(env.FAKE_CLAUDE_COST ?? 0.01), num_turns: 1, result: "", structured_output: output });
 }

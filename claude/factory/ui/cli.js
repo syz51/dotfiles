@@ -10,9 +10,10 @@ import { CaptureError, resolveRev, runChecks, treeState } from "./capture.js";
 import { ConfigError, loadConfig } from "./config.js";
 import { barReach, calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, runJudge, sd, signed, topIssues, verdict } from "./council.js";
 import { evaluateGates } from "./gates.js";
+import { ledger, markIssues, settledFixes } from "./ledger.js";
 import { renderReport } from "./report.js";
 import {
-  baselineVersions, calibrationPath, candidateShots, capturedShots, findRun, identity, lockRun, openRun, record, referenceVersions,
+  baselineVersions, calibrationPath, candidateShots, capturedShots, findRun, fullRounds, identity, lockRun, openRun, record, referenceVersions,
   RunError, rounds, roundsPath, spent, versionDir, withSource,
 } from "./run.js";
 
@@ -166,6 +167,18 @@ export function plateau(list, { min, references = null, noise }) {
   return { plateau: tracked.length > 0 && tracked.every((metric) => !metric.moved), judged, judge, metrics, movedAt };
 }
 
+// The structural round a plateau has tried: the latest one after the metrics last moved
+// (movedAt), as { round, followed }, or null. One that moved them has not stopped the climb,
+// and a later plateau earns a new one. followed: a judged round came after it, the round
+// that judged another commit, the one that fixes the structural round's own issues (a re-run
+// of the same commit fixes nothing); until then the climb is not told to stop.
+export function structuralTried(list, movedAt) {
+  const since = movedAt ?? -Infinity;
+  const structural = list.findLast((round) => round.verdicts?.length && round.structural && round.round > since);
+  if (!structural) return null;
+  return { round: structural.round, followed: list.some((round) => round.verdicts?.length && round.round > structural.round && round.sha !== structural.sha) };
+}
+
 function printGates(gates, dir) {
   const { candidate, baseline } = gates.totals;
   console.log(`Page checks (this vs main): ${Object.keys(candidate).map((key) => `${key} ${candidate[key]}/${baseline[key]}`).join(", ")}`);
@@ -301,6 +314,10 @@ async function roundCommand(config, values) {
     }
     const previous = rounds(run);
     const number = previous.length + 1;
+    // The issues of earlier rounds: this round's are marked against them, and the fixes that
+    // resolved them go to the judges as settled.
+    const entries = ledger(fullRounds(run, previous));
+    const settled = settledFixes(entries);
     // Until a round has heard from every judge, rounds run them all, so the climb knows
     // whether they agree.
     const everyJudge = values["all-judges"] || !previous.some((round) => round.verdicts?.length === config.judges.length);
@@ -342,7 +359,7 @@ async function roundCommand(config, values) {
         let outcome;
         try {
           outcome = await runJudge({
-            judge, versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call,
+            judge, versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call, settled,
             room: () => Math.min(config.budgetUsd.round - cost, config.budgetUsd.run - spent(run)),
             spend: (usd) => {
               cost += usd;
@@ -369,13 +386,16 @@ async function roundCommand(config, values) {
       for (const v of verdicts)
         for (const [category, score] of Object.entries(v.scores.candidate))
           if (score !== null && score < config.pass.min) deficits[category] = Math.max(deficits[category] ?? 0, config.pass.min - score);
+      // Every issue, so the round can fix them all and the ledger misses none.
       result = {
         ...base, stage, pass, verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
-        issues: topIssues(judged, "candidate", 20, deficits), samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
+        // The settled fixes the judges were told, when any judge was asked.
+        issues: markIssues(topIssues(judged, "candidate", Infinity, deficits), entries), settled: verdicts.length || error ? settled : [],
+        samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
       };
     }
     writeJsonAtomic(join(run.dir, "rounds", `${name}.json`), result);
-    const { samples: _, issues: __, ...summary } = result;
+    const { samples: _, issues: __, settled: ___, ...summary } = result;
     appendJsonl(roundsPath(run), { ...summary, gates: { ok: gates.ok, failures: gates.failures, totals: gates.totals }, verdicts: result.verdicts.map(({ scores, ...rest }) => rest) });
     printRound(result, config, run, values.json);
     if (result.stage === "budget") return 3;
@@ -405,12 +425,19 @@ function printRound(result, config, run, json) {
       console.log(`| ${category} | ${result.verdicts.map((v) => `${fixed(v.scores.candidate[category])} / ${fixed(v.scores.baseline[category])}`).join(" | ")} |`);
   }
   if (result.issues?.length) {
-    console.log("\nTop issues, categories under the bar first (screen · category · severity × reports):");
+    console.log("\nIssues, categories under the bar first (screen · category · severity × reports). Fix every one, or say in the round's note why you keep it:");
     result.issues.forEach((issue, index) => {
-      console.log(`${index + 1}. ${issue.underBar ? "[under bar] " : ""}${issue.screen} · ${issue.category} · ${issue.severity} ×${issue.count}: ${issue.problems[0]}`);
+      const marks = `${issue.underBar ? "[under bar] " : ""}${issue.since ? `[unfixed since round ${issue.since}] ` : ""}${issue.returns ? `[returns after round ${issue.returns.round}] ` : ""}`;
+      console.log(`${index + 1}. ${marks}${issue.screen} · ${issue.category} · ${issue.severity} ×${issue.count}: ${issue.problems[0]}`);
       console.log(`   fix: ${issue.fixes[0]}`);
+      if (issue.returns) console.log(`   Round ${issue.returns.round} resolved it with: ${issue.returns.fix}. If this undoes that fix, keep the better-scoring version and note the conflict.`);
     });
+    const unfixed = result.issues.filter((issue) => issue.since).length;
+    const returning = result.issues.filter((issue) => issue.returns).length;
+    if (unfixed || returning)
+      console.log(`\nLedger: ${unfixed} unfixed from an earlier round (try a different fix), ${returning} back after a fix.`);
   }
+  if (result.settled?.length) console.log(`The judges were told ${result.settled.length} earlier fix${result.settled.length === 1 ? " is" : "es are"} settled.`);
   // A category under the bar that fewer than two reports named: what the judges said of the
   // design, a few of their summaries.
   const reports = (category) => (result.issues ?? []).filter((issue) => issue.category === category).reduce((sum, issue) => sum + issue.count, 0);
@@ -473,12 +500,11 @@ function statusCommand(config, values) {
   }
   if (status.plateau.plateau) {
     console.log(`Plateau (${status.plateau.judge}): in the last two judged rounds nothing the bar needs moved beyond the noise: ${describeMetrics(status.plateau.metrics)}.`);
-    // A structural round since the metrics last moved has had its try; one that moved them has not
-    // stopped the climb, and a later plateau earns a new one.
-    const since = status.plateau.movedAt ?? -Infinity;
-    const structural = list.findLast((round) => round.verdicts?.length && round.structural && round.round > since);
-    if (structural) {
-      console.log(`Structural round ${structural.round} did not move it either: stop the climb and say so in the last note.`);
+    const structural = structuralTried(list, status.plateau.movedAt);
+    if (structural && !structural.followed) {
+      console.log(`Structural round ${structural.round} has no fix round yet: fix the issues it reported in one more round on a new commit (not --structural) before you decide. Stop if that round does not move it either.`);
+    } else if (structural) {
+      console.log(`Structural round ${structural.round} and the round that fixed its issues did not move it either: stop the climb and say so in the last note.`);
       const unreachable = barWarnings(calibration?.judges);
       if (unreachable.length) {
         console.log(`Calibration warned that the bar ${config.pass.min} may be out of the judges' range: say so in that note too.`);
@@ -501,7 +527,7 @@ function existingRun(config, values) {
 function reportCommand(config, values) {
   const run = existingRun(config, values);
   const out = values.out ?? join(run.dir, "report.html");
-  const list = rounds(run).map((round) => readJson(join(run.dir, "rounds", `round-${round.round}.json`), round));
+  const list = fullRounds(run);
   // The latest round with screenshots: a round whose checks failed has none.
   const shown = [...list].reverse().find((round) => capturedShots(run, `round-${round.round}`));
   const versions = { baseline: capturedShots(run, "baseline"), ...(shown ? { [`round-${shown.round}`]: capturedShots(run, `round-${shown.round}`) } : {}) };
