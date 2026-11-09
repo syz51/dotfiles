@@ -152,20 +152,48 @@ export async function baselineVersions(config, run, { control = false, log = () 
   };
 }
 
-// The references' shots, captured once per run.
-export async function referenceVersions(config, run, { log = () => {} } = {}) {
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// The references' shots, captured once per run. A reference counts only when all its shots
+// captured. One that failed is tried again config.referenceCapture.tries times in all, with
+// a doubling wait; one still missing is tried again by the next command. Returns
+// { references, missing }: the captured references as judge versions, and the missing ones
+// as { id, title, error }. With none captured there is nothing to compare against: a
+// CaptureError. capture and sleep are for tests.
+export async function referenceVersions(config, run, { log = () => {}, capture = captureShots, sleep = wait } = {}) {
   const shots = referenceShots(config);
-  if (!shots.length) return [];
+  if (!shots.length) return { references: [], missing: [] };
   const dir = versionDir(run, "references");
-  if (!saved(dir, shots)) {
-    log(`Capturing ${config.references.length} reference${config.references.length > 1 ? "s" : ""}…`);
-    rmSync(dir, { recursive: true, force: true });
-    const records = await captureShots(shots, { dir, settleMs: config.settleMs });
-    fatal(records, "a reference");
-    writeJsonAtomic(join(dir, "capture.json"), { at: new Date().toISOString(), shots: records });
+  const file = join(dir, "capture.json");
+  const kept = (readJson(file, null)?.shots ?? []).filter((item) => !item.error && existsSync(item.file) && shots.some((shot) => shot.id === item.id));
+  const records = new Map(kept.map((item) => [item.id, item]));
+  const shotsOf = (ref) => shots.filter((shot) => shot.ref === ref.id);
+  const complete = (ref) => shotsOf(ref).every((shot) => records.get(shot.id) && !records.get(shot.id).error);
+  const { tries, delayMs } = config.referenceCapture;
+  for (let attempt = 1; attempt <= tries; attempt++) {
+    const todo = config.references.filter((ref) => !complete(ref));
+    if (!todo.length) break;
+    if (attempt > 1) {
+      const ms = delayMs * 2 ** (attempt - 2);
+      log(`${todo.map((ref) => ref.id).join(", ")} did not capture; trying again in ${Math.round(ms / 1000)} s (try ${attempt} of ${tries})…`);
+      await sleep(ms);
+    } else log(`Capturing ${todo.length} reference${todo.length > 1 ? "s" : ""}…`);
+    for (const item of await capture(todo.flatMap(shotsOf), { dir, settleMs: config.settleMs })) records.set(item.id, item);
+    writeJsonAtomic(file, { at: new Date().toISOString(), shots: [...records.values()] });
   }
-  const records = withMeta(saved(dir, shots).shots, shots);
-  return config.references.map((ref) => ({ key: `ref:${ref.id}`, kind: "reference", title: ref.title, shots: records.filter((item) => item.ref === ref.id) }));
+  const captured = config.references.filter(complete);
+  const missing = config.references.filter((ref) => !complete(ref)).map((ref) => ({
+    id: ref.id, title: ref.title,
+    error: shotsOf(ref).map((shot) => records.get(shot.id)).filter((item) => item?.error).map((item) => `${item.id}: ${item.error}`).join("; "),
+  }));
+  if (!captured.length)
+    throw new CaptureError(`no reference captured after ${tries} tr${tries === 1 ? "y" : "ies"}, so there is nothing to compare against: ${missing.map((ref) => ref.error).join("; ")}`);
+  if (missing.length) log(`Going on without ${missing.length === 1 ? "a reference that" : `${missing.length} references that`} did not capture after ${tries} tr${tries === 1 ? "y" : "ies"}: ${missing.map((ref) => ref.error).join("; ")}`);
+  const withShots = withMeta(shots.map((shot) => records.get(shot.id)).filter(Boolean), shots);
+  return {
+    references: captured.map((ref) => ({ key: `ref:${ref.id}`, kind: "reference", title: ref.title, shots: withShots.filter((item) => item.ref === ref.id) })),
+    missing,
+  };
 }
 
 // Runs fn(root) on a candidate: the committed tree at sha, extracted and set up, or the

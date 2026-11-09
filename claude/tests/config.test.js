@@ -893,6 +893,17 @@ describe("lean prompt", () => {
     expect(skill).not.toContain("for an issue reported once");
   });
 
+  // board task dotfiles-227: one reference page that would not load stopped a climb's run.
+  test("the ui-climb skill retries a reference, goes on without it, and never hands over a provisional pass", () => {
+    const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain("A reference page that fails to capture is tried again: `referenceCapture.tries` times in all (default 3)");
+    expect(skill).toContain("names the missing one in its output, the round's `score:` line (`missing reference: <id>`) and the report");
+    expect(skill).toContain("A round that every judge passes without every reference is a **provisional pass** (exit 4), not a pass on the bar");
+    expect(skill).toContain("`\"pass\": { \"allReferences\": false }` lets such a round pass; set it only on the owner's word");
+    expect(skill).toContain("a main or control shot failed, or no reference captured");
+    expect(skill).toContain("Never hand a provisional pass over as a pass");
+  });
+
   // Skills with no skillUsage record in ~/.claude.json on 2026-11-08. A skill the model may
   // still need to load (a tool or the user asks for it) keeps its name in the listing; only
   // the two skills that just explain Claude Code to the user are hidden from the model. Their

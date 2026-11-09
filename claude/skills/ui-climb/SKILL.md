@@ -16,7 +16,7 @@ merges.
 UI="bun ~/.claude/factory/cli.js ui"   # every subcommand takes --config PATH (default ui-climb.json)
 $UI capture     # screenshots of the working tree, main and the references, page checks; no judges
 $UI calibrate   # can the judges tell main from a degraded control, and how noisy are they
-$UI round       # gates, then judges, on HEAD; exit 0 pass, 1 fail, 2 error, 3 budget spent
+$UI round       # gates, then judges, on HEAD; exit 0 pass, 1 fail, 2 error, 3 budget spent, 4 provisional pass
 $UI status      # rounds, spending, plateau
 $UI report      # one HTML file: scores per round, main beside the latest round, issues
 ```
@@ -68,6 +68,14 @@ relative to its folder. Start from:
   `capture`. `pass.references` (optional) also requires every category to beat the best
   reference by that margin; leave it out unless the owner asks for it or picks the
   suggested lead at calibration (below).
+- A reference page that fails to capture is tried again: `referenceCapture.tries` times
+  in all (default 3), waiting `referenceCapture.delayMs` (default 30000), then twice as
+  long before each later try. One still missing is left out: the command goes on with the
+  references that captured, names the missing one in its output, the round's `score:` line
+  (`missing reference: <id>`) and the report, and tries it again next command. A round
+  that every judge passes without every reference is a **provisional pass** (exit 4), not
+  a pass on the bar. `"pass": { "allReferences": false }` lets such a round pass; set it
+  only on the owner's word.
 - The council is a Haiku judge first and one Opus judge second, as in the template. Use
   only Opus and Haiku models. Judges run in order and a round stops at the first that
   fails, so Haiku must pass a round before the Opus judge scores it. Until a round has
@@ -188,7 +196,12 @@ Rules:
   `budgetUsd.call` caps one call, `round` a round and `run` everything in the run,
   calibration included. `$UI status` shows what is spent.
 - Exit 2 means the command could not run (configuration, git, the app did not start, a
-  baseline or reference shot failed): its message says what to do. The app's output
+  main or control shot failed, or no reference captured): its message says what to do.
+- Exit 4, a provisional pass, means every judge passed but a reference did not capture.
+  Record the `score:` line, wait, and run `$UI round` again on the same commit. When the
+  reference stays down, ask the owner (`ask_user`, `Reason: design`) whether to replace
+  it or accept a pass without it (`pass.allReferences` false, with `--new-run`). Never
+  hand a provisional pass over as a pass. The app's output
   is in `server.log` beside the round's screenshots. A judge that could not finish its
   calls also exits 2; the round is recorded as an error with its cost, and you run it
   again (its `score:` line still goes in a note).
