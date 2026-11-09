@@ -3,7 +3,8 @@
 // to the model.
 const DOWNLOAD = new RegExp([
   String.raw`\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|update|upgrade|x|dlx)\b`,
-  String.raw`\b(?:npx|bunx|uvx|pipx)\b`,
+  String.raw`\b(?:vp|vite-plus)\s+(?:i|install|add|update|up|dlx|upgrade)\b`,
+  String.raw`\b(?:npx|bunx|vpx|uvx|pipx)\b`,
   String.raw`\bpip3?\s+install\b`,
   String.raw`\buv\s+(?:add|pip|sync|lock|tool|python\s+install)\b`,
   String.raw`\bcargo\s+(?:install|add|update|fetch|generate-lockfile)\b`,

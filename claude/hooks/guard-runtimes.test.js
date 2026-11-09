@@ -17,12 +17,12 @@ describe("blocks", () => {
     ["pytest -q tests"],
     ["py.test tests"],
     ["node check.js"],
+    ["node x.js"],
     ["nodejs server.js"],
     ["/opt/homebrew/bin/node --version"],
     // other JavaScript package managers, also through bunx, even where a lockfile selects them
     ["npx x"],
     ["pnpm i"],
-    ["node x.js"],
     ["npm test"],
     ["npm install"],
     ["npx vitest run"],
@@ -48,9 +48,38 @@ describe("blocks", () => {
     ["NPM install"],
     ["Node check.js"],
     ["ssh host 'cd app && npm ci'"],
-    // allowing Vite+ does not let another tool through beside it
+    // Vite+ may run, but not as a way into the tools above: beside it, through its
+    // launchers, as Node.js, or through the project's package manager
     ["vp lint && npm test"],
     ["bunx vp test; pnpm i"],
+    ["vpx npm install"],
+    ["vpx pnpm@11 i"],
+    ["vpx -p left-pad npm install"],
+    ["vpx --package=pnpm pnpm i"],
+    ["vpx -c 'npm test'"],
+    ["vpx check.js"],
+    ["vpx --tsconfig tsconfig.json scripts/build.ts"],
+    ["vp exec node x.js"],
+    ["vp exec -- python3 x.py"],
+    ["vp exec pytest"],
+    ["vp env exec node x.js"],
+    ["bunx vp exec npm test"],
+    ["bunx vite-plus exec node x"],
+    ["vite-plus exec npm test"],
+    ["vp node check.js"],
+    ["vp node -e 'console.log(1)'"],
+    ["vp install"],
+    ["vp i"],
+    ["vp add left-pad"],
+    ["vp remove left-pad"],
+    ["vp update"],
+    ["vp pm list"],
+    ["vp why vite"],
+    ["vp dlx create-vite"],
+    ["vp dlx pnpm i"],
+    ["vp --silent install"],
+    ["bunx vp install"],
+    ["cd app && vp install"],
     // shells, wrappers, substitutions and inputs
     ["cd src && python3 check.py"],
     ["FOO=1 python3 check.py"],
@@ -120,6 +149,9 @@ describe("blocks", () => {
     ["bunx @openai/codex exec hi"],
     ["bunx @openai/codex@0.50 exec hi"],
     ["bun x codex exec hi"],
+    ["vpx codex exec hi"],
+    ["vpx @openai/codex exec hi"],
+    ["vp exec codex exec hi"],
     ["ssh host 'codex exec hi'"],
     ["bash -lc 'codex exec hi'"],
     ["Codex exec hi"],
@@ -164,15 +196,25 @@ describe("allows", () => {
     ["git log --oneline # python3 check.py"],
     ["ls node_modules/.bin"],
     ["bun run node_modules/.bin/vite build"],
-    // Vite+ is allowed: bare, through vpx or bunx, and from package scripts
+    // Vite+ is allowed: bare or through bunx, and its launchers when they start an allowed tool
+    ["vp"],
+    ["vp --version"],
     ["vp lint"],
+    ["vp check --fix"],
     ["vp run build"],
+    ["vpr build"],
+    ["vp test"],
+    ["vp build"],
+    ["vp env use 24"],
     ["vpx tsc"],
+    ["vpx -p typescript tsc --noEmit"],
+    ["vpx -c 'tsc --noEmit'"],
+    ["vp exec tsc"],
+    ["vp exec -- eslint ."],
     ["bunx vp test"],
     ["bunx --bun vp --version"],
     ["bun x vp check"],
     ["bunx vite-plus"],
-    ["bun run lint"],
     ["ssh host 'cd app && vp test'"],
     ["ssh host 'uv run python check.py'"],
     ["ssh -i ~/.ssh/key host ls node_modules"],
@@ -208,6 +250,12 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("node check.js")).not.toContain("lockfile");
   expect(verdict("pnpm install")).toContain("`bun install`");
   expect(verdict("bunx pnpm@11 store prune")).toContain("runs pnpm through bunx");
+  expect(verdict("vpx npm install")).toContain("runs npm through vpx");
+  expect(verdict("vp exec python3 x.py")).toContain("runs python3 through vp exec");
+  expect(verdict("vp node check.js")).toContain("`bun <file>`");
+  expect(verdict("vp install")).toContain("pnpm when no lockfile names one");
+  expect(verdict("vp install")).toContain("`bun install`");
+  expect(verdict("vp dlx create-vite")).toContain("through `vp dlx`");
   expect(verdict("codex exec hi")).toContain("only a Claude plan");
   expect(verdict("codex exec hi")).toContain("with Claude instead");
   expect(verdict("codex exec hi")).not.toContain("bun");

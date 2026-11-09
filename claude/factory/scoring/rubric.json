@@ -7,7 +7,7 @@
       "id": "package-runner",
       "kind": "detector",
       "section": "Working preferences",
-      "description": "Bash ran node, npm, npx, pnpm, yarn or corepack (also through bunx), whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
+      "description": "Bash ran node, npm, npx, pnpm, yarn or corepack (also through bunx, vpx or `vp exec`), Vite+'s package-management commands or `vp node`, whatever the project's lockfile, or pip, pytest or bare python outside `uv run`."
     },
     {
       "id": "ai-attribution",
