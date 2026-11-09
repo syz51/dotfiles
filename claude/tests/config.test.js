@@ -143,7 +143,7 @@ describe("global instructions", () => {
   // Most of the user's repositories have no branch protection, so the hook enforces the merge
   // condition the Autonomy section grants (dotfiles-259).
   test("the merge rule names the hook that enforces it", () => {
-    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks.");
+    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed.");
   });
 
   // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed

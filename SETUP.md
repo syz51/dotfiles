@@ -249,7 +249,14 @@ section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view
 head commit. A check run is pending until its status is `COMPLETED`; it fails with any
 conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
 also one with the name of a later run; within one Actions workflow run, which a re-run
-reuses, only the latest attempt of each job counts. A head commit without checks passes only when the repository has no
+reuses, only the latest attempt of each job counts. GitHub records each Actions job it never
+started for billing as a failed check run with no steps and one annotation on `.github`. Such a
+job passes when a non-Actions check named `<context>: <job name>`, such as
+`ci/circleci: build`, succeeded. A failed job with steps fails, even with that annotation,
+because a job's own output can write it. So does a skipped job whose name a skipped job of
+another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
+check is a failed Actions job. It adds about 0.75 seconds and costs about 12 GraphQL rate-limit
+points. It filters by github.com's Actions app, so on another host such jobs stay failed. A head commit without checks passes only when the repository has no
 active Actions workflows. `--auto` on a non-draft passes when the base branch requires status
 checks through protection or a ruleset and gh enables auto-merge, so GitHub waits for the
 required checks. When the pull request is `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, gh merges at
@@ -263,7 +270,8 @@ merge in a command that also runs another merge, or a git or gh command that is 
 read-only, such as `git push`, `git switch`, `gh pr checkout` or `gh pr update-branch`: merge
 in a separate call once the head's checks pass.
 It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
-crash blocks the merge. The queries add about 0.7 seconds to each merge, and its
+crash blocks the merge. The queries add about 0.7 seconds to each merge, about 1.5 with the
+GraphQL call, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot
 see gh aliases, scripts, an endpoint held wholly in a variable, a query read from a file,
 or curl.
@@ -457,7 +465,10 @@ it end or Codex marks it complete; one with no such mark counts as ended after 6
 without activity, and until then holds the cursor. Turns with board or other failed calls
 (a search that found nothing does not count), hook blocks, retries of the same program, or
 phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
-points; up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
+points. A turn whose only friction is board errors the server counts itself scores
+nothing: answers with a server error code (`invalid: …`) and text the CLI refused before
+sending (`(not sent)`), which the board turns into `signal` items. Refusals no server saw,
+such as a runtime's schema check, still count. Up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
 $0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
 agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
 factual lines quoting at most one error line and naming the session, turn and project

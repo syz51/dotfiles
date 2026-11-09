@@ -372,7 +372,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     console.log(`${turns.length} completed turns since ${new Date(from).toISOString()} (skipped ${skipped.automation} automation sessions, ${skipped.feedback} turns that filed feedback); ${candidates.length} show friction; judging up to ${options.maxTurns} with ${options.model}.`);
     if (options.dryRun) {
       for (const entry of candidates.slice(0, options.maxTurns))
-        console.log(`  ${entry.harness} ${entry.sessionId} turn ${entry.turn.index}: score ${entry.signals.score} (${entry.signals.toolErrors} tool errors, ${entry.signals.boardErrors} board, ${entry.signals.hookBlocks} hook, ${entry.signals.retries} retries, ${entry.signals.phrases} phrases); digest ${digest(entry.turn).length} chars`);
+        console.log(`  ${entry.harness} ${entry.sessionId} turn ${entry.turn.index}: score ${entry.signals.score} (${entry.signals.toolErrors} tool errors, ${entry.signals.boardErrors} board (${entry.signals.serverErrors} server-counted), ${entry.signals.hookBlocks} hook, ${entry.signals.retries} retries, ${entry.signals.phrases} phrases); digest ${digest(entry.turn).length} chars`);
       if (pending.length) console.log(`${pending.length} judged findings wait to be filed.`);
       console.log("Dry run: nothing called or written.");
       return 0;
