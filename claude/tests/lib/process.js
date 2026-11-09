@@ -26,15 +26,17 @@ export function descendants(pid) {
   return below(table, [pid]);
 }
 
-// One snapshot of the process table: pid -> { ppid, started, command }. started (the
-// start time) tells a process from a later one that reuses its pid.
+// One snapshot of the process table: pid -> { ppid, pgid, zombie, started, command }.
+// started (the start time) tells a process from a later one that reuses its pid. A zombie
+// has exited and waits only for its parent to collect its status.
 function processTable() {
-  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,lstart=,command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
   if (table.status !== 0) throw new Error(`ps failed: ${table.stderr}`);
   const processes = new Map();
   for (const line of table.stdout.split("\n")) {
-    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/);
-    if (match) processes.set(Number(match[1]), { ppid: Number(match[2]), started: match[3], command: match[4] });
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/);
+    if (match)
+      processes.set(Number(match[1]), { ppid: Number(match[2]), pgid: Number(match[3]), zombie: match[4].startsWith("Z"), started: match[5], command: match[6] });
   }
   return processes;
 }
@@ -62,7 +64,8 @@ export function trackDescendants(pid, tracked) {
 // Processes, other than this one, working inside dir or naming it in their command line,
 // plus those in tracked (see trackDescendants) still running and their descendants: what
 // a session left running in a fixture. dir must be a real path, as lsof reports working
-// directories resolved. Returns [{ pid, command }].
+// directories resolved. Returns [{ pid, pgid, command }], without zombies, which have
+// already exited.
 export function processesUnder(dir, { tracked = new Map() } = {}) {
   const inside = (path) => path === dir || path.startsWith(`${dir}/`);
   const pids = new Set();
@@ -80,23 +83,45 @@ export function processesUnder(dir, { tracked = new Map() } = {}) {
   for (const id of [...live, ...below(table, live)]) pids.add(id);
   pids.delete(process.pid);
   // A process that exited between the two snapshots is not in the table: it is gone.
-  return [...pids].filter((id) => table.has(id)).map((id) => ({ pid: id, command: table.get(id).command }));
+  return [...pids].filter((id) => table.has(id) && !table.get(id).zombie)
+    .map((id) => ({ pid: id, pgid: table.get(id).pgid, command: table.get(id).command }));
 }
 
 // Processes still under dir once graceMs has passed (see processesUnder, which also gets
-// tracked), each then killed: what a session left behind, given its own children time to
-// finish exiting. Returns them as found. A process gone by the time it is signalled is skipped.
-export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, tracked } = {}) {
+// tracked), then killed: what a session left behind, given its own children time to
+// finish exiting. Returns each process found, once, in the order found.
+// A leftover can fork after the snapshot, such as a loop starting its next write, and its
+// child would then outlive the kill. So each leftover's whole process group dies with it,
+// except this process's own group, and the scan repeats until it finds none; a process
+// still found after killMs of rounds throws. A process gone by the time it is signalled is
+// skipped, and so is a group with a member not ours to signal.
+export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, killMs = 5000, tracked } = {}) {
+  const pause = () => new Promise((resolve) => setTimeout(resolve, pollMs));
   let left = processesUnder(dir, { tracked });
   for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir, { tracked }))
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-  for (const { pid } of left)
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+    await pause();
+  const found = new Map();
+  const ownGroup = processTable().get(process.pid).pgid;
+  for (const deadline = Date.now() + killMs; left.length; left = processesUnder(dir, { tracked })) {
+    if (Date.now() >= deadline)
+      throw new Error(`Processes under ${dir} still ran ${killMs} ms after being killed:\n${left.map(({ pid, command }) => `${pid} ${command}`).join("\n")}`);
+    for (const leftover of left) {
+      if (!found.has(leftover.pid)) found.set(leftover.pid, leftover);
+      if (leftover.pgid > 1 && leftover.pgid !== ownGroup)
+        try {
+          process.kill(-leftover.pgid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
+        }
+      try {
+        process.kill(leftover.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
     }
-  return left;
+    await pause();
+  }
+  return [...found.values()];
 }
 
 // Runs argv in its own process group. Resolves with the exit status and UTF-8 output;

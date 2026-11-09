@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configuredEffort, holdConfigSync, toolDirectories } from "./lib/live.js";
-import { childEnv, runProcess } from "./lib/process.js";
+import { childEnv, processesUnder, runProcess } from "./lib/process.js";
 
 const TESTS = import.meta.dir;
 
@@ -202,6 +202,19 @@ describe("teardown waits for the sessions' leftover processes", () => {
     expect(output(run)).toMatch(new RegExp(`Session processes still ran 1500 ms after the suite's sessions; killed them, then removed ${join(root, "tmp")}/claude-live-policy-\\w+:\\n\\d+ sh -c while`));
     // A writer still alive would recreate the root within 200 ms.
     await Bun.sleep(500);
+    assertCleanedUp();
+  }, 30_000);
+
+  // Writers that never sleep fork a new write between the harness's process listing and
+  // its kill nearly every run; that write must die with its group, not recreate the root.
+  test("a background task writing back to back is killed with every write it started", async () => {
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "busy", CLAUDE_LIVE_SETTLE_MS: "1500" });
+    expect(run.code, output(run)).not.toBe(0);
+    expect(output(run)).toMatch(/Session processes still ran 1500 ms after the suite's sessions; killed them, then removed /);
+    expect(output(run)).toMatch(/^\d+ sh -c for loop in .*; wait$/m);
+    expect(output(run)).not.toContain("The suite root remains after teardown");
+    await Bun.sleep(500);
+    expect(processesUnder(root)).toEqual([]);
     assertCleanedUp();
   }, 30_000);
 });

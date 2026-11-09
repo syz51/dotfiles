@@ -165,6 +165,36 @@ test("stopLeftovers waits for exiting processes and kills the rest", async () =>
   }
 });
 
+test("stopLeftovers kills a leftover's whole process group, also members it cannot find", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "process-group-")));
+  let hidden;
+  try {
+    // The leader works in root; its background child works outside root and names
+    // nothing in it, so only the group leads to the child.
+    const leader = spawn("sh", ["-c", "(cd / && exec sleep 30) & echo $!; exec sleep 30"], { cwd: root, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    hidden = Number(await new Promise((resolve) => leader.stdout.once("data", (chunk) => resolve(String(chunk).trim()))));
+    await Bun.sleep(150);
+    expect(processesUnder(root).map((found) => found.pid)).toEqual([leader.pid]);
+    expect((await stopLeftovers(root, { graceMs: 0 })).map((found) => found.pid)).toEqual([leader.pid]);
+    await Bun.sleep(200);
+    let alive = true;
+    try {
+      process.kill(hidden, 0);
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  } finally {
+    try {
+      process.kill(hidden, "SIGKILL");
+    } catch {
+      // Already gone.
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a tracked run's background process stays findable after the run exits, until it is killed", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "process-tracked-")));
   const pidFile = join(root, "pid");
