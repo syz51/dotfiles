@@ -86,7 +86,7 @@ describe("transcripts", () => {
       .apiError(429)
       .compact()
       .prompt("no, that's the wrong file")
-      .text("Fixed", { model: "claude-sonnet-5-5", use: usage(1, 10, { cacheRead: 0, cacheWrite: 0 }) })
+      .text("Fixed", { model: "claude-haiku-5-5", use: usage(1, 10, { cacheRead: 0, cacheWrite: 0 }) })
       .title("Fix login")
       .prLink("https://github.com/o/r/pull/7")
       .prLink("https://github.com/o/r/pull/7")
@@ -102,7 +102,7 @@ describe("transcripts", () => {
       expect(session.prompts.map((prompt) => prompt.text)).toEqual(["Fix the login bug", "no, that's the wrong file"]);
       // The two-block message counts once; so does each tool-use message.
       expect(session.assistantMessages).toBe(4);
-      expect(session.models).toEqual({ "claude-opus-5-5": 3, "claude-sonnet-5-5": 1 });
+      expect(session.models).toEqual({ "claude-opus-5-5": 3, "claude-haiku-5-5": 1 });
       expect(session.usage["claude-opus-5-5"].output).toBe(300);
       expect(session.toolCalls.map((call) => [call.name, call.ok, call.output])).toEqual([["Bash", false, "1 fail"], ["Read", true, "x"]]);
       expect(session.interrupts).toBe(1);
@@ -276,7 +276,7 @@ describe("claude runner", () => {
 
   test("judge sends the prompt on stdin in a restricted, unsaved session", async () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
-    const { output, costUSD } = await judge({ prompt: "Grade this 中文", schema, model: "claude-sonnet-5-5", budgetUsd: 0.3 });
+    const { output, costUSD } = await judge({ prompt: "Grade this 中文", schema, model: "claude-haiku-5-5", budgetUsd: 0.3 });
     expect(output).toEqual({ verdict: "pass" });
     expect(costUSD).toBe(0.02);
     const [call] = calls();

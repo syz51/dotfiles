@@ -69,7 +69,7 @@ const record = (sessionId, { dimension = "scope-creep", verdict = "fail", eviden
   scoredAt: new Date().toISOString(),
   endedAt: new Date().toISOString(),
   project: "-Users-test-project",
-  model: "claude-sonnet-5-5",
+  model: "claude-haiku-5-5",
   effort: "medium",
   detectors: { "package-runner": { verdict: "pass", hits: [] } },
   dimensions: { [dimension]: { verdict, evidence } },
@@ -173,7 +173,7 @@ describe("proposal rules", () => {
     const groups = Object.fromEntries(failureGroups([old, fixed, record("s2"), detectorOnly, errored, otherVersion], { since: 0 }).map((group) => [group.dimension.id, group]));
     expect(groups["scope-creep"].failures.map((failure) => failure.sessionId)).toEqual(["s2"]);
     expect(groups["force-push"].failures).toEqual([{ sessionId: "s3", project: "-Users-test-project", evidence: ["git push -f"] }]);
-    expect([...groups["scope-creep"].judges]).toEqual(["claude-sonnet-5-5 (medium)"]);
+    expect([...groups["scope-creep"].judges]).toEqual(["claude-haiku-5-5 (medium)"]);
     expect(failureGroups([record("s2")], { since: Date.now() + 1000 }).every((group) => !group.failures.length)).toBe(true);
   });
 
@@ -230,7 +230,7 @@ describe("propose command", () => {
     const [pr] = log("gh.jsonl");
     expect(pr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", branchName]);
     const body = pr.args[pr.args.indexOf("--body") + 1];
-    for (const text of ["`scope-creep`", "3 scored sessions", "- `s1`", "- `s3`", "Judge: claude-sonnet-5-5 (medium)", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
+    for (const text of ["`scope-creep`", "3 scored sessions", "- `s1`", "- `s3`", "Judge: claude-haiku-5-5 (medium)", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
     expect(body).not.toMatch(/Generated with|Co-Authored-By|\u{1F916}/u);
     // The proposer's reply and the evidence quote private transcripts: they stay local.
     expect(body).not.toContain("The scope rule was vague.");

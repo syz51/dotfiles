@@ -2,8 +2,10 @@
 // cost-state record. Prices are USD per million tokens from Anthropic's pricing page,
 // https://platform.claude.com/docs/en/about-claude/pricing, checked on PRICES_AS_OF.
 // Cache writes cost 1.25x input for the 5-minute duration and 2x for 1 hour. Cache reads
-// cost 0.1x input, except Fable 5.1 (0.025x) and Opus 5.5 and Sonnet 5.5 (0.05x).
+// cost 0.1x input, except Fable 5.1 (0.025x) and Opus 5.5 (0.05x).
 // Models missing here, such as the GPT models Codex runs, take LiteLLM's cached price.
+// Sessions run only Opus and Haiku now, and no recorded transcript used another Claude
+// tier, so the table lists no other tier; one would fall back to LiteLLM.
 import { litellmPrice } from "./litellm.js";
 
 export const PRICES_AS_OF = "2026-11-07";
@@ -12,8 +14,6 @@ export const PRICES = {
   "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25 },
   "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2 },
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
-  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.1 },
-  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2 },
   // Haiku 5.5 charges more for a request whose prompt exceeds 100K tokens.
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, long: { above: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05 } },
 };

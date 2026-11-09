@@ -88,7 +88,7 @@ function repoWith(...commits) {
 
 const sessions = () => readJsonl(join(scratch, "sessions.jsonl"));
 const results = () => readJsonl(join(scratch, "state", "bench", "results.jsonl"));
-const runOptions = (overrides = {}) => ({ model: "claude-sonnet-5-5", effort: "high", trial: 1, runId: "r1", batch: "b1", ...overrides });
+const runOptions = (overrides = {}) => ({ model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", batch: "b1", ...overrides });
 
 async function capture(fn) {
   const out = [];
@@ -201,11 +201,11 @@ describe("cases", () => {
     expect(agentOverride("---\nname: x\n---\nBody\n", { model: "m", effort: "e" })).toBe("---\nname: x\nmodel: m\neffort: e\n---\nBody\n");
     expect(() => agentOverride("no frontmatter", { model: "m", effort: "e" })).toThrow("frontmatter");
     for (const role of ["explorer", "worker", "solver"]) {
-      const path = writeAgentOverride(join(scratch, role), role, { model: "claude-sonnet-5-5", effort: "medium" }, AGENTS_DIR);
+      const path = writeAgentOverride(join(scratch, role), role, { model: "claude-opus-5-5", effort: "medium" }, AGENTS_DIR);
       const written = readFileSync(path, "utf8");
       expect(path).toBe(join(scratch, role, ".claude", "agents", `${role}.md`));
       expect(written).toContain(`name: ${role}`);
-      expect(written.match(/^model: .*$/gm)).toEqual(["model: claude-sonnet-5-5"]);
+      expect(written.match(/^model: .*$/gm)).toEqual(["model: claude-opus-5-5"]);
       expect(written.match(/^effort: .*$/gm)).toEqual(["effort: medium"]);
     }
   });
@@ -257,14 +257,14 @@ describe("runs", () => {
     const [session] = sessions();
     const option = (name) => session.args[session.args.indexOf(name) + 1];
     expect(option("--agent")).toBe("worker");
-    expect(option("--model")).toBe("claude-sonnet-5-5");
+    expect(option("--model")).toBe("claude-opus-5-5");
     expect(option("--effort")).toBe("high");
     expect(option("--max-budget-usd")).toBe("1.5");
     // The session is saved, so its effort can be read, and its transcript deleted after.
     expect(session.args).not.toContain("--no-session-persistence");
     expect(option("--session-id")).toMatch(/^[0-9a-f-]{36}$/);
     expect(readdirSync(join(homedir(), ".claude", "projects")).filter((name) => name.startsWith(projectName(dirname(session.cwd))))).toEqual([]);
-    expect(session.agentFile).toContain("model: claude-sonnet-5-5\neffort: high\n");
+    expect(session.agentFile).toContain("model: claude-opus-5-5\neffort: high\n");
     expect(session.agentFile).toContain("name: worker");
     // As a spawned subagent would, the role runs without the main session's own tools.
     expect(session.settings.permissions.deny).toEqual(["WebFetch", "WebSearch", "ScheduleWakeup", "Workflow"]);
@@ -272,7 +272,7 @@ describe("runs", () => {
     expect(session.env).toMatchObject({ UV_OFFLINE: "1", TMPDIR: dirname(session.cwd), CLAUDE_CODE_TMPDIR: dirname(session.cwd) });
     expect(existsSync(session.cwd)).toBe(false);
     expect(record).toMatchObject({
-      runId: "r1", batch: "b1", caseId: "sample", role: "worker", model: "claude-sonnet-5-5", modelObserved: "claude-sonnet-5-5",
+      runId: "r1", batch: "b1", caseId: "sample", role: "worker", model: "claude-opus-5-5", modelObserved: "claude-opus-5-5",
       effort: "high", effortObserved: "high", trial: 1, pass: true, oracleExit: 0, costUSD: 0.25, turns: 3, error: null, infra: false, cliVersion: "9.9.9",
     });
     expect(record.durationMs).toBeGreaterThan(0);
@@ -320,7 +320,7 @@ describe("runs", () => {
     setEnv({ FAKE_BENCH_RAN: "claude-haiku-5-5" });
     const wrong = await runOne(benchCase, runOptions());
     expect(wrong).toMatchObject({ pass: false, infra: true, modelObserved: "claude-haiku-5-5" });
-    expect(wrong.error).toContain("requested claude-sonnet-5-5 but the session ran claude-haiku-5-5");
+    expect(wrong.error).toContain("requested claude-opus-5-5 but the session ran claude-haiku-5-5");
     setEnv({ FAKE_BENCH_RAN: undefined, FAKE_BENCH_SUBTYPE: "error_during_execution", FAKE_BENCH_API_ERROR: "401" });
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, infra: true, error: "session ended with error_during_execution (HTTP 401)" });
     setEnv({ FAKE_BENCH_SUBTYPE: undefined, FAKE_BENCH_API_ERROR: undefined, FAKE_BENCH_IS_ERROR: "1", FAKE_BENCH_TEXT: "Not logged in" });
@@ -342,12 +342,12 @@ describe("runs", () => {
     expect(unrecorded.error).toContain("recorded no effort");
     // The wrong model is reported over the wrong effort.
     setEnv({ FAKE_CLAUDE_EFFORT: "low", FAKE_BENCH_RAN: "claude-haiku-5-5" });
-    expect((await runOne(benchCase, runOptions())).error).toContain("requested claude-sonnet-5-5 but the session ran claude-haiku-5-5");
+    expect((await runOne(benchCase, runOptions())).error).toContain("requested claude-opus-5-5 but the session ran claude-haiku-5-5");
   });
 
   test("a dated ID of the requested model is the requested model", async () => {
-    setEnv({ FAKE_BENCH_RAN: "claude-sonnet-5-5-20261001" });
-    expect(await runOne(loadCase(writeCase(caseValue())), runOptions())).toMatchObject({ pass: true, infra: false, modelObserved: "claude-sonnet-5-5-20261001" });
+    setEnv({ FAKE_BENCH_RAN: "claude-opus-5-5-20261001" });
+    expect(await runOne(loadCase(writeCase(caseValue())), runOptions())).toMatchObject({ pass: true, infra: false, modelObserved: "claude-opus-5-5-20261001" });
   });
 
   test("observedModels counts only the main thread", () => {
@@ -468,7 +468,7 @@ describe("bench run command", () => {
     expect(code).toBe(0);
     // The default models are Haiku and Opus only.
     expect(out).toContain("| sample | main | claude-opus-5-5 | high | 1 | $0.75 |");
-    expect(out).not.toContain("sonnet");
+    expect([...new Set(out.match(/claude-[a-z0-9-]+/g))].sort()).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
     expect(out).toContain("4 runs, worst case $3.00 (limit $2.00; at least the first 2 runs fit)");
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
   });
@@ -479,7 +479,7 @@ describe("bench run command", () => {
     const failed = await capture(() => main(["bench", "run", "--cases", casesDir, "--models", "claude-opus-5-5", "--efforts", "high"]));
     expect(failed.code).toBe(1);
     expect(failed.out).toContain("INFRA");
-    for (const args of [["--efforts", "ultra"], ["--models", "sonnet"], ["--trials", "0"], ["--case", "missing"], ["--bogus"]])
+    for (const args of [["--efforts", "ultra"], ["--models", "haiku"], ["--trials", "0"], ["--case", "missing"], ["--bogus"]])
       expect((await capture(() => main(["bench", "run", "--cases", casesDir, ...args]))).code).toBe(2);
   });
 
@@ -528,12 +528,12 @@ describe("report", () => {
   test("recommends the cheapest configuration within the margin of the best", () => {
     const configs = [
       { model: "haiku", effort: "medium", runs: 3, passRate: 2 / 3, medianCostUSD: 0.1 },
-      { model: "sonnet", effort: "medium", runs: 3, passRate: 0.9, medianCostUSD: 0.5 },
+      { model: "opus", effort: "medium", runs: 3, passRate: 0.9, medianCostUSD: 0.5 },
       { model: "opus", effort: "high", runs: 3, passRate: 1, medianCostUSD: 2 },
     ];
-    expect(recommend(configs, 0.1)).toMatchObject({ status: "ok", model: "sonnet", bestPassRate: 1 });
+    expect(recommend(configs, 0.1)).toMatchObject({ status: "ok", model: "opus", effort: "medium", bestPassRate: 1 });
     expect(recommend(configs, 0.4)).toMatchObject({ status: "ok", model: "haiku" });
-    expect(recommend(configs, 0)).toMatchObject({ status: "ok", model: "opus" });
+    expect(recommend(configs, 0)).toMatchObject({ status: "ok", model: "opus", effort: "high" });
     expect(recommend([...configs, { model: "new", effort: "low", runs: 2, passRate: 1, medianCostUSD: 0.01 }], 0.1))
       .toEqual({ status: "not enough trials", need: 3, short: ["new low"] });
     expect(recommend([], 0.1)).toEqual({ status: "no runs" });
@@ -543,7 +543,7 @@ describe("report", () => {
     const records = [
       ...trials("haiku", "medium", 3, [0.1, 0.1, 0.1]), ...trials("haiku", "medium", 0, [0.2, 0.2, 0.2], { caseId: "c2" }),
       ...trials("opus", "high", 3, [1, 1, 1]), ...trials("opus", "high", 3, [2, 2, 2], { caseId: "c2" }),
-      ...trials("sonnet", "high", 3, [0.5, 0.5, 0.5]),
+      ...trials("opus", "medium", 3, [0.5, 0.5, 0.5]),
     ];
     const [role] = aggregate(records, { margin: 0.1 }).roles;
     expect(role.overall.map((config) => [config.model, config.passRate, config.medianCostUSD])).toEqual([["haiku", 0.5, 0.30000000000000004], ["opus", 1, 3]]);
