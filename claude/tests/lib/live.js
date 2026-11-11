@@ -179,7 +179,9 @@ export function liveSuite(name) {
   // even when it throws. With followUp, the prompt and the follow-up go in as a
   // conversation (see conversation.js), and the stream has one result per turn. With
   // stopAtAnswer, the session ends when its first turn does, background tasks included.
-  async function session(dir, { label, cwd, prompt, followUp, stopAtAnswer = false, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report }) {
+  // env replaces the session's default variables, such as a TMPDIR away from a fixture
+  // that a hook would otherwise exempt as temporary.
+  async function session(dir, { label, cwd, prompt, followUp, stopAtAnswer = false, model = MODEL, effort = EFFORT, maxTurns, timeout = 300_000, report, env: overrides = {} }) {
     const id = `session-${String(++sequence).padStart(2, "0")}`;
     const recordDir = join(dir, `${id}-hooks`);
     mkdirSync(recordDir);
@@ -201,6 +203,7 @@ export function liveSuite(name) {
       UV_PYTHON_DOWNLOADS: "never",
       CARGO_NET_OFFLINE: "true",
       PYTHONDONTWRITEBYTECODE: "1",
+      ...overrides,
     });
     if (releaseConfigSync) holdConfigSync(name);
     const guard = guardSnapshot();
