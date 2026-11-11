@@ -10,7 +10,10 @@
 // BUN_OPTIONS=--bun (set in ~/.zshenv) makes bun run and bunx use bun for tools whose
 // shebang names node. `uv run python`, `uv pip`, `bun run`, `vp check`, `vp test` and
 // words that only mention a runtime (`grep python`, `command -v node`, `ls ~/.codex`)
-// still run. Exit 2 blocks the command and shows stderr to Claude; a crash is a
+// still run, and so does a bare version probe: argv of exactly `python3 --version` or `-V`
+// (also pypy, a path such as /usr/bin/python3, and node with `-v`), here or over ssh,
+// which runs no user code. A probe with any other word, or through a launcher, is blocked.
+// Exit 2 blocks the command and shows stderr to Claude; a crash is a
 // non-blocking hook error, so the guard fails open. shell.js follows the shell syntax
 // around a command (wrappers, `sh -c`, `find -exec`, `ssh`) but cannot see into script
 // files, package scripts or expanded variables. A Python block over ssh names what works on
@@ -39,6 +42,11 @@ const PACKAGE_MANAGER_SCRIPT = /(?:^|[/(`\s])(?:npm|npx|pnpm|pnpx|yarn|yarnpkg|c
 const GITHUB_REMOTE = /^(?:(?:https?|ssh|git|git\+ssh):\/\/)?(?:[^@/\s]+@)?(?:ssh\.)?github\.com(?::\d+)?[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i;
 // The Codex CLI, by its name or, through bunx, its npm package.
 const CODEX = /^(?:@openai\/)?codex$/i;
+// A bare version probe: an interpreter and its version flag, nothing else.
+const PROBE_INTERPRETER = /^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/i;
+const versionProbe = (words) => words.length === 2 && (
+  (PROBE_INTERPRETER.test(basename(words[0])) && (words[1] === "--version" || words[1] === "-V"))
+  || (NODE.test(basename(words[0])) && ["--version", "-V", "-v"].includes(words[1])));
 // A cheap prefilter: commands that never name a runtime or a launcher, even split by
 // quotes or backslashes ("no"de, n\ode), are not parsed.
 const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus|codex/i;
@@ -186,6 +194,7 @@ export const codexLaunch = (words) => find(words, undefined, (tool) => CODEX.tes
  * must not run, or undefined when it may.
  */
 export function runtimeViolation(words, dir, { remote = false } = {}) {
+  if (versionProbe(words)) return undefined;
   // node-repos.json names local checkouts, so a command on another host, even one that
   // `bun --cwd` moves to a path that exists here, gets no exception.
   const blocked = (remote ? blockedRuntime(words, undefined, () => false) : blockedRuntime(words, dir)) ?? codexLaunch(words);
