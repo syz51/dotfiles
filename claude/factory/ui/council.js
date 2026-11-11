@@ -336,8 +336,24 @@ export function verdict({ result, pass, noise, candidate = "candidate", baseline
   // How far the categories under the bar are below it in all, and how many there are.
   const under = values.filter(([, value]) => value < pass.min);
   const shortfall = under.reduce((sum, [, value]) => sum + pass.min - value, 0);
-  return { judge: result.judge, pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], baselineLowest, shortfall, underCount: under.length, reasons };
+  return { judge: result.judge, role: "bar", pass: reasons.length === 0, lowest, lowestCategory, gain, gainBar, referenceMargin, overall: result.overall[candidate], baselineLowest, shortfall, underCount: under.length, reasons };
 }
+
+// A regression pre-check's verdict: the judge passes the candidate unless its overall score
+// is under main's by more than pass.regression times the judge's noise (sigmaOverall). It
+// never applies the bar; its scores are kept so the report and the climb can read them.
+// gainBar holds the floor, so the plateau's gain series tracks how far under it the
+// candidate is.
+export function precheck({ result, pass, noise, candidate = "candidate", baseline = "baseline", references = [] }) {
+  const full = verdict({ result, pass, noise, candidate, baseline, references });
+  const gainBar = -pass.regression * noise.sigmaOverall;
+  const reasons = full.gain < gainBar ? [`scores under main by ${(-full.gain).toFixed(2)}, more than ${(-gainBar).toFixed(2)} (${pass.regression}× its noise)`] : [];
+  return { ...full, role: "precheck", pass: reasons.length === 0, gainBar, reasons };
+}
+
+// A round's verdict from the judge that applies the bar (the last judge), or undefined when
+// the round stopped before it. Rounds recorded before pre-checks had no role: their last.
+export const barVerdict = (round) => round.verdicts?.findLast((v) => v.role !== "precheck");
 
 export const signed = (value) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`;
 export const fixed = (value) => (typeof value === "number" ? value.toFixed(2) : "–");
