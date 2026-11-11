@@ -161,7 +161,7 @@ describe.skipIf(!LIVE)("live skill dispatch", () => {
     const before = snapshot(work);
     const run = await session({
       cwd: work,
-      prompt: "Draft a short article of about 150 words for our team newsletter about the Riverside branch library's new hours, using only the facts in notes.md. Save it as article.md.",
+      prompt: "Write a feature article of 200 to 250 words for our team newsletter about the changes at the Riverside branch library, with a headline and a clear angle for readers who use the library. Ground every claim in notes.md and add no outside facts. Draft it, review the draft for accuracy and clarity against the notes, revise it, and save the final article as article.md.",
     });
     expect(skillLoads(run.events)).toContain("content-research-writer");
     expect(existsSync(join(work, "article.md")), "article.md was not saved").toBe(true);
