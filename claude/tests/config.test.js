@@ -793,7 +793,14 @@ describe("rules the live suites test", () => {
   });
 
   test("Workflow stops background work before finishing", () => {
-    expect(section("Workflow")).toMatch(/Before finishing, stop the background commands and processes you started and confirm none is still running, unless I asked to keep them running/);
+    expect(section("Workflow")).toMatch(/stop the background commands and processes you started, and confirm none still runs, unless I asked to keep them running/);
+  });
+
+  // A worker removed its parent's snapshot directory, and a background review agent removed
+  // its parent's tf/ copy from the shared scratchpad (dotfiles-94).
+  test("Workflow keeps each subagent's scratch apart and cleans up only what it made", () => {
+    expect(section("Workflow")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created,");
+    expect(read("codex/AGENTS.md")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created.\n");
   });
 
   test("Delegation is a standing request limited to parallel tracks", () => {

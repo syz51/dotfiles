@@ -8,6 +8,7 @@
 ## Workflow
 
 - Shape non-trivial work in the stages of the `work-stages` skill (explore, research, design, plan, build, verify), skipping those it does not need.
+- Keep temporary files in the session scratchpad if there is one, otherwise in one task directory under `$TMPDIR`; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created.
 - To continue a branch that another worktree has checked out, which git refuses to check out twice, work on a local branch started from `origin/<branch>` and push to `<branch>`; brief a child that continues one the same way.
 
 ## Work board
