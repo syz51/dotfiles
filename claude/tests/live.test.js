@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { AT_INSTALLED, EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL, TEARDOWN_TIMEOUT } from "./lib/live.js";
 import {
-  agentSpawns, concurrentSpawns, finalText, mainBashPrinted, printedFrom, spawnEnds, subagentMessages, toolResults, toolUses,
+  agentSpawns, concurrentSpawns, finalText, freeWhileRunning, mainBashPrinted, printedFrom, spawnEnds, subagentMessages, toolResults, toolUses,
 } from "./lib/stream.js";
 
 const CLAUDE = join(import.meta.dir, "..");
@@ -369,9 +369,27 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   // first turn ends, as a person typing mid-review: the session must answer it while the
   // review still runs, and the review must still finish and reach the final reply.
   test("a high-impact review runs in the background reviewer while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
+    // The callers and the tests give the reviewer work to do: its skill reads each caller
+    // of a changed function and the tests that cover it. Without them the review of a
+    // one-line change can end before the session's first turn does, and the follow-up
+    // then never reaches the session while the review runs.
+    const route = (name, action) => `import { canEdit } from "../auth/access.js";\n\n`
+      + `export function ${action}(user, ${name}, change) {\n  if (!canEdit(user, ${name})) throw new Error("forbidden");\n`
+      + `  return { ...${name}, ...change, updatedBy: user.id };\n}\n`;
     const { remote, work } = publishedRepo(fixture, {
-      "README.md": "# Documents service\nauth/access.js is the shared authorization check that every service imports.\n",
+      "README.md": "# Documents service\nauth/access.js is the shared authorization check that every service imports: "
+        + "services/documents.js, services/comments.js, services/attachments.js and services/sharing.js call canEdit "
+        + "before every write. test/access.test.js covers it.\n",
       "auth/access.js": "export function canEdit(user, doc) {\n  return user.roles.includes(\"admin\") || doc.ownerId === user.id;\n}\n",
+      "services/documents.js": route("doc", "updateDocument"),
+      "services/comments.js": route("doc", "editComment"),
+      "services/attachments.js": route("doc", "replaceAttachment"),
+      "services/sharing.js": route("doc", "shareDocument"),
+      "test/access.test.js": "import { expect, test } from \"bun:test\";\nimport { canEdit } from \"../auth/access.js\";\n\n"
+        + "const doc = { ownerId: \"u1\" };\n"
+        + "test(\"an admin can edit\", () => expect(canEdit({ id: \"u2\", roles: [\"admin\"] }, doc)).toBe(true));\n"
+        + "test(\"the owner can edit\", () => expect(canEdit({ id: \"u1\", roles: [] }, doc)).toBe(true));\n"
+        + "test(\"another user cannot edit\", () => expect(canEdit({ id: \"u2\", roles: [] }, doc)).toBe(false));\n",
     });
     writeFileSync(join(work, "auth/access.js"), "export function canEdit(user, doc) {\n  const admin = user.roles.includes(\"admin\");\n  return admin || doc.ownerId !== user.id;\n}\n");
     git(work, "commit", "--quiet", "-am", "Name the admin check in canEdit");
@@ -407,11 +425,16 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(messages.length, "no messages from the reviewer agent").toBeGreaterThan(0);
       for (const message of messages) expect(message.message.model).toBe(MODEL);
 
-      // The follow-up was answered before the review ended, and the review still finished.
+      // The session ended its first turn while the review ran, so the follow-up reached a
+      // free session, and it answered without waiting on the review: no tool call between
+      // its first turn and the earlier of its answer and the review's end. The review can
+      // end before or after the answer; either order passes. The review still finished.
       const ended = spawnEnds(run.events, [spawn]).get(spawn.id);
       const answered = run.events.findIndex((event) => event.type === "result" && /\b391\b/.test(event.result ?? ""));
       expect(answered, "the follow-up was never answered").toBeGreaterThan(-1);
-      expect(answered, "the follow-up was answered only after the review ended").toBeLessThan(ended);
+      const { turnEnded, waits } = freeWhileRunning(run.events, ended, answered);
+      expect(turnEnded, "the first turn ended only after the review ended").toBeLessThan(ended);
+      expect(waits.map((use) => use.name), "the session waited on the review before it answered the follow-up").toEqual([]);
       const notification = run.events.find((event) => event.type === "system" && event.subtype === "task_notification" && event.tool_use_id === spawn.id);
       expect(notification?.status, "the review did not finish").toBe("completed");
       const reply = finalText(run.events);
