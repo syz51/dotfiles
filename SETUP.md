@@ -399,6 +399,34 @@ the ignore file explicitly anyway:
 git config --global core.excludesFile "$HOME/.config/git/ignore"
 ```
 
+## opencode
+
+opencode 2 reads its global configuration from `~/.config/opencode`, so the tracked files
+in `opencode/` apply without a link. They give opencode the Claude Code setup:
+
+- `opencode.json` loads `~/.claude/CLAUDE.md` as instructions, uses Opus by default, allows
+  every tool as Claude Code's `bypassPermissions` does, and runs two MCP servers: the board
+  and computer use (`desktop`). opencode 2 does not read `CLAUDE.md` files by itself.
+- `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's.
+- `agents/` holds `explorer`, `worker` and `solver`. They keep the Claude agents'
+  descriptions, prompts, models and effort; `claude/tests/opencode.test.js` keeps them in step.
+- `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
+  `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
+  refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
+  act as `claude:<root opencode session id>`, so subagents share their parent's board
+  identity. The plugin also adds the project's Claude Code memory index to the context at
+  session start.
+
+opencode keeps `service.json` (the background service's password) and `cli.json` in the
+same directory; both stay ignored. Models come from the OpenCode Console (Zen), which
+bills per token. Skills load from `~/.claude/skills` without configuration.
+
+To try a change before it reaches `~/.config/opencode`, copy `opencode/` to a scratch
+directory and run `OPENCODE_CONFIG_DIR=<dir> opencode run --standalone ...`. Without
+`--standalone`, commands talk to the running background service and its configuration
+(`opencode service --help`); run `opencode reload` after a change reaches
+`~/.config/opencode`.
+
 ## Factory
 
 `claude/factory/` measures and improves this Claude Code setup. It reads the session
