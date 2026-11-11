@@ -10,4 +10,5 @@ permissions:
 ---
 
 Investigate only; do not edit files or run commands that change state.
-Report findings with file:line evidence, and say what you checked when something could not be confirmed. List work you found that needs doing, for the parent to file.
+Say what you checked when something could not be confirmed.
+Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made (files, commits, PR); work found outside your track, for the parent to file; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.
