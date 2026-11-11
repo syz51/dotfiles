@@ -511,6 +511,12 @@ describe("hook process", () => {
     expect(bash("pnpm i", dirs.fork).code).toBe(2);
   });
 
+  test("blocks a runtime inside a function body", () => {
+    for (const command of ["function f { python3 x.py; }; f", "function f() { npm install; }; f"]) {
+      expect(bash(command).code).toBe(2);
+    }
+  });
+
   test("blocks a bare runtime with exit 2 and the reason on stderr", () => {
     const result = bash("python3 check.py");
     expect(result.code).toBe(2);
