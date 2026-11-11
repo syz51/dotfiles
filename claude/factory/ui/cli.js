@@ -2,8 +2,8 @@
 // judges tell main from a degraded control and measures their noise; round gates and
 // judges the committed candidate against main and the references; report and status
 // summarize the run. State lives in the factory's state folder, per configuration name.
-import { realpathSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { appendJsonl, readJson, writeJsonAtomic } from "../lib/state.js";
 import { CaptureError, repoRoot, resolveRev, runChecks, treeState } from "./capture.js";
@@ -650,6 +650,7 @@ function reportCommand(config, values) {
   // The latest round with screenshots: a round whose checks failed has none.
   const shown = [...list].reverse().find((round) => capturedShots(run, `round-${round.round}`));
   const versions = { baseline: capturedShots(run, "baseline"), ...(shown ? { [`round-${shown.round}`]: capturedShots(run, `round-${shown.round}`) } : {}) };
+  mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, renderReport({ config, run, rounds: list, calibration: readJson(calibrationPath(run), null), spentUSD: spent(run), versions, champion: championOf(rounds(run), run) }));
   console.log(out);
   return 0;
