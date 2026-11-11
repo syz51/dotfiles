@@ -140,7 +140,9 @@ describe("refuses", () => {
     ["gh -R o/r pr merge 12 --admin", {}, "--admin bypasses"],
     // the directory, and so the repository, is unknown
     ["cd \"$DIR\" && gh pr merge 12", {}, "cannot tell which directory"],
-    ["ssh host gh pr merge 12", {}, "cannot tell which directory"],
+    ["ssh host gh pr merge 12", {}, "on another host over ssh"],
+    // a directory on another host stays unknown, so the advice names -R, not a literal cd
+    ["ssh host 'cd /repo && gh pr merge 12'", {}, "Pass -R OWNER/REPO"],
     // wrappers and shells
     ["cd /repo && gh pr merge 12 --squash", { view: { isDraft: true } }, "is a draft"],
     ["bash -c 'gh pr merge 12'", { view: { isDraft: true } }, "is a draft"],
