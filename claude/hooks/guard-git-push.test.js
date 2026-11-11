@@ -318,6 +318,13 @@ describe("hook process", () => {
     expect(result.stderr).toStartWith("Blocked by the guard-git-push hook:");
   });
 
+  test.each([
+    ["function f { git push --force origin main; }; f"],
+    ["function f() { git push --force origin main; }; f"],
+  ])("blocks a force push inside a function body: %s", (command) => {
+    expect(bash(command, join(root, "work")).code).toBe(2);
+  });
+
   // The entry point's text prefilter must not skip an alias command without the word "push".
   test.each([
     ["git --config-env=alias.p=V p --force origin main"],

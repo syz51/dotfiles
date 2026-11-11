@@ -62,6 +62,16 @@ test("parseScript counts subshells, and the operator after `)` ends the command 
   ]);
 });
 
+test("the bodies of `function NAME { … }` and `function NAME() { … }` are visited (dotfiles-153)", () => {
+  for (const source of ["function f { make; }; f", "function f() { make; }; f", "function f () { make; }; f",
+    "function f g { make; }; g", "function { make; }", "if true; then function f { make; }; fi", "function f\n{ make; }"]) {
+    expect(commands(source).map(([command]) => command)).toContain("make");
+  }
+  expect(parseScript("function f { a; }").commands.map(({ argv }) => argv.join(" "))).toEqual(["{ a", "}"]);
+  // An argument named function defines nothing.
+  expect(commands("echo function { a; }")).toEqual([["echo function { a", "/repo"]]);
+});
+
 test("cd changes the directory of later commands, and ~ is the home folder", () => {
   expect(commands("cd sub && make; cd ~ && ls")).toEqual([["make", "/repo/sub"], ["ls", homedir()]]);
   expect(commands("cd $X && make")).toEqual([["make", undefined]]);
