@@ -471,6 +471,7 @@ function program(argv, dir, remote = false) {
   let runner = false;
   let replace; // xargs' -I or -J string, which each input line replaces
   let filled = false; // the input fills in an `env -S` string, so it may supply any words
+  let envDir; // the directory an env started in while it parses its `env -S` words again
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
@@ -509,18 +510,22 @@ function program(argv, dir, remote = false) {
     if (name === "env") {
       // env puts the words of an `env -S` string where the option was and parses them again,
       // so they come before the words after it, which reach the command as its arguments.
+      // env changes directory once, to its last -C, from the directory it started in.
+      const base = envDir ?? dir;
       const split = options.find(([option]) => option === "-S" || option === "--split-string");
       for (const [option, value] of options) {
-        if (option === "-C" || option === "--chdir") dir = chdir(value);
+        if (option === "-C" || option === "--chdir") dir = remote ? undefined : changeDirectory(base, value);
         if (option === split?.[0]) break;
       }
       if (split !== undefined) {
         const [, value = "", end] = split;
         if (replace !== undefined && value.includes(replace)) filled = true;
         argv = [argv[start], ...splitString(value), ...argv.slice(end)];
+        envDir = base;
         i = 0;
         continue;
       }
+      envDir = undefined;
     }
     if (name === "sudo") {
       for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = chdir(value);

@@ -97,6 +97,10 @@ test("env -S puts its words before the words after it, as one command", () => {
   expect(commands("env -S '-C sub make all' x")).toEqual([["make all x", "/repo/sub"]]);
   expect(commands("env -S 'make' -C sub")).toEqual([["make -C sub", "/repo"]]);
   expect(commands("env -C sub --split-string='make all' x")).toEqual([["make all x", "/repo/sub"]]);
+  // env changes directory once, to its last -C, from the directory it started in
+  expect(commands("env -C a -S '-C b make' x")).toEqual([["make x", "/repo/b"]]);
+  expect(commands("env -C a -C b make")).toEqual([["make", "/repo/b"]]);
+  expect(commands("env -C a env -C b make")).toEqual([["make", "/repo/a/b"]]);
   expect(commands("env -iS'FOO=1 make' x")).toEqual([["make x", "/repo"]]);
   // env's own quoting, escapes and comments, not the shell's: a `;` is a word
   const words = (source) => {
