@@ -286,8 +286,27 @@ succeeded. A failed job with steps fails, even with that annotation,
 because a job's own output can write it. So does a skipped job whose name a skipped job of
 another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
 check is a failed Actions job. It adds about 0.75 seconds and costs about 12 GraphQL rate-limit
-points. It filters by github.com's Actions app, so on another host such jobs stay failed. A head commit without checks passes only when the repository has no
-active Actions workflows. `--auto` on a non-draft passes when the base branch requires status
+points. It filters by github.com's Actions app, so on another host such jobs stay failed. Once no
+check is pending or failed, the guard expects a check from the CI that runs on every pull
+request. One GraphQL call reads each file in `.github/workflows` at the head commit and on
+the base branch, and whether `.circleci/config.yml` exists at the head commit; `Bun.YAML`
+parses the workflows. A workflow is expected when its `on:` has `pull_request`, at the head
+commit, or `pull_request_target`, on the base branch that GitHub runs it from, with no
+`paths`, `paths-ignore`, `branches`, `branches-ignore` or `types` filter, in string, list or
+map form. The guard refuses, naming each one, until the rollup has a check run with the
+workflow's `name:`, or its path where it has none. Workflows that share a name need a
+workflow run each. Only when one is missing does a REST call list the repository's
+workflows, and one that Actions lists as disabled is not expected. With
+`.circleci/config.yml`, it refuses until a `ci/circleci` status context, or a check run
+that links to circleci.com, appears; a configured repository that CircleCI does not build
+stays refused. So a head
+commit without checks passes where no workflow runs on pull requests, such as
+dispatch-, push-, schedule- or tag-only workflows, and a fast third-party status no longer
+lets a merge pass before the Actions runs appear. A workflow with a filtered pull request
+trigger is not expected, so its check can still arrive after the merge. A workflow file that
+does not parse, or a query that fails, refuses the merge. The call adds about 1 second, 0.7 to 1.4 seconds, on
+syz51/vps, with 25 workflows. A job queued forever on a runner label with no runner stays
+pending, so it still blocks the merge. `--auto` on a non-draft passes when the base branch requires status
 checks through protection or a ruleset and gh enables auto-merge, so GitHub waits for the
 required checks. When the pull request is `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, gh merges at
 once, so the guard checks it as a direct merge. It also refuses `gh api` calls to
