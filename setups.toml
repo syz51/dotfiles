@@ -22,7 +22,7 @@ verify = ["cargo test --workspace --locked", "board status"]
 [[setup]]
 id = "instructions"
 title = "Agent instructions"
-covers = ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/frontend-avoid.md", "CLAUDE.md"]
+covers = ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/frontend-avoid.md", "CLAUDE.md", "claude/skills/diff-review", "the diff-review skill: the Review rule's reviewer agent and its recipe"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles keeping claude/CLAUDE.md and codex/AGENTS.md identical; the live suites when behavior changes"

@@ -17,7 +17,7 @@ one, otherwise in the reply.
 | Design | An approach within the constraints | Choice, rejected alternatives with reasons, and shared interfaces written; user-owned decisions asked | `decision` notes; asks | `solver` for a hard trade-off |
 | Plan | Tasks others can run | Each has an imperative title, a standalone body and observable acceptance checks; dependencies as blockers; parallel tracks named | `task_add` with acceptance, blockers, parent | none |
 | Build | The change | Acceptance checks pass; tests cover new behavior | claim, lease, handoff | `worker` per independent track |
-| Verify | It works where it is used | Closest user-facing check run; review findings handled | `task_done` evidence | review agent per the Review section |
+| Verify | It works where it is used | Closest user-facing check run; review findings handled | `task_done` evidence | `reviewer` in the background, per the Review section |
 
 The last column names an agent only for a stage that splits into independent parallel
 tracks. One track stays with one agent through every stage it needs: an explorer's

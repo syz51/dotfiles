@@ -32,7 +32,8 @@ function frontmatter(path) {
 }
 
 // The user chose GPT models for opencode: Opus maps to Sol at xhigh, Haiku to Luna at max.
-const OPENCODE_MODEL = { opus: "opencode/gpt-6.1-sol#xhigh", haiku: "opencode/gpt-6-luna#max" };
+// The reviewer, which inherits the session's model at medium, runs Sol at medium.
+const OPENCODE_MODEL = { opus: "opencode/gpt-6.1-sol#xhigh", haiku: "opencode/gpt-6-luna#max", inherit: "opencode/gpt-6.1-sol#medium" };
 
 describe("opencode config", () => {
   const config = JSON.parse(read("opencode/opencode.json"));

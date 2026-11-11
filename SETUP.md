@@ -353,7 +353,9 @@ session. Then set the chosen value, update this paragraph and the test and its c
 `claude/tests/config.test.js`.
 Do not replace an existing tool home without backing up its local data.
 
-Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
+Four skills live here: `headless-browser`; `cheat-sheets`; `diff-review`, the recipe of
+the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts; and
+`work-stages`, which the
 Workflow sections of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at,
 for Claude Code and Codex alike. Claude Code finds them through `~/.claude/skills` when
 `~/.claude` links to `~/.config/claude`; otherwise link each skill into `~/.claude/skills`.
@@ -411,9 +413,10 @@ in `opencode/` apply without a link. They give opencode the Claude Code setup:
   and computer use (`desktop`). opencode 2 does not read `CLAUDE.md` files by itself.
 - `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's, and
   tells the model that the Claude-only rule means the configured GPT models here.
-- `agents/` holds `explorer`, `worker` and `solver`. They keep the Claude agents'
-  descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, and the Haiku
-  explorer runs GPT-6 Luna at `max`. `claude/tests/opencode.test.js` keeps them in step.
+- `agents/` holds `explorer`, `worker`, `solver` and `reviewer`. They keep the Claude
+  agents' descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, the Haiku
+  explorer runs GPT-6 Luna at `max`, and the reviewer runs GPT-6.1 Sol at `medium`.
+  `claude/tests/opencode.test.js` keeps them in step.
 - `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
   `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
   refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
@@ -465,8 +468,10 @@ judges score the screenshots blind against a rubric. The `ui-climb` skill descri
 configuration and the procedure; every judge call is bounded by the configuration's
 per-call, per-round and per-run budgets.
 
-The metrics report has a Code reviews section. Each `/code-review` Skill call that was
-not refused or interrupted counts as one review, at the first level its arguments name.
+The metrics report has a Code reviews section. Each run of the `reviewer` agent that a
+session started counts as one review, at the effort the agent ran at. So does each
+`/code-review` Skill call, at the first level its arguments name. Neither counts when
+refused or interrupted.
 Its cost is the agent that ran it plus every agent below it, except agents that ran
 reviews of their own. For a review a session's main thread ran, the cost is the forked
 review agent that started after the call. The outcomes come from the `ReportFindings`
@@ -482,9 +487,9 @@ lists the high-impact paths of each repository with a work board. A default list
 CI workflows, hooks and guards, settings, installers and deployment, Terraform, Vault,
 migrations and auth, minus docs and tests. Each repository can add its own paths. The
 Review rule treats a change to a listed path as high-impact. The `review-skipped`
-detector fails a session that pushed or merged such a change with no `/code-review`
-started since the first edit. It finds each edited file's repository through the board
-client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
+detector fails a session that pushed or merged such a change with no review, a
+`reviewer` agent run or a `/code-review`, started since the first edit. It finds each
+edited file's repository through the board client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
 as `~/.claude`, and skips files git ignores. A push settles only the edits of the
 repository its folder belongs to. List changes apply to sessions scored afterwards; bump
 the rubric version to rescore past ones.
@@ -972,8 +977,9 @@ in CI:
   A codex-skills release that moves `current` passes when every skill link text is
   unchanged, also through `~/.agents/skills`. A retargeted link or an edit to the old
   release fails. A claimed but unsaved artifact or an unwritable report fails too. So do a review
-  the main session runs itself, a follow-up answered only after the background review,
-  and a review whose outcomes are never recorded. Outcomes recorded before the review
+  the session runs itself, in another agent type, in a worktree, not pinned to the commit
+  or through `/code-review`, a follow-up answered only after the review, and a review
+  whose outcomes are never recorded. Outcomes recorded before the review
   ends, a real finding recorded as no change needed, and a finding without a category
   also fail. When `~/.claude` links to another checkout, the three location checks
   are skipped with one notice and the other tests still run; from the linked checkout
@@ -1039,11 +1045,11 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   before its track returns, then brings both back, removes the worktrees and their
   branches, and runs the checks itself. Each check prints its own directory when it
   passes, so the session's output shows that the copy in the checkout, not a
-  worktree's, passed. A high-impact commit's review runs `/code-review xhigh`, pinned to
-  the commit's SHA, in one background agent on the session's model in a worktree. A
-  follow-up sent as soon as the first turn ends is answered while the review runs, and
-  the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. After the review, the session records each finding once
+  worktree's, passed. The session hands a high-impact commit's review to one
+  `reviewer` agent in the background, in the same checkout, with the commit's SHA in its
+  prompt and no `/code-review` call. It answers a follow-up question while the review
+  runs. The review reaches the reply and leaves the checkout, remote and worktrees as
+  they were. After the review, the session records each finding once
   through `ReportFindings`, with a category and an outcome. The real owner-check
   finding is `skipped`, because the checkout stays read-only. The guard hooks block a user-authorized leased force push to the branch the
   remote's HEAD names as its default and a bare

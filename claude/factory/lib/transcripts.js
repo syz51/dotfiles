@@ -178,6 +178,10 @@ export const topKey = (counts) => Object.entries(counts).reduce((best, entry) =>
 // A tool call that runs the /code-review skill, unless it was refused or interrupted.
 export const isCodeReview = (call) => call.name === "Skill" && call.input?.skill === "code-review" && call.ok !== false;
 
+// A tool call that starts the `reviewer` agent (claude/agents/reviewer.md), which the
+// Review rule has a session start for its review, unless it was refused or interrupted.
+export const isReviewerRun = (call) => ["Agent", "Task"].includes(call.name) && call.input?.subagent_type === "reviewer" && call.ok !== false;
+
 // The first prompt of the agent /code-review's skill runs forked as: the review recipe.
 const REVIEW_PROMPT = /^(?:Review target: |`\w+ effort → )/;
 

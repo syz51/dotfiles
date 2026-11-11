@@ -7,7 +7,7 @@ The instructions in `~/.claude/CLAUDE.md` were written for Claude Code. In openc
 - Claude's `Bash`, `Read`, `Edit`, `Write`, `Grep`, `Glob`, `WebFetch` and `WebSearch` are `shell`, `read`, `edit`, `write`, `grep`, `glob`, `webfetch` and `websearch`.
 - `Skill` is `skill`. The skills in `~/.claude/skills` load as they do in Claude Code.
 - `AskUserQuestion` is `question`.
-- `Agent` is `subagent`. The `explorer`, `worker` and `solver` agents keep the roles that the Delegation section gives them; `general` stands in for `general-purpose`. A subagent has no worktree isolation: create one with `opencode_worktree_create` and name it in the brief.
+- `Agent` is `subagent`. The `explorer`, `worker` and `solver` agents keep the roles that the Delegation section gives them, and `reviewer` the role of the Review section; `general` stands in for `general-purpose`. A subagent has no worktree isolation: create one with `opencode_worktree_create` and name it in the brief.
 - `EnterWorktree` is `opencode_worktree_create`.
 - The board's MCP tools are `board_<tool>`, such as `board_board_snapshot` and `board_task_claim`. Never pass their `agent` argument: the `claude-hooks` plugin fills in this session's board identity. The `board` CLI in `shell` gets the same identity, `opencode:<session id>`, from `OPENCODE_SESSION_ID`. The board's weekly usage hold covers only Claude Code, so it does not stop opencode sessions; a paused board still does.
 - The computer-use tools are `desktop_<tool>`.
@@ -20,7 +20,7 @@ The instructions in `~/.claude/CLAUDE.md` were written for Claude Code. In openc
 
 ## Review
 
-- `/code-review` does not exist here. For a change that `CLAUDE.md` calls high-impact, start one `general` subagent with the final diff, such as `git diff origin/main...HEAD`, and ask it to report correctness, security and reliability defects with file:line evidence.
+- The `reviewer` agent exists here too. For a change that `CLAUDE.md` calls high-impact, start it as a `subagent` with only the commit's range as its prompt, such as `origin/main...<SHA>`; it loads the `diff-review` skill and returns its findings as JSON. `/code-review` does not exist here.
 - Decide each finding as the Review section says. Record the outcomes as a `decision` note on the board task in place of `ReportFindings`.
 
 ## Threads and memory
@@ -31,5 +31,5 @@ The instructions in `~/.claude/CLAUDE.md` were written for Claude Code. In openc
 ## Models
 
 - In opencode, the user chose GPT models over Claude. `CLAUDE.md`'s Claude-only rule covers Claude Code; here it means: use only the models that the user configured.
-- The main session runs `opencode/gpt-6.1-sol#xhigh`. `worker` and `solver` run the same model, and `explorer` runs `opencode/gpt-6-luna#max`.
+- The main session runs `opencode/gpt-6.1-sol#xhigh`. `worker` and `solver` run the same model, `reviewer` runs `opencode/gpt-6.1-sol#medium`, and `explorer` runs `opencode/gpt-6-luna#max`.
 - Never pass a `model` to `subagent`; each agent keeps its configured model. Never start the `codex` CLI.

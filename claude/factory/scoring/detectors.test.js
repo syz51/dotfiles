@@ -503,6 +503,11 @@ describe("review-skipped", () => {
       expect(detect([first, bash("git push")], { commands: [command] }).verdict, name).toBe("pass");
     }
     expect(detect([edit("/w/app/hooks/pre.sh"), call("Skill", { skill: "tools:code-review" }), bash("git push")]).verdict).toBe("pass");
+    // So does the `reviewer` agent the Review rule has the session start; another agent does not.
+    const reviewer = (type, extra) => call("Agent", { subagent_type: type, prompt: "origin/main...abc1234", run_in_background: true }, extra);
+    expect(detect([edit("/w/app/hooks/pre.sh"), reviewer("reviewer"), bash("git push")]).verdict).toBe("pass");
+    expect(detect([edit("/w/app/hooks/pre.sh"), reviewer("explorer"), bash("git push")]).verdict).toBe("fail");
+    expect(detect([edit("/w/app/hooks/pre.sh"), reviewer("reviewer", { ok: false }), bash("git push")]).verdict).toBe("fail");
   });
 
   test("a review before the edits, or one refused, does not count", () => {

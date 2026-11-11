@@ -365,8 +365,10 @@ describe("pull requests", () => {
   });
 });
 
-// Code reviews (claude/CLAUDE.md, Review): a background agent runs /code-review, whose skill
-// runs forked as its child; the main session then records each finding's outcome.
+// Code reviews (claude/CLAUDE.md, Review): the session starts the `reviewer` agent, then
+// records each finding's outcome. Older sessions ran /code-review, whose skill runs forked,
+// themselves or through a background wrapper agent with the fork as its child; every
+// shape counts.
 describe("code reviews", () => {
   // Opus output at $20 per million tokens: dollars as output tokens.
   const spend = (usd) => ({ use: usage(0, usd * 50_000, { cacheRead: 0, cacheWrite: 0 }) });
@@ -463,6 +465,33 @@ describe("code reviews", () => {
     expect(previous.reviews).toMatchObject({ reviews: 0, recorded: { triages: 0, fixedRate: null } });
   });
 
+  test("counts a reviewer agent run at the agent's effort and prices it from that agent", async () => {
+    // One run with its agent ($2, with a web-fetch agent below it, $0.50), one whose agent
+    // left no transcript, and one refused.
+    const main = new Transcript({ start: at("2026-11-05T14:00:00Z") })
+      .prompt("Ship the change")
+      .tool("Agent", { description: "Review the commit", subagent_type: "reviewer", prompt: "origin/main...abc1234", run_in_background: true }, "started", { use: free })
+      .tool("ReportFindings", { findings: [finding("docs", "a", "fixed")] }, "ok", { use: free })
+      .tool("Agent", { subagent_type: "reviewer", prompt: "origin/main...def5678" }, "[]", { use: free })
+      .tool("Agent", { subagent_type: "reviewer", prompt: "HEAD" }, "The user doesn't want to proceed with this tool use.", { isError: true, use: free })
+      .tool("Agent", { subagent_type: "explorer", prompt: "Review the commit" }, "done", { use: free });
+    // The reviewer calls /code-review against its instructions: still one review.
+    const reviewer = new Transcript({ start: at("2026-11-05T14:00:10Z") }).prompt("origin/main...abc1234")
+      .tool("Skill", { skill: "code-review", args: "low" }, "done", { use: free, effort: "medium" }).text("[]", { ...spend(2), effort: "medium" });
+    const fetcher = new Transcript({ start: at("2026-11-05T14:00:20Z") }).prompt("Read the page").text("page", spend(0.5));
+    write([{ transcript: main, subagents: [
+      { id: "agent-r1", meta: { agentType: "reviewer", toolUseId: "toolu_1", spawnDepth: 1 }, transcript: reviewer },
+      { id: "agent-g1", meta: { agentType: "web-fetch", toolUseId: "toolu_9", parentAgentId: "r1", spawnDepth: 2 }, transcript: fetcher },
+    ] }]);
+    const { reviews } = (await report("--no-gh")).current;
+    expect([reviews.reviews, reviews.sessions, reviews.byLevel]).toEqual([2, 1, { medium: 1, default: 1 }]);
+    expect(reviews.cost.totalUSD).toBeCloseTo(2.5);
+    expect([reviews.cost.unpriced, reviews.cost.mainThread]).toEqual([1, 0]);
+    expect(reviews.recorded).toMatchObject({ triages: 1, findings: 1, outcomes: { fixed: 1 } });
+    const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(markdown).toContain("every agent below it. 1 reviews left no agent of their own to price, so their cost stays in the session's.");
+  });
+
   test("compares the revert rate of reviewed and unreviewed merged PRs, and reports it all", async () => {
     reviewed();
     gh({
@@ -475,7 +504,7 @@ describe("code reviews", () => {
       unreviewed: { merged: 1, reverted: 0, rate: 0 },
     });
     const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
-    expect(markdown).toContain("- Reviews: 5 (/code-review runs, not counting refused or interrupted ones) in 3 sessions; levels: high 2, low 1, medium 1, xhigh 1.");
+    expect(markdown).toContain("- Reviews: 5 (reviewer agent and /code-review runs, not counting refused or interrupted ones) in 3 sessions; levels: high 2, low 1, medium 1, xhigh 1.");
     expect(markdown).toContain("- Cost: $7.50, median $1.50 per review");
     expect(markdown).toContain("3 reviews ran in a session's main thread");
     expect(markdown).toContain("3 reviews recorded through ReportFindings, with 5 findings, median 1 per review. fixed 3 (60.0%), no change needed 1 (20.0%), skipped 1 (20.0%)");

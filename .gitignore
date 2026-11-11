@@ -56,6 +56,7 @@ uv
 /claude/skills/headless-browser/node_modules/
 !/claude/skills/ui-climb/
 !/claude/skills/cheat-sheets/
+!/claude/skills/diff-review/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack

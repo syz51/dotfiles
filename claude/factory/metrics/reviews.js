@@ -1,10 +1,11 @@
 // Code reviews in sessions and what came of their findings (claude/CLAUDE.md, Review).
-// A review is one /code-review Skill call that was not refused or interrupted. The Review
-// rule runs it in a background agent, whose skill runs forked as a child agent; the
-// review's cost is that agent's and every agent below it. Outcomes come from the main
-// session's ReportFindings calls, made after it decides on the findings, each finding
-// with a category and an outcome.
-import { isCodeReview } from "../lib/transcripts.js";
+// A review is one run of the `reviewer` agent, which the Review rule has the session start
+// in the background, or one /code-review Skill call; neither refused nor interrupted. The
+// skill runs forked as a child agent, and older sessions ran it through a background
+// agent. The review's cost is the agent that ran it and every agent below it. Outcomes
+// come from the main session's ReportFindings calls, made after it decides on the
+// findings, each finding with a category and an outcome.
+import { isCodeReview, isReviewerRun } from "../lib/transcripts.js";
 import { quantile, ratio, sum } from "./stats.js";
 
 const LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"];
@@ -25,7 +26,8 @@ const time = (at) => Date.parse(at ?? "") || 0;
 /**
  * A session's reviews and recorded outcomes:
  * { reviews: [{ level, at, agent, costUSD }], triages: [{ at, findings: [{ category, outcome }] }] }.
- * costUSD is null for a review the main thread ran without a forked agent; for one it
+ * A reviewer agent's level is the effort it ran at. costUSD is null for a review with no
+ * agent of its own, such as one the main thread ran without a forked agent; for one it
  * ran with a forked agent, it leaves out the main thread's own turns.
  */
 export function sessionReviews(session) {
@@ -46,7 +48,15 @@ export function sessionReviews(session) {
     const review = reviews.findLast((candidate) => time(candidate.at) <= time(agent.startedAt));
     if (review) review.costUSD = (review.costUSD ?? 0) + treeCost(agent);
   }
-  for (const agent of session.subagents) {
+  // A reviewer agent the main thread started is the review itself, also when it calls
+  // /code-review against its instructions.
+  const reviewers = new Set();
+  for (const call of session.toolCalls.filter(isReviewerRun)) {
+    const agent = session.subagents.find((candidate) => candidate.toolUseId === call.id);
+    if (agent) reviewers.add(agent);
+    reviews.push({ level: agent?.effort ?? "default", at: call.at, agent: agent?.id ?? call.id, costUSD: agent ? treeCost(agent) : null });
+  }
+  for (const agent of session.subagents.filter((agent) => !reviewers.has(agent))) {
     const runs = agent.codeReviews ?? [];
     // An agent that ran several reviews splits its cost evenly among them.
     for (const run of runs) reviews.push({ level: reviewLevel(run.args), at: run.at, agent: agent.id, costUSD: treeCost(agent) / runs.length });
@@ -127,7 +137,7 @@ export function reviewStats(entries, prInfo) {
     cost: {
       totalUSD: reviewCost,
       medianUSD: quantile(priced.map((review) => review.costUSD), 0.5),
-      // Reviews the main thread ran without a forked agent: their cost stays in the session's.
+      // Reviews with no agent of their own: their cost stays in the session's.
       unpriced: reviews.length - priced.length,
       // Reviews the main thread ran: their cost leaves out the main thread's own turns.
       mainThread: reviews.filter((review) => review.agent === null).length,

@@ -172,14 +172,16 @@ if (mode.startsWith("chinese-")) {
 }
 if (mode.startsWith("review-")) {
   // A conversation over stream-json input: each turn's events go out when the turn ends,
-  // and the session exits once stdin ends. review-background hands the review to a
-  // background agent and answers the follow-up while it runs; review-late does the same
-  // but answers only after the review; review-foreground runs the review itself;
-  // review-unrecorded never records the outcomes through ReportFindings, review-early
-  // records them before the review ends, review-dismissed records the real finding as
-  // no change needed, and review-uncategorized leaves out its category. As in
-  // Claude Code, agents run in the background without a flag, and stdin ending while the
-  // review still runs stops it.
+  // and the session exits once stdin ends. review-background starts the `reviewer` agent
+  // in the background with the commit's range and answers the follow-up while it runs;
+  // review-late answers only after the review; review-foreground runs /code-review
+  // itself; review-general starts another agent type, review-worktree gives the reviewer
+  // a worktree, review-unpinned leaves the commit out, and review-skill has the reviewer
+  // call /code-review; review-unrecorded never records the outcomes through
+  // ReportFindings, review-early records them before the review ends, review-dismissed
+  // records the real finding as no change needed, and review-uncategorized leaves out
+  // its category. As in Claude Code, agents run in the background without a flag, and
+  // stdin ending while the review still runs stops it.
   const lines = (async function* () {
     let pending = "";
     for await (const chunk of process.stdin) {
@@ -206,16 +208,21 @@ if (mode.startsWith("review-")) {
   };
   await nextMessage();
   if (mode === "review-foreground") {
-    tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }));
+    tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }));
     turn(findings);
     await nextMessage();
     turn("391");
   } else {
-    const spawn = tool("Agent", { subagent_type: "general-purpose", isolation: "worktree", prompt: "Review it." },
-      () => ({ text: "Async agent launched successfully." }));
+    const spawn = tool("Agent", {
+      subagent_type: mode === "review-general" ? "general-purpose" : "reviewer",
+      ...(mode === "review-worktree" ? { isolation: "worktree" } : {}),
+      prompt: mode === "review-unpinned" ? "Review the latest commit." : `origin/main...${sha}`,
+    }, () => ({ text: "Async agent launched successfully." }));
     emit({ type: "system", subtype: "task_started", task_id: "task_review", tool_use_id: spawn, is_backgrounded: true });
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
-    tool("Skill", { skill: "code-review", args: `xhigh origin/main...${sha}` }, () => ({ text: findings }), spawn);
+    // The reviewer's own messages carry the Agent call as their parent.
+    if (mode === "review-skill") tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }), spawn);
+    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: option("--model"), content: [{ type: "text", text: findings }] } });
     const finish = (status = "completed") => {
       emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });

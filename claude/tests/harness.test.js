@@ -275,12 +275,10 @@ describe("configuration must not change during a run", () => {
     }, 30_000);
 });
 
-// The follow-up goes in over stream-json input while the session runs, so these also
-// prove the conversation keeps stdin open until the background review is done.
 describe("background review", () => {
-  const name = "background while the session answers";
+  const name = "background reviewer while the session answers";
 
-  test("a review in a background agent, with the follow-up answered meanwhile, passes", async () => {
+  test("a review in the background reviewer agent, with the follow-up answered meanwhile, passes", async () => {
     const run = await runLive("live.test.js", name, "review-background");
     expect(run.code, output(run)).toBe(0);
     expect(output(run)).toMatch(/1 pass/);
@@ -288,7 +286,11 @@ describe("background review", () => {
   }, 30_000);
 
   for (const [mode, message] of [
-    ["review-foreground", "the review was not one background agent"],
+    ["review-foreground", "the review was not one background reviewer agent"],
+    ["review-general", "the review was not the reviewer agent"],
+    ["review-worktree", "the review got a worktree of its own"],
+    ["review-unpinned", "the review was not pinned to"],
+    ["review-skill", "the review ran /code-review"],
     ["review-late", "the follow-up was answered only after the review ended"],
     ["review-unrecorded", "the session did not record the outcomes once through ReportFindings"],
     ["review-early", "the outcomes were recorded before the review ended"],
@@ -374,13 +376,13 @@ describe("location checks", () => {
   // The notice prints when lib/live.js loads, before any test, so before any session.
   test("are skipped with one notice when ~/.claude is another checkout", async () => {
     // The background review scenario runs a fake session alongside: the other tests still run.
-    const run = await runLive("live.test.js", `${location}|background while the session answers`, "review-background");
+    const run = await runLive("live.test.js", `${location}|background reviewer while the session answers`, "review-background");
     const text = output(run);
     expect(run.code, text).toBe(0);
     expect(text.split(notice)).toHaveLength(2);
     expect(text).toContain(`${notice}${home} (~/.claude is ${join(home, ".claude")}), not this checkout ${realpathSync(join(TESTS, "..", ".."))}.`);
     expect(text).toContain("live-tested only after merge and config-sync");
-    expect(text).toContain("(pass) live Claude Code > a high-impact review runs in the background while the session answers");
+    expect(text).toContain("(pass) live Claude Code > a high-impact review runs in the background reviewer while the session answers");
     expect(text).toMatch(/ 1 pass\n 3 skip\n/);
     expect(text).toMatch(/\(skip\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
     assertCleanedUp();

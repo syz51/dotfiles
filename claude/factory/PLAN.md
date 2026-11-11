@@ -229,7 +229,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   (CI workflows, hooks and guards, settings, installers and deployment, Terraform, Vault,
   migrations, auth) minus docs and tests, plus each board repository's own paths. A
   session fails when it pushed or merged an edit on its repository's list with no
-  /code-review started since the first such edit. Files map to repositories through the
+  review (a `reviewer` agent run or a /code-review) started since the first such edit. Files map to repositories through the
   board client's `[projects]` checkouts and their Claude Code and T3 worktrees, with
   symbolic links resolved and git-ignored files skipped; a push settles its own
   repository's edits. Over 30 days to 2026-11-08 it fails 39 of 298 sessions (88 pushes;

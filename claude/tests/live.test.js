@@ -109,7 +109,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
 
     test("offers the configured agents and installed skills", () => {
       expect(session.init.model).toBe(HAIKU);
-      expect(session.init.agents).toEqual(expect.arrayContaining(["explorer", "worker", "solver"]));
+      expect(session.init.agents).toEqual(expect.arrayContaining(["explorer", "worker", "solver", "reviewer"]));
       const installed = readdirSync(join(CLAUDE, "skills"), { withFileTypes: true })
         .filter((entry) => existsSync(join(CLAUDE, "skills", entry.name, "SKILL.md")))
         .map((entry) => entry.name);
@@ -364,12 +364,11 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     expect(readFileSync(join(child, "notes.txt"), "utf8")).toBe("first\nsecond\nthird\ndone\n");
   }), 400_000);
 
-  // The Review rule on background review: the session hands the review to one background
-  // agent on its own model, in a worktree, with the diff pinned to the commit's SHA. The
-  // follow-up arrives as soon as the first turn ends, as a person typing mid-review: the
-  // session must answer it while the review still runs, and the review must still finish
-  // and reach the final reply.
-  test("a high-impact review runs in the background while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
+  // The Review rule: the session starts the `reviewer` agent in the background, in this
+  // checkout, with the commit's range as its prompt. The follow-up arrives as soon as the
+  // first turn ends, as a person typing mid-review: the session must answer it while the
+  // review still runs, and the review must still finish and reach the final reply.
+  test("a high-impact review runs in the background reviewer while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
     const { remote, work } = publishedRepo(fixture, {
       "README.md": "# Documents service\nauth/access.js is the shared authorization check that every service imports.\n",
       "auth/access.js": "export function canEdit(user, doc) {\n  return user.roles.includes(\"admin\") || doc.ownerId === user.id;\n}\n",
@@ -390,25 +389,23 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
         followUp: "Unrelated quick question while that runs: what is 17 * 23? Reply with just the number.",
       });
 
-      // One background agent on the session's own model, in a worktree, ran the review.
-      // Agents run in the background by default, so the run's task events, not the
-      // Agent input, show that it did.
+      // One `reviewer` agent ran the review, in the background and in this checkout, with
+      // the commit pinned in its prompt. Agents run in the background by default, so the
+      // run's task events, not the Agent input, show that it did. No /code-review ran: the
+      // reviewer does the review itself, on the session's model.
       const spawns = agentSpawns(run.events).filter((spawn) => spawn.parent === null);
-      expect(spawns.length, "the review was not one background agent").toBe(1);
+      expect(spawns.length, "the review was not one background reviewer agent").toBe(1);
       const [spawn] = spawns;
+      expect(spawn.input.subagent_type, "the review was not the reviewer agent").toBe("reviewer");
       const started = run.events.find((event) => event.type === "system" && event.subtype === "task_started" && event.tool_use_id === spawn.id);
-      expect(started?.is_backgrounded, "the review was not one background agent").toBe(true);
-      expect(spawn.input.isolation, "the review shared the checkout").toBe("worktree");
-      const messages = subagentMessages(run.events, [spawn]);
-      expect(messages.length, "no messages from the review agent").toBeGreaterThan(0);
+      expect(started?.is_backgrounded, "the review was not one background reviewer agent").toBe(true);
+      expect(spawn.input.isolation, "the review got a worktree of its own").toBeUndefined();
+      const target = spawn.input.prompt ?? "";
+      expect((target.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((hash) => sha.startsWith(hash)), `the review was not pinned to ${sha}: ${target}`).toBe(true);
+      expect(toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review"), "the review ran /code-review").toEqual([]);
+      const messages = subagentMessages(run.events, [spawn]).filter((message) => message.message.model !== "<synthetic>");
+      expect(messages.length, "no messages from the reviewer agent").toBeGreaterThan(0);
       for (const message of messages) expect(message.message.model).toBe(MODEL);
-      const skills = toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review");
-      expect(skills.filter((use) => use.parent === null), "the main session ran the review itself").toEqual([]);
-      const reviews = skills.filter((use) => use.parent === spawn.id);
-      expect(reviews.length, "the agent did not run /code-review").toBe(1);
-      const args = reviews[0].input.args ?? "";
-      expect(args, "the review did not run at xhigh").toMatch(/\bxhigh\b/);
-      expect((args.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((hash) => sha.startsWith(hash)), `the review was not pinned to ${sha}: ${args}`).toBe(true);
 
       // The follow-up was answered before the review ended, and the review still finished.
       const ended = spawnEnds(run.events, [spawn]).get(spawn.id);
@@ -439,12 +436,12 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(inverted.length, "no recorded finding names the owner check").toBeGreaterThan(0);
       expect(inverted.some((finding) => finding.outcome === "skipped"), "the real owner-check finding was not recorded as skipped").toBe(true);
 
-      // Read-only: nothing changed, nothing was pushed, and the review's worktree is gone.
+      // Read-only: nothing changed, nothing was pushed, and no worktree or branch was added.
       assertUnchanged(before, snapshot(work, { ignore }));
       expect(git(work, "rev-parse", "HEAD")).toBe(sha);
       expect(git(remote, "rev-parse", "main")).toBe(published);
-      expect(worktreesOf(work), "the review's worktree was left behind").toEqual([]);
-      expect(git(work, "branch", "--format=%(refname:short)").split("\n"), "the review's branch was left behind").toEqual(["main"]);
+      expect(worktreesOf(work), "the review left a worktree behind").toEqual([]);
+      expect(git(work, "branch", "--format=%(refname:short)").split("\n"), "the review left a branch behind").toEqual(["main"]);
     } finally {
       removeOutside(work);
     }
