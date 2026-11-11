@@ -47,6 +47,9 @@ describe("refuses", () => {
   test.each([
     ["gh pr merge 12 --admin", {}, "--admin bypasses"],
     ["gh pr merge 12 --squash --admin=true", {}, "--admin bypasses"],
+    // env -S puts its words first, so the words after the string are the merge's arguments (dotfiles-339)
+    ["env -S 'gh pr' merge 12 -R o/r --admin", {}, "--admin bypasses"],
+    ["env -S 'gh pr merge 12 -R o/r' --admin", {}, "--admin bypasses"],
     ["gh pr merge 12 --auto --admin", { branch: PROTECTED }, "--admin bypasses"],
     ["gh pr merge 12", { view: { isDraft: true } }, "is a draft"],
     // without required checks, only an update and a wait help, also for an --auto merge that just got here
@@ -292,6 +295,8 @@ describe("resolves the pull request", () => {
     ["gh pr merge -b 'body text' -t subject -- 12", ["pr", "view", "12", ...json]],
     ["GH_REPO=o/r gh pr merge 12 -R o/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
     ["gh -R o/r pr merge 12", ["pr", "view", "12", "--repo", "o/r", ...json]],
+    // gh uses the last -R, which env -S puts after the string's words
+    ["env -S 'gh pr merge 12 -R good/repo' -R other/repo", ["pr", "view", "12", "--repo", "other/repo", ...json]],
     ["gh pr merge 12 --body \"$B\" -R o/r", undefined],
   ])("%s", (command, args) => {
     if (args === undefined) expect(findMergeViolation(command, "/repo", fakeGh())).toContain("the shell fills in");
