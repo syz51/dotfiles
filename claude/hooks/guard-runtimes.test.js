@@ -22,7 +22,23 @@ describe("blocks", () => {
     ["node check.js"],
     ["node x.js"],
     ["nodejs server.js"],
-    ["/opt/homebrew/bin/node --version"],
+    // a version flag beside any other word, through a launcher, or beside another runtime command
+    ["python3 -c pass"],
+    ["python3 -m pip"],
+    ["python3 --version x.py"],
+    ["python3 -V -c pass"],
+    ["python3 -VV"],
+    ["python3 --version; python3 x.py"],
+    ["python3 --version && node x.js"],
+    ["pip --version"],
+    ["pytest --version"],
+    ["node -p process.version"],
+    ["node --version --require x.js"],
+    ["bunx node --version"],
+    ["vp node --version"],
+    ["ssh host python3 -c pass"],
+    ["ssh host 'python3 --version; python3 x.py'"],
+    ["ssh host node x.js"],
     // other JavaScript package managers, also through bunx, even where a lockfile selects them
     ["npx x"],
     ["pnpm i"],
@@ -95,10 +111,10 @@ describe("blocks", () => {
     ["bash -lc 'python3 check.py'"],
     ['eval "node check.js"'],
     ["out=$(python3 -c 'print(1)')"],
-    ['echo "$(node -v)"'],
+    ['echo "$(node -v x.js)"'],
     ["echo $(echo python3 x.py) | sh"],
     ["echo $(case a in a) python3 x.py;; esac)"],
-    ["cat <<EOF\n$(node -v)\nEOF"],
+    ["cat <<EOF\n$(node x.js)\nEOF"],
     ["python3 - <<'EOF'\nprint(1)\nEOF"],
     ["bash <<EOF\npytest\nEOF"],
     ["sh -c 'cd x && node y.js'"],
@@ -168,6 +184,24 @@ describe("blocks", () => {
 
 describe("allows", () => {
   test.each([
+    // a bare version probe runs no user code, here or over ssh
+    ["/usr/bin/python3 --version"],
+    ["python3 -V"],
+    ["python --version"],
+    ["python3.11 -V"],
+    ["PYTHON3 --version"],
+    ["pypy3 --version"],
+    ["node --version"],
+    ["node -v"],
+    ["nodejs --version"],
+    ["/opt/homebrew/bin/node --version"],
+    ["sudo python3 --version"],
+    ["python3 --version 2>&1"],
+    ["python3 --version && uv run python x.py"],
+    ["echo $(python3 -V)"],
+    ["ssh host python3 --version"],
+    ["ssh host 'node --version'"],
+    ["ssh host 'cd app && node -v'"],
     ["uv run python check.py"],
     ["uv run --no-project --python 3.11 python -B check.py"],
     ["uv run --with pytest pytest -q"],
@@ -281,7 +315,7 @@ test("python over ssh stays blocked, and its reason names what works on the remo
     "echo 'python3 x.py' | ssh host",
     "ssh host bash -s <<'EOF'\npython3 x.py\nEOF",
     "ssh host 'bash -c \"pytest -q\"'",
-    "sudo ssh host 'echo $(python3 -V)'",
+    "sudo ssh host 'echo $(python3 -V x.py)'",
     "ssh host pip install requests",
     "ssh host pytest -q",
     "vpx -c 'ssh host python3 x.py'",
@@ -443,7 +477,7 @@ describe("node in a checkout of a repository node-repos.json lists", () => {
   test("GIT_DIR in the hook's environment does not decide the checkout", () => {
     const run = (cwd) => Bun.spawnSync({
       cmd: [process.execPath, HOOK], env: { ...process.env, GIT_DIR: join(dirs.fork, ".git") },
-      stdin: Buffer.from(JSON.stringify({ tool_name: "Bash", tool_input: { command: "node --version" }, cwd })),
+      stdin: Buffer.from(JSON.stringify({ tool_name: "Bash", tool_input: { command: "node x.js" }, cwd })),
     }).exitCode;
     expect(run(dirs.dotfiles)).toBe(2);
     expect(run(dirs.scp)).toBe(0);
@@ -462,8 +496,18 @@ describe("hook process", () => {
   const bash = (command, cwd = "/tmp") => run(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd }));
 
   test("allows node in a T3 Code fork checkout and blocks it elsewhere", () => {
-    expect(bash("node --version", dirs.fork)).toEqual({ code: 0, stderr: "" });
-    expect(bash("node --version", dirs.dotfiles).code).toBe(2);
+    expect(bash("node x.js", dirs.fork)).toEqual({ code: 0, stderr: "" });
+    expect(bash("node x.js", dirs.dotfiles).code).toBe(2);
+  });
+
+  test("allows a bare version probe anywhere and blocks every other interpreter call", () => {
+    for (const command of ["/usr/bin/python3 --version", "python3 -V", "node --version", "ssh host node --version"]) {
+      expect(bash(command, dirs.dotfiles)).toEqual({ code: 0, stderr: "" });
+    }
+    for (const command of ["python3 -c pass", "python3 script.py", "python3 -m pip", "node x.js", "python3 --version; python3 x.py",
+      "ssh host python3 -c pass", "ssh host python3 script.py", "ssh host python3 -m pip", "ssh host node x.js"]) {
+      expect(bash(command, dirs.dotfiles).code).toBe(2);
+    }
     expect(bash("pnpm i", dirs.fork).code).toBe(2);
   });
 
