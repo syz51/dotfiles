@@ -299,15 +299,20 @@ see gh aliases, scripts, an endpoint held wholly in a variable, a query read fro
 or curl.
 `claude/hooks/auto-merge.js` (Claude Code only, a PostToolUse hook on Bash) turns on
 auto-merge after a Bash call that ran `gh pr create` succeeds. For each pull request URL
-the call printed on a line of its own, it runs `gh pr merge <url> --auto` when the
+the call printed on a line of its own, it turns on auto-merge when the
 repository's owner is in its `OWNERS` list (`syz51`), the repository allows auto-merge,
 the pull request is open, not a draft and has no auto-merge request, and the base branch
 requires status checks or approving reviews through branch protection or a ruleset. It
-passes the first merge method the repository allows, in its `METHODS` order: merge commit,
-squash, rebase. It skips a pull request that is already `CLEAN`, `HAS_HOOKS` or `UNSTABLE`,
-since gh would merge it at once. It runs gh with the user's login, so the merge pushes as
-the user and starts push workflows. Its gh call is not a tool call, so guard-pr-merge never
-sees it. It never blocks: it reports each pull request, and any gh failure, to the session
+asks for the first merge method the repository allows, in its `METHODS` order: merge
+commit, squash, rebase. It never merges at once. It calls the `enablePullRequestAutoMerge`
+mutation through `gh api graphql`, which GitHub refuses for a pull request that can merge
+now, rather than `gh pr merge --auto`, which merges such a pull request directly. Right
+after `gh pr create`, GitHub often still reports the state as `UNKNOWN`, so a check of the
+state alone would not stop that. It skips a pull request that is `CLEAN`, `HAS_HOOKS` or
+`UNSTABLE`, or that GitHub refuses as such, and leaves it to an agent and guard-pr-merge. It
+runs gh with the user's login, so the merge pushes as the user and starts push workflows.
+Its gh call is not a tool call, so guard-pr-merge, a PreToolUse hook, never sees it; it
+would refuse the mutation from a Bash call. It never blocks: it reports each pull request, and any gh failure, to the session
 as additional context and exits 0. Each gh call gets 10 seconds, and all of them 45, within
 its 60-second `settings.json` timeout. The user chose this hook over a GitHub workflow
 (dotfiles-350), so a pull request opened on the web gets no auto-merge.

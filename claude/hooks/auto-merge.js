@@ -8,9 +8,11 @@
 // - the base branch requires status checks or approving reviews, through branch protection or
 //   a ruleset; without one, --auto has nothing to wait for;
 // - the repository allows auto-merge (allow_auto_merge).
-// It passes the first merge method the repository allows, in METHODS order. It never merges at
-// once: when the pull request is already CLEAN, HAS_HOOKS or UNSTABLE, gh would merge it
-// directly, so the hook leaves that to an agent, through guard-pr-merge. The hook runs gh itself,
+// It asks for the first merge method the repository allows, in METHODS order. It never merges
+// at once. It calls the enablePullRequestAutoMerge mutation, which GitHub refuses for a pull
+// request it can merge now, rather than `gh pr merge --auto`, which merges such a pull request
+// directly, also when its state was still UNKNOWN when the hook read it. A pull request that can
+// merge now is left to an agent, through guard-pr-merge. The hook runs gh itself,
 // with the user's login, so the merge pushes as the user and starts push workflows. A gh call
 // that a hook starts is not a tool call, so guard-pr-merge, a PreToolUse hook on Bash, never
 // sees it. The hook never blocks: it reports what it did, skipped or failed to the session as
@@ -23,16 +25,18 @@ import { runGh } from "./guard-pr-merge.js";
 // The policy, kept here so it stays easy to change.
 /** Repository owners whose pull requests get auto-merge, compared without case. */
 export const OWNERS = ["syz51"];
-/** The merge methods in order of preference: the repository setting that allows each, and its gh flag. */
-export const METHODS = [["allow_merge_commit", "--merge"], ["allow_squash_merge", "--squash"], ["allow_rebase_merge", "--rebase"]];
+/** The merge methods in order of preference: the repository setting that allows each, its GraphQL name and its name in the report. */
+export const METHODS = [["allow_merge_commit", "MERGE", "merge commit"], ["allow_squash_merge", "SQUASH", "squash"], ["allow_rebase_merge", "REBASE", "rebase"]];
 const HOST = "github.com";
 
 // Each gh call gets at most this long, and the hook stops once the budget is spent, before
 // settings.json's 60-second timeout.
 export const CALL_TIMEOUT_MS = 10000;
 export const BUDGET_MS = 45000;
-// gh merges at once, without enabling auto-merge, when the pull request is in one of these states.
+// GitHub refuses auto-merge for a pull request in one of these states, which can merge now.
 const MERGEABLE_NOW = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
+const ENABLE_AUTO_MERGE = `mutation($id: ID!, $method: PullRequestMergeMethod!) {
+  enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method}) { pullRequest { autoMergeRequest { enabledAt } } } }`;
 const PR_URL = /^https:\/\/([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/;
 
 /** Whether `command` runs `gh pr create` (or its alias `gh pr new`) anywhere shell.js can see. */
@@ -57,10 +61,7 @@ const firstLine = (text) => (text ?? "").trim().split("\n")[0] || "no output";
 
 class GhFailure extends Error {}
 
-/**
- * Runs gh through `run(args, timeoutMs)`; returns the parsed JSON, or `missing` on HTTP 404.
- * With `missing` null, it returns gh's output as text and treats HTTP 404 as a failure.
- */
+/** Runs gh through `run(args, timeoutMs)`; returns the parsed JSON, or `missing` on HTTP 404. */
 function makeQuery(run, deadline) {
   return (args, what, missing) => {
     const left = deadline - Date.now();
@@ -75,7 +76,6 @@ function makeQuery(run, deadline) {
       if (missing !== undefined && /HTTP 404/.test(result.stderr ?? "")) return missing;
       throw new GhFailure(`gh could not ${what} (${firstLine(result.stderr)})`);
     }
-    if (missing === null) return result.stdout;
     try {
       return JSON.parse(result.stdout);
     } catch {
@@ -102,7 +102,7 @@ function autoMerge(url, query) {
   if (host !== HOST || !OWNERS.some((allowed) => allowed.toLowerCase() === owner.toLowerCase())) {
     return `${url}: skipped, the repository's owner ${owner} is not one auto-merge acts for.`;
   }
-  const view = query(["pr", "view", url, "--json", "state,isDraft,baseRefName,mergeStateStatus,autoMergeRequest"], "read the pull request");
+  const view = query(["pr", "view", url, "--json", "id,state,isDraft,baseRefName,mergeStateStatus,autoMergeRequest"], "read the pull request");
   if (view.state !== "OPEN") return `${url}: skipped, it is ${view.state.toLowerCase()}.`;
   if (view.isDraft) return `${url}: skipped, it is a draft. Turn on auto-merge after \`gh pr ready\` if its base requires checks.`;
   if (view.autoMergeRequest) return `${url}: auto-merge is already on.`;
@@ -114,11 +114,16 @@ function autoMerge(url, query) {
   }
   const method = METHODS.find(([setting]) => settings[setting] === true);
   if (method === undefined) return `${url}: skipped, the repository allows no merge method.`;
-  if (MERGEABLE_NOW.has(view.mergeStateStatus)) {
-    return `${url}: skipped, it is ${view.mergeStateStatus} and gh would merge it at once. Merge it yourself once every check passes.`;
+  const now = `${url}: skipped, it can merge now, so auto-merge has nothing to wait for. Merge it yourself once every check passes.`;
+  if (MERGEABLE_NOW.has(view.mergeStateStatus)) return now;
+  try {
+    query(["api", "--hostname", HOST, "graphql", "-f", `query=${ENABLE_AUTO_MERGE}`, "-f", `id=${view.id}`, "-f", `method=${method[1]}`], "turn on auto-merge");
+  } catch (error) {
+    // The state changed after the read, as it does while GitHub still computes it.
+    if (error instanceof GhFailure && /\b(?:clean|unstable|has_hooks) status\b/i.test(error.message)) return now;
+    throw error;
   }
-  query(["pr", "merge", url, "--auto", method[1]], "turn on auto-merge", null);
-  return `${url}: auto-merge is on (${method[1]}); GitHub merges it once ${view.baseRefName}'s requirements pass. If it falls BEHIND, run \`gh pr update-branch ${url}\`.`;
+  return `${url}: auto-merge is on (${method[2]}); GitHub merges it once ${view.baseRefName}'s requirements pass. If it falls BEHIND, run \`gh pr update-branch ${url}\`.`;
 }
 
 /**

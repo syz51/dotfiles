@@ -276,8 +276,6 @@ describe("settings", () => {
     expect(tracked("claude/hooks/freshen-base.js")).toBe(true);
   });
 
-  // T3's delegate_task and `claude --worktree` cut worktrees without a tool call, so
-  // freshen-base never runs for them (board-feedback-392); the session is warned at start.
   // Agents turned on auto-merge only when they remembered to; the user chose a local hook over a
   // GitHub workflow (dotfiles-350). It runs after the Bash call, so it can never block it, and
   // its gh call is not a tool call, so guard-pr-merge, which runs only before Bash calls, never
@@ -293,10 +291,12 @@ describe("settings", () => {
     const guard = Object.entries(settings.hooks).flatMap(([event, list]) => list.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/guard-pr-merge.js"))).map((group) => [event, group.matcher]));
     expect(guard).toEqual([["PreToolUse", "^Bash$"]]);
     expect(section("Autonomy")).toContain("After a successful `gh pr create`, the auto-merge hook turns on auto-merge where the base branch requires checks or reviews, and its output says what it did.");
-    expect(referenceRules("merge")).toContain("- After a Bash call runs `gh pr create`, the auto-merge hook runs `gh pr merge --auto` for each pull request it printed, with a merge commit, else squash, else rebase, as the repository allows.");
+    expect(referenceRules("merge")).toContain("- After a Bash call runs `gh pr create`, the auto-merge hook turns on auto-merge for each pull request it printed, with a merge commit, else squash, else rebase, as the repository allows.");
     expect(referenceRules("merge")).toContain("You still run `gh pr update-branch` when the pull request falls BEHIND.");
   });
 
+  // T3's delegate_task and `claude --worktree` cut worktrees without a tool call, so
+  // freshen-base never runs for them (board-feedback-392); the session is warned at start.
   test("a session that starts in a worktree behind origin's default branch is warned", () => {
     const groups = settings.hooks.SessionStart.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/stale-base.js")));
     expect(groups.map((group) => group.matcher)).toEqual(["startup"]);
