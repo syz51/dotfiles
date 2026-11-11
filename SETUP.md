@@ -801,13 +801,27 @@ A plugin install, update or enable can rewrite `claude/settings.json` in Claude 
 own layout; config-sync restores the committed text when only the layout changed.
 
 On first use the server compiles `server/helper.swift` with `xcrun swiftc` into
-`~/.local/state/desktop-mcp`, again after the source changes. macOS asks the app that
-started Claude Code (T3 Code) for Screen Recording and Accessibility; grant both in
-System Settings > Privacy & Security.
+`~/.local/state/desktop-mcp`, again after the source changes. The one-time macOS grants
+and how to check them are in
+[claude/marketplace/computer-use/README.md](claude/marketplace/computer-use/README.md).
 
 The server keeps these safeguards:
 
-- The model calls `request_access` with app names. You allow or deny them in a dialog.
+- The model calls `request_access` with app names. An approval policy decides how they
+  are approved:
+  - `auto`, the default, approves them at once, with no dialog.
+  - `dialog` shows an Allow/Deny dialog for each request. It denies after 120 seconds.
+  - To switch to the dialog, write `{"approval": "dialog"}` to
+    `~/.local/state/desktop-mcp/policy.json`. Delete that file to go back to `auto`. The
+    file lives outside the repository, so a branch switch or a commit does not change it.
+    The server reads it at each `request_access`, also in running sessions.
+  - Terminals, agent apps, editors with a terminal, script tools and system apps such as
+    System Settings always get the dialog. `DIALOG_APPS` in `server/desktop.js` lists them.
+  - After you press Stop, every session gets the dialog, also after a server restart. The
+    policy applies again once you allow apps in a dialog.
+  - `approvals.log` in the state folder records each approval and its mode.
+
+  The plugin README gives the details.
 - Each click, drag, scroll or pointer move checks the app under the pointer. Keys and
   typing check the app with keyboard focus (Accessibility). An app that is not approved
   is refused.
