@@ -265,7 +265,12 @@ refuses one in a main checkout, unless it runs inside a remote script. Forms suc
 guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'s Autonomy
 section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
-head commit. Its refusal of a `BEHIND` branch names `gh pr update-branch` with the pull
+head commit. A merge that it checks like a direct merge must also pin that head with
+`--match-head-commit <SHA>`, the `headRefOid` read in the same query as the checks, so
+GitHub refuses the merge if a commit was pushed after the check. The guard refuses a merge
+without the pin, and refuses a pin that is not the head for every merge. The refusal names
+the SHA and the command to rerun, with the pull request's URL in place of its selector. Its
+refusal of a `BEHIND` branch names `gh pr update-branch` with the pull
 request's URL. Where the base branch requires checks, it also says to rerun the merge with
 `--auto` in a separate command, so GitHub merges once they pass instead of the agent
 re-waiting each time the branch falls behind. A check run is pending until its status is

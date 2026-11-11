@@ -197,6 +197,7 @@ describe("global instructions", () => {
   test("the merge rule names the hook that enforces it", () => {
     expect(section("Autonomy")).toContain("merge them once their required checks pass (or the project's local checks, where it has no CI)");
     expect(referenceRules("merge")).toContain("- The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed.");
+    expect(referenceRules("merge")).toContain("- Pin each merge that the guard checks to the head commit whose checks passed: `gh pr merge <number> --match-head-commit <SHA>`. The guard refuses a merge without the pin, and its refusal names the SHA and the command to rerun.");
   });
 
   // Strict up-to-date protection makes a pull request fall behind while its CI runs; auto-merge

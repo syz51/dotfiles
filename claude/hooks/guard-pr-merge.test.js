@@ -45,6 +45,10 @@ function fakeGh({ view = {}, branch, rules, workflows, graphql, calls = [] } = {
 }
 
 const verdict = (command, options = {}, cwd = "/repo") => findMergeViolation(command, cwd, fakeGh(options));
+// A merge that passes must pin the head commit the guard judged (dotfiles-290). The cases that test
+// something else pin it with this, after the first " merge".
+const HEAD = VIEW.headRefOid;
+const pinned = (command) => command.replace(" merge", ` merge --match-head-commit ${HEAD}`);
 
 describe("refuses", () => {
   test.each([
@@ -235,7 +239,7 @@ describe("allows", () => {
     ["l? && gh pr merge 12", {}],
     ["gh pr merge 12 --subject 'Fix it?'", {}],
   ])("%s", (command, options) => {
-    expect(verdict(command, options)).toBeUndefined();
+    expect(verdict(pinned(command), options)).toBeUndefined();
   });
 
   // The rollup does not say which event started a run, so a later success with the same name,
@@ -260,7 +264,7 @@ describe("allows", () => {
     const second = attempt("SUCCESS", "2026-11-08T11:00:00Z", 2);
     expect(classifyChecks([first, second])).toEqual({ pending: [], failed: [], actionsFailed: 0 });
     expect(classifyChecks([second, first])).toEqual({ pending: [], failed: [], actionsFailed: 0 });
-    expect(verdict("gh pr merge 12", { view: { statusCheckRollup: [first, second] } })).toBeUndefined();
+    expect(verdict(pinned("gh pr merge 12"), { view: { statusCheckRollup: [first, second] } })).toBeUndefined();
     // a queued re-run has no start time yet, or GitHub's zero time, and is the latest
     expect(classifyChecks([first, attempt("", null, 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
     expect(classifyChecks([first, attempt("", "0001-01-01T00:00:00Z", 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
@@ -281,7 +285,7 @@ describe("allows", () => {
 describe("resolves the pull request", () => {
   const query = (command, cwd = "/repo") => {
     const calls = [];
-    expect(findMergeViolation(command, cwd, fakeGh({ calls }))).toBeUndefined();
+    expect(findMergeViolation(pinned(command), cwd, fakeGh({ calls }))).toBeUndefined();
     return calls[0];
   };
   const json = ["--json", "number,url,state,isDraft,mergeStateStatus,baseRefName,headRefOid,statusCheckRollup"];
@@ -338,7 +342,7 @@ describe("an Actions job GitHub never started for billing", () => {
   const TEST = job("test", 12);
   const FALLBACKS = [context("ci/circleci: build", "SUCCESS"), context("ci/circleci: test", "SUCCESS")];
   const BOTH = graph([billingRun(11), billingRun(12)]);
-  const merge = (rollup, graphql, calls) => verdict("gh pr merge 12 --merge", { view: { statusCheckRollup: rollup }, graphql, calls });
+  const merge = (rollup, graphql, calls) => verdict(pinned("gh pr merge 12 --merge"), { view: { statusCheckRollup: rollup }, graphql, calls });
   const graphCalls = (calls) => calls.filter((call) => call.args[3] === "graphql");
 
   test("passes when a non-Actions check of the same job passed, after one GraphQL call on the head commit", () => {
@@ -481,6 +485,77 @@ test("parseMerge reads short option groups and values", () => {
   expect(parseMerge(["-sdR", "o/r", "12"])).toMatchObject({ repo: "o/r", selector: "12", admin: false });
   expect(parseMerge(["-b", "--admin", "12"])).toMatchObject({ admin: false, selector: "12" });
   expect(parseMerge(["--auto=false", "12"])).toMatchObject({ auto: false });
+  expect(parseMerge(["12", "--match-head-commit", "abc"])).toMatchObject({ matchHead: "abc", selector: "12" });
+  expect(parseMerge(["--match-head-commit=abc", "12"])).toMatchObject({ matchHead: "abc", selector: "12" });
+});
+
+// GitHub refuses a merge whose --match-head-commit is not the head, so a push after the check
+// cannot merge on the checks of the commit before (dotfiles-290).
+describe("pins the merge to the head commit it checked", () => {
+  test.each([
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
+    [`gh pr merge 12 --squash --match-head-commit=${HEAD}`, {}],
+    [`cd /other && gh pr merge 12 -R o/r --match-head-commit ${HEAD} --delete-branch`, {}],
+    // GitHub waits for the required checks of whatever head it merges, so this --auto needs no pin
+    ["gh pr merge 12 --auto --squash", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED" } }],
+    // these merge nothing now
+    ["gh pr merge 12 --disable-auto", {}],
+    ["gh pr merge --help", {}],
+    ["gh pr merge 12", { view: { state: "MERGED", mergeStateStatus: "UNKNOWN" } }],
+  ])("allows %s", (command, options) => {
+    expect(verdict(command, options)).toBeUndefined();
+  });
+
+  test("refuses a merge without a pin, and names the SHA and the command to rerun", () => {
+    expect(verdict("gh pr merge 12 --squash")).toBe("`gh pr merge 12 --squash`: the checks passed on pull request #12's head commit abc123. "
+      + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`.");
+    // an --auto merge that the guard checks like a direct merge
+    expect(verdict("gh pr merge 12 --auto --squash")).toContain("`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --auto --squash`");
+    expect(verdict("gh pr merge 12 --auto", { branch: PROTECTED })).toContain("--match-head-commit abc123");
+    // the rerun command quotes a word with spaces or quotes
+    expect(verdict("gh pr merge 12 -t \"it's done\" -b 'a body'")).toContain("`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -t 'it'\\''s done' -b 'a body'`");
+  });
+
+  // A `cd`, `ssh` or the current branch chose the pull request; the URL names it from any directory.
+  test.each([
+    ["cd /other && gh pr merge 12 --squash", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`"],
+    ["gh pr merge --squash", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`"],
+    ["gh pr merge", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123`"],
+    ["gh -R o/r pr merge -b body -- 12", "`gh -R o/r pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -b body --`"],
+    ["ssh host gh pr merge 12 -R o/r -d", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -R o/r -d`"],
+  ])("names the pull request by its URL in the rerun command: %s", (command, rerun) => {
+    expect(verdict(command)).toContain(rerun);
+  });
+
+  test.each([
+    [`gh pr merge 12 --match-head-commit 0000000`, {}],
+    // an abbreviated SHA is not the head GitHub compares
+    [`gh pr merge 12 --match-head-commit ${HEAD.slice(0, 4)}`, {}],
+    ["gh pr merge 12 --match-head-commit=0000000 --auto", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED" } }],
+  ])("refuses a pin that is not the head: %s", (command, options) => {
+    const violation = verdict(command, options);
+    expect(violation).toContain("is not pull request #12's head commit abc123.");
+    // the rerun command replaces the stale pin
+    expect(violation).toMatch(/rerun with it: `gh pr merge https:\/\/github\.com\/o\/r\/pull\/12 --match-head-commit abc123[^`]*`\.$/);
+    expect(violation.match(/--match-head-commit/g)).toHaveLength(3);
+  });
+
+  test.each([
+    ["gh pr merge 12 --match-head-commit \"$SHA\"", "the shell fills in `$SHA`"],
+    ["gh pr merge 12 --match-head-commit $(git rev-parse HEAD)", "the shell fills in"],
+    // the guard runs once before the whole command, so a push in it moves the head after the check
+    ["git push && gh pr merge 12", "the same command also runs `git push`"],
+    [`git push && gh pr merge 12 --match-head-commit ${HEAD}`, "the same command also runs `git push`"],
+  ])("refuses %s", (command, reason) => {
+    expect(verdict(command)).toContain(reason);
+  });
+
+  test("checks the pin against the SHA from the same query as the checks", () => {
+    const calls = [];
+    expect(verdict("gh pr merge 12 --match-head-commit def456", { view: { headRefOid: "def456" }, calls })).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.at(-1)).toContain("headRefOid,statusCheckRollup");
+  });
 });
 
 describe("the hook", () => {
@@ -489,7 +564,7 @@ describe("the hook", () => {
   const env = () => ({ ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_GH_LOG: join(root, "log") });
   const hook = (stdin, extraEnv = {}) => {
     const result = Bun.spawnSync({ cmd: [process.execPath, HOOK], stdin: Buffer.from(stdin), env: { ...env(), ...extraEnv } });
-    return { code: result.exitCode, stderr: result.stderr.toString() };
+    return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
   };
   const bash = (command, extraEnv) => hook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: root }), extraEnv);
   const reply = (value) => writeFileSync(join(root, "reply"), JSON.stringify(value));
@@ -521,8 +596,20 @@ describe("the hook", () => {
   test("allows a merge whose checks pass, and gh sees GH_REPO from the environment", () => {
     reply(VIEW);
     rmSync(join(root, "log"), { force: true });
-    expect(bash("gh pr merge 12 --squash", { GH_REPO: "o/r" })).toEqual({ code: 0, stderr: "" });
+    expect(bash(pinned("gh pr merge 12 --squash"), { GH_REPO: "o/r" })).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readFileSync(join(root, "log"), "utf8")).toStartWith("GH_REPO=o/r pr view 12 --json");
+  });
+
+  // The guard refuses and never rewrites the command, so it prints no updatedInput (dotfiles-290).
+  test("blocks a merge without the head pin, names the SHA and the command, and prints nothing on stdout", () => {
+    reply(VIEW);
+    const result = bash("cd /tmp && gh pr merge 12 --squash -R o/r");
+    expect(result).toEqual({ code: 2, stdout: "",
+      stderr: "Blocked by the guard-pr-merge hook: `gh pr merge 12 --squash -R o/r`: the checks passed on pull request #12's head commit abc123. "
+        + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash -R o/r`.\n" });
+    const stale = bash("gh pr merge 12 --squash --match-head-commit 0000000");
+    expect(stale.code).toBe(2);
+    expect(stale.stderr).toContain("--match-head-commit 0000000 is not pull request #12's head commit abc123.");
   });
 
   test("blocks when gh fails", () => {
@@ -566,7 +653,7 @@ describe("the hook", () => {
     const answer = (runs) => reply({ ...VIEW, statusCheckRollup: rollup, ...graph(runs) });
     answer([billingRun(11, NOTICE)]);
     rmSync(join(root, "log"), { force: true });
-    expect(bash("gh pr merge 12 --squash", { GH_REPO: "o/r" })).toEqual({ code: 0, stderr: "" });
+    expect(bash(pinned("gh pr merge 12 --squash"), { GH_REPO: "o/r" })).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(readFileSync(join(root, "log"), "utf8")).toContain("graphql");
     for (const runs of [[billingRun(11, { ...NOTICE, annotationLevel: "WARNING" })], [graphRun(11, 2, [BILLING, NOTICE])]]) {
       answer(runs);
@@ -578,7 +665,7 @@ describe("the hook", () => {
 
   test("skips commands that do not mention merge without calling gh", () => {
     rmSync(join(root, "log"), { force: true });
-    expect(bash("gh pr view 12")).toEqual({ code: 0, stderr: "" });
+    expect(bash("gh pr view 12")).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(() => readFileSync(join(root, "log"))).toThrow();
   });
 });
