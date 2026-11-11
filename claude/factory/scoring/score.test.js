@@ -238,6 +238,61 @@ describe("score command", () => {
     expect(scores().map((record) => record.sessionId)).toEqual([kept.sessionId]);
   });
 
+  // Remove `gone`'s transcript when scoring first reads its records, after listing and
+  // hashing are done.
+  const removeOnRead = (gone) => {
+    const { loadSessions, readRecords } = transcripts;
+    let listed = false;
+    const spies = [
+      spyOn(transcripts, "loadSessions").mockImplementation((...args) => {
+        const sessions = loadSessions(...args);
+        listed = true;
+        return sessions;
+      }),
+      spyOn(transcripts, "readRecords").mockImplementation((file, ...args) => {
+        if (listed && file.endsWith(`${gone.sessionId}.jsonl`) && existsSync(file)) rmSync(file);
+        return readRecords(file, ...args);
+      }),
+    ];
+    return { mockRestore: () => spies.forEach((spy) => spy.mockRestore()) };
+  };
+
+  test("a session whose transcript vanished after it was hashed is skipped, not fatal", async () => {
+    const gone = new Transcript().prompt("Temporary session").text("Done");
+    const kept = new Transcript().prompt("Fix it").text("Done");
+    for (const argv of [["--days", "3650"], ["--days", "3650", "--sample", "0"], ["--days", "3650", "--dry-run"]]) {
+      rmSync(score.scoresFile(), { force: true });
+      output.length = 0;
+      write([gone, kept]);
+      judgeAnswer(answer());
+      const spy = removeOnRead(gone);
+      try {
+        expect(await run(argv)).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
+      // Both were eligible when hashed; the gone one is skipped while scoring.
+      expect(output.join("\n")).toContain("2 eligible sessions;");
+      expect(output.join("\n")).toContain("Skipped while scoring: 1 transcript gone.");
+      if (argv.includes("--dry-run")) expect(existsSync(score.scoresFile())).toBe(false);
+      else expect(scores().map((record) => record.sessionId)).toEqual([kept.sessionId]);
+    }
+  });
+
+  test("an error other than a vanished transcript while reading records still fails the run", async () => {
+    write([new Transcript().prompt("Fix it").text("Done")]);
+    judgeAnswer(answer());
+    const spy = spyOn(transcripts, "readRecords").mockImplementation(() => {
+      throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+    });
+    try {
+      await expect(run(["--days", "3650"])).rejects.toThrow("EACCES");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(existsSync(score.scoresFile()) ? scores() : []).toEqual([]);
+  });
+
   test("an invalid judge answer or a failed call is recorded as an error, never a score, and retried", async () => {
     const t = new Transcript().prompt("Fix it").text("Done");
     write([t]);

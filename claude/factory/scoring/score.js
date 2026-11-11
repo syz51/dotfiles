@@ -34,10 +34,22 @@ Runs the detectors on every eligible session and the judge on a sample of them.
   --help`;
 
 const QUIET_MINUTES = 30;
+const GONE = "transcript gone";
 const PROJECT_INSTRUCTION_CHARS = 20_000;
 
 export const scoresFile = () => statePath("scores.jsonl");
 export const transcriptSha = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+
+// The result of reading a session's transcript, or undefined when the file is gone. A
+// transcript can be removed at any time while a run goes on, such as a temporary
+// session's at cleanup; every other error stays fatal.
+function unlessGone(read) {
+  try {
+    return read();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+}
 
 // Signals that make a session worth judging first. Corrections are the metrics
 // heuristic; the judge's user-corrections dimension is the reliable signal.
@@ -259,19 +271,22 @@ export async function run(argv, { now = Date.now() } = {}) {
   const existing = readJsonl(file);
   const keys = scoredKeys(existing);
   const candidates = [];
+  // Sessions skipped before judging starts, and those whose transcript went while it ran.
   const skipped = {};
+  const late = {};
+  const skip = (counts, { session, explicit }, reason) => {
+    counts[reason] = (counts[reason] ?? 0) + 1;
+    if (explicit) console.error(`Skipping ${session.id}: ${reason}`);
+  };
+  const summary = (counts) => Object.entries(counts).map(([reason, n]) => `${n} ${reason}`).join(", ");
+  const reportLate = () => {
+    if (Object.keys(late).length) console.log(`Skipped while scoring: ${summary(late)}.`);
+  };
   for (const { session, explicit } of selectSessions(options, now)) {
-    let sha;
-    try {
-      sha = transcriptSha(session.file);
-    } catch (error) {
-      // A transcript removed after it was listed, such as a temporary session's.
-      if (error.code !== "ENOENT") throw error;
-    }
-    const reason = sha === undefined ? "transcript gone" : ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
+    const sha = unlessGone(() => transcriptSha(session.file));
+    const reason = sha === undefined ? GONE : ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
     if (reason) {
-      skipped[reason] = (skipped[reason] ?? 0) + 1;
-      if (explicit) console.error(`Skipping ${session.id}: ${reason}`);
+      skip(skipped, { session, explicit }, reason);
       continue;
     }
     candidates.push({ session, sha, explicit, signals: prioritySignals(session) });
@@ -281,24 +296,30 @@ export async function run(argv, { now = Date.now() } = {}) {
   const sampleSize = options.sessions.length ? ranked.length : options.sample;
   const sample = ranked.slice(0, sampleSize);
   const rest = ranked.slice(sampleSize);
-  console.log(`${candidates.length} eligible sessions${Object.keys(skipped).length ? ` (skipped: ${Object.entries(skipped).map(([reason, n]) => `${n} ${reason}`).join(", ")})` : ""}; judging ${sample.length} with ${options.model} at ${options.effort} effort, rubric v${RUBRIC.version}.`);
+  console.log(`${candidates.length} eligible sessions${Object.keys(skipped).length ? ` (skipped: ${summary(skipped)})` : ""}; judging ${sample.length} with ${options.model} at ${options.effort} effort, rubric v${RUBRIC.version}.`);
 
   if (options.dryRun) {
-    const rows = ranked.map((candidate, index) => {
-      const records = sessionRecords(candidate.session);
+    const rows = [];
+    for (const [index, candidate] of ranked.entries()) {
+      const records = unlessGone(() => sessionRecords(candidate.session));
+      if (!records) {
+        skip(late, candidate, GONE);
+        continue;
+      }
       const detectors = runDetectors(candidate.session, records);
       const digest = buildDigest(candidate.session, { records: records.main });
       const { corrections, interrupts, toolErrors } = candidate.signals;
-      return {
+      rows.push({
         id: candidate.session.id,
         project: projectName(candidate.session),
         prompts: candidate.session.prompts.length,
         sessionCost: formatUsd(candidate.session.costUSD),
         judgeCost: index < sampleSize ? "judge" : "-",
         result: `digest ${digest.length}${digest.length >= DIGEST_CHARS - 1000 ? " (bounded)" : ""} chars; corrections ${corrections}, interrupts ${interrupts}, tool errors ${toolErrors}; ${failures({ detectors }).join(" ") || "detectors pass"}`,
-      };
-    });
+      });
+    }
     printTable(rows);
+    reportLate();
     console.log("Dry run: nothing called or written. * marks a detector.");
     return 0;
   }
@@ -337,7 +358,11 @@ export async function run(argv, { now = Date.now() } = {}) {
       if (candidate.explicit) console.error(`Skipping ${candidate.session.id}: not judged, as the call could pass --max-total-usd ${formatUsd(options.maxTotalUsd)}`);
       continue;
     }
-    const records = sessionRecords(candidate.session);
+    const records = unlessGone(() => sessionRecords(candidate.session));
+    if (!records) {
+      skip(late, candidate, GONE);
+      continue;
+    }
     const detectors = runDetectors(candidate.session, records);
     const digest = buildDigest(candidate.session, { records: records.main });
     const projectFiles = projectInstructions(candidate.session.cwd);
@@ -367,7 +392,12 @@ export async function run(argv, { now = Date.now() } = {}) {
   // transcript version.
   for (const candidate of rest) {
     if (keys.any.has(`${candidate.session.id}:${candidate.sha}:${RUBRIC.version}`)) continue;
-    const record = { ...base(candidate, runDetectors(candidate.session, sessionRecords(candidate.session))), model: null, effort: null, costUSD: 0, dimensions: null, corrections: null, summary: null, error: null };
+    const records = unlessGone(() => sessionRecords(candidate.session));
+    if (!records) {
+      skip(late, candidate, GONE);
+      continue;
+    }
+    const record = { ...base(candidate, runDetectors(candidate.session, records)), model: null, effort: null, costUSD: 0, dimensions: null, corrections: null, summary: null, error: null };
     appendJsonl(file, record);
     rows.push(row(candidate, record, "-"));
   }
@@ -385,6 +415,7 @@ export async function run(argv, { now = Date.now() } = {}) {
     const count = counts[dimension.id];
     if (count) console.log(`  ${`${dimension.id}${dimension.kind === "detector" ? "*" : ""}`.padEnd(26)} ${count.pass}/${count.fail}/${count.na}`);
   }
+  reportLate();
   if (stopped) console.log(`Stopped judging: another call could pass --max-total-usd ${formatUsd(options.maxTotalUsd)}.`);
   console.log(`Judged ${judged.length} sessions (${errors} errors); judge cost ${formatUsd(total)}. Records: ${file}`);
   return errors ? 1 : 0;
