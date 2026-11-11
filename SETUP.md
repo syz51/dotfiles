@@ -503,7 +503,9 @@ project's own setup and `other`. Each entry gives the `id` agents name with
 parent task), its channel (`skill-notes` for codex-skills skills, which record their own
 feedback), how a change is made and how to verify it. The feedback board's triage routes
 reports with it. `setups --check` validates the schema and ids and checks that the
-repository paths in `covers` exist; add an entry when you add a component.
+repository paths in `covers` exist; add an entry when you add a component. A setup whose
+code is in another repository names that repository's board: `t3` is the T3 Code fork, on
+the `t3code` board, and `t3-scripts` is the routines in `t3code/` here.
 
 Most friction never gets reported, so `friction run` looks for it. It reads the main
 sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
