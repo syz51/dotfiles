@@ -568,7 +568,7 @@ describe("work board", () => {
     expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
     for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/work found that still needs doing, for the parent to file/);
-    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/anything in a setup \(hooks, tools, skills, board, instructions\) that cost you a step, with the error and your workaround, for the parent to report as feedback/);
+    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/anything in a setup \(such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup\) that cost you a step, with the error and your workaround, for the parent to report as feedback/);
   });
 
   // Asks sent the user to look up what memory, the board or a repository already held,
@@ -811,7 +811,7 @@ describe("rules the live suites test", () => {
   });
 
   test("explorer, worker and solver end with the same report shape", () => {
-    const shape = "Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made, if any (files, commits, PR); work found that still needs doing, for the parent to file; anything in a setup (hooks, tools, skills, board, instructions) that cost you a step, with the error and your workaround, for the parent to report as feedback; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.";
+    const shape = "Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made, if any (files, commits, PR); work found that still needs doing, for the parent to file; anything in a setup (such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup) that cost you a step, with the error and your workaround, for the parent to report as feedback; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.";
     for (const agent of ["explorer", "worker", "solver"]) expect(frontmatter(`claude/agents/${agent}.md`).body.trimEnd().split("\n").at(-1), agent).toBe(shape);
     expect(frontmatter("claude/agents/explorer.md").body).toContain("Say what you checked when something could not be confirmed.");
     expect(frontmatter("claude/agents/worker.md").body).toContain("Run the checks relevant to your track.");
