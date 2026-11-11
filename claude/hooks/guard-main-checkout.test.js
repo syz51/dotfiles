@@ -201,6 +201,17 @@ describe("in a main checkout it blocks", () => {
 });
 
 describe("it allows", () => {
+  test("commands over ssh, which change a repository on another host", () => {
+    for (const command of ["ssh host 'cd ~/.config && git reset --hard'", "ssh host 'cd /main && git switch feature'",
+      "ssh host git -C /main stash", "ssh host 'cd /main && gh pr merge 12'", "ssh host sudo -D /main git pull",
+      "ssh host bash -s <<'EOF'\ncd /main\ngit rebase origin/main\nEOF"]) {
+      expect(verdict(command)).toBeUndefined();
+    }
+    // the same commands here stay blocked, also beside an ssh command
+    expect(verdict("ssh host ls && git reset --hard")).toBeDefined();
+    expect(verdict("ssh -o ProxyCommand='git -C /main stash' host ls")).toBeDefined();
+  });
+
   test.each([
     // read-only, file-level, finishing and ending forms
     ["git status"],
@@ -400,6 +411,11 @@ describe("hook process", () => {
     const result = run("git switch feature", main);
     expect(result.code).toBe(2);
     expect(result.stderr).toStartWith(`Blocked by the guard-main-checkout hook: \`git switch feature\`: it changes the branch of ${main}, a main checkout`);
+  });
+
+  test("allows a reset over ssh from the main checkout", () => {
+    expect(run("ssh host 'cd ~/.config && git reset --hard'", main)).toEqual({ code: 0, stderr: "" });
+    expect(run(`ssh host 'cd ${main} && git reset --hard HEAD~1'`, main)).toEqual({ code: 0, stderr: "" });
   });
 
   test("allows the same command in a linked worktree, and read-only commands in the main checkout", () => {

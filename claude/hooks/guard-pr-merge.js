@@ -236,7 +236,7 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
 }
 
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
-function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appended }) {
+function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appended, remote }) {
   if (merge.unresolved !== undefined) {
     return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally. `
       + "The guard cannot see quotes, so for a body with `$`, backticks or braces, write it to a file and pass --body-file.";
@@ -250,6 +250,10 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appende
   if (setsRepo && merge.repo === undefined) return "the command sets GH_REPO, which the guard does not follow. Name the repository with -R OWNER/REPO instead.";
   if (setsGitDir) return "the command sets GIT_DIR or GIT_WORK_TREE, which change the repository and branch gh reads, and the guard does not follow them. Run the merge without them.";
   if (dir === undefined && merge.repo === undefined && !/^https?:\/\//.test(merge.selector ?? "")) {
+    if (remote) {
+      return "it runs on another host over ssh, whose directory, and so repository, the guard cannot read. "
+        + "Pass -R OWNER/REPO and the pull request number, or the pull request's URL.";
+    }
     return "the guard cannot tell which directory, and so which repository, it runs in. Run it after a literal `cd`, or pass -R OWNER/REPO and the pull request number.";
   }
   const where = dir ?? process.cwd();
@@ -403,12 +407,12 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
     setsGitDir: /\bGIT_(?:DIR|WORK_TREE)\b/.test(command) };
   const merges = [];
   let mover;
-  const violation = visitCommands(command, cwd, (words, dir, { appended }) => {
+  const violation = visitCommands(command, cwd, (words, dir, { appended, remote }) => {
     const before = merges.length;
     // macOS volumes ignore case, so GH and Gh run gh too, and a glob such as [g]h can name it.
     const name = basename(words[0]).toLowerCase();
     let reason;
-    if (name === "gh" || (GLOB.test(name) && globMatches(name, "gh"))) reason = ghCommand(words, dir, query, { ...env, appended }, merges);
+    if (name === "gh" || (GLOB.test(name) && globMatches(name, "gh"))) reason = ghCommand(words, dir, query, { ...env, appended, remote }, merges);
     else if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
       reason = `${quoted(words)}: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
     }

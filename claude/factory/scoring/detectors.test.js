@@ -90,6 +90,15 @@ describe("package-runner", () => {
     expect(packageRunner(actions([bash(command)])).verdict).toBe("pass");
   });
 
+  test("a command over ssh gets no node exception, as in the hook", () => {
+    // A gone directory of a call the hook let run allows node, as the test above shows.
+    const gone = join(tmpdir(), "detectors-gone-t3code-worktree", "x");
+    expect(packageRunner(actions([bash(`bun --cwd ${gone} x node x.js`)])).verdict).toBe("pass");
+    for (const command of [`ssh host 'cd ${gone} && node x.js'`, `ssh host bun --cwd ${gone} x node x.js`, `ssh host env -C ${gone} node x.js`]) {
+      expect(packageRunner(actions([bash(command, { cwd: gone })])).hits[0]?.tool).toBe("node");
+    }
+  });
+
   test("`command` without a lookup option still runs its program", () => {
     expect(simpleCommands("command -v python3 && echo ok")).toEqual([["command", "-v", "python3"], ["echo", "ok"]]);
     expect(simpleCommands("command python3 x.py")).toEqual([["python3", "x.py"]]);

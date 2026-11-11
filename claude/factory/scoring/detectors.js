@@ -95,7 +95,10 @@ export function packageRunner(actions) {
   for (const call of commands) {
     const { command } = call.input;
     const allowsNode = (dir) => dir !== undefined && (existsSync(dir) ? nodeCheckout(dir) : call.ok !== null && !call.runtimeBlocked);
-    const tool = visitCommands(command, call.cwd ?? actions.cwd ?? "/", (words, dir) => blockedRuntime(words, dir, allowsNode)?.tool);
+    // As in the hook, a command over ssh gets no node exception, even where `bun --cwd` names a local checkout.
+    const tool = visitCommands(command, call.cwd ?? actions.cwd ?? "/", (words, dir, { remote }) => (remote
+      ? blockedRuntime(words, undefined, () => false)
+      : blockedRuntime(words, dir, allowsNode))?.tool);
     if (tool) hits.push(hit(call, `${tool}: ${command}`, { tool }));
   }
   return verdictOf(commands.length > 0, hits);

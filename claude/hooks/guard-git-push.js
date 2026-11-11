@@ -7,7 +7,9 @@
 // the push: quotes, substitutions, heredocs, `cd`, `sh -c`, wrappers and `ssh`. A push
 // whose subcommand, refspec, remote or option name the shell fills in is blocked, as is one
 // given push configuration by `-c` or an earlier `git config`; a push without refspecs is
-// checked against its remote's push and mirror configuration. Aliases and GIT_CONFIG_*
+// checked against its remote's push and mirror configuration. A push over `ssh` runs in a
+// repository on another host, so the guard reads no local configuration or branch for it
+// and judges its refspecs alone. Aliases and GIT_CONFIG_*
 // variables are not seen.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -205,11 +207,12 @@ function judge(push, dir, git, configChanged) {
 }
 
 /** `state.configChanged` records a `git config` earlier in the same command that sets push configuration. */
-function gitPush(words, dir, git, state) {
+function gitPush(words, dir, git, state, remote) {
   let i = 1;
   let pushConfigOption;
   while (i < words.length && words[i].startsWith("-")) {
-    if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
+    // A repository on another host is unknown here, whatever path -C names.
+    if (words[i] === "-C" && i + 1 < words.length && !remote) dir = changeDirectory(dir, words[i + 1]);
     // `-c key=value` and `--config-env key=VAR` set configuration for this one command.
     const setting = words[i] === "-c" || words[i] === "--config-env" ? words[i + 1] : /^--config-env=(.*)$/s.exec(words[i])?.[1];
     if (setting !== undefined && (expands(setting) || isPushConfig(setting.split("=")[0]))) pushConfigOption ??= setting;
@@ -235,8 +238,8 @@ function gitPush(words, dir, git, state) {
  */
 export function findViolation(command, cwd, git) {
   const state = { configChanged: false };
-  return visitCommands(command, cwd, (words, dir) => (basename(words[0]) === "git" || (expands(words[0]) && words.includes("push"))
-    ? gitPush(words, dir, git, state)
+  return visitCommands(command, cwd, (words, dir, { remote }) => (basename(words[0]) === "git" || (expands(words[0]) && words.includes("push"))
+    ? gitPush(words, dir, git, state, remote)
     : undefined), TOO_DEEP);
 }
 

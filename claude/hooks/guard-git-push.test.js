@@ -216,6 +216,20 @@ test("a git query that fails blocks only history rewrites, with the reason", () 
   expect(findViolation("git push", "/repo", broken)).toBeUndefined();
 });
 
+test("a push over ssh reads no local repository and is judged by its refspecs", () => {
+  const calls = [];
+  const git = fakeGit({ config: "remote.origin.push +HEAD:main", calls });
+  for (const command of ["ssh host 'cd /other && git push'", "ssh host git -C /other push", "ssh host 'git push origin feature'",
+    "ssh host 'cd ~/.config && git reset --hard'"]) {
+    expect(findViolation(command, "/repo", git)).toBeUndefined();
+  }
+  expect(calls).toEqual([]);
+  expect(findViolation("ssh host git -C /repo push --force origin main", "/repo", git)).toContain("a default branch");
+  // the branch a remote bare lease rewrites is unknown here
+  expect(findViolation("ssh host 'cd /repo && git push --force-with-lease=x:abc123'", "/repo", git)).toContain("could not be determined");
+  expect(calls).toEqual([]);
+});
+
 describe("a cd in a subshell, a background job or an earlier pipeline part moves no later push", () => {
   const push = "git push --force-with-lease=trunk:abc origin trunk";
   const trunkIn = (dir, calls) => fakeGit({ remoteHead: { [dir]: "origin/trunk" }, calls });
