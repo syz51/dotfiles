@@ -250,7 +250,9 @@ configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 blocks a push that `xargs` adds words to, such as `echo --force | xargs git push origin main`,
 here and over `ssh`, and every command whose words `xargs` supplies (see below). It
-cannot see git aliases or `GIT_CONFIG_*` variables.
+follows an alias that `-c` sets on the git command, as in `git -c alias.p=push p`, and
+blocks one it cannot read, such as a `--config-env` or `!` alias. It cannot see aliases in
+config files or `GIT_CONFIG_*` variables.
 `shell.js` reports a command as opaque when the words `xargs` adds can run a command the
 guards cannot see: `xargs ssh` and `xargs watch`, which parse them again as a script,
 wrappers with no command such as `xargs sudo`, `xargs env` and `xargs nice`, a second
@@ -271,9 +273,11 @@ re-waiting each time the branch falls behind. A check run is pending until its s
 conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
 also one with the name of a later run; within one Actions workflow run, which a re-run
 reuses, only the latest attempt of each job counts. GitHub records each Actions job it never
-started for billing as a failed check run with no steps and one annotation on `.github`. Such a
-job passes when a non-Actions check named `<context>: <job name>`, such as
-`ci/circleci: build`, succeeded. A failed job with steps fails, even with that annotation,
+started for billing as a failed check run with no steps and one failure-level annotation on
+`.github`. GitHub may add notice-level annotations on `.github`, such as the `ubuntu-latest`
+migration notice. Such a job passes when its annotations number at most 10 and are all
+these, and a non-Actions check named `<context>: <job name>`, such as `ci/circleci: build`,
+succeeded. A failed job with steps fails, even with that annotation,
 because a job's own output can write it. So does a skipped job whose name a skipped job of
 another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
 check is a failed Actions job. It adds about 0.75 seconds and costs about 12 GraphQL rate-limit
@@ -341,7 +345,9 @@ changes, and `stash drop` or `stash clear`. For `gh pr checkout` the message giv
 route through `git fetch` and `git switch`. To allow every such command in one repository, run
 `git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
 command that sets that key. It is a guardrail against mistakes, not a security
-boundary: it does not see aliases, scripts or direct edits of `.git/config`. In a main
+boundary: it follows an alias that `-c` sets on the git command and, in a main checkout,
+blocks one it cannot read, but it does not see aliases in config files, scripts or direct
+edits of `.git/config`. In a main
 checkout it also refuses a git command that `xargs` adds words to when those words could
 change the branch, as `echo feature | xargs git checkout` can, but not file restores after
 `--`, aborts, continues and stash or bisect reads. Anywhere, it refuses a bare `git` that

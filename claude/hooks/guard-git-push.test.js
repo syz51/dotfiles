@@ -318,6 +318,21 @@ describe("hook process", () => {
     expect(result.stderr).toStartWith("Blocked by the guard-git-push hook:");
   });
 
+  // The entry point's text prefilter must not skip an alias command without the word "push".
+  test.each([
+    ["git --config-env=alias.p=V p --force origin main"],
+    ["git -c alias.p=$CMD p origin main"],
+    [`git -c al"ias".p=-p p origin main`],
+  ])("blocks an alias it cannot read: %s", (command) => {
+    const result = bash(command, join(root, "work"));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("alias the guard cannot read");
+  });
+
+  test("allows an alias for a command that does not push", () => {
+    expect(bash("git -c alias.st=status st", join(root, "work")).code).toBe(0);
+  });
+
   test("follows cd into another checkout", () => {
     git(join(root, "work"), "switch", "-q", "main");
     const result = bash(`cd ${join(root, "work")} && git push --force-with-lease=main:0000000`, root);
@@ -383,6 +398,35 @@ describe("pushes xargs supplies or extends (dotfiles-338)", () => {
   });
 
   test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"], ["git branch --merged | xargs git branch -d"], ["find . -name x | xargs -I{} rm -f {}"]])("allows %s", (command) => {
+    expect(verdict(command)).toBeUndefined();
+  });
+});
+
+describe("an alias set on the command line (dotfiles-278)", () => {
+  test.each([
+    ["git -c alias.p=push p --force origin main", "default branch"],
+    ["git -c alias.P=push P --force origin main", "default branch"],
+    [`git -c alias.p='"push" --force' p origin main`, "alias the guard cannot read"],
+    ["git -c 'alias.p=push --force' p origin main", "default branch"],
+    ["git -c alias.q=push -c alias.p=q p --force origin main", "default branch"],
+    ["git --config-env=alias.p=V p --force origin main", "alias the guard cannot read"],
+    ["git --config-env alias.p=V p --force origin main", "alias the guard cannot read"],
+    ["git -c 'alias.p=!git push --force origin main' p", "alias the guard cannot read"],
+    ["git -c alias.p=$CMD p origin main", "alias the guard cannot read"],
+    ["git -c alias.p=p p origin main", "alias the guard cannot read"],
+    ["git -c alias.p=-p p origin main", "alias the guard cannot read"],
+    // git takes the last value of a key
+    ["git -c alias.p=status -c alias.p=push p --force origin main", "default branch"],
+    // an alias never hides a built-in command
+    ["git -c alias.push=status push --force origin main", "default branch"],
+  ])("blocks %s", (command, reason) => {
+    expect(verdict(command)).toContain(reason);
+  });
+  test.each([
+    ["git -c alias.p=push p origin feature"],
+    ["git -c alias.st=status st"],
+    ["git -c alias.p=push status --force origin main"],
+  ])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
 });

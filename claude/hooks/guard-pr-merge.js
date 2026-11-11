@@ -16,10 +16,10 @@
 // such as `git push`, `git switch` or `gh pr checkout`: it could move the head or change which
 // pull request gh merges after the check. Within one Actions workflow run only the latest
 // attempt of each job counts, so a passing re-run replaces a failed attempt. A failed Actions job
-// that GitHub never started for billing, with no steps and only the billing annotation, counts
-// as passed when a passing non-Actions check is named "<context>: <job name>", such as
-// "ci/circleci: build"; one GraphQL call reads those jobs' steps and annotations, and only
-// when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// that GitHub never started for billing, with no steps, the billing annotation and at most
+// GitHub's notices besides, counts as passed when a passing non-Actions check is named
+// "<context>: <job name>", such as "ci/circleci: build"; one GraphQL call reads those jobs'
+// steps and annotations, and only when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
 // block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
@@ -43,7 +43,8 @@ const VIEW_FIELDS = "number,url,state,isDraft,mergeStateStatus,baseRefName,headR
 // An Actions job's check run links to its job page; the last number is the check run's id.
 const ACTIONS_JOB = /\/actions\/runs\/(\d+)\/job\/(\d+)/;
 // GitHub records each Actions job it never started for billing as a failed check run with no
-// steps and one annotation, on path .github, whose message starts with this text.
+// steps and one failure-level annotation, on path .github, whose message starts with this text.
+// GitHub may add notice-level annotations on .github, such as a runner label's migration notice.
 const BILLING = "The job was not started because recent account payments have failed or your spending limit";
 // The failed check runs in the head commit's Actions suites, with their steps and annotations.
 // 15368 is the github-actions app on github.com; on another host the call finds no suites, so
@@ -52,7 +53,7 @@ const FAILED_RUNS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjec
   repository(owner: $owner, name: $name) { object(oid: $oid) { ... on Commit {
     checkSuites(first: 20, filterBy: {appId: 15368}) { nodes { app { slug }
       checkRuns(first: 30, filterBy: {checkType: ALL, conclusions: [FAILURE]}) { nodes {
-        databaseId steps(first: 1) { totalCount } annotations(first: 2) { totalCount nodes { path message } } } } } } } } } }`;
+        databaseId steps(first: 1) { totalCount } annotations(first: 10) { totalCount nodes { path message annotationLevel } } } } } } } } } }`;
 const MERGE_ENDPOINT = /(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
 const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // Each gh call gets at most this long, and the hook stops querying once the budget is spent,
@@ -216,9 +217,10 @@ function requiresChecks(query, dir, api, repo, base) {
 
 /**
  * The ids of the failed Actions jobs on the head commit that GitHub never started for billing: a FAILURE
- * check run of the github-actions app with no steps, whose annotations are all the billing one on
- * path .github. A job with steps ran, so its annotation may be its own output. It reads them all
- * in one GraphQL call on commit `oid` of `owner/name`.
+ * check run of the github-actions app with no steps and all its annotations on path .github: exactly
+ * one failure-level billing annotation, and only notices besides. A job with steps ran, so its
+ * annotations may be its own output. A job with more annotations than the call read fails.
+ * It reads them all in one GraphQL call on commit `oid` of `owner/name`.
  */
 function billingSkippedJobs(query, dir, api, owner, name, oid) {
   const answer = query(dir, [...api, "graphql", "-f", `query=${FAILED_RUNS_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `oid=${oid}`],
@@ -228,8 +230,12 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
     if (suite?.app?.slug !== "github-actions") continue;
     for (const run of suite.checkRuns?.nodes ?? []) {
       const annotations = run?.annotations?.nodes ?? [];
-      if (run?.steps?.totalCount === 0 && annotations.length > 0 && annotations.length === run.annotations.totalCount
-        && annotations.every((annotation) => annotation?.path === ".github" && annotation.message?.startsWith(BILLING))) skipped.add(String(run.databaseId));
+      if (run?.steps?.totalCount !== 0 || annotations.length !== run.annotations.totalCount
+        || !annotations.every((annotation) => annotation?.path === ".github")) continue;
+      const billing = annotations.filter((annotation) => annotation.annotationLevel === "FAILURE" && annotation.message?.startsWith(BILLING));
+      if (billing.length === 1 && annotations.every((annotation) => annotation === billing[0] || annotation.annotationLevel === "NOTICE")) {
+        skipped.add(String(run.databaseId));
+      }
     }
   }
   return skipped;

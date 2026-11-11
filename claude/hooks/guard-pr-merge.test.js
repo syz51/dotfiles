@@ -16,11 +16,14 @@ const PROTECTED = { protection: { enabled: true, required_status_checks: { enfor
 const WORKFLOWS = { total_count: 1, workflows: [{ path: ".github/workflows/checks.yml", state: "active" }] };
 
 // Actions jobs as the rollup and the GraphQL answer show them. GitHub records a job it never
-// started for billing as a failed run with no steps and one annotation on .github.
+// started for billing as a failed run with no steps and one failure-level annotation on .github.
+// It adds notices on .github to a job on a migrating runner label, such as ubuntu-latest.
 const BILLING_TEXT = "The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings";
 const job = (name, id, conclusion = "FAILURE") => run(name, "COMPLETED", conclusion, { workflowName: "Checks", detailsUrl: `https://github.com/o/r/actions/runs/7/job/${id}` });
 const graphRun = (id, steps, annotations) => ({ databaseId: id, steps: { totalCount: steps }, annotations: { totalCount: annotations.length, nodes: annotations } });
-const billingRun = (id) => graphRun(id, 0, [{ path: ".github", message: BILLING_TEXT }]);
+const BILLING = { path: ".github", message: BILLING_TEXT, annotationLevel: "FAILURE" };
+const NOTICE = { path: ".github", message: "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026.", annotationLevel: "NOTICE" };
+const billingRun = (id, ...others) => graphRun(id, 0, [BILLING, ...others]);
 const graph = (runs, slug = "github-actions") => ({ data: { repository: { object: { checkSuites: { nodes: [{ app: { slug: "vercel" }, checkRuns: { nodes: [] } }, { app: { slug }, checkRuns: { nodes: runs } }] } } } } });
 
 // A stubbed gh. `view` overrides the pull request fields; `branch`, `rules`, `workflows` and
@@ -370,18 +373,41 @@ describe("an Actions job GitHub never started for billing", () => {
 
   test("refuses a job with steps even when its annotation carries the billing text", () => {
     // `::error file=.github,line=1::<text>` writes the same annotation from a job that ran
-    const violation = merge([BUILD, ...FALLBACKS], graph([graphRun(11, 3, [{ path: ".github", message: BILLING_TEXT }])]));
+    const violation = merge([BUILD, ...FALLBACKS], graph([graphRun(11, 3, [BILLING])]));
     expect(violation).toContain("checks failed on pull request #12's head commit: Checks / build (FAILURE)");
+    expect(merge([BUILD, ...FALLBACKS], graph([graphRun(11, 3, [BILLING, NOTICE])]))).toContain("Checks / build (FAILURE)");
+  });
+
+  test("passes a skipped job that also carries GitHub's notices on .github, and reads every annotation's level", () => {
+    const calls = [];
+    expect(merge([BUILD, TEST, ...FALLBACKS], graph([billingRun(11, NOTICE), billingRun(12, NOTICE, { ...NOTICE, message: "another notice" })]), calls)).toBeUndefined();
+    const query = graphCalls(calls)[0].args.find((arg) => arg.startsWith("query="));
+    expect(query).toContain("annotations(first: 10) { totalCount nodes { path message annotationLevel } }");
+    // the notice may come first, and up to ten annotations are read
+    expect(merge([BUILD, ...FALLBACKS], graph([graphRun(11, 0, [NOTICE, BILLING])]))).toBeUndefined();
+    expect(merge([BUILD, ...FALLBACKS], graph([billingRun(11, ...Array(9).fill(NOTICE))]))).toBeUndefined();
   });
 
   test.each([
     ["has no annotation", graphRun(11, 0, [])],
-    ["has another annotation", graphRun(11, 0, [{ path: ".github", message: "The workflow is not valid." }])],
-    ["quotes the billing text inside another message", graphRun(11, 0, [{ path: ".github", message: `Invalid input "${BILLING_TEXT}"` }])],
-    ["has the billing text on another path", graphRun(11, 0, [{ path: ".github/workflows/ci.yml", message: BILLING_TEXT }])],
-    ["has a second annotation", graphRun(11, 0, [{ path: ".github", message: BILLING_TEXT }, { path: ".github", message: "other" }])],
+    ["has another annotation", graphRun(11, 0, [{ ...BILLING, message: "The workflow is not valid." }])],
+    ["quotes the billing text inside another message", graphRun(11, 0, [{ ...BILLING, message: `Invalid input "${BILLING_TEXT}"` }])],
+    ["has the billing text on another path", graphRun(11, 0, [{ ...BILLING, path: ".github/workflows/ci.yml" }])],
+    ["has a second annotation", billingRun(11, { ...BILLING, message: "other" })],
     ["has more annotations than the call read", { ...billingRun(11), annotations: { totalCount: 3, nodes: billingRun(11).annotations.nodes } }],
     ["has no step count", { ...billingRun(11), steps: undefined }],
+    // only notices may join the billing annotation, and only on .github
+    ["has only notices", graphRun(11, 0, [NOTICE])],
+    ["has the billing text only as a notice", graphRun(11, 0, [{ ...BILLING, annotationLevel: "NOTICE" }, NOTICE])],
+    ["has the billing text without a level", graphRun(11, 0, [{ path: ".github", message: BILLING_TEXT }])],
+    ["has the billing text as a warning", graphRun(11, 0, [{ ...BILLING, annotationLevel: "WARNING" }])],
+    ["has a warning next to the billing annotation", billingRun(11, { ...NOTICE, annotationLevel: "WARNING" })],
+    ["has another failure next to the billing annotation", billingRun(11, NOTICE, { ...NOTICE, annotationLevel: "FAILURE" })],
+    ["has the billing annotation twice", billingRun(11, BILLING)],
+    ["has a notice without a level", billingRun(11, { path: ".github", message: NOTICE.message })],
+    ["has a notice on another path", billingRun(11, { ...NOTICE, path: ".github/workflows/ci.yml" })],
+    ["has a notice without a path", billingRun(11, { ...NOTICE, path: null })],
+    ["has more notices than the call read", { ...billingRun(11, ...Array(9).fill(NOTICE)), annotations: { totalCount: 11, nodes: billingRun(11, ...Array(9).fill(NOTICE)).annotations.nodes } }],
   ])("refuses a job that %s", (_, graphRunAnswer) => {
     expect(merge([BUILD, ...FALLBACKS], graph([graphRunAnswer]))).toContain("Checks / build (FAILURE)");
   });
@@ -532,6 +558,22 @@ describe("the hook", () => {
     const result = hook("{ not json, gh pr merge 12");
     expect(result.code).toBe(2);
     expect(result.stderr).toContain("the guard failed");
+  });
+
+  // The fake gh prints one reply to every call: the pull request's fields and the GraphQL answer.
+  test("passes a billing-skipped job with a GitHub notice, and refuses one with a warning or with steps", () => {
+    const rollup = [job("Scan history", 11), context("ci/circleci: Scan history", "SUCCESS")];
+    const answer = (runs) => reply({ ...VIEW, statusCheckRollup: rollup, ...graph(runs) });
+    answer([billingRun(11, NOTICE)]);
+    rmSync(join(root, "log"), { force: true });
+    expect(bash("gh pr merge 12 --squash", { GH_REPO: "o/r" })).toEqual({ code: 0, stderr: "" });
+    expect(readFileSync(join(root, "log"), "utf8")).toContain("graphql");
+    for (const runs of [[billingRun(11, { ...NOTICE, annotationLevel: "WARNING" })], [graphRun(11, 2, [BILLING, NOTICE])]]) {
+      answer(runs);
+      const result = bash("gh pr merge 12 --squash", { GH_REPO: "o/r" });
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain("Checks / Scan history (FAILURE)");
+    }
   });
 
   test("skips commands that do not mention merge without calling gh", () => {
