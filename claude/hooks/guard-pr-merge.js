@@ -3,10 +3,11 @@
 // `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses --admin, a draft,
 // a branch that is BEHIND its base or DIRTY with conflicts, and a head commit with a pending or
 // failed check, or with no check yet from CI that runs on every pull request: an Actions workflow
-// at the head commit whose pull_request or pull_request_target trigger has no branch, path or
-// type filter, and CircleCI where .circleci/config.yml exists; one GraphQL call reads those
-// files. A workflow with a filtered trigger is not expected, so its check can still arrive after
-// the merge. A workflow that Actions lists as disabled is not expected either. --auto
+// whose pull_request trigger, at the head commit, or pull_request_target trigger, on the base
+// branch, has no branch, path or type filter, and CircleCI where .circleci/config.yml exists at
+// the head commit; one GraphQL call reads those files. A workflow with a filtered trigger is not
+// expected, so its check can still arrive after the merge. A workflow that Actions lists as
+// disabled is not expected either. --auto
 // passes when the base branch requires status checks and gh will enable auto-merge rather than
 // merge at once, because GitHub then waits for the required checks; otherwise it is checked like
 // a direct merge. It also refuses `gh api` calls to the pulls/<n>/merge endpoint and the
@@ -62,19 +63,25 @@ const FAILED_RUNS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjec
     checkSuites(first: 20, filterBy: {appId: 15368}) { nodes { app { slug }
       checkRuns(first: 30, filterBy: {checkType: ALL, conclusions: [FAILURE]}) { nodes {
         databaseId steps(first: 1) { totalCount } annotations(first: 10) { totalCount nodes { path message annotationLevel } } } } } } } } } }`;
-// The CI configuration at the head commit: each file in .github/workflows with its text, and
-// whether .circleci/config.yml exists. `head` confirms the commit was found.
+// The CI configuration: each file in .github/workflows, with its text, at the head commit and on
+// the base branch, which pull_request_target runs its workflows from, and whether
+// .circleci/config.yml exists at the head commit. `head` confirms the commit was found.
 const WORKFLOW_DIR = ".github/workflows";
 const CIRCLECI_CONFIG = ".circleci/config.yml";
-const CI_FILES_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!, $workflows: String!, $circleci: String!) {
+const WORKFLOW_FILES = "... on Tree { entries { name type object { ... on Blob { text isTruncated } } } }";
+const CI_FILES_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!, $workflows: String!, $baseWorkflows: String!, $circleci: String!) {
   repository(owner: $owner, name: $name) { head: object(oid: $oid) { oid }
-    workflows: object(expression: $workflows) { ... on Tree { entries { name type object { ... on Blob { text isTruncated } } } } }
+    workflows: object(expression: $workflows) { ${WORKFLOW_FILES} }
+    baseWorkflows: object(expression: $baseWorkflows) { ${WORKFLOW_FILES} }
     circleci: object(expression: $circleci) { oid } } }`;
 const PR_EVENTS = ["pull_request", "pull_request_target"];
+// CircleCI reports a commit status named ci/circleci: <job>, or, through its GitHub App, check
+// runs that link to its site.
+const CIRCLECI_RUN = /^https:\/\/(?:[\w-]+\.)*circleci\.com\//;
 // A workflow with one of these under its pull request trigger may not run on a given pull
 // request; the guard does not evaluate them, so it does not expect a check from it.
 const PR_FILTERS = ["paths", "paths-ignore", "branches", "branches-ignore", "types"];
-const MERGE_ENDPOINT =/(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
+const MERGE_ENDPOINT = /(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
 const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // Each gh call gets at most this long, and the hook stops querying once the budget is spent,
 // so it refuses before settings.json's 45-second timeout, which would let the command through.
@@ -265,14 +272,15 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
 }
 
 /**
- * Whether a workflow's `on:` value runs it on every pull request: pull_request or
- * pull_request_target with no branch, path or type filter, in string, list or map form.
+ * Whether a workflow's `on:` value runs it on every pull request through one of `events`:
+ * pull_request or pull_request_target with no branch, path or type filter, in string, list or
+ * map form.
  */
-export function runsOnEveryPullRequest(on) {
-  if (typeof on === "string") return PR_EVENTS.includes(on);
-  if (Array.isArray(on)) return on.some((event) => PR_EVENTS.includes(event));
+export function runsOnEveryPullRequest(on, events = PR_EVENTS) {
+  if (typeof on === "string") return events.includes(on);
+  if (Array.isArray(on)) return on.some((event) => events.includes(event));
   if (on === null || typeof on !== "object") return false;
-  return PR_EVENTS.some((event) => {
+  return events.some((event) => {
     if (!Object.hasOwn(on, event)) return false;
     const filters = on[event];
     return filters === null || (typeof filters === "object" && !Array.isArray(filters) && !PR_FILTERS.some((filter) => Object.hasOwn(filters, filter)));
@@ -280,46 +288,71 @@ export function runsOnEveryPullRequest(on) {
 }
 
 /**
- * The CI the head commit `oid` should have a check from, but has none in `rollup`: each Actions
- * workflow in .github/workflows at that commit that runs on every pull request, named by its
- * `name:` or else its path, and CircleCI, when .circleci/config.yml exists there. One GraphQL
- * call reads both. Only when a workflow is missing, a REST call reads the workflows' states, so
- * one that is disabled in Actions is not expected. A file that does not parse refuses the merge.
+ * The workflows of `tree`, a .github/workflows tree read by CI_FILES_QUERY at `where`, as
+ * { path, workflow }. GitHub runs only the YAML files directly in it. A file whose text gh
+ * could not read, or that does not parse as a YAML mapping, refuses the merge.
  */
-function missingCi(query, dir, api, repo, owner, name, oid, rollup) {
-  const answer = query(dir, [...api, "graphql", "-f", `query=${CI_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
-    "-f", `oid=${oid}`, "-f", `workflows=${oid}:${WORKFLOW_DIR}`, "-f", `circleci=${oid}:${CIRCLECI_CONFIG}`],
-  "read the head commit's CI configuration");
-  const repository = answer?.data?.repository;
-  // Without the commit, the files read as absent, and nothing would be expected.
-  if (repository?.head?.oid !== oid) throw new Refusal(`gh could not find the head commit ${oid} to read its CI configuration.`);
-  const expected = [];
-  for (const entry of repository.workflows?.entries ?? []) {
-    // GitHub runs only the YAML files directly in .github/workflows.
+function readWorkflows(tree, where) {
+  const workflows = [];
+  for (const entry of tree?.entries ?? []) {
     if (entry?.type !== "blob" || !/\.ya?ml$/.test(entry.name)) continue;
     const path = `${WORKFLOW_DIR}/${entry.name}`;
     const text = entry.object?.text;
-    if (typeof text !== "string" || entry.object.isTruncated) throw new Refusal(`gh could not read the text of ${path} at the head commit.`);
+    if (typeof text !== "string" || entry.object.isTruncated) throw new Refusal(`gh could not read the text of ${path} ${where}.`);
     let workflow;
     try {
       workflow = Bun.YAML.parse(text);
     } catch (error) {
-      throw new Refusal(`${path} at the head commit does not parse as YAML (${firstLine(error.message)}), so the guard cannot tell whether it runs on pull requests.`);
+      throw new Refusal(`${path} ${where} does not parse as YAML (${firstLine(error.message)}), so the guard cannot tell whether it runs on pull requests.`);
     }
     if (workflow === null || typeof workflow !== "object" || Array.isArray(workflow)) {
-      throw new Refusal(`${path} at the head commit is not a YAML mapping, so the guard cannot tell whether it runs on pull requests.`);
+      throw new Refusal(`${path} ${where} is not a YAML mapping, so the guard cannot tell whether it runs on pull requests.`);
     }
-    if (runsOnEveryPullRequest(workflow.on)) expected.push({ path, name: typeof workflow.name === "string" && workflow.name !== "" ? workflow.name : path });
+    workflows.push({ path, workflow });
   }
-  const ran = new Set(rollup.filter((check) => check.__typename === "CheckRun").map((check) => check.workflowName));
-  let missing = expected.filter((workflow) => !ran.has(workflow.name));
+  return workflows;
+}
+
+/**
+ * The CI the head commit `oid` should have a check from, but has none in `rollup`: each Actions
+ * workflow that runs on every pull request, from the head commit for pull_request and from base
+ * branch `base` for pull_request_target, and CircleCI, when .circleci/config.yml exists at the
+ * head commit. A workflow is named by its `name:`, else its path; where several expected
+ * workflows share a name, each needs its own workflow run. One GraphQL call reads the files.
+ * Only when a workflow is missing, a REST call reads the workflows' states, so one that is
+ * disabled in Actions is not expected.
+ */
+function missingCi(query, dir, api, repo, owner, name, oid, base, rollup) {
+  const answer = query(dir, [...api, "graphql", "-f", `query=${CI_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
+    "-f", `oid=${oid}`, "-f", `workflows=${oid}:${WORKFLOW_DIR}`, "-f", `baseWorkflows=${base}:${WORKFLOW_DIR}`,
+    "-f", `circleci=${oid}:${CIRCLECI_CONFIG}`], "read the CI configuration");
+  const repository = answer?.data?.repository;
+  // Without the commit, the files read as absent, and nothing would be expected.
+  if (repository?.head?.oid !== oid) throw new Refusal(`gh could not find the head commit ${oid} to read its CI configuration.`);
+  const expect = (workflows, event) => workflows.filter(({ workflow }) => runsOnEveryPullRequest(workflow.on, [event]))
+    .map(({ path, workflow }) => ({ path, name: typeof workflow.name === "string" && workflow.name !== "" ? workflow.name : path }));
+  const expected = [...expect(readWorkflows(repository.workflows, "at the head commit"), "pull_request"),
+    ...expect(readWorkflows(repository.baseWorkflows, `on ${base}`), "pull_request_target")];
+  // The workflow runs that reported a check run, by workflow name.
+  const runs = new Map();
+  for (const check of rollup.filter((check) => check.__typename === "CheckRun" && check.workflowName)) {
+    const run = ACTIONS_JOB.exec(check.detailsUrl ?? "")?.[1] ?? check.detailsUrl ?? Symbol("run");
+    runs.set(check.workflowName, (runs.get(check.workflowName) ?? new Set()).add(run));
+  }
+  const missingNames = (workflows) => {
+    const wanted = Map.groupBy(workflows, (workflow) => workflow.name);
+    return [...wanted].filter(([workflowName, list]) => (runs.get(workflowName)?.size ?? 0) < list.length).map(([workflowName]) => workflowName);
+  };
+  let missing = missingNames(expected);
   if (missing.length > 0) {
     const listed = query(dir, [...api, `${repo}/actions/workflows?per_page=100`], "list the repository's workflows", { workflows: [] });
     const disabled = new Set((listed.workflows ?? []).filter((workflow) => workflow.state !== "active").map((workflow) => workflow.path));
-    missing = missing.filter((workflow) => !disabled.has(workflow.path));
+    missing = missingNames(expected.filter((workflow) => !disabled.has(workflow.path)));
   }
-  const names = missing.map((workflow) => `workflow "${workflow.name}"`);
-  if (repository.circleci && !rollup.some((check) => check.__typename === "StatusContext" && check.context?.startsWith("ci/circleci"))) names.push("CircleCI");
+  const names = missing.map((workflowName) => `workflow "${workflowName}"`);
+  const circleci = (check) => (check.__typename === "StatusContext" && check.context?.startsWith("ci/circleci"))
+    || (check.__typename === "CheckRun" && CIRCLECI_RUN.test(check.detailsUrl ?? ""));
+  if (repository.circleci && !rollup.some(circleci)) names.push("CircleCI");
   return names;
 }
 
@@ -378,7 +411,7 @@ function judgeMerge(merge, words, next, dir, query, { setsHost, setsRepo, setsGi
   const { pending, failed } = checks;
   if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
   if (pending.length > 0) return `checks are still running on ${pr}'s head commit: ${list(pending)}. Wait until they finish and pass, then merge.`;
-  const missing = missingCi(query, where, api, repo, owner, name, head, rollup);
+  const missing = missingCi(query, where, api, repo, owner, name, head, view.baseRefName, rollup);
   if (missing.length > 0) {
     return `${pr}'s head commit has no check yet from ${list(missing)}, which run on every pull request, so CI may not have started. Wait for their checks to appear and pass, then merge.`;
   }

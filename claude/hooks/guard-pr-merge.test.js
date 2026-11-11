@@ -27,13 +27,13 @@ const NOTICE = { path: ".github", message: "The ubuntu-latest label will migrate
 const billingRun = (id, ...others) => graphRun(id, 0, [BILLING, ...others]);
 const graph = (runs, slug = "github-actions") => ({ data: { repository: { object: { checkSuites: { nodes: [{ app: { slug: "vercel" }, checkRuns: { nodes: [] } }, { app: { slug }, checkRuns: { nodes: runs } }] } } } } });
 
-// The answer to the guard's GraphQL query for the CI configuration at the head commit: `files`
-// maps each name in .github/workflows to its text (an object: the entry itself), and `circleci`
-// says whether .circleci/config.yml exists.
-const ciFiles = ({ files = {}, circleci = false, head = HEAD } = {}) => ({ data: { repository: {
-  head: head === null ? null : { oid: head },
-  workflows: Object.keys(files).length === 0 ? null : { entries: Object.entries(files).map(([name, text]) =>
-    (typeof text === "object" ? { name, ...text } : { name, type: "blob", object: { text, isTruncated: false } })) },
+// The answer to the guard's GraphQL query for the CI configuration: `files` and `baseFiles` map
+// each name in .github/workflows at the head commit and on the base branch to its text (an
+// object: the entry itself), and `circleci` says whether .circleci/config.yml exists.
+const tree = (files) => (Object.keys(files).length === 0 ? null : { entries: Object.entries(files).map(([name, text]) =>
+  (typeof text === "object" ? { name, ...text } : { name, type: "blob", object: { text, isTruncated: false } })) });
+const ciFiles = ({ files = {}, baseFiles = {}, circleci = false, head = HEAD } = {}) => ({ data: { repository: {
+  head: head === null ? null : { oid: head }, workflows: tree(files), baseWorkflows: tree(baseFiles),
   circleci: circleci ? { oid: "c1" } : null } } });
 const isCiQuery = (args) => args.some((arg) => arg.startsWith("query=") && arg.includes("workflows: object"));
 const PR_WORKFLOW = "name: Checks\non: [push, pull_request]\njobs: {}\n";
@@ -206,7 +206,7 @@ describe("refuses", () => {
 
   test("when a later API query fails", () => {
     const gh = (dir, args) => (args[0] === "pr" ? ok({ ...VIEW, statusCheckRollup: [] }) : { code: 1, stdout: "", stderr: "HTTP 500" });
-    expect(findMergeViolation("gh pr merge 12", "/repo", gh)).toContain("gh could not read the head commit's CI configuration (HTTP 500)");
+    expect(findMergeViolation("gh pr merge 12", "/repo", gh)).toContain("gh could not read the CI configuration (HTTP 500)");
   });
 
   test("once the time budget is spent", () => {
@@ -536,10 +536,21 @@ describe("CI that runs on every pull request", () => {
     // a fast third-party status passed before the Actions runs appeared
     ["only a third-party status", [context("license/cla", "SUCCESS")], { "checks.yml": PR_WORKFLOW }, 'workflow "Checks"'],
     ["a run of another workflow only", [run("lint", "COMPLETED", "SUCCESS", { workflowName: "Lint" })], { "checks.yml": PR_WORKFLOW }, 'workflow "Checks"'],
-    ["a workflow without a name, named by its path", [], { "ci.yaml": "on:\n  pull_request_target:\n" }, 'workflow ".github/workflows/ci.yaml"'],
+    ["a workflow without a name, named by its path", [], { "ci.yaml": "on:\n  pull_request:\n" }, 'workflow ".github/workflows/ci.yaml"'],
+    // two workflows share a name, and only one has a workflow run
+    ["one run for two workflows of the same name", [CHECKS], { "a.yml": PR_WORKFLOW, "b.yml": PR_WORKFLOW }, 'workflow "Checks"'],
     ["two missing workflows", [], { "a.yml": "name: A\non: pull_request\n", "b.yml": "name: B\non: [pull_request]\n" }, 'workflow "A", workflow "B"'],
   ])("refuses with %s", (_, rollup, files, missing) => {
     expect(merge({ view: { statusCheckRollup: rollup }, ci: { files } })).toContain(`pull request #12's head commit has no check yet from ${missing}, which run on every pull request`);
+  });
+
+  // GitHub runs pull_request_target workflows from the base branch, not the head commit.
+  test("expects pull_request_target workflows from the base branch, and pull_request ones from the head commit", () => {
+    const target = "name: Target\non: pull_request_target\n";
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { baseFiles: { "t.yml": target } } })).toContain('no check yet from workflow "Target"');
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { files: { "t.yml": target } } })).toBeUndefined();
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { baseFiles: { "checks.yml": PR_WORKFLOW } } })).toBeUndefined();
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { baseFiles: { "t.yml": "on: [pull_request_target\n" } } })).toContain(".github/workflows/t.yml on main does not parse as YAML");
   });
 
   test("keeps expecting a workflow that Actions lists as active", () => {
@@ -566,8 +577,8 @@ describe("CI that runs on every pull request", () => {
   });
 
   test.each([
-    ["the query fails", () => ({ code: 1, stdout: "", stderr: "GraphQL: Something went wrong" }), "gh could not read the head commit's CI configuration (GraphQL: Something went wrong)"],
-    ["the query times out", () => { throw new Error("spawnSync gh ETIMEDOUT"); }, "gh could not read the head commit's CI configuration (spawnSync gh ETIMEDOUT)"],
+    ["the query fails", () => ({ code: 1, stdout: "", stderr: "GraphQL: Something went wrong" }), "gh could not read the CI configuration (GraphQL: Something went wrong)"],
+    ["the query times out", () => { throw new Error("spawnSync gh ETIMEDOUT"); }, "gh could not read the CI configuration (spawnSync gh ETIMEDOUT)"],
     ["the head commit is not found", () => ok(ciFiles({ head: null })), "gh could not find the head commit abc123"],
   ])("refuses when %s", (_, ci, reason) => {
     expect(merge({ ci })).toContain(reason);
@@ -590,10 +601,18 @@ describe("CI that runs on every pull request", () => {
     expect(calls.map((call) => (call.args[0] === "pr" ? "pr" : call.args[3]))).toEqual(["pr", "graphql"]);
     expect(calls[1].args).toContain("oid=abc123");
     expect(calls[1].args).toContain("circleci=abc123:.circleci/config.yml");
+    expect(calls[1].args).toContain("baseWorkflows=main:.github/workflows");
   });
 
-  test("passes when CircleCI reported a status", () => {
+  test("passes when CircleCI reported a status, or a check run through its GitHub App", () => {
     expect(merge({ view: { statusCheckRollup: [context("ci/circleci: build", "SUCCESS")] }, ci: { circleci: true } })).toBeUndefined();
+    const app = run("build", "COMPLETED", "SUCCESS", { workflowName: "", detailsUrl: "https://app.circleci.com/pipelines/gh/o/r/1/workflows/w/jobs/1" });
+    expect(merge({ view: { statusCheckRollup: [app] }, ci: { circleci: true } })).toBeUndefined();
+  });
+
+  test("passes two workflows of the same name once each has a workflow run", () => {
+    const rollup = [job("test", 1, "SUCCESS"), { ...job("test", 2, "SUCCESS"), detailsUrl: "https://github.com/o/r/actions/runs/8/job/2" }];
+    expect(merge({ view: { statusCheckRollup: rollup }, ci: { files: { "a.yml": PR_WORKFLOW, "b.yml": PR_WORKFLOW } } })).toBeUndefined();
   });
 
   test("does not expect a workflow that Actions lists as disabled", () => {
