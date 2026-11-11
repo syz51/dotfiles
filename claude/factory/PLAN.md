@@ -101,13 +101,13 @@ review on sai** for the feasibility notes the user asked about.
 threads become `subagents` of their root thread and whose cost is the usage estimate):
 
 ```
-{ id, harness: "claude" | "codex", project, cwd, file, entrypoint, title, startedAt, endedAt,
+{ id, harness: "claude" | "codex" | "opencode", project, cwd, file, entrypoint, title, startedAt, endedAt,
   models: {model: count},
   prompts: [{ at, text, source }],      // human-sent prompts only
   assistantMessages, efforts: {effort: count},
   toolCalls: [{ id, name, input, ok, output, at }],  // output: 2,000-char start+end excerpt
   usage: { [model]: { input, output, cacheRead, cacheWrite5m, cacheWrite1h } },
-  costUSD, costSource: "cost-state" | "estimated", estimatedCostUSD, unpriced,
+  costUSD, costSource: "cost-state" | "estimated" | "api" | "partial", estimatedCostUSD, unpriced,
   linesAdded, linesRemoved, compactions, interrupts, apiErrors: {status: count},
   subagents: [{ id, agentType, description, toolUseId, model, effort, usage, costUSD,
                 toolCalls, toolErrors, malformedLines }],
@@ -586,6 +586,17 @@ coordination). This file keeps the goal, evidence, decisions and log.
 
 ## Log
 
+- 2026-11-11 (dotfiles-382, accepted dotfiles-377): metrics and friction now observe
+  OpenCode V2 through `opencode api get`, using its service discovery and authentication.
+  Paginated projections stay in memory; no database, credentials or transcript snapshots
+  are copied. Roots include descendants once; shared/forked history is excluded. Costs
+  come from own messages, not header totals; missing prices remain partial known costs.
+  Synthetic turns use stable message IDs and wait for explicit idle; busy turns never
+  become stale completions. Read failures hold the capture cursor and report missing
+  coverage. Reports separate all three runtimes; correction and tool-error rates apply
+  to OpenCode, but review-specific scoring remains Claude Code-only. Scheduled jobs
+  retain the OpenCode executable's folder when reinstalled. Synthetic tests and an
+  unpaid read-only live-service smoke test cover the integration.
 - 2026-11-05: Plan written. Facts above checked on this Mac.
 - 2026-11-05: Foundation done. On real data: 80 sessions in 30 days, 78 with `cost-state`,
   about $719 API-equivalent in total, 377 human prompts, 6 sessions with `pr-link`.

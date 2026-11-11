@@ -17,7 +17,7 @@ export function sessionPrs(session) {
   const add = (link) => found.has(link.key) || found.set(link.key, link);
   for (const link of session.prLinks) for (const parsed of prUrls(link.url)) add(parsed);
   for (const call of session.toolCalls) {
-    if (call.name === "Bash" && /\bgh\s+pr\s+create\b/.test(call.input?.command ?? ""))
+    if (["Bash", "shell"].includes(call.name) && /\bgh\s+pr\s+create\b/.test(call.input?.command ?? ""))
       for (const parsed of prUrls(call.output)) add(parsed);
     for (const line of String(call.output ?? "").split("\n")) if (line.startsWith("remote:")) for (const parsed of prUrls(line)) add(parsed);
   }
@@ -37,7 +37,7 @@ const PULL_NEW = /https:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/new\/(\S+)/
 // or deleted refs, nor tags), and GitHub's `remote: … /pull/new/<branch>` hint for a new
 // branch. A quiet push (`-q`) prints neither, so it is not seen.
 export function sessionPushes(session) {
-  const found = new Map();
+  const found = new Map((session.descendantPushes ?? []).map((push) => [push.key, { ...push }]));
   const add = (repository, branch, created) => {
     const key = `${repository.toLowerCase()}:${branch}`;
     const known = found.get(key);

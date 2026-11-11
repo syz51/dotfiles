@@ -1,9 +1,10 @@
-// metrics: cost, effort and quality of Claude Code and Codex sessions in a window,
+// metrics: cost, effort and quality of Claude Code, Codex and OpenCode in a window,
 // compared with the window before it, overall, per project and per pull request.
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadCodexSessions } from "../lib/codex.js";
+import { loadOpenCodeSessions } from "../lib/opencode.js";
 import { litellmFetchedAt, refreshLitellm } from "../lib/litellm.js";
 import { priceSource } from "../lib/pricing.js";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
@@ -22,8 +23,9 @@ const HISTORY = "metrics-history.jsonl";
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js metrics [options]
 
-Cost, effort and quality of Claude Code and Codex sessions, compared with the previous
-window. Codex sessions come from \$CODEX_HOME/sessions (default ~/.codex/sessions).
+Cost, effort and quality of Claude Code, Codex and OpenCode sessions.
+OpenCode uses the read-only live service API through opencode api (discovery/auth).
+Codex sessions come from \$CODEX_HOME/sessions (default ~/.codex/sessions).
 
   --days N              Window length in days, ending now (default 7)
   --since ISO           Window start (instead of --days)
@@ -114,7 +116,7 @@ function reportName({ since, until, project }) {
   return ["metrics", localDate(until), ...(days === 7 ? [] : [`${days}d`]), ...(slug ? [slug] : [])].join("-");
 }
 
-export async function buildReport(options) {
+export async function buildReport(options, { openCodeApi } = {}) {
   const { since, until } = options;
   const length = until - since;
   const previousSince = since - length;
@@ -124,7 +126,14 @@ export async function buildReport(options) {
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
   const entries = { current: [], previous: [] };
-  for (const session of [...loadSessions({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until })]) {
+  let openCode = [], openCodeObserved = true;
+  try {
+    openCode = await loadOpenCodeSessions({ since: previousSince, until, api: openCodeApi });
+  } catch (error) {
+    openCodeObserved = false;
+    notes.push(`${error.message}; OpenCode coverage is unavailable, not zero usage.`);
+  }
+  for (const session of [...loadSessions({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until }), ...openCode]) {
     const ended = Date.parse(session.endedAt);
     if (!Number.isFinite(ended) || ended <= previousSince || ended > until) continue;
     if (session.automation && !options.includeAutomation) {
@@ -152,7 +161,11 @@ export async function buildReport(options) {
     prInfo = new Map([...states].map(([key, state]) => [key, { ...state, revertedBy: reverted.get(key) ?? null }]));
   } else notes.push("GitHub lookups were skipped (--no-gh), so PR states, merged-PR counts and reverts are unknown.");
 
-  const stats = (list) => ({ ...windowStats(list, prInfo), reviews: reviewStats(list, prInfo) });
+  const stats = (list) => {
+    const result = { ...windowStats(list, prInfo), reviews: reviewStats(list, prInfo) };
+    result.harness.opencode.observed = openCodeObserved;
+    return result;
+  };
   const projectKeys = [...new Set(all.map((entry) => entry.session.project))];
   const projects = projectKeys.map((project) => {
     const of = (list) => list.filter((entry) => entry.session.project === project);
@@ -170,13 +183,13 @@ export async function buildReport(options) {
       url: pr.url, repository: pr.repository, number: pr.number, title: info?.title ?? null, state: info?.state ?? null,
       createdAt: info?.createdAt ?? null, mergedAt: info?.mergedAt ?? null, closedAt: info?.closedAt ?? null,
       additions: info?.additions ?? null, deletions: info?.deletions ?? null, headRefName: info?.headRefName ?? null,
-      revertedBy: info?.revertedBy ?? null, sessions: pr.sessions, costUSD: pr.costUSD, prompts: pr.prompts,
+      revertedBy: info?.revertedBy ?? null, sessions: pr.sessions, costUSD: pr.costUSD, partialCost: pr.partialCost ?? false, prompts: pr.prompts,
     };
   }).sort((a, b) => b.costUSD - a.costUSD);
 
   const topSessions = entries.current.map(({ session, prompts }) => ({
     id: session.id, title: session.title, project: tilde(session.cwd) ?? session.project, costUSD: session.costUSD,
-    costSource: session.costSource, prompts: prompts.length, startedAt: session.startedAt, endedAt: session.endedAt,
+    costSource: session.costSource, unpriced: session.unpriced, harness: session.harness, prompts: prompts.length, startedAt: session.startedAt, endedAt: session.endedAt,
   })).sort((a, b) => b.costUSD - a.costUSD).slice(0, 5);
 
   if (excluded.hostPrompts) notes.push(`${excluded.hostPrompts} prompts were host notices (PR updates, delegated-task results, resume nudges, slash commands) and are not counted as the person's prompts.`);
@@ -189,6 +202,8 @@ export async function buildReport(options) {
     notes.push(`The previous window starts more than ${RETENTION_DAYS} days ago; Claude Code deletes older transcripts, so it is likely incomplete.`);
   if (entries.current.some(({ session }) => session.harness === "codex"))
     notes.push("Codex sessions: subagent threads count with their root thread's session, tool errors are calls whose script failed or never ran (not non-zero exits inside a script), and API errors are turns that ended with an error such as a usage limit.");
+  if (all.some(({ session }) => session.harness === "opencode"))
+    notes.push("OpenCode: read-only API projections stay in memory. Each root includes its descendants once; costs use own messages, not session-header totals. Missing prices are partial known subtotals, not free usage. Synthetic continuations are friction turns, not human prompts. Review-specific scoring remains Claude Code-only.");
   const malformed = all.reduce((total, { session }) => total + session.malformedLines, 0);
   if (malformed) notes.push(`${malformed} transcript lines did not parse (usually a session still being written).`);
   const current = stats(entries.current);
@@ -223,6 +238,9 @@ function historyEntry(report, path) {
     sessions: current.sessions,
     codexSessions: current.harness.codex.sessions,
     codexTokens: current.harness.codex.tokens,
+    openCodeSessions: current.harness.opencode.observed ? current.harness.opencode.sessions : null,
+    openCodeTokens: current.harness.opencode.observed ? current.harness.opencode.tokens : null,
+    openCodeUnpricedSessions: current.harness.opencode.observed ? current.harness.opencode.unpricedSessions : null,
     costUSD: current.cost.totalUSD,
     prompts: current.prompts.total,
     promptsPerSession: current.prompts.meanPerSession,

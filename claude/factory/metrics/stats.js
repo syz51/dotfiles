@@ -9,7 +9,7 @@ export const sum = (values) => values.reduce((total, value) => total + value, 0)
 const usageTokens = (entry) => entry.input + entry.output + entry.cacheRead + entry.cacheWrite5m + entry.cacheWrite1h;
 const tokens = (usage) => sum(Object.values(usage).map(usageTokens));
 // Harnesses a session can come from, with their names in reports.
-export const HARNESSES = { claude: "Claude Code", codex: "Codex" };
+export const HARNESSES = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode" };
 export const ratio = (part, whole) => (whole ? part / whole : null);
 
 // Linear-interpolation quantile of values (q in [0, 1]); null for no values.
@@ -30,6 +30,7 @@ export function attributePrs(entries) {
       const pr = prs.get(link.key) ?? { ...link, sessions: [], costUSD: 0, prompts: 0 };
       pr.sessions.push(session.id);
       pr.costUSD += session.costUSD / links.length;
+      if (!costKnown(session)) pr.partialCost = true;
       pr.prompts += prompts.length / links.length;
       prs.set(link.key, pr);
     }
@@ -38,7 +39,7 @@ export function attributePrs(entries) {
 
 // A session's cost is unknown when it is a usage estimate with an unpriced model, such as
 // every Codex session until GPT models have prices: its $0 is partial, not a cost.
-export const costKnown = (session) => !(session.unpriced && session.costSource === "estimated");
+export const costKnown = (session) => Number.isFinite(session.costUSD) && session.costSource !== "partial" && !(session.unpriced && session.costSource === "estimated");
 
 function prStats(entries, prInfo, totalPrompts) {
   const linked = attributePrs(entries);
@@ -70,9 +71,9 @@ function prStats(entries, prInfo, totalPrompts) {
 // cost is the session's estimate less its subagents, split across models by their usage.
 function modelMix(sessions) {
   const rows = new Map();
-  const row = (role, model) => {
-    const key = `${role}\u0000${model}`;
-    if (!rows.has(key)) rows.set(key, { role, model, runs: 0, messages: 0, tokens: 0, costUSD: 0 });
+  const row = (harness, role, model) => {
+    const key = `${harness}\u0000${role}\u0000${model}`;
+    if (!rows.has(key)) rows.set(key, { harness, role, model, runs: 0, messages: 0, tokens: 0, costUSD: 0 });
     return rows.get(key);
   };
   for (const session of sessions) {
@@ -82,18 +83,32 @@ function modelMix(sessions) {
     const weights = Object.keys(session.models).map((model) => [model, session.costByModel?.[model] ?? 0]);
     const totalWeight = sum(weights.map(([, weight]) => weight));
     for (const [model, weight] of weights) {
-      const entry = row("main", model);
+      const entry = row(session.harness, "main", model);
       entry.runs++;
       entry.messages += session.models[model];
       entry.tokens += session.usage[model] ? usageTokens(session.usage[model]) : 0;
       entry.costUSD += totalWeight ? (mainCost * weight) / totalWeight : 0;
+      if (session.ownCostSource ? session.ownCostSource === "partial" : !costKnown(session)) entry.partialCost = true;
     }
     for (const agent of session.subagents) {
-      const entry = row(agent.agentType ?? "unknown", agent.model ?? "unknown");
-      entry.runs++;
-      entry.messages += agent.assistantMessages;
-      entry.tokens += tokens(agent.usage);
-      entry.costUSD += agent.costUSD;
+      if (agent.models) {
+        // OpenCode preserves each descendant's model mix, not only its top model.
+        for (const [model, messages] of Object.entries(agent.models)) {
+          const entry = row(session.harness, agent.agentType ?? "unknown", model);
+          entry.runs++;
+          entry.messages += messages;
+          entry.tokens += agent.usage[model] ? usageTokens(agent.usage[model]) : 0;
+          entry.costUSD += agent.costByModel[model] ?? 0;
+          if (agent.unpriced) entry.partialCost = true;
+        }
+      } else {
+        const entry = row(session.harness, agent.agentType ?? "unknown", agent.model ?? "unknown");
+        entry.runs++;
+        entry.messages += agent.assistantMessages;
+        entry.tokens += tokens(agent.usage);
+        entry.costUSD += agent.costUSD;
+        if (agent.unpriced) entry.partialCost = true;
+      }
     }
   }
   const total = sum([...rows.values()].map((entry) => entry.costUSD));
@@ -135,7 +150,8 @@ export function windowStats(entries, prInfo) {
       // Codex session, is a partial $0 that would drag these down.
       medianUSD: quantile(pricedCosts, 0.5),
       p90USD: quantile(pricedCosts, 0.9),
-      sources: { "cost-state": sessions.filter((session) => session.costSource === "cost-state").length, estimated: sessions.filter((session) => session.costSource === "estimated").length },
+      sources: { "cost-state": sessions.filter((session) => session.costSource === "cost-state").length, estimated: sessions.filter((session) => session.costSource === "estimated").length,
+        ...Object.fromEntries(["api", "partial"].map((source) => [source, sessions.filter((session) => session.costSource === source).length]).filter(([, count]) => count)) },
       unpricedSessions: sessions.filter((session) => session.unpriced).length,
     },
     prs: prStats(entries, prInfo, totalPrompts),

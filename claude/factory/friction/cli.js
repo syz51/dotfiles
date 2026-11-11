@@ -1,4 +1,4 @@
-// `friction`: finds turns of recent Claude Code and Codex sessions where the setup got in the
+// `friction`: finds recent Claude Code, Codex and OpenCode turns where the setup got in the
 // way, asks a budget-capped judge which setup it was, and files each finding once as board
 // feedback (source capture), so friction nobody reported still reaches the setup's owner.
 // The judge sees the items already filed and names the one a finding repeats: the report
@@ -14,11 +14,12 @@ import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { boardBin, call as boardCall, FEEDBACK_BOARD } from "../board/cli.js";
 import { judge } from "../lib/claude.js";
 import { codexSessionsRoot, rolloutThreads } from "../lib/codex.js";
+import { loadOpenCodeData } from "../lib/opencode.js";
 import { agentStatus, installAgent, plistPath, plistText, toolPath, uninstallAgent } from "../lib/launchd.js";
 import { acquireLock, appendJsonl, readJson, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
 import { isAutomation, projectsRoot, sessionFiles } from "../lib/transcripts.js";
 import { loadSetups } from "../setups/cli.js";
-import { claudeTurns, codexTurns, digest, filedFeedback, signals } from "./turns.js";
+import { claudeTurns, codexTurns, digest, filedFeedback, openCodeTurns, signals } from "./turns.js";
 
 export const LABEL = "com.syz51.claude-factory.friction";
 export const ACTIVITIES = ["explore", "research", "design", "plan", "build", "review", "operate", "other"];
@@ -57,7 +58,7 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js friction <run|install|uninsta
     --effort LEVEL       judge effort (default medium)
     --budget-usd N       budget per judge call (default 0.05)
     --max-total-usd N    stop before judge spending could pass this (default 0.30)
-    --dry-run            list the turns that would be judged; call and write nothing
+    --dry-run            read sessions and list candidates; no judge, filing or state writes
   install    Write and load the LaunchAgent (every hour)
     --print            Print the plist instead of installing it
   uninstall  Unload and remove the LaunchAgent
@@ -68,7 +69,7 @@ export const recordsFile = () => statePath("friction.jsonl");
 const keyOf = (harness, sessionId, turn) => `${harness}:${sessionId}:${turn}`;
 // A finding's own key, so a filing is made once. The board merges reports by its own
 // signature (setup and title), so the same friction seen in many turns is one item.
-export const filingOf = (sessionId, turn, n) => `capture:${sessionId}:${turn}:${n}`;
+export const filingOf = (sessionId, turn, n, harness) => `capture:${harness === "opencode" ? "opencode:" : ""}${sessionId}:${turn}:${n}`;
 const usd = (value) => `$${value.toFixed(2)}`;
 const line = (text, max) => {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -80,17 +81,17 @@ const line = (text, max) => {
 // folder. Its judge calls save no session at all.
 export const skippedCwd = (cwd, state = stateDir()) => isAutomation(cwd) || (cwd !== null && (cwd === state || cwd.startsWith(`${state}/`)));
 
-// Completed turns of both harnesses that ended in (from, to], with their session. A turn
+// Completed turns of all harnesses that ended in (from, to], with their session. A turn
 // in that window that has not ended is held: holdAt is the earliest such end, before which
 // the cursor stays until the turn ends or goes stale (no activity since staleBefore).
-export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot() }) {
+export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot(), openCodeData = [] }) {
   const found = [];
   const skipped = { automation: 0, feedback: 0 };
   let holdAt = Infinity;
   const take = (harness, session, turn) => {
     const end = Date.parse(turn.end);
     if (!(end > from && end <= to)) return;
-    if (!turn.complete && end > staleBefore) {
+    if (!turn.complete && (turn.active || end > staleBefore)) {
       holdAt = Math.min(holdAt, end);
       return;
     }
@@ -112,6 +113,11 @@ export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot =
     if (!session) continue;
     if (skippedCwd(session.cwd)) skipped.automation++;
     else for (const turn of session.turns) take("codex", session, turn);
+  }
+  for (const entry of openCodeData) {
+    const session = openCodeTurns(entry);
+    if (skippedCwd(session.cwd)) skipped.automation++;
+    else for (const turn of session.turns) take("opencode", session, turn);
   }
   return { turns: found, skipped, holdAt };
 }
@@ -249,7 +255,7 @@ export const feedbackText = (finding, { harness, sessionId, turn, cwd }) => {
   const where = cwd ? ` in ${cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd}` : "";
   return [
     finding.title, "", ...(finding.detail ? [finding.detail, ""] : []), ...(finding.error ? [`Error: ${finding.error}`, ""] : []),
-    `Captured from ${harness === "codex" ? "Codex" : "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
+    `Captured from ${{ claude: "Claude Code", codex: "Codex", opencode: "OpenCode" }[harness] ?? harness} session ${sessionId}, turn ${turn}${where}.`,
   ].join("\n");
 };
 
@@ -286,7 +292,7 @@ async function itemState(id, depth = 0) {
 // it there while the item is live, and files a new item that recurs it once it is not. A
 // match closed after the turn ended is skipped: its fix, such as a raised limit, came later.
 async function file(record, finding, n, filed) {
-  const filing = filingOf(record.sessionId, record.turn, n);
+  const filing = filingOf(record.sessionId, record.turn, n, record.harness);
   if (filed.has(filing)) return null;
   const args = ["--agent", AGENT, "feedback", "--source", "capture", "--about", finding.about, "--activity", finding.activity];
   if (finding.match) {
@@ -342,7 +348,7 @@ function parseOptions(argv) {
   };
 }
 
-export async function runFriction(options, { now = Date.now(), claudeRoot, codexRoot } = {}) {
+export async function runFriction(options, { now = Date.now(), claudeRoot, codexRoot, openCodeApi } = {}) {
   const lock = statePath("friction.lock");
   if (!options.dryRun && !acquireLock(lock)) {
     console.error("Another friction run is in progress.");
@@ -358,7 +364,14 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     const from = Math.max(state.cursor ? Date.parse(state.cursor) : now - options.sinceHours * HOUR, oldest);
     const records = readJsonl(recordsFile());
     const known = recordState(records);
-    const { turns, skipped, holdAt } = completedTurns({ from, to, staleBefore: now - options.staleHours * HOUR, claudeRoot, codexRoot });
+    let openCodeData = [], observationError;
+    try {
+      openCodeData = await loadOpenCodeData({ since: from, until: to, api: openCodeApi });
+    } catch (error) {
+      observationError = error.message;
+      console.error(`${observationError}; OpenCode coverage unavailable; cursor will not advance.`);
+    }
+    const { turns, skipped, holdAt } = completedTurns({ from, to, staleBefore: now - options.staleHours * HOUR, claudeRoot, codexRoot, openCodeData });
     const candidates = turns
       .filter((entry) => !known.judged.has(entry.key) && (known.errors.get(entry.key) ?? 0) < MAX_JUDGE_ERRORS)
       .map((entry) => ({ ...entry, signals: signals(entry.turn) }))
@@ -367,15 +380,15 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     // Findings judged earlier whose filing failed, as when the board was unreachable, until
     // they have failed MAX_FILE_ERRORS times or their turn is older than --max-age-hours.
     const pending = [...known.judged.values()].filter((record) => Date.parse(record.endedAt) > oldest)
-      .flatMap((record) => record.findings.map((finding, index) => ({ record, finding, n: index + 1, filing: filingOf(record.sessionId, record.turn, index + 1) })))
+      .flatMap((record) => record.findings.map((finding, index) => ({ record, finding, n: index + 1, filing: filingOf(record.sessionId, record.turn, index + 1, record.harness) })))
       .filter(({ filing }) => !known.filed.has(filing) && (known.fileErrors.get(filing) ?? 0) < MAX_FILE_ERRORS);
     console.log(`${turns.length} completed turns since ${new Date(from).toISOString()} (skipped ${skipped.automation} automation sessions, ${skipped.feedback} turns that filed feedback); ${candidates.length} show friction; judging up to ${options.maxTurns} with ${options.model}.`);
     if (options.dryRun) {
       for (const entry of candidates.slice(0, options.maxTurns))
         console.log(`  ${entry.harness} ${entry.sessionId} turn ${entry.turn.index}: score ${entry.signals.score} (${entry.signals.toolErrors} tool errors, ${entry.signals.boardErrors} board (${entry.signals.serverErrors} server-counted), ${entry.signals.hookBlocks} hook, ${entry.signals.retries} retries, ${entry.signals.phrases} phrases); digest ${digest(entry.turn).length} chars`);
       if (pending.length) console.log(`${pending.length} judged findings wait to be filed.`);
-      console.log("Dry run: nothing called or written.");
-      return 0;
+      console.log("Dry run: no judge calls, feedback filings or state writes.");
+      return observationError ? 1 : 0;
     }
     if (!(await boardFilesCapture())) {
       // The cursor stays, so these turns are judged once the CLI is updated (within
@@ -386,7 +399,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
       return 0;
     }
 
-    let errors = 0;
+    let errors = observationError ? 1 : 0;
     let spent = 0;
     let judgedCount = 0;
     const filed = [];
@@ -420,7 +433,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
         }
       } catch (error) {
         errors++;
-        const filing = filingOf(record.sessionId, record.turn, n);
+        const filing = filingOf(record.sessionId, record.turn, n, record.harness);
         appendJsonl(recordsFile(), { kind: "file-error", key: record.key, filing, error: line(error.message, 300), at: new Date(now).toISOString() });
         console.error(`Filing ${filing} failed: ${line(error.message, 300)}`);
       }
@@ -431,7 +444,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     const schema = judgeSchema(setups);
     // The earliest turn left unjudged, or not yet ended, keeps the cursor before it, so the
     // next run sees it.
-    let resumeAt = Math.min(to, holdAt - 1);
+    let resumeAt = observationError ? from : Math.min(to, holdAt - 1);
     for (const [index, entry] of candidates.entries()) {
       if (index >= options.maxTurns || spent + options.budgetUsd > options.maxTotalUsd) {
         resumeAt = Math.min(resumeAt, Date.parse(entry.turn.end) - 1);
@@ -468,7 +481,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
       judgedCount++;
       for (const [n, finding] of findings.entries()) await fileOne(record, finding, n + 1);
     }
-    writeJsonAtomic(stateFile(), { cursor: new Date(Math.max(from, resumeAt)).toISOString(), lastRun: { at: new Date(now).toISOString(), judged: judgedCount, filed: filed.length, skipped: skippedFixed.length, errors, costUSD: spent } });
+    writeJsonAtomic(stateFile(), { cursor: new Date(Math.max(from, resumeAt)).toISOString(), lastRun: { at: new Date(now).toISOString(), judged: judgedCount, filed: filed.length, skipped: skippedFixed.length, errors, costUSD: spent, ...(observationError ? { note: `${observationError}; OpenCode coverage unavailable; cursor held.` } : {}) } });
     const duplicates = filed.filter((entry) => entry.duplicate).length;
     console.log(`Judged ${judgedCount} turns for ${usd(spent)}; filed ${filed.length} findings${duplicates ? ` (${duplicates} added to existing items)` : ""}${skippedFixed.length ? `; skipped ${skippedFixed.length} whose item closed after their turn` : ""}${errors ? `; ${errors} errors` : ""}.`);
     for (const entry of filed) console.log(`  ${entry.task} about ${entry.about} (${entry.filing})${entry.match ? `, matched ${entry.match}` : ""}`);
@@ -511,7 +524,7 @@ export async function run(argv, context) {
     case "run":
       return runFriction(options, context);
     case "install": {
-      const text = plist({ path: await toolPath({ required: ["claude"], purpose: "friction capture" }) });
+      const text = plist({ path: await toolPath({ required: ["claude"], optional: ["opencode"], purpose: "friction capture" }) });
       if (options.print) {
         console.log(text);
         return 0;

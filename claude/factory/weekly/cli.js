@@ -200,7 +200,7 @@ export function plist({ bun = process.execPath, cli = join(homedir(), ".claude",
 
 async function install({ print }) {
   // cargo only tests agent-board proposals; without it they fail their tests, the rest runs.
-  const text = plist({ path: await toolPath({ required: ["claude", "git", "gh", "uv"], optional: ["cargo"], purpose: "the weekly run" }) });
+  const text = plist({ path: await toolPath({ required: ["claude", "git", "gh", "uv"], optional: ["cargo", "opencode"], purpose: "the weekly run" }) });
   if (print) {
     console.log(text);
     return 0;

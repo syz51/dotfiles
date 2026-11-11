@@ -1,10 +1,11 @@
-// Turns of Claude Code sessions and Codex threads, and the friction signals in each. A turn
+// Turns of Claude Code, Codex and OpenCode sessions, and the friction signals in each. A turn
 // is one prompt (from the person, an orchestrating agent or the host) and the agent's
-// work until the next one. Only main sessions are read: a subagent's errors show in its
-// own transcript, not here. Transcripts are external data: their text is clipped and
+// work until the next one. OpenCode also reads each child's own turns; the file-based
+// adapters read main transcripts only. External transcript/API text is clipped and
 // quoted to the judge, never trusted.
 import { basename } from "node:path";
 import { contentText, FAILED_OUTPUT, promptText as codexPrompt, readThread } from "../lib/codex.js";
+import { openCodeCall, openCodeMessageTime } from "../lib/opencode.js";
 import { promptText, readRecords, textOf } from "../lib/transcripts.js";
 
 const OUTPUT = 800;
@@ -146,6 +147,47 @@ export function codexTurns(thread) {
   return { sessionId: thread.id, cwd: meta.cwd ?? null, turns };
 }
 
+// Synthetic messages (host continuations, scheduled work) start turns too, but are not
+// human prompts in metrics. Assistant finish=stop ends a step, NOT an execution: only
+// idle closes the pending turns. Message IDs are stable replay keys, unlike page indexes.
+export function openCodeTurns({ info, messages }) {
+  const turns = [];
+  let turn;
+  let pending = [];
+  for (const message of messages) {
+    const at = new Date(openCodeMessageTime(message)).toISOString();
+    if (message.type === "user" || message.type === "synthetic") {
+      turn = newTurn(message.id, at, message.text);
+      turns.push(turn);
+      pending.push(turn);
+      continue;
+    }
+    if (message.type === "idle") {
+      for (const open of pending) { open.complete = true; open.end = at; }
+      pending = [];
+      continue;
+    }
+    if (!turn) continue;
+    if (message.type === "assistant") {
+      // Work after an idle reopens the latest turn rather than treating a step as final.
+      if (turn.complete) { turn.complete = false; pending.push(turn); }
+      turn.end = at;
+      for (const part of message.content) {
+        if (part.type === "text" && part.text.trim()) addText(turn, part.text);
+        if (part.type === "tool") {
+          const call = openCodeCall(part);
+          call.output = ends(call.output);
+          addCall(turn, call);
+        }
+      }
+    }
+  }
+  // Explicitly busy turns never become "stale completed" while waiting on tools/people.
+  const busy = (info.time.busy ?? -Infinity) > (info.time.idle ?? -Infinity);
+  for (const open of pending) open.active = busy;
+  return { sessionId: info.id, cwd: info.location.directory, turns };
+}
+
 // What a call runs in a shell: Claude Code's Bash command, a Codex shell command or
 // exec_command, or a Codex custom tool's script. Other inputs, such as a Bash call's
 // description or an edit's text, only mention commands.
@@ -157,11 +199,11 @@ export const commandText = (call) => {
 // A call that filed feedback: the board's MCP tool, or `board feedback` run in a shell. A
 // call that failed (an older `board` rejecting its options, say) filed nothing, so the
 // capture still judges that turn.
-const FEEDBACK_TOOL = /(?:^|__|\.)feedback$/;
+const FEEDBACK_TOOL = /(?:^|_|\.)feedback$/;
 const FEEDBACK_COMMAND = /\bboard\s+feedback\b/;
 export const filedFeedback = (turn) => turn.calls.some((call) => call.ok !== false && (FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(commandText(call))));
 
-const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^board$/;
+const BOARD_CALL = /(?:^|__|\.)board(?:_|\.)|^board$/;
 const BOARD_COMMAND = /(?:^|[\s;&|(/"'])board\s+[a-z]/;
 const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(commandText(call));
 // A board error the server counts itself: an answer with its error code, as the board's

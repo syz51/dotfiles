@@ -6,8 +6,9 @@ import { rolloutThreads } from "../lib/codex.js";
 import { readJson, readJsonl } from "../lib/state.js";
 import { Rollout, writeRollouts } from "../lib/testing/codex.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
+import { openCodeInfo, openCodeMessage, openCodeTool } from "../lib/testing/opencode.js";
 import { AGENT, checkFindings, feedbackText, filedItems, judgeSchema, judgeSystem, LABEL, matchItems, plist, run } from "./cli.js";
-import { claudeTurns, codexTurns, digest, filedFeedback, signals } from "./turns.js";
+import { claudeTurns, codexTurns, digest, filedFeedback, openCodeTurns, signals } from "./turns.js";
 
 const FAKE_CLAUDE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 const NOW = Date.parse("2026-11-01T12:00:00Z");
@@ -69,6 +70,8 @@ console.log(JSON.stringify({ task: { id: "board-feedback-" + count, board: "boar
     CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_BIN: FAKE_CLAUDE, CLAUDE_FACTORY_BOARD: board,
     FAKE_CLAUDE_LOG: join(scratch, "claude.jsonl"), FAKE_BOARD_LOG: join(scratch, "board.jsonl"), FAKE_CLAUDE_MODE: "structured",
     FAKE_CLAUDE_COST: "0.01", FAKE_BOARD_FAIL: undefined, FAKE_BOARD_OLD: undefined, FAKE_BOARD_TASKS: undefined, FAKE_BOARD_LS_FAIL: undefined,
+    CLAUDE_FACTORY_OPENCODE: join(import.meta.dir, "..", "lib", "testing", "fake-opencode.js"),
+    FAKE_OPENCODE_DATA: undefined, FAKE_OPENCODE_FAIL: undefined, FAKE_OPENCODE_LOG: join(scratch, "opencode.log"),
     FAKE_CLAUDE_OUTPUT: JSON.stringify({ findings: [{ about: "board", activity: "build", title: "Claims are refused for a task the agent owns", detail: "The agent retried the claim twice.", error: "claim refused: owned by\nanother agent" }] }),
   });
   spyOn(console, "log").mockImplementation(() => {});
@@ -125,6 +128,18 @@ const feedbackCalls = () => log("board.jsonl").filter((args) => args.includes("f
 const records = () => readJsonl(join(scratch, "state", "friction.jsonl"));
 
 describe("turns", () => {
+  test("OpenCode steering and synthetic prompts stay pending together until explicit idle", () => {
+    const start = NOW - 60_000;
+    const info = openCodeInfo("root", { start });
+    const messages = [openCodeMessage("u", "user", start), openCodeMessage("a", "assistant", start + 1),
+      openCodeMessage("s", "synthetic", start + 2), openCodeMessage("a2", "assistant", start + 3)];
+    expect(openCodeTurns({ info, messages }).turns.map((turn) => turn.complete)).toEqual([false, false]);
+    messages.push(openCodeMessage("i", "idle", start + 4));
+    expect(openCodeTurns({ info, messages }).turns.map((turn) => [turn.index, turn.complete, turn.end])).toEqual([
+      ["u", true, new Date(start + 4).toISOString()], ["s", true, new Date(start + 4).toISOString()],
+    ]);
+  });
+
   test("Claude turns split at prompts, with calls, results, text and hook blocks in order", () => {
     const transcript = frictionSession();
     transcript.records.push(transcript.base({ type: "attachment", attachment: { type: "hook_blocking_error", hookName: "Stop", blockingError: { blockingError: "board: handoff is stale" } } }));
@@ -256,6 +271,62 @@ describe("turns", () => {
 });
 
 describe("friction run", () => {
+  test("OpenCode synthetic turns wait for idle, capture once across cursor resets, and label the runtime", async () => {
+    const start = NOW - 2 * 3_600_000;
+    const dataFile = join(scratch, "opencode.json");
+    const own = { info: openCodeInfo("open-root", { start, time: { created: start, updated: start + 2, busy: start } }), messages: [
+      openCodeMessage("synthetic-turn", "synthetic", start, { text: "Continue the fixture job" }),
+      openCodeMessage("a", "assistant", start + 1, { content: [openCodeTool("t1"), openCodeTool("t2")] }),
+    ] };
+    const write = () => writeFileSync(dataFile, JSON.stringify([own]));
+    write();
+    setEnv({ FAKE_OPENCODE_DATA: dataFile });
+    const roots = { claudeRoot: join(scratch, "empty-claude"), codexRoot: join(scratch, "empty-codex") };
+    // Even beyond stale-hours, an explicitly busy turn is held; finish=stop is not idle.
+    expect(await run(["run", "--stale-hours", "0"], context(roots))).toBe(0);
+    expect(log("claude.jsonl")).toHaveLength(0);
+    expect(Date.parse(readJson(join(scratch, "state", "friction-state.json")).cursor)).toBeLessThan(start + 2);
+    own.messages.push(openCodeMessage("idle", "idle", start + 60_000));
+    own.info.time.idle = start + 60_000;
+    own.info.time.updated = start + 60_000;
+    write();
+    expect(await run(["run"], context(roots, NOW + 60_000))).toBe(0);
+    expect(log("claude.jsonl")).toHaveLength(1);
+    expect(records().find((record) => record.kind === "judged")).toMatchObject({ harness: "opencode", key: "opencode:open-root:synthetic-turn" });
+    expect(feedbackCalls()[0].at(-1)).toContain("Captured from OpenCode session open-root, turn synthetic-turn");
+    expect(records().find((record) => record.kind === "filed").filing).toBe("capture:opencode:open-root:synthetic-turn:1");
+    rmSync(join(scratch, "state", "friction-state.json"));
+    expect(await run(["run"], context(roots, NOW + 120_000))).toBe(0);
+    expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([1, 1]);
+  });
+
+  test("OpenCode capture includes a child's own errors without repeating parent history or feedback", async () => {
+    const start = NOW - 2 * 3_600_000;
+    const history = [openCodeMessage("p", "user", start), openCodeMessage("a", "assistant", start + 1, { content: [openCodeTool("t1"), openCodeTool("t2")] }), openCodeMessage("idle", "idle", start + 2)];
+    const child = [...history, openCodeMessage("cp", "synthetic", start + 3), openCodeMessage("ca", "assistant", start + 4, { content: [openCodeTool("ct1"), openCodeTool("ct2")] }), openCodeMessage("ci", "idle", start + 5)];
+    const dataFile = join(scratch, "opencode.json");
+    writeFileSync(dataFile, JSON.stringify([{ info: openCodeInfo("root", { start }), messages: history }, { info: openCodeInfo("child", { start, parentID: "root" }), messages: child }]));
+    setEnv({ FAKE_OPENCODE_DATA: dataFile });
+    const roots = { claudeRoot: join(scratch, "no-claude"), codexRoot: join(scratch, "no-codex") };
+    expect(await run(["run", "--dry-run"], context(roots))).toBe(0);
+    expect(console.log.mock.calls.flat().join("\n")).toContain("2 completed turns");
+    expect(console.log.mock.calls.flat().join("\n")).toContain("opencode child turn cp: score 10");
+    expect(log("claude.jsonl")).toHaveLength(0);
+    expect(existsSync(join(scratch, "state", "friction-state.json"))).toBe(false);
+    expect(filedFeedback({ calls: [{ name: "board_board_feedback", ok: true }] })).toBe(true);
+    expect(filedFeedback({ calls: [{ name: "board_board_feedback", ok: false }] })).toBe(false);
+  });
+
+  test("an OpenCode read failure holds the cursor and records coverage failure without leaking CLI stderr", async () => {
+    setEnv({ FAKE_OPENCODE_FAIL: "1" });
+    const roots = { claudeRoot: join(scratch, "no-claude"), codexRoot: join(scratch, "no-codex") };
+    expect(await run(["run"], context(roots))).toBe(1);
+    const state = readJson(join(scratch, "state", "friction-state.json"));
+    expect(state.cursor).toBe(new Date(NOW - 24 * 3_600_000).toISOString());
+    expect(state.lastRun.note).toContain("OpenCode coverage unavailable; cursor held");
+    expect(console.error.mock.calls.flat().join(" ")).not.toContain("private credential");
+  });
+
   test("files each finding once with the capture flags, skipping automation and turns that filed feedback", async () => {
     const roots = fixture();
     expect(await run(["run"], context(roots))).toBe(0);
@@ -606,10 +677,14 @@ describe("LaunchAgent", () => {
     const tools = join(scratch, "tools");
     mkdirSync(tools);
     script(join(tools, "claude"), "#!/bin/sh\n");
-    setEnv({ CLAUDE_FACTORY_LAUNCH_AGENTS: agents, CLAUDE_FACTORY_LAUNCHCTL: launchctl, PATH: `${tools}:/usr/bin:/bin` });
+    const openCode = join(scratch, "opencode-bin");
+    mkdirSync(openCode);
+    script(join(openCode, "opencode"), "#!/bin/sh\n");
+    setEnv({ CLAUDE_FACTORY_LAUNCH_AGENTS: agents, CLAUDE_FACTORY_LAUNCHCTL: launchctl, PATH: `${tools}:${openCode}:/usr/bin:/bin` });
     expect(await run(["install"])).toBe(0);
     const file = join(agents, `${LABEL}.plist`);
     expect(readFileSync(file, "utf8")).toContain(`<string>${tools}:`);
+    expect(readFileSync(file, "utf8")).toContain(`:${openCode}:`);
     expect(await run(["status"])).toBe(0);
     expect(console.log.mock.calls.flat().join("\n")).toContain(`LaunchAgent: ${file}; loaded`);
     expect(readFileSync(join(scratch, "launchctl.log"), "utf8")).toMatch(new RegExp(`bootout gui/\\d+/${LABEL}\\nbootstrap gui/\\d+ .*\\nprint gui/\\d+/${LABEL}`));

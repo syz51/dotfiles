@@ -7,6 +7,7 @@ import { LITELLM_FILE, LITELLM_URL } from "../lib/litellm.js";
 import { readJson, readJsonl, writeJsonAtomic } from "../lib/state.js";
 import { codexUsage, Rollout, writeRollouts } from "../lib/testing/codex.js";
 import { Transcript, usage, writeProjects } from "../lib/testing/transcripts.js";
+import { openCodeInfo, openCodeMessage, openCodeTool } from "../lib/testing/opencode.js";
 import { run } from "./cli.js";
 import { CACHE_FILE, OPEN_TTL_MS } from "./github.js";
 
@@ -40,6 +41,8 @@ beforeEach(() => {
     CLAUDE_FACTORY_GH: FAKE_GH,
     FAKE_GH_DATA: join(scratch, "gh.json"),
     FAKE_GH_LOG: join(scratch, "gh.log"),
+    CLAUDE_FACTORY_OPENCODE: join(import.meta.dir, "..", "lib", "testing", "fake-opencode.js"),
+    FAKE_OPENCODE_DATA: undefined, FAKE_OPENCODE_FAIL: undefined, FAKE_OPENCODE_LOG: join(scratch, "opencode.log"),
   });
   gh({});
   // A fresh price list, so runs with GitHub lookups never fetch LiteLLM's.
@@ -135,6 +138,43 @@ describe("windows", () => {
 });
 
 describe("session metrics", () => {
+  test("observes OpenCode through the API CLI with distinct reporting and unknown-cost coverage", async () => {
+    const start = at("2026-11-03T10:00:00Z");
+    const fixture = join(scratch, "opencode.json");
+    writeFileSync(fixture, JSON.stringify([{ info: openCodeInfo("open-root", { start }), messages: [
+      openCodeMessage("u", "user", start, { text: "Ship it" }),
+      openCodeMessage("a", "assistant", start + 1, { content: [openCodeTool("pr", { name: "shell", ok: true, command: "gh pr create", output: "https://github.com/o/r/pull/3" })] }),
+      openCodeMessage("s", "synthetic", start + 2, { text: "Continue the host job" }),
+      openCodeMessage("u2", "user", start + 3, { text: "no, use a draft" }),
+    ] }, { info: openCodeInfo("open-child", { start, parentID: "open-root" }), messages: [
+      openCodeMessage("c", "assistant", start + 4, { cost: 0, model: { providerID: "fixture", id: "unpriced" } }),
+    ] }]));
+    setEnv({ FAKE_OPENCODE_DATA: fixture });
+    const { current, notes, prs } = await report("--no-gh");
+    expect(current.harness.opencode).toMatchObject({ sessions: 1, costUSD: 0.25, subagentRuns: 1, unpricedSessions: 1 });
+    expect(current.harness.codex.sessions).toBe(0);
+    expect(current.cost.medianUSD).toBeNull();
+    expect(current.corrections).toMatchObject({ followUps: 1, corrections: 1 });
+    expect(current.prompts.total).toBe(2);
+    expect(prs).toMatchObject([{ number: 3, partialCost: true }]);
+    expect(notes.some((note) => note.startsWith("OpenCode:"))).toBe(true);
+    const md = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(md).toContain("| OpenCode sessions | 1 | 0 |");
+    expect(md).toContain("partial known costs");
+    expect(md).toContain("not free usage");
+    expect(readJsonl(join(scratch, "state", "metrics-history.jsonl"))[0]).toMatchObject({ openCodeSessions: 1, openCodeTokens: 310, openCodeUnpricedSessions: 1 });
+    expect(readJsonl(join(scratch, "opencode.log")).every((args) => args[0] === "api" && args[1] === "get")).toBe(true);
+  });
+
+  test("an unavailable OpenCode service is reported as missing coverage, not observed zero usage", async () => {
+    setEnv({ FAKE_OPENCODE_FAIL: "1" });
+    const { notes } = await report("--no-gh");
+    expect(notes).toContain("OpenCode API: CLI exited 1; OpenCode coverage is unavailable, not zero usage.");
+    expect(notes.join(" ")).not.toContain("private credential");
+    expect(readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8")).toContain("| OpenCode sessions | n/a | n/a |");
+    expect(readJsonl(join(scratch, "state", "metrics-history.jsonl"))[0]).toMatchObject({ openCodeSessions: null, openCodeTokens: null });
+  });
+
   test("prompts, corrections, interrupts, errors, compactions, subagents and model mix", async () => {
     const main = new Transcript({ start: at("2026-11-03T10:00:00Z") })
       .prompt("no, this first prompt is the task")
@@ -241,7 +281,7 @@ describe("session metrics", () => {
     output.length = 0;
     expect(await run(["--history"])).toBe(0);
     const rows = output.join("\n").split("\n");
-    expect(rows[0]).toContain("| Sessions | Codex sessions |");
+    expect(rows[0]).toContain("| Sessions | Codex sessions | OpenCode sessions |");
     expect(rows[2]).toContain("| 2 | not read |");
     expect(rows[3]).toContain("| 2 | 1 |");
   });

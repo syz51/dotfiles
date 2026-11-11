@@ -270,6 +270,13 @@ describe("LaunchAgent", () => {
     setEnv({ PATH: `${tools}:${cargo}:/usr/bin:/bin` });
     expect(await run(["install"])).toBe(0);
     expect(readFileSync(file, "utf8")).toMatch(new RegExp(`<string>[^<]*${cargo}[^<]*</string>`));
+    const openCode = join(scratch, "opencode-bin");
+    mkdirSync(openCode);
+    writeFileSync(join(openCode, "opencode"), "#!/bin/sh\n");
+    chmodSync(join(openCode, "opencode"), 0o755);
+    setEnv({ PATH: `${tools}:${cargo}:${openCode}:/usr/bin:/bin` });
+    expect(await run(["install"])).toBe(0);
+    expect(readFileSync(file, "utf8")).toContain(`:${openCode}:`);
     expect(readFileSync(log, "utf8")).toMatch(new RegExp(`bootout gui/\\d+/${LABEL}\\nbootstrap gui/\\d+ ${file.replace(/[.]/g, "\\.")}`));
     expect(await run(["uninstall"])).toBe(0);
     expect(existsSync(file)).toBe(false);
