@@ -17,9 +17,9 @@
 // pull request gh merges after the check. Within one Actions workflow run only the latest
 // attempt of each job counts, so a passing re-run replaces a failed attempt. A failed Actions job
 // that GitHub never started for billing, with no steps, the billing annotation and at most
-// GitHub's notices besides, counts as passed when a passing non-Actions check is named "<context>: <job name>", such as
-// "ci/circleci: build"; one GraphQL call reads those jobs' steps and annotations, and only
-// when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// GitHub's notices besides, counts as passed when a passing non-Actions check is named
+// "<context>: <job name>", such as "ci/circleci: build"; one GraphQL call reads those jobs'
+// steps and annotations, and only when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
 // block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
@@ -219,8 +219,8 @@ function requiresChecks(query, dir, api, repo, base) {
  * The ids of the failed Actions jobs on the head commit that GitHub never started for billing: a FAILURE
  * check run of the github-actions app with no steps and all its annotations on path .github: exactly
  * one failure-level billing annotation, and only notices besides. A job with steps ran, so its
- * annotations may be its own output. A job with more annotations than the call read fails. It reads them all
- * in one GraphQL call on commit `oid` of `owner/name`.
+ * annotations may be its own output. A job with more annotations than the call read fails.
+ * It reads them all in one GraphQL call on commit `oid` of `owner/name`.
  */
 function billingSkippedJobs(query, dir, api, owner, name, oid) {
   const answer = query(dir, [...api, "graphql", "-f", `query=${FAILED_RUNS_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-f", `oid=${oid}`],
