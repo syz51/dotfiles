@@ -89,6 +89,31 @@ test("wrappers are skipped, reading options as getopt does", () => {
   expect(commands("coproc job { make; }")).toEqual([["make", "/repo"]]);
 });
 
+test("env -S puts its words before the words after it, as one command", () => {
+  expect(commands("env -S 'a b' c")).toEqual([["a b c", "/repo"]]);
+  expect(commands("env -S 'gh pr' merge 12 -R o/r --admin")).toEqual([["gh pr merge 12 -R o/r --admin", "/repo"]]);
+  expect(commands("env -S 'gh pr merge 12 -R good/repo' -R other/repo")).toEqual([["gh pr merge 12 -R good/repo -R other/repo", "/repo"]]);
+  // env parses the split words again as its options; options after the string are the command's
+  expect(commands("env -S '-C sub make all' x")).toEqual([["make all x", "/repo/sub"]]);
+  expect(commands("env -S 'make' -C sub")).toEqual([["make -C sub", "/repo"]]);
+  expect(commands("env -C sub --split-string='make all' x")).toEqual([["make all x", "/repo/sub"]]);
+  // env changes directory once, to its last -C, from the directory it started in
+  expect(commands("env -C a -S '-C b make' x")).toEqual([["make x", "/repo/b"]]);
+  expect(commands("env -C a -C b make")).toEqual([["make", "/repo/b"]]);
+  expect(commands("env -C a env -C b make")).toEqual([["make", "/repo/a/b"]]);
+  expect(commands("env -iS'FOO=1 make' x")).toEqual([["make x", "/repo"]]);
+  // env's own quoting, escapes and comments, not the shell's: a `;` is a word
+  const words = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (argv) => { seen.push(argv); });
+    return seen;
+  };
+  expect(words(`env -S "a 'b c' \\"d e\\" f\\\\_g # h" i`)).toEqual([["a", "b c", "d e", "f", "g", "i"]]);
+  expect(words(`env -S "'x\\\\'y' \\"p\\\\tq\\"" r`)).toEqual([["x'y", "p\tq", "r"]]);
+  expect(words("env -S 'a;b' c")).toEqual([["a;b", "c"]]);
+  expect(words("env -S 'a \\c b' c")).toEqual([["a", "c"]]);
+});
+
 test("find -exec runs its command with the words kept intact", () => {
   expect(commands("find . -name '*.c' -exec cc -c {} \\; -print")).toEqual([["cc -c {}", "/repo"], ["find . -name *.c -exec cc -c {} ; -print", "/repo"]]);
   expect(commands("find . -exec sh -c 'make \"$1\"' _ {} +").map(([words]) => words)).toContain("make $1");
@@ -302,8 +327,8 @@ test("visit learns that xargs appends arguments to what ssh, watch and env -S ru
   expect(appended("echo 1 | xargs ssh -p 22 host -- gh pr merge 12 -R o/r")).toEqual(merge(true));
   expect(appended("echo 1 | xargs watch gh pr merge 12 -R o/r")).toEqual(merge(false));
   expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r'")).toEqual(merge(false));
-  // env -S runs its script here, with ssh and the words xargs adds after it
-  expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r' ssh")).toEqual(merge(false));
+  // env -S puts its words first: ssh is an argument of gh, and so are the words xargs adds
+  expect(appended("echo 1 | xargs env -S 'gh pr merge 12 -R o/r' ssh")).toEqual([["echo 1", false, false], ["gh pr merge 12 -R o/r ssh", true, false]]);
   // every command of the remote script and the scripts nested in it
   expect(appended("echo 1 | xargs ssh host 'git status; bash -c \"make\"'")).toEqual(
     [["echo 1", false, false], ["git status", true, true], ["make", true, true], ["bash -c make", true, true]]);
@@ -335,8 +360,8 @@ test("visit reports a command that xargs supplies or parses again as opaque", ()
   for (const wrapper of ["sudo", "env", "nice", "xargs", "env -S ''", "env FOO=1", "bash -c", "sh -ec", "fish --command", "eval"]) {
     expect(opaque(`echo 'gh pr merge 12' | xargs ${wrapper}`)).toEqual([[`xargs ${wrapper}`.replace("''", ""), "/repo", true, false]]);
   }
-  // an env -S script that is only a wrapper, and a remote shell's empty sudo
-  expect(opaque("echo 'gh pr merge 12' | xargs env -S 'sudo -u me'")).toEqual([["sudo -u me", "/repo", true, false]]);
+  // an env -S string that is only a wrapper, and a remote shell's empty sudo
+  expect(opaque("echo 'gh pr merge 12' | xargs env -S 'sudo -u me'")).toEqual([["xargs env -S sudo -u me", "/repo", true, false]]);
   // 4: xargs supplies gh's subcommand; the gh command is appended, and over ssh the whole ssh command is opaque
   expect(opaque("echo 'merge 12' | xargs gh pr")).toEqual([]);
   expect(opaque("echo 'merge 12' | xargs ssh host gh pr")).toEqual([["xargs ssh host gh pr", "/repo", true, false]]);
