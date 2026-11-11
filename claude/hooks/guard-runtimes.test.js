@@ -121,6 +121,9 @@ describe("blocks", () => {
     ["echo 'python3 x' | ssh -lme host"],
     ["ssh host 'cd app && bash -s' <<'EOF'\npython3 x.py\nEOF"],
     ["ssh -o ProxyCommand='python3 proxy.py' host ls"],
+    ["ssh -o RemoteCommand='python3 x' host"],
+    ["sshpass -p pw ssh host python3 x"],
+    ["sshpass -e ssh host 'cd app && pytest -q'"],
     ["fish --command 'python3 x'"],
     ["fish -C 'node x.js'"],
     ["{ echo 'python3 x'; } | sh"],
@@ -222,6 +225,9 @@ describe("allows", () => {
     ["ssh host 'uv run python check.py'"],
     ["ssh -i ~/.ssh/key host ls node_modules"],
     ["ssh host"],
+    ["echo 'python3 x' | ssh -n host"],
+    ["echo 'python3 x' | ssh -f host ls"],
+    ["ssh -N host <<'EOF'\npython3 x.py\nEOF"],
     ["echo 'python3 check.py' > run.sh"],
     ["echo 'python3 check.py' | tee notes.txt"],
     ["find . -name '*.py' -exec grep -l python3 {} +"],
@@ -279,6 +285,8 @@ test("python over ssh stays blocked, and its reason names what works on the remo
     "ssh host pip install requests",
     "ssh host pytest -q",
     "vpx -c 'ssh host python3 x.py'",
+    "ssh -o RemoteCommand='python3 x' host",
+    "sshpass -p pw ssh host python3 x",
   ];
   for (const command of remote) {
     const reason = verdict(command);
