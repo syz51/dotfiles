@@ -240,13 +240,14 @@ function gitPush(words, dir, git, state, { appended, remote }) {
  * Returns why `command` must not run, or undefined when it may. `git(dir, args)` returns trimmed
  * stdout, undefined when git reports that the ref, upstream, or branch does not exist, and throws
  * when git could not answer. A script nested too deeply to check is blocked. A command whose name
- * the shell fills in, as in `$GIT push`, is checked as git when a later word is `push`.
+ * the shell fills in, as in `$GIT push`, is checked as git when a later word is `push`. The name
+ * matches git in any case, as macOS volumes ignore case.
  */
 export function findViolation(command, cwd, git) {
   const state = { configChanged: false };
   return visitCommands(command, cwd, (words, dir, flags) => {
     if (flags.opaque) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command or script the guard cannot see, so it may push. Write the command out literally.`;
-    return basename(words[0]) === "git" || (expands(words[0]) && words.includes("push")) ? gitPush(words, dir, git, state, flags) : undefined;
+    return basename(words[0]).toLowerCase() === "git" || (expands(words[0]) && words.includes("push")) ? gitPush(words, dir, git, state, flags) : undefined;
   }, TOO_DEEP);
 }
 
@@ -261,8 +262,11 @@ function runGit(dir, args) {
 if (import.meta.main) {
   const input = JSON.parse(readFileSync(0, "utf8"));
   const command = input?.tool_input?.command;
-  // A cheap prefilter. An alias that the command line sets may push without the word.
-  if (typeof command === "string" && /\bgit\b/.test(command) && /\bpush\b|alias\./i.test(command.replace(/["'\\]/g, ""))) {
+  // A cheap prefilter on the text without quotes and backslashes, as the shell removes them
+  // (g"i"t, g\it), and any case, as macOS volumes run GIT as git. An alias that the command
+  // line sets may push without the word.
+  const text = typeof command === "string" ? command.replace(/["'\\]/g, "") : "";
+  if (/\bgit\b/i.test(text) && /\bpush\b|alias\./i.test(text)) {
     const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
     const violation = findViolation(command, cwd, runGit);
     if (violation) {

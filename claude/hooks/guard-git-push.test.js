@@ -329,6 +329,23 @@ describe("hook process", () => {
     expect(result.stderr).toContain("alias the guard cannot read");
   });
 
+  // macOS volumes ignore case, and the shell removes quotes and backslashes, so each of these runs git (dotfiles-168).
+  test.each([
+    ["GIT push --force origin main"],
+    ["Git push -f origin main"],
+    [`g"i"t push --force origin main`],
+    ["g\\it push --force origin main"],
+    ["gi''t push --force origin main"],
+  ])("blocks a force push to main by another spelling of git: %s", (command) => {
+    const result = bash(command, join(root, "work"));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("main, a default branch");
+  });
+
+  test("allows a push to a feature branch by another spelling of git", () => {
+    expect(bash("GIT push --dry-run origin feature", join(root, "work"))).toEqual({ code: 0, stderr: "" });
+  });
+
   test("allows an alias for a command that does not push", () => {
     expect(bash("git -c alias.st=status st", join(root, "work")).code).toBe(0);
   });
@@ -426,6 +443,24 @@ describe("an alias set on the command line (dotfiles-278)", () => {
     ["git -c alias.p=push p origin feature"],
     ["git -c alias.st=status st"],
     ["git -c alias.p=push status --force origin main"],
+  ])("allows %s", (command) => {
+    expect(verdict(command)).toBeUndefined();
+  });
+});
+
+describe("git in any case, as macOS volumes ignore case (dotfiles-168)", () => {
+  test.each([
+    ["GIT push --force origin main"],
+    ["Git push -f origin main"],
+    ["/usr/bin/GIT push -f origin main"],
+    ["GIT -C /other push --force"],
+  ])("blocks %s", (command) => {
+    expect(verdict(command)).toBeDefined();
+  });
+
+  test.each([
+    ["GIT push origin feature"],
+    ["Git status"],
   ])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
