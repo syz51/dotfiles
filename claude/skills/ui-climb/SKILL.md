@@ -77,9 +77,13 @@ relative to its folder. Start from:
   a pass on the bar. `"pass": { "allReferences": false }` lets such a round pass; set it
   only on the owner's word.
 - The council is a Haiku judge first and one Opus judge second, as in the template. Use
-  only Opus and Haiku models. Judges run in order and a round stops at the first that
-  fails, so Haiku must pass a round before the Opus judge scores it. Until a round has
-  heard from every judge, rounds run them all, so you learn whether they agree.
+  only Opus and Haiku models. Haiku is the regression pre-check and Opus is the bar
+  judge. Haiku runs first, cheaply, and only checks that the candidate does not score
+  under main by more than `pass.regression` (default 2) times Haiku's noise; a round it
+  fails stops before Opus. Opus alone applies `pass.min`, `pass.gain` and
+  `pass.references`. In general every judge before the last is a pre-check and the last
+  applies the bar. Until a round has heard from every judge, rounds run them all, so you
+  learn whether they agree.
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
@@ -99,11 +103,11 @@ most categories, or whose scores vary by more than a point between calls. Then t
 judge cannot steer the climb: use a stronger model or effort, or better screens, and
 calibrate again. Rounds refuse to run without a passing calibration.
 
-Each judge is calibrated on its own, Haiku too: its own noise and bar reach, against the
-one shared bar. Haiku gates the Opus judge, so a bar-reach warning for Haiku alone means
-Opus may never score a candidate; say so in the ask below.
+Each judge is calibrated on its own, Haiku too: its noise sets its pre-check floor
+(`pass.regression` times it, or main's spread over the run's rounds when larger). Only
+the bar judge, Opus, gets a bar reach check, since Haiku never applies the bar.
 
-Calibration also prints a **bar reach** warning when a judge almost never gives the bar:
+Calibration also prints a **bar reach** warning when the bar judge almost never gives the bar:
 the bar is above the best reference by more than twice its noise, or under 5% of its scores of
 main and the references reach it. With references, it also prints a suggested `pass`
 that leads the best reference in every category (`pass.references`, at least 0.25 or the
@@ -115,7 +119,7 @@ owner (`ask_user`, `Reason: design`) before round 1, with these options in this 
    the real goal of beating products of the same kind). Start it with `--new-run`.
 2. Go on as is.
 3. Add a reference they rate at the bar.
-4. Put a judge that uses the top of the scale first.
+4. Use a bar judge that uses the top of the scale.
 5. Lower the bar.
 
 ## 3. Climb

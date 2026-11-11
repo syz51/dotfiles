@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 import { appendJsonl, readJson, writeJsonAtomic } from "../lib/state.js";
 import { CaptureError, resolveRev, runChecks, treeState } from "./capture.js";
 import { ConfigError, loadConfig } from "./config.js";
-import { barReach, calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, runJudge, sd, signed, topIssues, verdict } from "./council.js";
+import { barReach, barVerdict, calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, precheck, runJudge, sd, signed, topIssues, verdict } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { ledger, markIssues, settledFixes } from "./ledger.js";
 import { renderReport } from "./report.js";
@@ -25,10 +25,12 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js ui <subcommand> [options]
                judge: passes when every judge ranks the control clearly lower and its
                scores vary little between calls. Required before rounds.
   round        Gate and judge the committed candidate (HEAD) against main. Judges run in
-               order and stop at the first that fails, except until a round of the run
-               has heard from every judge. Exit 0 when every judge passes the bar, 1 when
-               it fails, 3 when the budget ran out, 4 when every judge passes but a
-               reference did not capture (a provisional pass).
+               order: those before the last are regression pre-checks (the candidate
+               must not score under main beyond pass.regression times their noise), and
+               the last applies the bar. A failed pre-check stops the round, except
+               until a round of the run has heard from every judge. Exit 0 when the
+               pre-checks and the bar pass, 1 when one fails, 3 when the budget ran out,
+               4 when they pass but a reference did not capture (a provisional pass).
   status       Rounds so far, spending, and whether the climb has plateaued.
   report       Write the run's HTML report: scores per round, screenshots, issues.
 
@@ -113,7 +115,9 @@ function calibrated(config, calibration) {
 }
 
 // A short form of a judge's verdict for notes and tables.
-const verdictLine = (v, pass) => `${v.judge} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
+const verdictLine = (v, pass) => v.role === "precheck"
+  ? `${v.judge} pre-check ${signed(v.gain)} vs main (floor ${signed(v.gainBar)})`
+  : `${v.judge} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
 
 // The references a round was judged without, for notes and the report.
 export const missingLine = (ids) => `missing reference${ids.length === 1 ? "" : "s"}: ${ids.join(", ")}`;
@@ -133,8 +137,8 @@ export function scoreLine(round, config) {
 
 // The climb has plateaued when nothing the bar still needs moved in the binding judge's last
 // two judged rounds: the best of them is within the noise of the best before them. The
-// binding judge is the latest round's first failing judge. Its metrics are those still short
-// of their bar: the lowest category and the total shortfall under min (so progress on one of
+// binding judge is the latest round's first failing judge, else its bar judge. Its metrics are those still short
+// of their bar: for a pre-check only the gain over its floor; for the bar judge the lowest category and the total shortfall under min (so progress on one of
 // several tied categories counts), the gain over main, and the lead over the best reference
 // when pass.references is set. noise(judge key) gives { lowest, gain }. movedAt is the latest
 // round in which one of those metrics beat every earlier round by more than the noise, or null.
@@ -143,7 +147,7 @@ export function plateau(list, { min, references = null, noise }) {
   const judged = judgedRounds.length;
   if (judged < 3) return { plateau: false, judged, metrics: {} };
   const latestRound = judgedRounds.at(-1);
-  const judge = (latestRound.verdicts.find((v) => !v.pass) ?? latestRound.verdicts[0]).judge;
+  const judge = (latestRound.verdicts.find((v) => !v.pass) ?? latestRound.verdicts.at(-1)).judge;
   const verdicts = verdictsOf(judgedRounds, judge);
   if (verdicts.length < 3) return { plateau: false, judged, judge, metrics: {} };
   const roundOf = judgedRounds.filter((round) => round.verdicts.some((v) => v.judge === judge)).map((round) => round.round);
@@ -151,12 +155,13 @@ export function plateau(list, { min, references = null, noise }) {
   const sigma = noise(judge);
   // name: [values, noise, lower is better]
   const series = {};
-  if (latest.lowest < min) {
+  const bar = latest.role !== "precheck";
+  if (bar && latest.lowest < min) {
     series.lowest = [verdicts.map((v) => v.lowest), sigma.lowest, false];
     if (verdicts.every((v) => typeof v.shortfall === "number")) series.shortfall = [verdicts.map((v) => v.shortfall), sigma.lowest * Math.sqrt(latest.underCount), true];
   }
   if (latest.gain < latest.gainBar) series.gain = [verdicts.map((v) => v.gain), sigma.gain, false];
-  if (references !== null && latest.referenceMargin !== null && latest.referenceMargin < references) series.references = [verdicts.map((v) => v.referenceMargin), sigma.lowest, false];
+  if (bar && references !== null && latest.referenceMargin !== null && latest.referenceMargin < references) series.references = [verdicts.map((v) => v.referenceMargin), sigma.lowest, false];
   const metrics = {};
   let movedAt = null;
   for (const [name, [values, spread, lower]] of Object.entries(series)) {
@@ -271,7 +276,8 @@ async function calibrateCommand(config, values) {
       results[judgeKey(judge)] = {
         ...calibration,
         references: Object.fromEntries(references.map((ref) => [ref.key, result.overall[ref.key]])),
-        barReach: barReach(result, { min: config.pass.min, references: references.map((ref) => ref.key), sigmaCategory: calibration.sigmaCategory }),
+        // Only the bar judge's reach matters: the pre-checks never apply the bar.
+        barReach: judge !== config.judges.at(-1) ? null : barReach(result, { min: config.pass.min, references: references.map((ref) => ref.key), sigmaCategory: calibration.sigmaCategory }),
         scores: result.scores,
       };
     }
@@ -298,7 +304,7 @@ async function calibrateCommand(config, values) {
         console.log(`Suggested bar, from these reference scores: lead the best reference by ${lead} in every category, with ${min} (about the best reference's level) as the floor. In the configuration (with --new-run):`);
         console.log(`  "pass": { "min": ${min}, "gain": ${config.pass.gain}, "references": ${lead} }`);
       }
-      console.log(`Before round 1, put this in a note and ask the owner whether to ${suggestions.length ? "use the suggested lead over the references, " : ""}go on as is, add a reference they rate at the bar, put a judge that uses the top of the scale first, or lower the bar.`);
+      console.log(`Before round 1, put this in a note and ask the owner whether to ${suggestions.length ? "use the suggested lead over the references, " : ""}go on as is, add a reference they rate at the bar, use a bar judge that uses the top of the scale, or lower the bar.`);
     }
     if (errored) {
       console.log("\nA judge could not finish its calls (its cost is counted): see the reason in the table, then calibrate again.");
@@ -390,7 +396,9 @@ async function roundCommand(config, values) {
         }
         judged.push(outcome);
         const noise = climbNoise(noiseOf(calibrationFile, judge), judge, previous);
-        const v = verdict({ result: outcome, pass: config.pass, noise, references: referenceKeys });
+        // Every judge but the last is a regression pre-check; the last applies the bar.
+        const judgeVerdict = index < config.judges.length - 1 ? precheck : verdict;
+        const v = judgeVerdict({ result: outcome, pass: config.pass, noise, references: referenceKeys });
         verdicts.push({ ...v, calibrated: noise.calibrated !== false, references: Object.fromEntries(referenceKeys.map((key) => [key, outcome.overall[key]])), baseline: outcome.overall.baseline, scores: outcome.scores });
         if (!v.pass && !everyJudge) break;
       }
@@ -399,9 +407,9 @@ async function roundCommand(config, values) {
       const passed = calibration.ok && stage === "judges" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
       const provisional = passed && missing.length > 0 && config.pass.allReferences;
       const pass = passed && !provisional;
-      // How far each category is under the bar, by the judge that scores it lowest.
+      // How far each category is under the bar, by the bar judge (pre-checks do not apply it).
       const deficits = {};
-      for (const v of verdicts)
+      for (const v of verdicts.filter((item) => item.role !== "precheck"))
         for (const [category, score] of Object.entries(v.scores.candidate))
           if (score !== null && score < config.pass.min) deficits[category] = Math.max(deficits[category] ?? 0, config.pass.min - score);
       // Every issue, so the round can fix them all and the ledger misses none.
@@ -437,7 +445,7 @@ function printRound(result, config, run, json) {
   if (result.verdicts.length) {
     console.log("\n| Judge | This | Main | Lowest | Gain (bar) | vs refs | Result |\n|---|---|---|---|---|---|---|");
     for (const v of result.verdicts)
-      console.log(`| ${v.judge} | ${fixed(v.overall)} | ${fixed(v.baseline)} | ${v.lowestCategory} ${fixed(v.lowest)} (bar ${config.pass.min}) | ${signed(v.gain)} (${fixed(v.gainBar)}) | ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)} | ${v.pass ? "pass" : `fail: ${v.reasons.join("; ")}`} |`);
+      console.log(`| ${v.judge} | ${fixed(v.overall)} | ${fixed(v.baseline)} | ${v.lowestCategory} ${fixed(v.lowest)}${v.role === "precheck" ? "" : ` (bar ${config.pass.min})`} | ${signed(v.gain)} (${v.role === "precheck" ? "floor " : ""}${fixed(v.gainBar)}) | ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)} | ${v.pass ? "pass" : `fail: ${v.reasons.join("; ")}`} |`);
     const categories = Object.keys(result.verdicts[0].scores.candidate);
     console.log(`\n| Category | ${result.verdicts.map((v) => `${v.judge} this / main`).join(" | ")} |\n|---|${result.verdicts.map(() => "---|").join("")}`);
     for (const category of categories)
@@ -487,7 +495,11 @@ function statusCommand(config, values) {
   const run = existingRun(config, values);
   const list = rounds(run);
   const first = config.judges[0];
+  const barJudge = config.judges.at(-1);
   const latest = [...list].reverse().find((round) => round.verdicts?.length);
+  // The latest verdict on the bar; the latest round may have stopped at a pre-check.
+  const barRound = [...list].reverse().find((round) => barVerdict(round));
+  const latestBar = barRound ? barVerdict(barRound) : null;
   const spentUSD = spent(run);
   const calibration = readJson(calibrationPath(run), null);
   const noise = (key) => {
@@ -502,10 +514,10 @@ function statusCommand(config, values) {
     plateau: plateau(list, { min: config.pass.min, references: config.pass.references, noise }),
     passed: list.some((round) => round.pass && !round.dirty && round.calibrated !== false),
     provisional: list.some((round) => round.provisional && !round.dirty && round.calibrated !== false),
-    barGap: latest ? config.pass.min - latest.verdicts[0].lowest : null,
-    lowestCategory: latest?.verdicts[0].lowestCategory ?? null,
+    barGap: latestBar ? config.pass.min - latestBar.lowest : null,
+    lowestCategory: latestBar?.lowestCategory ?? null,
     judgesInLatest: latest ? { judged: latest.verdicts.length, of: config.judges.length } : null,
-    main: { calibration: calibration?.judges?.[judgeKey(first)]?.baseline ?? null, rounds: mainRange(list, first) },
+    main: { calibration: calibration?.judges?.[judgeKey(barJudge)]?.baseline ?? null, rounds: mainRange(list, barJudge) },
   };
   if (values.json) {
     console.log(JSON.stringify(status, null, 2));
@@ -515,10 +527,16 @@ function statusCommand(config, values) {
   for (const round of status.rounds) console.log(round.scoreLine);
   if (!list.length) console.log("No rounds yet.");
   if (status.main.rounds)
-    console.log(`Main scored ${fixed(status.main.rounds.low)}–${fixed(status.main.rounds.high)} over ${status.main.rounds.rounds} judged round${status.main.rounds.rounds === 1 ? "" : "s"}${status.main.calibration === null ? "" : `, ${fixed(status.main.calibration)} in calibration`} (${judgeKey(first)}; scores are comparative).`);
+    console.log(`Main scored ${fixed(status.main.rounds.low)}–${fixed(status.main.rounds.high)} over ${status.main.rounds.rounds} judged round${status.main.rounds.rounds === 1 ? "" : "s"}${status.main.calibration === null ? "" : `, ${fixed(status.main.calibration)} in calibration`} (${judgeKey(barJudge)}; scores are comparative).`);
+  if (latest && latest !== barRound) {
+    const failed = latest.verdicts.find((v) => !v.pass);
+    console.log(`Latest judged round ${latest.round}: ${failed ? `the regression pre-check ${failed.judge} failed it (${failed.reasons.join("; ")}), so` : ""} the bar judge did not score it.`);
+  }
+  if (barRound) {
+    const v = latestBar;
+    console.log(`${barRound === latest ? "Latest judged round" : "Latest round the bar judge scored:"} ${barRound.round}: lowest ${v.lowestCategory} ${fixed(v.lowest)}, ${status.barGap > 0 ? `${fixed(status.barGap)} under` : "at or over"} the bar ${config.pass.min}; gain ${signed(v.gain)} (bar ${fixed(v.gainBar)}).`);
+  }
   if (latest) {
-    const v = latest.verdicts[0];
-    console.log(`Latest judged round ${latest.round}: lowest ${v.lowestCategory} ${fixed(v.lowest)}, ${status.barGap > 0 ? `${fixed(status.barGap)} under` : "at or over"} the bar ${config.pass.min}; gain ${signed(v.gain)} (bar ${fixed(v.gainBar)}).`);
     if (latest.verdicts.length < config.judges.length)
       console.log(`It was judged by ${latest.verdicts.length} of ${config.judges.length} judges: run \`ui round --all-judges\` on the commit you hand over.`);
   }
