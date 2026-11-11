@@ -403,6 +403,30 @@ describe("node in a checkout of a repository node-repos.json lists", () => {
     expect(verdictIn("dotfiles", `bun --cwd ${fork} x --cwd apps/server node x.js`)).toBeUndefined();
   });
 
+  test("a command over ssh gets no exception, whatever local checkout it names", () => {
+    const { fork } = dirs;
+    for (const command of [
+      `ssh host 'cd ${fork} && node x.js'`,
+      `ssh host 'pushd ${fork} && node x.js'`,
+      `ssh host bun --cwd ${fork} x node x.js`,
+      `ssh host bunx --cwd ${fork} node x.js`,
+      `ssh host sudo -D ${fork} node x.js`,
+      `ssh host env -C ${fork} node x.js`,
+      `ssh host bash -s <<'EOF'\ncd ${fork}\nnode x.js\nEOF`,
+      `ssh host "vpx -c 'cd ${fork} && node x.js'"`,
+    ]) {
+      // also when the session itself runs in the checkout
+      for (const where of ["dotfiles", "fork"]) {
+        const reason = verdictIn(where, command);
+        expect(reason).toContain("on the remote host over ssh");
+        expect(reason).toContain("covers only checkouts on this machine");
+      }
+    }
+    expect(verdictIn("fork", "ssh host 'npm ci'")).toContain("`bun install`");
+    // node in the local checkout beside an ssh command keeps its exception
+    expect(verdictIn("dotfiles", `cd ${fork} && ssh host ls && node x.js`)).toBeUndefined();
+  });
+
   test("a command whose directory is unknown gets no exception", () => {
     expect(findRuntimeViolation("node x.js", undefined)).toBeDefined();
     expect(verdictIn("fork", "cd $DIR && node x.js")).toBeDefined();

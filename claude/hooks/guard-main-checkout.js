@@ -7,7 +7,8 @@
 // merge, rebase, pull, stash, bisect, gh pr checkout and gh pr merge. Their read-only, continue and abort
 // forms, file restores, fast-forward-only merges and pulls (see fastForwardOnly), a switch to
 // the default branch with no tracked changes, every command in a linked worktree and every
-// repository in a temporary directory still run. When the user asked for the change in that
+// repository in a temporary directory still run, as does every command over `ssh`, which
+// changes a repository on another host. When the user asked for the change in that
 // checkout, the agent runs that one git command with `-c claude.mainCheckout=allow`, which
 // the guard lets through; the block message says so, so agents never hand the command back
 // to the user. Even then it refuses what would lose work another thread may own: a discarding
@@ -274,7 +275,9 @@ const mergeReason = (top) => `it merges a pull request from ${top}, a main check
  * `tempRoots` (absolute, resolved paths) are never treated as shared.
  */
 export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
-  return visitCommands(command, cwd, (words, dir) => {
+  return visitCommands(command, cwd, (words, dir, { remote }) => {
+    // A command over ssh changes a repository on another host, not a checkout here.
+    if (remote) return undefined;
     // macOS volumes ignore case, so GIT and Git run git too.
     const name = basename(words[0]).toLowerCase();
     let reason;
