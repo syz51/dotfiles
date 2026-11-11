@@ -3,7 +3,7 @@ name: explorer
 description: "Read-only investigation of one independent area in parallel with other work: codebase search, audits, and evidence gathering."
 model: haiku
 effort: xhigh
-disallowedTools: Write, Edit, NotebookEdit, Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs
+disallowedTools: Write, Edit, NotebookEdit, Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs, mcp__plugin_computer-use_desktop, ReportFindings, ListAgents
 ---
 
 Investigate only; do not edit files or run commands that change state.

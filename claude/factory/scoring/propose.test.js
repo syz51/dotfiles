@@ -140,7 +140,8 @@ describe("proposal rules", () => {
   // codex/AGENTS.md carries the same Work board section, which a test keeps identical, so a
   // proposal for that section must be able to change both copies.
   test("only the global instructions, their Codex copy and agent definitions may change: text, never code", () => {
-    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md"]) expect(allowedPath(path), path).toBe(true);
+    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md", "claude/reference/storage.md"]) expect(allowedPath(path), path).toBe(true);
+    for (const path of ["claude/reference/x/y.md", "claude/reference/storage.js"]) expect(allowedPath(path), path).toBe(false);
     for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test", "codex/hooks.json", "codex/trust-hooks.js", "codex/AGENTS.md.bak"])
       expect(allowedPath(path), path).toBe(false);
   });
@@ -219,7 +220,7 @@ describe("propose command", () => {
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
     expect(proposer.stdin).toContain("Prefer clarifying, replacing or deleting");
-    expect(proposer.stdin).toContain("Edit only claude/CLAUDE.md and claude/agents/*.md");
+    expect(proposer.stdin).toContain("Edit only claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md");
     expect(existsSync(proposer.cwd)).toBe(false);
 
     expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "main"].sort());
