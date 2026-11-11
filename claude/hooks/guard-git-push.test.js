@@ -318,6 +318,21 @@ describe("hook process", () => {
     expect(result.stderr).toStartWith("Blocked by the guard-git-push hook:");
   });
 
+  // The entry point's text prefilter must not skip an alias command without the word "push".
+  test.each([
+    ["git --config-env=alias.p=V p --force origin main"],
+    ["git -c alias.p=$CMD p origin main"],
+    [`git -c al"ias".p=-p p origin main`],
+  ])("blocks an alias it cannot read: %s", (command) => {
+    const result = bash(command, join(root, "work"));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("alias the guard cannot read");
+  });
+
+  test("allows an alias for a command that does not push", () => {
+    expect(bash("git -c alias.st=status st", join(root, "work")).code).toBe(0);
+  });
+
   test("follows cd into another checkout", () => {
     git(join(root, "work"), "switch", "-q", "main");
     const result = bash(`cd ${join(root, "work")} && git push --force-with-lease=main:0000000`, root);

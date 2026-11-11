@@ -261,7 +261,8 @@ function runGit(dir, args) {
 if (import.meta.main) {
   const input = JSON.parse(readFileSync(0, "utf8"));
   const command = input?.tool_input?.command;
-  if (typeof command === "string" && /\bgit\b/.test(command) && /\bpush\b/.test(command)) {
+  // A cheap prefilter. An alias that the command line sets may push without the word.
+  if (typeof command === "string" && /\bgit\b/.test(command) && /\bpush\b|alias\./i.test(command.replace(/["'\\]/g, ""))) {
     const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
     const violation = findViolation(command, cwd, runGit);
     if (violation) {
