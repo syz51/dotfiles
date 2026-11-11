@@ -1036,9 +1036,11 @@ button { font: inherit; padding: 8px 16px; }
     expect(status.barGap).toBeCloseTo(-0.5);
     expect(status.spentUSD).toBeCloseTo(0.5);
 
-    result = await ui(["report", "--out", join(scratch, "report.html")]);
+    // --out may name a folder that does not exist yet: the report creates it.
+    const reportPath = join(scratch, "new", "nested", "report.html");
+    result = await ui(["report", "--out", reportPath]);
     expect(result.code).toBe(0);
-    const html = readFileSync(join(scratch, "report.html"), "utf8");
+    const html = readFileSync(reportPath, "utf8");
     expect(html).toContain("UI climb: demo");
     expect(html).toContain("Passed in round 2");
     expect(html).not.toContain("<b>low contrast</b>");
