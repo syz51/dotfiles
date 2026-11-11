@@ -800,6 +800,7 @@ describe("rules the live suites test", () => {
   // its parent's tf/ copy from the shared scratchpad (dotfiles-94).
   test("Workflow keeps each subagent's scratch apart and cleans up only what it made", () => {
     expect(section("Workflow")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created,");
+    expect(read("codex/AGENTS.md")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created.\n");
   });
 
   test("Delegation is a standing request limited to parallel tracks", () => {
