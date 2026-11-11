@@ -248,7 +248,18 @@ guard-git-push blocks a push whose subcommand, refspec, remote or option name co
 a variable, command substitution or brace expansion, and one that sets push
 configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
+blocks a push that `xargs` adds words to, such as `echo --force | xargs git push origin main`,
+here and over `ssh`, and every command whose words `xargs` supplies (see below). It
 cannot see git aliases or `GIT_CONFIG_*` variables.
+`shell.js` reports a command as opaque when the words `xargs` adds can run a command the
+guards cannot see: `xargs ssh` and `xargs watch`, which parse them again as a script,
+wrappers with no command such as `xargs sudo`, `xargs env` and `xargs nice`, a second
+`xargs`, a shell's `-c` with no script, `eval`, and `xargs find`, whose added words can
+hold an `-exec`. With `xargs -I {}`, a word that holds `{}` reads as `${xargs}`, which the
+guards treat as filled in by the shell, and a command whose name or script holds it is
+opaque. guard-git-push and guard-pr-merge refuse an opaque command; guard-main-checkout
+refuses one in a main checkout, unless it runs inside a remote script. Forms such as
+`git ls-files | xargs grep foo` and `ls | xargs -n1 basename` are not opaque.
 guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'s Autonomy
 section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
@@ -272,8 +283,9 @@ checks through protection or a ruleset and gh enables auto-merge, so GitHub wait
 required checks. When the pull request is `CLEAN`, `HAS_HOOKS` or `UNSTABLE`, gh merges at
 once, so the guard checks it as a direct merge. It also refuses `gh api` calls to
 `pulls/<n>/merge` and the `mergePullRequest` and `enablePullRequestAutoMerge` mutations. It
-refuses any merge argument or subcommand that the shell fills in, arguments that `xargs`
-adds, options other than `-R` before the subcommand, `GH_HOST` set in the command,
+refuses any merge argument or subcommand that the shell fills in, any gh command that `xargs`
+adds arguments to, such as `echo 'merge 12' | xargs gh pr`, unless its visible subcommand is
+read-only, as in `xargs gh pr view`, any opaque command, options other than `-R` before the subcommand, `GH_HOST` set in the command,
 `GH_REPO` set without `-R`, `GIT_DIR` and `GIT_WORK_TREE`, and a glob that can name gh or
 fill in its subcommand or selector. It runs once before the whole command, so it refuses a
 merge in a command that also runs another merge, or a git or gh command that is not
@@ -310,7 +322,13 @@ changes, and `stash drop` or `stash clear`. For `gh pr checkout` the message giv
 route through `git fetch` and `git switch`. To allow every such command in one repository, run
 `git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
 command that sets that key. It is a guardrail against mistakes, not a security
-boundary: it does not see aliases, scripts or direct edits of `.git/config`. It fails
+boundary: it does not see aliases, scripts or direct edits of `.git/config`. In a main
+checkout it also refuses a git command that `xargs` adds words to when those words could
+change the branch, as `echo feature | xargs git checkout` can, but not file restores after
+`--`, aborts, continues and stash or bisect reads. Anywhere, it refuses a bare `git` that
+`xargs` supplies the subcommand to, since the added words can hold `-C <path>`, and
+`git config` with added words unless it only reads. It also refuses `gh` when `xargs` supplies its subcommand, and an
+opaque command, in a main checkout. It fails
 open when it cannot tell the repository, such as with `--git-dir` or a directory held
 in a variable, and for scripts nested too deeply to parse.
 guard-asks (Claude Code only) checks each board `ask_user` call against

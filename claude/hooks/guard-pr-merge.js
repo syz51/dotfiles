@@ -236,7 +236,7 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
 }
 
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
-function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appended, remote }) {
+function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, remote }) {
   if (merge.unresolved !== undefined) {
     return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally. `
       + "The guard cannot see quotes, so for a body with `$`, backticks or braces, write it to a file and pass --body-file.";
@@ -245,7 +245,6 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, appende
   if (merge.help) return undefined;
   if (merge.admin) return "--admin bypasses the repository's merge requirements. Never use it: merge only once the checks pass.";
   if (merge.disableAuto && !merge.auto) return undefined; // it only turns auto-merge off
-  if (appended) return "xargs adds arguments the guard cannot see. Write the pull request out literally: `gh pr merge <number>`.";
   if (setsHost) return "the command sets GH_HOST, which the guard does not follow. Name the repository with -R HOST/OWNER/REPO instead.";
   if (setsRepo && merge.repo === undefined) return "the command sets GH_REPO, which the guard does not follow. Name the repository with -R OWNER/REPO instead.";
   if (setsGitDir) return "the command sets GIT_DIR or GIT_WORK_TREE, which change the repository and branch gh reads, and the guard does not follow them. Run the merge without them.";
@@ -340,12 +339,13 @@ const API_FIELDS = /^(?:-[fF]|--field|--raw-field|--input)(?:=|$)|^-[fF]./;
  * request or repository a merge without a selector picks: anything but a read-only git or gh
  * command, and any command whose name the shell fills in.
  */
-function mayMoveHead(words) {
+function mayMoveHead(words, appended) {
   if (expands(words[0])) return true;
   if (runs(words[0], "git")) {
     let i = 1;
     while (i < words.length && words[i].startsWith("-")) i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
-    return words[i] !== undefined && !GIT_READ_ONLY.has(words[i]);
+    // xargs may add the subcommand itself.
+    return words[i] === undefined ? appended : !GIT_READ_ONLY.has(words[i]);
   }
   if (!runs(words[0], "gh")) return false;
   const { path: [group, subcommand], other } = ghSubcommands(words, 2);
@@ -407,16 +407,30 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
     setsGitDir: /\bGIT_(?:DIR|WORK_TREE)\b/.test(command) };
   const merges = [];
   let mover;
-  const violation = visitCommands(command, cwd, (words, dir, { appended, remote }) => {
+  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote }) => {
+    if (opaque) {
+      return `${quoted(words)}: xargs runs the words it reads as a command or script the guard cannot see, so it may merge a pull request. `
+        + "Write the command out literally.";
+    }
     const before = merges.length;
     // macOS volumes ignore case, so GH and Gh run gh too, and a glob such as [g]h can name it.
     const name = basename(words[0]).toLowerCase();
+    const isGh = name === "gh" || (GLOB.test(name) && globMatches(name, "gh"));
+    // The words xargs adds can be the subcommand, the pull request or any option, such as --admin;
+    // after a read-only subcommand they only change what it reads.
+    if (isGh && appended) {
+      const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+      if (other !== undefined || !(GH_READ_ONLY[group] ?? []).includes(subcommand)) {
+        return `${quoted(words)}: xargs adds arguments the guard cannot see, so it cannot tell whether this gh command merges a pull request. `
+          + "Write the gh command out literally, such as `gh pr merge <number>`.";
+      }
+    }
     let reason;
-    if (name === "gh" || (GLOB.test(name) && globMatches(name, "gh"))) reason = ghCommand(words, dir, query, { ...env, appended, remote }, merges);
+    if (isGh) reason = ghCommand(words, dir, query, { ...env, remote }, merges);
     else if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
       reason = `${quoted(words)}: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
     }
-    if (reason === undefined && merges.length === before && mayMoveHead(words)) mover ??= words;
+    if (reason === undefined && merges.length === before && mayMoveHead(words, appended)) mover ??= words;
     return reason;
   }, TOO_DEEP);
   if (violation || merges.length === 0) return violation;
