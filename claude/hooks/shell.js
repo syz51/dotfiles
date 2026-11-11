@@ -59,6 +59,7 @@ const WRAPPERS = {
   noglob: [],
   nohup: [],
   stdbuf: ["-i", "-o", "-e"],
+  sshpass: ["-p", "-f", "-d", "-P"],
   sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--chdir"],
   time: ["-f", "-o"],
   timeout: ["-s", "-k", "--signal", "--kill-after"],
@@ -70,6 +71,10 @@ const WRAPPERS = {
 const SSH_VALUE_LETTERS = "BbcDEeFIiJLlmOoPpQRSWw";
 // ssh -o options whose value is a command run locally through the user's shell.
 const SSH_LOCAL_COMMAND = /^\s*(?:ProxyCommand|LocalCommand|KnownHostsCommand)\s*(?:=\s*|\s+)(.+)$/is;
+// ssh -o option whose value is the command to run on the remote host.
+const SSH_REMOTE_COMMAND = /^\s*RemoteCommand\s*(?:=\s*|\s+)(.+)$/is;
+// ssh options that keep it from reading standard input.
+const SSH_NO_STDIN = new Set(["-n", "-f", "-N"]);
 // find actions that run a command up to `;` or `+`.
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 
@@ -389,26 +394,28 @@ function readsStdin(words) {
  * `ssh [options] host [options] [command…]`: OpenSSH parses options again after the host
  * unless `--` came before it. The remote shell runs the command words joined by spaces, in an
  * unknown directory, and reads its script from standard input when there is no command or a
- * command of it is a shell reading standard input. `-o ProxyCommand=…` and similar options
- * run their command here, in `dir`.
+ * command of it is a shell reading standard input, unless `-n`, `-f` or `-N` keeps ssh from
+ * reading it. `-o RemoteCommand=…` runs its command there too. `-o ProxyCommand=…` and similar
+ * options run their command here, in `dir`.
  */
 function sshProgram(argv, i, dir) {
   const takesValue = (option) => /^-[A-Za-z]$/.test(option) && SSH_VALUE_LETTERS.includes(option[1]);
   const before = skipOptions(argv, i + 1, takesValue);
   const hasHost = before.next < argv.length;
   const after = hasHost && argv[before.next - 1] !== "--" ? skipOptions(argv, before.next + 1, takesValue) : { next: before.next + 1, options: [] };
-  const local = [...before.options, ...after.options]
-    .filter(([option, value]) => option === "-o" && value !== undefined)
-    .map(([, value]) => SSH_LOCAL_COMMAND.exec(value)?.[1])
-    .filter((command) => command !== undefined && command.trim().toLowerCase() !== "none")
-    .map((command) => [command, dir]);
-  const remote = argv.slice(after.next).join(" ");
-  if (remote === "") return { words: [], nested: [], local, dir: undefined, remote: true, reads: () => hasHost };
-  const reads = () => parseScript(remote).commands.some((command) => {
+  const options = [...before.options, ...after.options];
+  const settings = options.filter(([option, value]) => option === "-o" && value !== undefined).map(([, value]) => value);
+  const commandsOf = (pattern) => settings.map((value) => pattern.exec(value)?.[1])
+    .filter((command) => command !== undefined && command.trim().toLowerCase() !== "none");
+  const local = commandsOf(SSH_LOCAL_COMMAND).map((command) => [command, dir]);
+  const words = argv.slice(after.next).join(" ");
+  const nested = [...commandsOf(SSH_REMOTE_COMMAND), ...(words === "" ? [] : [words])];
+  const stdin = hasHost && !options.some(([option]) => SSH_NO_STDIN.has(option));
+  const reads = () => stdin && (nested.length === 0 || nested.some((remote) => parseScript(remote).commands.some((command) => {
     const inner = program(command.argv, undefined);
     return readsStdin(inner.words) || inner.reads?.() === true;
-  });
-  return { words: [], nested: [remote], local, dir: undefined, remote: true, reads };
+  })));
+  return { words: [], nested, local, dir: undefined, remote: true, reads };
 }
 
 /**
