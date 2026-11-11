@@ -509,7 +509,7 @@ describe("work board", () => {
     expect(rule).toMatch(/Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix\. Agents in their own threads, such as a coordinator's children, file for themselves/);
     expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
-    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/List work you found .*, for the parent to file\.$/m);
+    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/work found that still needs doing, for the parent to file/);
   });
 
   // Asks sent the user to look up what memory, the board or a repository already held,
@@ -729,10 +729,24 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
     expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
     expect(delegation).toMatch(/hard debugging or reasoning, including its fix, to `solver`/);
-    expect(delegation).toMatch(/Settle only the interfaces tracks share/);
-    expect(delegation).toMatch(/those interfaces, what it needs from this conversation/);
     expect(delegation).not.toMatch(/decided design/);
     expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);
+  });
+
+  // A quarter of all brief characters in a week restated rules the child loads itself, only
+  // a quarter of briefs named a report, and free-prose reports lost evidence and a relayed
+  // review's categories (dotfiles-391). The brief has fixed parts and the agents one report
+  // shape, so a brief carries neither the shared rules nor a report request.
+  test("a brief has fixed parts and names only what differs from what a child loads", () => {
+    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer`, `worker` and `solver` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
+  });
+
+  test("explorer, worker and solver end with the same report shape", () => {
+    const shape = "Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made, if any (files, commits, PR); work found that still needs doing, for the parent to file; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.";
+    for (const agent of ["explorer", "worker", "solver"]) expect(frontmatter(`claude/agents/${agent}.md`).body.trimEnd().split("\n").at(-1), agent).toBe(shape);
+    expect(frontmatter("claude/agents/explorer.md").body).toContain("Say what you checked when something could not be confirmed.");
+    expect(frontmatter("claude/agents/worker.md").body).toContain("Run the checks relevant to your track.");
+    expect(frontmatter("claude/agents/solver.md").body).toContain("Verify the result with a reproducible check, and give the approach and any remaining doubts with the result.");
   });
 
   test("Review fixes every real defect it finds and files the rest", () => {
