@@ -1,8 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/gpt-6.1-sol#xhigh",
+  "model": "opencode/gpt-6.1-sol",
+  "providers": {
+    "opencode": {
+      "models": {
+        "gpt-6.1-sol": { "settings": { "reasoningEffort": "xhigh" } },
+        "gpt-6-luna": { "settings": { "reasoningEffort": "max" } }
+      }
+    }
+  },
   "instructions": ["{env:HOME}/.claude/CLAUDE.md"],
-  "permissions": [{ "action": "*", "resource": "*", "effect": "allow" }],
   "mcp": {
     "servers": {
       "board": {

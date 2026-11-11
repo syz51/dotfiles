@@ -402,36 +402,59 @@ git config --global core.excludesFile "$HOME/.config/git/ignore"
 
 ## opencode
 
-opencode 2 reads its global configuration from `~/.config/opencode`, so the tracked files
-in `opencode/` apply without a link. They give opencode the Claude Code setup:
+OpenCode 2.2.7 reads global configuration from `~/.config/opencode`. These files port
+selected Claude Code behavior; they do not import all Claude settings.
 
-- `opencode.json` loads `~/.claude/CLAUDE.md` as instructions, uses GPT-6.1 Sol at
-  `xhigh` by default, allows
-  every tool as Claude Code's `bypassPermissions` does, and runs two MCP servers: the board
-  and computer use (`desktop`). opencode 2 does not read `CLAUDE.md` files by itself.
-- `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's, and
-  tells the model that the Claude-only rule means the configured GPT models here.
-- `agents/` holds `explorer`, `worker` and `solver`. They keep the Claude agents'
-  descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, and the Haiku
-  explorer runs GPT-6 Luna at `max`. `claude/tests/opencode.test.js` keeps them in step.
-- `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
-  `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
-  refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
-  act as `opencode:<root opencode session id>` (`OPENCODE_SESSION_ID`), so subagents share
-  their parent's board identity. The board hooks run with `BOARD_HOOK_RUNTIME=opencode`, so
-  the board registers runtime `opencode`, which its weekly usage hold skips: that hold
-  measures the Claude account and applies only to Claude Code. The plugin also adds the project's Claude Code memory index to the context at
-  session start.
+| Behavior | OpenCode source |
+| --- | --- |
+| Global instructions | `opencode.json` loads `~/.claude/CLAUDE.md` once. Global `opencode/AGENTS.md` translates tools and host capabilities. |
+| Project instructions | OpenCode discovers `AGENTS.md`, not `CLAUDE.md`. This repository has a portable root `AGENTS.md`, without another global import. |
+| Models | Root Sol uses `providers.opencode.models.gpt-6.1-sol.settings.reasoningEffort: "xhigh"`. Root `#variant` is not retained by the catalog default. Worker/solver select Sol `#xhigh`; explorer selects Luna `#max`. |
+| Roles | Built-in permissions remain intact because there is no global allow-all. Build, worker, and solver retain autonomous editing and shell access. |
+| Host full access | `plugins/setup-policy` uses the supported `permission.evaluate` boundary. Session rules run after agent rules and pass to children, so agent denies alone are insufficient. |
+| Hooks | `plugins/claude-hooks` translates supported hook events from `~/.claude/settings.json`, including guards, board hooks, atuin, and worktree checks. Guard refusals block calls. Configured critical `guard-*.js` errors/timeouts fail closed; optional hooks warn and fail open. |
+| Board | Native children share `opencode:<root session id>`. Hooks set runtime `opencode`; the Claude-only weekly usage hold does not apply. |
+| Memory | The plugin injects the project's Claude memory index into roots and, on their first context request, native children. Children do not run root lifecycle hooks or file board work; the parent files their findings. |
+| MCP | `opencode.json` separately configures board and desktop servers. |
 
-opencode keeps `service.json` (the background service's password) and `cli.json` in the
-same directory; both stay ignored. Models come from the OpenCode Console (Zen), which
-bills per token. Skills load from `~/.claude/skills` without configuration.
+`setup-policy` blocks all title/summary tools, General's questions and subagents,
+and worker/solver subagents, even under inherited full-access session rules.
+Plan can edit only files below `~/.opencode/plan`. Explore and explorer can use
+native read, glob, grep, webfetch, and websearch tools, plus external-directory checks.
+Custom explorer can also load skills; shipped Explore retains its skill deny.
+They cannot use shell, Code Mode, mutations, MCP actions, or subagents.
+Environment-secret reads require approval; `.env.example` remains readable.
+This plugin is a local role guardrail, not an operating-system sandbox.
 
-To try a change before it reaches `~/.config/opencode`, copy `opencode/` to a scratch
-directory and run `OPENCODE_CONFIG_DIR=<dir> opencode run --standalone ...`. Without
-`--standalone`, commands talk to the running background service and its configuration
-(`opencode service --help`); run `opencode reload` after a change reaches
-`~/.config/opencode`.
+Root session-end hooks run on archive, deletion, or plugin unload, not ordinary idle.
+Idle sessions can still own live/background leases. Reactivation resumes root hooks.
+Shell identity binds to each invocation. Native multi-file patches use the board's
+supported `apply_patch` telemetry shape, including adds, deletions, and moves.
+
+Claude's permissions, environment, compaction window, enabled plugins, status line,
+and other UI/settings values are not imported. OpenCode owns those settings separately.
+Native children never settle a host thread; a hosted parent follows its actual host's guidance.
+
+Skills require no compatibility-path configuration. For duplicate IDs, precedence increases
+from built-ins, through `.claude`, `.agents`, global OpenCode skills, project `.opencode`
+skills, then explicit config sources. Thus `.agents` overrides `.claude`, not the reverse.
+The policy plugin narrowly corrects the built-in `skill://opencode/SKILL.md` URL typo
+only on 2.2.7 and only when its exact contradictory paragraph matches.
+It leaves local skill overrides, future versions, and installed binaries untouched.
+
+`service.json` and `cli.json` stay ignored. Console (Zen) models bill per token.
+Configuration normally reloads automatically; use `/reload` for a forced reload.
+For isolated checks, copy the config into a temporary HOME with separate XDG data,
+cache, and config directories. `OPENCODE_CONFIG_DIR` alone adds a config directory;
+do not treat it as complete isolation from user settings. Use `--standalone` for
+CLI probes rather than the running shared service.
+
+`bun test claude/tests/opencode-policy*.js` runs offline callback fixtures.
+`RUN_OPENCODE_RUNTIME=1 bun test claude/tests/opencode-policy*.js` also checks the
+installed runtime using isolated temporary servers and a local mock model, with no paid generation.
+The [models guide](https://opencode.ai/docs/models),
+[permission hooks](https://opencode.ai/docs/build/plugins/server),
+and [skill precedence](https://opencode.ai/docs/skills#precedence) describe these interfaces.
 
 ## Factory
 
