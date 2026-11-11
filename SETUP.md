@@ -250,7 +250,9 @@ configuration with `git -c` or an earlier `git config`. It checks a push without
 refspecs against the push remote's `remote.<name>.push` and `remote.<name>.mirror`. It
 blocks a push that `xargs` adds words to, such as `echo --force | xargs git push origin main`,
 here and over `ssh`, and every command whose words `xargs` supplies (see below). It
-cannot see git aliases or `GIT_CONFIG_*` variables.
+follows an alias that `-c` sets on the git command, as in `git -c alias.p=push p`, and
+blocks one it cannot read, such as a `--config-env` or `!` alias. It cannot see aliases in
+config files or `GIT_CONFIG_*` variables.
 `shell.js` reports a command as opaque when the words `xargs` adds can run a command the
 guards cannot see: `xargs ssh` and `xargs watch`, which parse them again as a script,
 wrappers with no command such as `xargs sudo`, `xargs env` and `xargs nice`, a second
@@ -341,7 +343,9 @@ changes, and `stash drop` or `stash clear`. For `gh pr checkout` the message giv
 route through `git fetch` and `git switch`. To allow every such command in one repository, run
 `git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
 command that sets that key. It is a guardrail against mistakes, not a security
-boundary: it does not see aliases, scripts or direct edits of `.git/config`. In a main
+boundary: it follows an alias that `-c` sets on the git command and, in a main checkout,
+blocks one it cannot read, but it does not see aliases in config files, scripts or direct
+edits of `.git/config`. In a main
 checkout it also refuses a git command that `xargs` adds words to when those words could
 change the branch, as `echo feature | xargs git checkout` can, but not file restores after
 `--`, aborts, continues and stash or bisect reads. Anywhere, it refuses a bare `git` that
