@@ -479,7 +479,7 @@ describe("work board", () => {
     const rule = section("Work board");
     expect(rule).toMatch(/Before `task_done`, and before ending a turn, put each remaining step, follow-up and suggestion on the board, checking first for a task that covers it \(add a note there instead\)\. Where another section names the place for something, such as storage problems, it goes there/);
     expect(rule).toMatch(/Scope your task still needs: a sub-task \(`task_add` with your task as parent\)\. Your task stays open until every acceptance check passes/);
-    expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on the board of the work's repository, with the task you found it in, if any, as parent/);
+    expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on the board of the work's repository, or on this one when that repository has none, with the task you found it in, if any, as parent/);
     expect(rule).toMatch(/Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`/);
     expect(rule).toMatch(/Name what you filed in your reply, and report it there instead when filing fails\. Don't ask me before filing/);
     expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
@@ -490,13 +490,13 @@ describe("work board", () => {
   // its own board that already held the work (dotfiles-389): the session context names only
   // the current repository's board, and the registry sent T3 Code to dotfiles.
   test("work in another repository goes on that repository's board, after a search", () => {
-    const rule = "- Work in another repository goes on that repository's board; never assume it has none. `board boards` lists the boards and `board status --board <slug>` a board's repositories. Before adding a task there, search it with `board ls --board <slug> --search <words>` and add a note to a task that covers the work instead.\n";
+    const rule = "- Work in another repository goes on that repository's board; never assume it has none. `board boards` lists the boards and `board status --board <slug>` a board's repositories. Before adding a task there (`task_add` with `board`), search it with `board ls --board <slug> --search <words>` and add a note to a task that covers the work instead.\n";
     expect(section("Work board")).toContain(rule);
     expect(read("codex/AGENTS.md")).toContain(rule);
     const setups = Object.fromEntries(Bun.TOML.parse(read("setups.toml")).setup.map((setup) => [setup.id, setup]));
     expect(setups.t3.owner).toEqual({ repo: "github.com/syz51/t3code", board: "t3code" });
     expect(setups.t3.covers.filter(isPath)).toEqual([]);
-    expect(setups["t3-scripts"]).toMatchObject({ covers: ["t3code"], owner: { repo: "github.com/syz51/dotfiles", board: "dotfiles" } });
+    expect(setups["t3-scripts"]).toMatchObject({ covers: ["t3code", "the thread cleanup and branch pruning routines kept in dotfiles, not the T3 Code app"], owner: { repo: "github.com/syz51/dotfiles", board: "dotfiles" } });
   });
 
   // Filing is not a change to the work, so read-only work files too. Subagents run under

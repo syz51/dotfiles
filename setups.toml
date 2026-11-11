@@ -168,7 +168,7 @@ verify = ["storagectl dests"]
 [[setup]]
 id = "t3"
 title = "T3 Code (our fork): the app, its server and its orchestration tools"
-covers = ["the code of github.com/syz51/t3code: threads, delegates, worktrees, previews and the T3 MCP tools"]
+covers = ["the code of github.com/syz51/t3code: threads, delegates, worktrees, previews, the T3 MCP tools and the app's settings"]
 owner = { repo = "github.com/syz51/t3code", board = "t3code" }
 channel = "board"
 change = "A PR on syz51/t3code, tracked on the t3code board"
@@ -177,7 +177,7 @@ verify = ["the fork's own checks"]
 [[setup]]
 id = "t3-scripts"
 title = "T3 Code routines kept in dotfiles: thread cleanup and branch pruning"
-covers = ["t3code"]
+covers = ["t3code", "the thread cleanup and branch pruning routines kept in dotfiles, not the T3 Code app"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests"
