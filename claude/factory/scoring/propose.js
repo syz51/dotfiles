@@ -47,10 +47,11 @@ const EVIDENCE_ITEMS = 25;
 
 export const proposalsFile = () => statePath("proposals.jsonl");
 
-// Whether a repository path may change in a proposal: the global instructions, their Codex
-// copy (whose Work board section must stay identical) and the agent definitions. Tests are
+// Whether a repository path may change in a proposal: the global instructions, the rules
+// they point at in claude/reference, their Codex copy (whose Work board section must stay
+// identical) and the agent definitions. Tests are
 // code the suite would run, so a person updates them.
-export const allowedPath = (path) => path === "claude/CLAUDE.md" || path === "codex/AGENTS.md" || /^claude\/agents\/[^/]+\.md$/.test(path);
+export const allowedPath = (path) => path === "claude/CLAUDE.md" || path === "codex/AGENTS.md" || /^claude\/(agents|reference)\/[^/]+\.md$/.test(path);
 
 // Failing sessions per dimension, from the latest record of each session: the latest
 // judged record for judge dimensions, the latest record for detectors. Only records of
@@ -117,9 +118,9 @@ Evidence (the judge's or detector's words, not raw transcripts; it may be wrong)
 ${evidence.join("\n")}${group.failures.length > EVIDENCE_ITEMS ? `\n- … and ${group.failures.length - EVIDENCE_ITEMS} more sessions` : ""}
 
 Your task:
-1. Read claude/CLAUDE.md, the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
+1. Read claude/CLAUDE.md, the files in claude/reference that it points at (rules that few turns need, with the same force), the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
 2. Otherwise make the smallest change that fixes that cause. Prefer clarifying, replacing or deleting existing text over adding a new rule; keep the file's concise style and do not repeat rules.
-3. Edit only claude/CLAUDE.md and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
+3. Edit only claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
 4. The repository is public. Write the change in general terms: never copy the evidence, commands, paths, URLs or project names into it. A change that repeats the evidence verbatim is rejected.
 
 Reply with a short paragraph on the cause and the change, then a last line "TITLE: <imperative summary under 70 characters>". The paragraph stays private for the reviewer; the title becomes the public commit message and pull request title, so it must not quote the evidence either.`;

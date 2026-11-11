@@ -63,7 +63,8 @@
 ## Work board
 
 - When the session context names a work board for this repository, it is the shared plan for every thread and device: claim a task (`task_claim`) before working on it, lease files before changing them (`lease_paths`), keep your handoff current (`handoff_set`), finish with `task_done` and its evidence, and ask me through `ask_user` instead of waiting. Use the `board` CLI where the MCP tools are missing.
-- Before `ask_user`, before you write a task that waits on my decision or action, and when I ask you to explain an item, read `~/.claude/reference/asks.md`: search for the answer first, then open with a decision brief.
+- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.
+- Open each ask, and the body of each task that waits on my decision or action, with a brief in plain, short sentences: what it is, in one sentence; why it waits on me; the options, each with its consequence; your recommendation. Agent detail goes below the brief. Explain an item I ask about in the same structure, with a diagram only when it involves a flow across several parts.
 - Track all work for such a repository on its board, never only in chat, a plan file, ledger, TODO or next-steps list, handoff, or GitHub issue for our own backlog, even where the project's files say otherwise. Without a board, ignore this section; create one only when I ask.
 - Work I ask for directly gets its own task, including work you won't do now: before changing files or state, add one unless a task already covers it, and claim it.
 - Work in another repository goes on that repository's board; never assume it has none. `board boards` lists the boards and `board status --board <slug>` a board's repositories. Before adding a task there (`task_add` with `board`), search it with `board ls --board <slug> --search <words>` and add a note to a task that covers the work instead.
@@ -77,7 +78,7 @@
 
 ## Storage
 
-- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands, jobs on another machine, and where to report what got in the way.
+- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands and jobs on another machine. Report what got in the way as Feedback with `about` `storage`.
 
 ## Feedback
 

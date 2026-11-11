@@ -366,13 +366,17 @@ Do not replace an existing tool home without backing up its local data.
 Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
 what most turns need. Procedures that few turns need are in `claude/reference/`, each
 behind one pointer line in the section it belongs to: `storage.md`, `review-findings.md`,
-`merge.md`, `t3-delegation.md` and `asks.md`. A session reads one
-through `~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
+`merge.md` and `t3-delegation.md`. A session reads one through
+`~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
 rules word for word and states that they have the instructions' force. To move another
 rule, move its lines unchanged, leave a pointer that names when to read the file, and
 change the pins in `claude/tests/config.test.js`, which also holds the size budget of
 `claude/CLAUDE.md`. `codex/AGENTS.md` reads no reference files and keeps its rules in
-place. The four agents in `claude/agents/` deny the tools no subagent uses
+place. The factory reads the instructions too: the judge in
+`claude/factory/scoring/score.js` gets the reference files appended, the proposer in
+`claude/factory/scoring/propose.js` may edit them, and
+`claude/factory/board/proposal.js` requires the Work board section to be identical in
+both files, so no Work board rule moves. The four agents in `claude/agents/` deny the tools no subagent uses
 (`ReportFindings`, `ListAgents`, the claude.ai connectors, and computer use for the two
 read-only agents), which shortens each subagent request.
 
@@ -982,7 +986,8 @@ The `claude/tests` suites check the Claude Code configuration. These run offline
 in CI:
 
 - `config.test.js`: agent frontmatter against the delegation policy, files and agents
-  that `claude/CLAUDE.md` references, the rules in `claude/reference/` and their pointers, hook scripts in `claude/settings.json`, the rules
+  that `claude/CLAUDE.md` references, the rules in `claude/reference/` and their
+  pointers, hook scripts in `claude/settings.json`, the rules
   the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
   which the installed `frontend-ui` skill tells sessions to read rather than
   `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback

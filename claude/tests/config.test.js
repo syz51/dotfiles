@@ -41,13 +41,12 @@ const referenceRules = (name) => `${read(`claude/reference/${name}.md`).split("\
 
 // Every request of every session and subagent carries the global instructions, so
 // procedures that few turns need moved to reference files read on need: 23,808 characters
-// before, with storagectl in 7% of a week's main sessions, an ask in 6%, a T3 delegate or
+// before, with storagectl in 7% of a week's main sessions, a T3 delegate or
 // launch in 8% and a reviewer run in 1% (dotfiles-385). Each rule keeps its words there.
 const POINTERS = {
   merge: ["Autonomy", "Before a `gh pr merge`, read `~/.claude/reference/merge.md`: what the guard-pr-merge hook refuses, and how to land a pull request that is BEHIND its base branch."],
   "t3-delegation": ["Delegation", "- Before a `delegate_task` or `t3_thread_launch` call, read `~/.claude/reference/t3-delegation.md`: the fields T3 drops or refuses, and the route for a board task whose code is in another repository."],
-  asks: ["Work board", "- Before `ask_user`, before you write a task that waits on my decision or action, and when I ask you to explain an item, read `~/.claude/reference/asks.md`: search for the answer first, then open with a decision brief."],
-  storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands, jobs on another machine, and where to report what got in the way."],
+  storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands and jobs on another machine. Report what got in the way as Feedback with `about` `storage`."],
   "review-findings": ["Review", "- Once you have decided on every finding, record the outcomes with `ReportFindings` as `~/.claude/reference/review-findings.md` says, also for a review without findings, and report the result in your reply as well."],
 };
 
@@ -138,7 +137,7 @@ describe("global instructions", () => {
 
   // A regression budget, not a target: raise it when a rule that every turn needs is added.
   test("the global instructions stay under their size budget", () => {
-    expect(globalInstructions.length).toBeLessThan(21_000);
+    expect(globalInstructions.length).toBeLessThan(21_500);
   });
 
   // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:
@@ -574,14 +573,14 @@ describe("work board", () => {
   // Asks sent the user to look up what memory, the board or a repository already held,
   // and different threads asked the same question.
   test("an ask comes after searching and carries what was found", () => {
-    expect(referenceRules("asks")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
+    expect(section("Work board")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
   });
 
   // The user reviews waiting work from lists and had to ask "explain number N" for each
   // item whose body was written for agents (dotfiles-89).
   test("an ask and a task waiting on the user open with a decision brief", () => {
     const rule = "- Open each ask, and the body of each task that waits on my decision or action, with a brief in plain, short sentences: what it is, in one sentence; why it waits on me; the options, each with its consequence; your recommendation. Agent detail goes below the brief. Explain an item I ask about in the same structure, with a diagram only when it involves a flow across several parts.\n";
-    expect(referenceRules("asks")).toContain(rule);
+    expect(section("Work board")).toContain(rule);
     expect(read("codex/AGENTS.md")).toContain(rule);
   });
 
@@ -593,9 +592,10 @@ describe("work board", () => {
   });
 
   test("Codex gets the same rule", () => {
-    // Codex reads no reference files, so its section keeps the ask rules in place of the pointer.
-    const pointer = section("Work board").split("\n").find((line) => line.includes("~/.claude/reference/asks.md"));
-    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").replace(`${pointer}\n`, () => referenceRules("asks")).trimEnd()}\n`);
+    // The factory's proposers require the two copies to be identical, so no Work board rule
+    // moves to a reference file.
+    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
+    expect(section("Work board")).not.toContain("~/.claude/reference/");
     expect(tracked("codex/AGENTS.md")).toBe(true);
   });
 });
@@ -604,7 +604,8 @@ describe("storage rule", () => {
   test("the instructions keep when to use the shared storage and point at the rest", () => {
     const rule = section("Storage");
     expect(rule).toContain(`${referenceRules("storage").split("\n")[0].split(". ")[0]}. Before you use \`storagectl\` or split work across machines, read \`~/.claude/reference/storage.md\``);
-    expect(rule).toMatch(/where to report what got in the way/);
+    // The Work board section sends storage problems here, so the place stays in this section.
+    expect(rule).toContain("Report what got in the way as Feedback with `about` `storage`.");
   });
 
   test("names every destination, the entry command and where problems go", () => {
