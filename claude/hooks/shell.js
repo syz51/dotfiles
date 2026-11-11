@@ -351,7 +351,7 @@ export function changeDirectory(dir, path) {
  * Skips getopt-style options from `argv[start]`. A short option group ends at its first letter
  * that takes a value, which is the rest of the word or else the next word; `--long=value`
  * carries its value; `--` ends the options. Returns the index of the first operand and each
- * option with its value.
+ * option with its value and, for an option that takes one, the index of the word after it.
  */
 function skipOptions(argv, start, takesValue) {
   const options = [];
@@ -361,8 +361,8 @@ function skipOptions(argv, start, takesValue) {
     i += 1;
     if (word === "--") break;
     const equals = word.indexOf("=");
-    if (word.startsWith("--") && equals !== -1) options.push([word.slice(0, equals), word.slice(equals + 1)]);
-    else if (takesValue(word)) options.push([word, argv[i++]]);
+    if (word.startsWith("--") && equals !== -1) options.push([word.slice(0, equals), word.slice(equals + 1), i]);
+    else if (takesValue(word)) options.push([word, argv[i++], i]);
     else if (word.startsWith("--")) options.push([word, undefined]);
     else {
       for (let k = 1; k < word.length; k += 1) {
@@ -371,12 +371,50 @@ function skipOptions(argv, start, takesValue) {
           options.push([option, undefined]);
           continue;
         }
-        options.push([option, k + 1 < word.length ? word.slice(k + 1) : argv[i++]]);
+        options.push([option, k + 1 < word.length ? word.slice(k + 1) : argv[i++], i]);
         break;
       }
     }
   }
   return { next: i, options };
+}
+
+/**
+ * The words of an `env -S` string, as GNU and BSD env split it: blanks separate words, single
+ * quotes keep their text, and backslash escapes work outside single quotes. `\c` ends the
+ * string and a word that starts with `#` starts a comment. Variables stay unexpanded, so
+ * `expands` reports them as unknown.
+ */
+function splitString(value) {
+  const words = [];
+  let word;
+  let quote;
+  const ESCAPES = { n: "\n", t: "\t", r: "\r", f: "\f", v: "\v", _: " " };
+  for (let k = 0; k < value.length; k += 1) {
+    const char = value[k];
+    if (quote === undefined && /\s/.test(char)) {
+      if (word !== undefined) words.push(word);
+      word = undefined;
+    } else if (quote === undefined && char === "#" && word === undefined) {
+      break;
+    } else if (char === quote) {
+      quote = undefined;
+    } else if (quote === undefined && (char === "'" || char === '"')) {
+      quote = char;
+      word ??= "";
+    } else if (char === "\\" && k + 1 < value.length && (quote !== "'" || "\\'".includes(value[k + 1]))) {
+      const next = value[++k];
+      if (next === "c" && quote === undefined) break;
+      if (next === "_" && quote === undefined) {
+        if (word !== undefined) words.push(word);
+        word = undefined;
+      } else word = (word ?? "") + (ESCAPES[next] ?? next);
+    } else {
+      word = (word ?? "") + char;
+    }
+  }
+  if (word !== undefined) words.push(word);
+  return words;
 }
 
 /** Whether a shell invocation reads its commands from standard input (no -c and no script file). */
@@ -427,12 +465,13 @@ function sshProgram(argv, i, dir) {
  */
 function program(argv, dir, remote = false) {
   const chdir = (path) => (remote ? undefined : changeDirectory(dir, path));
-  const nested = [];
   let appended = false; // xargs adds words read from standard input
   // Whether a skipped word runs the words after it as a command: a wrapper, an assignment, or
   // a second xargs. The first xargs alone runs echo.
   let runner = false;
   let replace; // xargs' -I or -J string, which each input line replaces
+  let filled = false; // the input fills in an `env -S` string, so it may supply any words
+  let envDir; // the directory an env started in while it parses its `env -S` words again
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
@@ -448,32 +487,45 @@ function program(argv, dir, remote = false) {
     }
     if (name === "ssh") {
       const remote = sshProgram(argv, i, dir);
-      // A wrapper's `env -S` script runs here with ssh's words, and so with the words xargs adds.
-      return { ...remote, local: [...nested.map((script) => [script, dir, appended]), ...remote.local], appended };
+      return { ...remote, appended };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`.
       i += 1;
       while (i < argv.length && argv[i].startsWith("-")) i += ["-n", "--interval", "-q", "--equexit"].includes(argv[i]) ? 2 : 1;
-      nested.push(argv.slice(i).join(" "));
-      return { words: [], nested, dir, appended, reparses: true };
+      return { words: [], nested: [argv.slice(i).join(" ")], dir, appended, reparses: true };
     }
     if (name === "command") {
       // `command -v NAME` and `command -V NAME` look a command up without running it.
       let j = i + 1;
       while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested, dir, appended };
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, appended };
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     runner = name !== "xargs" || appended;
     const values = WRAPPERS[name];
+    const start = i;
     const { next, options } = skipOptions(argv, i + 1, (option) => values.includes(option));
     i = next;
     if (name === "env") {
+      // env puts the words of an `env -S` string where the option was and parses them again,
+      // so they come before the words after it, which reach the command as its arguments.
+      // env changes directory once, to its last -C, from the directory it started in.
+      const base = envDir ?? dir;
+      const split = options.find(([option]) => option === "-S" || option === "--split-string");
       for (const [option, value] of options) {
-        if (option === "-S" || option === "--split-string") nested.push(value ?? "");
-        else if (option === "-C" || option === "--chdir") dir = chdir(value);
+        if (option === "-C" || option === "--chdir") dir = remote ? undefined : changeDirectory(base, value);
+        if (option === split?.[0]) break;
       }
+      if (split !== undefined) {
+        const [, value = "", end] = split;
+        if (replace !== undefined && value.includes(replace)) filled = true;
+        argv = [argv[start], ...splitString(value), ...argv.slice(end)];
+        envDir = base;
+        i = 0;
+        continue;
+      }
+      envDir = undefined;
     }
     if (name === "sudo") {
       for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = chdir(value);
@@ -487,15 +539,14 @@ function program(argv, dir, remote = false) {
       }
     }
   }
-  // `bare`: wrappers or assignments with no command and no `env -S` script after them, so the
-  // command is the words xargs adds, if any.
-  const bare = i === argv.length && runner && nested.every((script) => script.trim() === "");
+  // `bare`: wrappers or assignments with no command after them, so the command is the words
+  // xargs adds, if any.
+  const bare = i === argv.length && runner;
   const fill = (word) => (replace === undefined ? word : word.replaceAll(replace, FILLED));
   const words = argv.slice(i).map(fill);
-  const scripts = nested.map(fill);
-  // `fills`: the input fills in the command's name or an `env -S` script.
-  const fills = (words[0] ?? "").includes(FILLED) || scripts.some((script) => script.includes(FILLED));
-  return { words, nested: scripts, dir, appended, bare, fills };
+  // `fills`: the input fills in the command's name or an `env -S` string.
+  const fills = filled || (words[0] ?? "").includes(FILLED);
+  return { words, nested: [], dir, appended, bare, fills };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -613,7 +664,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
       // run on the remote host; its local options' commands run here. The words xargs adds to
-      // ssh, watch or `env -S` join the script they run.
+      // ssh or watch join the script they run.
       const scripts = [...substitutions.map((script) => [script, before, here]),
         ...nested.map((script) => [script, dir, here || Boolean(remote), appended]),
         ...(local ?? []).map(([script, where, adds]) => [script, where, here, adds])];
