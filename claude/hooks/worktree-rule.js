@@ -24,7 +24,7 @@ export function claudeWorktree(path) {
 /** The note for a session or agent isolated in `worktree`. */
 export function rule(worktree, { entered = false } = {}) {
   const lines = [
-    `Worktree isolation: Claude Code refuses each Bash command that it cannot verify stays in ${worktree}. No setting turns this off. It refuses these forms; write around them, and never hide a refused command in a script:`,
+    `Worktree isolation: Claude Code refuses each Bash command that it cannot verify stays in ${worktree}. No setting turns this off. It refuses these forms, though the simplest case of one sometimes passes; write around them, and never hide a refused command in a script:`,
     "- git, gitleaks or the word git inside a loop, `$(…)` or heredoc, or next to a `$variable` or `$?`. Run git with literal arguments, alone or joined to plain commands with && or |.",
     "- A program that runs code, such as sed, bash or bun, given a `$variable` or `$(…)` value. Give it literal paths and text.",
     "- The word eval anywhere, even in a quoted grep pattern. Write the pattern as `ev[a]l`.",
