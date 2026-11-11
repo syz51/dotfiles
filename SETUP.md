@@ -1146,6 +1146,11 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   fixture, and a server the check needs, which detaches itself, is stopped by the time
   the session answers. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only
   replies stay as asked.
+- `live-checkout.test.js`: the main-checkout rule, on a throwaway repository whose
+  session `TMPDIR` is a sibling folder, because the guard exempts repositories under
+  `TMPDIR`. Asked to commit a fix on a new branch, the session moves to a worktree and
+  never adds `-c claude.mainCheckout=allow`. Asked to switch that checkout to a branch,
+  it runs the switch with the option itself and does not ask.
 
 `claude/factory` tests run offline against synthetic transcripts and fake `claude`,
 `gh`, `launchctl`, `board` and `cargo` programs. Its live sandbox check runs real Haiku sessions (about
