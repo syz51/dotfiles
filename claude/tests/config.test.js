@@ -1090,6 +1090,46 @@ describe("lean prompt", () => {
   });
 });
 
+// The repository is public, so no tracked file may hold the login of the Mac it is edited
+// on. The login comes from HOME at run time. CI's login is an ordinary word ("runner")
+// that tracked files use, so the test runs only on a dev Mac.
+describe("local login", () => {
+  const login = process.env.CI ? undefined : /^\/Users\/([^/]+)$/.exec(process.env.HOME ?? "")?.[1];
+
+  // Tracked files of `cwd` that hold `name` as a whole word, which covers /Users/<name>,
+  // or attached to ssh's -l.
+  function filesNaming(name, cwd) {
+    const word = name.replace(/[.[\]{}()*+?^$|\\]/g, "\\$&");
+    const result = spawnSync("git", ["grep", "-I", "-l", "-E", "-e", `(^|[^[:alnum:]_])${word}([^[:alnum:]_]|$)`, "-e", `-l${word}`], { cwd, encoding: "utf8" });
+    if (result.error) throw result.error;
+    if (result.status > 1) throw new Error(result.stderr);
+    return result.stdout.split("\n").filter(Boolean);
+  }
+
+  test.skipIf(login === undefined)("is in no tracked file", () => {
+    expect(filesNaming(login, REPO)).toEqual([]);
+  });
+
+  test("the search finds a whole word, a home path and an attached -l value only", () => {
+    const repo = mkdtempSync(join(tmpdir(), "login-"));
+    try {
+      const git = (...args) => {
+        const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+        if (result.status !== 0) throw new Error(result.stderr);
+      };
+      git("init", "-q");
+      writeFileSync(join(repo, "word.txt"), "owner: someone\n");
+      writeFileSync(join(repo, "home.txt"), "/Users/someone/.config\n");
+      writeFileSync(join(repo, "ssh.txt"), "ssh -lsomeone host\n");
+      writeFileSync(join(repo, "other.txt"), "someoneelse and notsomeone\n");
+      git("add", ".");
+      expect(filesNaming("someone", repo).sort()).toEqual(["home.txt", "ssh.txt", "word.txt"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 // On 2026-11-08 GitHub's release host returned 504 for about 48 minutes, and CI failed
 // before any test ran. Retries cover short failures of the gitleaks download; the cache
 // covers long ones. setup-uv uses the Astral mirror, and setup-bun caches Bun itself.
