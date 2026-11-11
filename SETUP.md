@@ -417,8 +417,10 @@ in `opencode/` apply without a link. They give opencode the Claude Code setup:
 - `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
   `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
   refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
-  act as `claude:<root opencode session id>`, so subagents share their parent's board
-  identity. The plugin also adds the project's Claude Code memory index to the context at
+  act as `opencode:<root opencode session id>` (`OPENCODE_SESSION_ID`), so subagents share
+  their parent's board identity. The board hooks run with `BOARD_HOOK_RUNTIME=opencode`, so
+  the board registers runtime `opencode`, which its weekly usage hold skips: that hold
+  measures the Claude account and applies only to Claude Code. The plugin also adds the project's Claude Code memory index to the context at
   session start.
 
 opencode keeps `service.json` (the background service's password) and `cli.json` in the

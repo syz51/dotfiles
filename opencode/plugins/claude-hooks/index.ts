@@ -7,8 +7,9 @@
 //   Stop <- session experimental.idle (a block sends the reason back as a synthetic prompt)
 //   StopFailure <- session.execution.failed; SessionEnd <- session.deleted and plugin shutdown
 // Hook commands see session_id = the root opencode session, so subagents share their
-// parent's board identity as they do in Claude Code. Board MCP calls get that identity
-// through their `agent` argument, and shell commands through CLAUDE_CODE_SESSION_ID.
+// parent's board identity as they do in Claude Code. That identity is `opencode:<root>`
+// with runtime opencode, so the board's Claude usage hold skips it. Board MCP calls get it
+// through their `agent` argument, and shell commands and hooks through OPENCODE_SESSION_ID.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -102,7 +103,7 @@ export default {
     await ctx.tool.hook("execute.before", async (e: any) => {
       const root = await rootOf(e.sessionID);
       const input = (e.input ?? {}) as Record<string, unknown>;
-      if (e.tool.startsWith("board_") && input.agent === undefined) input.agent = `claude:${root}`;
+      if (e.tool.startsWith("board_") && input.agent === undefined) input.agent = `opencode:${root}`;
       if (e.tool === "shell" && typeof input.command === "string") shellSessions.set(input.command, root);
       toolInputs.set(e.id, input);
       const name = claudeToolName(e.tool);
@@ -151,7 +152,7 @@ export default {
       const sessionID = shellSessions.get(e.command);
       if (sessionID) {
         shellSessions.delete(e.command);
-        e.env.CLAUDE_CODE_SESSION_ID = sessionID;
+        e.env.OPENCODE_SESSION_ID = sessionID;
       }
     });
 

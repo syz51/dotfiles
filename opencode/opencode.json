@@ -7,7 +7,7 @@
     "servers": {
       "board": {
         "type": "local",
-        "command": ["/usr/bin/env", "-u", "T3CODE_THREAD_ID", "-u", "CLAUDE_CODE_SESSION_ID", "{env:HOME}/.cargo/bin/board", "mcp"],
+        "command": ["/usr/bin/env", "-u", "T3CODE_THREAD_ID", "-u", "CLAUDE_CODE_SESSION_ID", "-u", "OPENCODE_SESSION_ID", "{env:HOME}/.cargo/bin/board", "mcp"],
         "codemode": false
       },
       "desktop": {
