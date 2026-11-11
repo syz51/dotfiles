@@ -799,7 +799,7 @@ describe("rules the live suites test", () => {
   // A worker removed its parent's snapshot directory, and a background review agent removed
   // its parent's tf/ copy from the shared scratchpad (dotfiles-94).
   test("Workflow keeps each subagent's scratch apart and cleans up only what it made", () => {
-    expect(section("Workflow")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only the files you created,");
+    expect(section("Workflow")).toContain("; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created,");
   });
 
   test("Delegation is a standing request limited to parallel tracks", () => {
