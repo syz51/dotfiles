@@ -63,9 +63,11 @@ relative to its folder. Start from:
   empty, error and loading states. `before`/`after` are GET paths called around a shot,
   for switches like a simulated outage. `steps` are `click`, `hover`, `fill`
   (`SELECTOR=TEXT`), `press`, `scroll`, `wait` and `waitFor`.
-- References are public pages of products of the same kind (or `files` of PNGs with a
-  `view`), so judges score on a shared scale; check that each renders logged out with
-  `capture`.
+- References set the bar, so choose 2-3 products the owner admires (the `taste` may name
+  them) that show the same screen types as `screens`, so judges score on a shared scale.
+  Use a public page that renders logged out (check it with `capture`). When the product
+  shows those screens only after a login, use `files`: PNGs of its screens, each with a
+  `view`. Calibration drops the weak ones (below).
 - The bar is to lead the references: `pass.references` requires every category to beat
   the best reference by that margin, and `pass.min` is a floor at about the best
   reference's level. The template's values are placeholders: the run's first calibration
@@ -116,6 +118,12 @@ calibrate again. Rounds refuse to run without a passing calibration.
 Each judge is calibrated on its own, Haiku too: its noise sets its pre-check floor
 (`pass.regression` times it, or main's spread over the run's rounds when larger). Only
 the bar judge, Opus, gets a bar reach check, since Haiku never applies the bar.
+
+On the climb's first calibration, read the bar judge's row of the table first. A reference
+whose score in its References column is more than a point under its Main column is far
+below main, as far as the degraded control must be, and sets no target: remove it, add a
+better one if fewer than 2 remain, and calibrate again with `--new-run` before you take
+the derived bar.
 
 Every calibration with references prints a **derived bar**: a `pass` block that leads the
 best reference in every category (`pass.references`, at least 0.25 or the bar judge's
