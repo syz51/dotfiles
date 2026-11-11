@@ -34,16 +34,38 @@ function section(heading) {
   return match[1];
 }
 
+// Rules that few turns need are in claude/reference/<name>.md, and the global instructions keep
+// one pointer line for each (dotfiles-385). The rule lines of one such file, as they stood
+// in the instructions: its bullets.
+const referenceRules = (name) => `${read(`claude/reference/${name}.md`).split("\n").filter((line) => /^ *- /.test(line)).join("\n")}\n`;
+
+// Every request of every session and subagent carries the global instructions, so
+// procedures that few turns need moved to reference files read on need: 23,808 characters
+// before, with storagectl in 7% of a week's main sessions, an ask in 6%, a T3 delegate or
+// launch in 8% and a reviewer run in 1% (dotfiles-385). Each rule keeps its words there.
+const POINTERS = {
+  merge: ["Autonomy", "Before a `gh pr merge`, read `~/.claude/reference/merge.md`: what the guard-pr-merge hook refuses, and how to land a pull request that is BEHIND its base branch."],
+  "t3-delegation": ["Delegation", "- Before a `delegate_task` or `t3_thread_launch` call, read `~/.claude/reference/t3-delegation.md`: the fields T3 drops or refuses, and the route for a board task whose code is in another repository."],
+  asks: ["Work board", "- Before `ask_user`, before you write a task that waits on my decision or action, and when I ask you to explain an item, read `~/.claude/reference/asks.md`: search for the answer first, then open with a decision brief."],
+  storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands, jobs on another machine, and where to report what got in the way."],
+  "review-findings": ["Review", "- Once you have decided on every finding, record the outcomes with `ReportFindings` as `~/.claude/reference/review-findings.md` says, also for a review without findings, and report the result in your reply as well."],
+};
+
 // These agents never get the claude.ai Gmail and Docs connectors: their instructions and
 // schemas add about 1.5k tokens to each such subagent's prompt (dotfiles-116). Built-in
 // agent types still get them.
 const CONNECTORS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Claude_Docs"];
+// Tools no subagent called in a week of transcripts: the parent records review outcomes
+// (ReportFindings), and a subagent has no agents to list. Their schemas were about 1.4k
+// tokens of each subagent request (dotfiles-385). Read-only agents also lose computer use.
+const UNUSED = ["ReportFindings", "ListAgents"];
+const COMPUTER_USE = "mcp__plugin_computer-use_desktop";
 const POLICY = {
-  explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS] },
-  worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS] },
-  solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS] },
+  explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED] },
+  worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
+  solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
   // The Review rule's reviewer: this session's model at medium, with its recipe preloaded.
-  reviewer: { model: "inherit", effort: "medium", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS], skills: "diff-review" },
+  reviewer: { model: "inherit", effort: "medium", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -101,6 +123,31 @@ describe("global instructions", () => {
     for (const path of references) expect(tracked(`claude/${path}`), `claude/${path}`).toBe(true);
   });
 
+  test("each reference file is tracked, has the instructions' force and one pointer in its section", () => {
+    expect(readdirSync(join(CLAUDE, "reference")).sort()).toEqual(Object.keys(POINTERS).map((name) => `${name}.md`).sort());
+    for (const [name, [heading, line]] of Object.entries(POINTERS)) {
+      expect(tracked(`claude/reference/${name}.md`), name).toBe(true);
+      expect(section(heading), name).toContain(line);
+      expect(globalInstructions.split(`~/.claude/reference/${name}.md`).length, name).toBe(2);
+      expect(read(`claude/reference/${name}.md`), name).toMatch(new RegExp(`^# .+\\n\\nTh(ese rules are|is rule is) part of the global instructions \\(\`~/\\.claude/CLAUDE\\.md\`, ${heading} section\\) and ha(ve|s) the same force\\. `));
+      // A moved rule is not also kept in the instructions.
+      for (const rule of referenceRules(name).trimEnd().split("\n")) expect(globalInstructions, name).not.toContain(rule);
+    }
+    expect(read("claude/factory/scoring/high-impact.toml")).toContain('"claude/reference/**"');
+  });
+
+  // A regression budget, not a target: raise it when a rule that every turn needs is added.
+  test("the global instructions stay under their size budget", () => {
+    expect(globalInstructions.length).toBeLessThan(21_000);
+  });
+
+  // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:
+  // wide `sed -n` ranges, `grep -n` without a limit, full diffs, and 760 repeated file reads
+  // (dotfiles-119, agent-board-388).
+  test("Workflow keeps tool output small", () => {
+    expect(section("Workflow")).toContain("- Keep tool output small, since each result stays in context for every later turn. Pipe long command output through `head` or `tail`, or to a scratch file that you search; limit `grep` output; run `git diff --stat` before a full diff; read files and logs in ranges; do not read a file again after you edit it; read only the latest messages of a T3 thread.\n");
+  });
+
   // Agents stopped at "ask the user to merge" on ready pull requests. The Autonomy section
   // authorizes such steps, so the scorer must not count asking before them as correct.
   test("the scoring rubric counts asking only for the Autonomy section's reasons", () => {
@@ -148,14 +195,15 @@ describe("global instructions", () => {
   // Most of the user's repositories have no branch protection, so the hook enforces the merge
   // condition the Autonomy section grants (dotfiles-259).
   test("the merge rule names the hook that enforces it", () => {
-    expect(section("Autonomy")).toContain("The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed.");
+    expect(section("Autonomy")).toContain("merge them once their required checks pass (or the project's local checks, where it has no CI)");
+    expect(referenceRules("merge")).toContain("- The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed.");
   });
 
   // Strict up-to-date protection makes a pull request fall behind while its CI runs; auto-merge
   // stops agents re-waiting by hand. It can lag after the checks pass: 70 seconds on dotfiles
   // PR #152 (dotfiles-282).
   test("the merge rule tells agents to update a behind pull request and let auto-merge land it", () => {
-    expect(section("Autonomy")).toContain("When a pull request is BEHIND a base branch that requires checks, run `gh pr update-branch`, then, as a separate command, `gh pr merge --auto` with a merge-method flag, and watch the pull request instead of waiting for each run by hand; update the branch again whenever it falls behind. Auto-merge can lag a minute or two after the checks pass; if the pull request then still sits at CLEAN, merge it directly.");
+    expect(referenceRules("merge")).toContain("- When a pull request is BEHIND a base branch that requires checks, run `gh pr update-branch`, then, as a separate command, `gh pr merge --auto` with a merge-method flag, and watch the pull request instead of waiting for each run by hand; update the branch again whenever it falls behind. Auto-merge can lag a minute or two after the checks pass; if the pull request then still sits at CLEAN, merge it directly.");
   });
 
   // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
@@ -163,7 +211,7 @@ describe("global instructions", () => {
   // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
   // T3 tools.
   test("Delegation puts a T3 launch brief in message and resends it when no run started", () => {
-    expect(section("Delegation")).toContain("Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
+    expect(referenceRules("t3-delegation")).toContain("- Pass a `t3_thread_launch` brief in `message`; T3 silently drops a `prompt` key and starts no run, so when the result's `runId` is null, send the brief with `t3_thread_send`.");
   });
 
   // T3 refuses delegate_task with another project's target.projectId, and its error suggests
@@ -171,7 +219,7 @@ describe("global instructions", () => {
   // or left a cross-repo board task undispatched because the T3 rules reserve t3_thread_launch
   // for user-requested threads (board-feedback-188 to -550, dotfiles-120).
   test("Delegation names one route for local delegates and cross-repo board work", () => {
-    expect(section("Delegation")).toContain("A local `delegate_task` leaves out `target.projectId`; T3 refuses another project's id, even with a local `target.environmentId`. To dispatch a board task whose code is in another repository, call `t3_thread_launch` with that project's `projectId` and `workspaceStrategy` `{type: \"worktree\", baseRef: \"origin/<default branch>\", startFromOrigin: true}`. That thread opens its own PR there. Dispatching a board task counts as my standing request for such a thread; work you find in another repository still becomes a proposal.");
+    expect(referenceRules("t3-delegation")).toContain("- A local `delegate_task` leaves out `target.projectId`; T3 refuses another project's id, even with a local `target.environmentId`. To dispatch a board task whose code is in another repository, call `t3_thread_launch` with that project's `projectId` and `workspaceStrategy` `{type: \"worktree\", baseRef: \"origin/<default branch>\", startFromOrigin: true}`. That thread opens its own PR there. Dispatching a board task counts as my standing request for such a thread; work you find in another repository still becomes a proposal.");
   });
 });
 
@@ -526,14 +574,14 @@ describe("work board", () => {
   // Asks sent the user to look up what memory, the board or a repository already held,
   // and different threads asked the same question.
   test("an ask comes after searching and carries what was found", () => {
-    expect(section("Work board")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
+    expect(referenceRules("asks")).toContain("- Before `ask_user`, search memory, the board (other tasks' notes and answered asks), the repositories and related threads for the answer; an ask states what you found and asks only for what remains.\n");
   });
 
   // The user reviews waiting work from lists and had to ask "explain number N" for each
   // item whose body was written for agents (dotfiles-89).
   test("an ask and a task waiting on the user open with a decision brief", () => {
     const rule = "- Open each ask, and the body of each task that waits on my decision or action, with a brief in plain, short sentences: what it is, in one sentence; why it waits on me; the options, each with its consequence; your recommendation. Agent detail goes below the brief. Explain an item I ask about in the same structure, with a diagram only when it involves a flow across several parts.\n";
-    expect(section("Work board")).toContain(rule);
+    expect(referenceRules("asks")).toContain(rule);
     expect(read("codex/AGENTS.md")).toContain(rule);
   });
 
@@ -545,14 +593,22 @@ describe("work board", () => {
   });
 
   test("Codex gets the same rule", () => {
-    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").trimEnd()}\n`);
+    // Codex reads no reference files, so its section keeps the ask rules in place of the pointer.
+    const pointer = section("Work board").split("\n").find((line) => line.includes("~/.claude/reference/asks.md"));
+    expect(read("codex/AGENTS.md")).toContain(`## Work board\n${section("Work board").replace(`${pointer}\n`, () => referenceRules("asks")).trimEnd()}\n`);
     expect(tracked("codex/AGENTS.md")).toBe(true);
   });
 });
 
 describe("storage rule", () => {
-  test("names every destination, the entry command and where problems go", () => {
+  test("the instructions keep when to use the shared storage and point at the rest", () => {
     const rule = section("Storage");
+    expect(rule).toContain(`${referenceRules("storage").split("\n")[0].split(". ")[0]}. Before you use \`storagectl\` or split work across machines, read \`~/.claude/reference/storage.md\``);
+    expect(rule).toMatch(/where to report what got in the way/);
+  });
+
+  test("names every destination, the entry command and where problems go", () => {
+    const rule = referenceRules("storage");
     for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
     expect(rule).toContain("`storagectl dests`");
     expect(rule).toMatch(/root login shells/);
@@ -562,7 +618,7 @@ describe("storage rule", () => {
   });
 
   test("says how to split work across machines and where that feedback goes", () => {
-    const rule = section("Storage");
+    const rule = referenceRules("storage");
     expect(rule).toMatch(/Split work across machines/);
     expect(rule).toContain("`storagectl run --on sai|pro --to <dest>:<path> [--stage <file or dir>] -- <command>`");
     expect(rule).toContain("`$STORAGE_OUT`");
@@ -573,7 +629,7 @@ describe("storage rule", () => {
   });
 
   test("Codex gets the same rule", () => {
-    expect(read("codex/AGENTS.md")).toContain(`## Storage\n${section("Storage").trimEnd()}\n`);
+    expect(read("codex/AGENTS.md")).toContain(`## Storage\n\n${referenceRules("storage").trimEnd()}\n`);
   });
 });
 
@@ -775,9 +831,11 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/A change to a path that `~\/\.claude\/factory\/scoring\/high-impact\.toml` lists for its repository is always high-impact/);
   });
 
-  // factory metrics reads these records to measure review noise (dotfiles-100).
+  // factory metrics reads these records to measure review noise (dotfiles-100). The pointer
+  // keeps what a session must not miss: one record, also for a clean review, and the report.
   test("Review records each finding's outcome through ReportFindings", () => {
-    const review = section("Review");
+    expect(section("Review")).toContain(POINTERS["review-findings"][1]);
+    const review = referenceRules("review-findings");
     expect(review).toMatch(/Once you have decided on every finding, record the outcomes: call `ReportFindings` once with every finding, its category and its outcome/);
     expect(review).toMatch(/`fixed` for one you fixed, `no_change_needed` for one that is wrong or intentional, and `skipped` for a real one you filed or did not apply/);
     expect(review).toMatch(/Report the result in your reply as well/);

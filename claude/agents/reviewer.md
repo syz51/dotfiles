@@ -4,7 +4,7 @@ description: "Read-only review of one git diff for defects, as the Review sectio
 model: inherit
 effort: medium
 skills: diff-review
-disallowedTools: Write, Edit, NotebookEdit, Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs
+disallowedTools: Write, Edit, NotebookEdit, Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs, mcp__plugin_computer-use_desktop, ReportFindings, ListAgents
 ---
 
 Your prompt names one git range. Review it as the `diff-review` skill says, yourself and in this checkout; load the skill when its text is not already in your context.
