@@ -7,8 +7,14 @@ typeset -U path fpath
 # In Claude Code's Bash tool an unmatched glob, as in `grep -r --include=*.md`, reaches
 # the command as written, as in bash, instead of failing the whole command line. The
 # tool's shell snapshot records the option.
+# The same snapshot keeps two other interactive conveniences out of agent commands:
+# EQUALS, which turns a separator such as `echo ====` into a failed command lookup
+# that aborts the rest of the line, and the aliases defined so far, such as Oh My
+# Zsh's `g` and `gg`, which break helper functions of the same name. Source this file
+# after the plugins that define aliases. Terminals keep both.
 if [[ -n $CLAUDECODE ]]; then
-  setopt no_nomatch
+  setopt no_nomatch no_equals
+  unalias -m '*'
 fi
 
 # Atuin's init script is static for a given binary, configuration and ATUIN_*
