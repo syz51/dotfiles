@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { fromLitellm, litellmFetchedAt, LITELLM_FILE, LITELLM_URL, MAX_AGE_MS, r
 import { normalizeUsage, priceSource, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
+import * as transcripts from "./transcripts.js";
 import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, parseSession, readRecords, sessionFiles } from "./transcripts.js";
 
 const FAKE = join(import.meta.dir, "testing", "fake-claude.js");
@@ -336,6 +337,30 @@ describe("transcripts", () => {
       writeFileSync(file, '{"a":1}\n[1]\n"s"\nnope\n');
       expect(readRecords(file)).toEqual({ records: [{ a: 1 }, [1]], malformed: 2 });
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("loadSessions skips a transcript removed after listing; other read errors stay fatal", () => {
+    const kept = new Transcript({ start: Date.parse("2026-11-01T00:00:00Z") }).prompt("kept");
+    const gone = new Transcript({ start: Date.parse("2026-11-02T00:00:00Z") }).prompt("gone");
+    const root = writeProjects([{ transcript: kept }, { transcript: gone }]);
+    const list = transcripts.sessionFiles;
+    try {
+      const target = list(root).find(({ file }) => readFileSync(file, "utf8").includes('"gone"')).file;
+      spyOn(transcripts, "sessionFiles").mockImplementation((...args) => {
+        const files = list(...args);
+        rmSync(target);
+        return files;
+      });
+      expect(loadSessions({ root }).map((s) => s.prompts[0].text)).toEqual(["kept"]);
+      mock.restore();
+      spyOn(transcripts, "readRecords").mockImplementation(() => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      });
+      expect(() => loadSessions({ root })).toThrow("permission denied");
+    } finally {
+      mock.restore();
       rmSync(root, { recursive: true, force: true });
     }
   });
