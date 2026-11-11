@@ -273,9 +273,11 @@ re-waiting each time the branch falls behind. A check run is pending until its s
 conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
 also one with the name of a later run; within one Actions workflow run, which a re-run
 reuses, only the latest attempt of each job counts. GitHub records each Actions job it never
-started for billing as a failed check run with no steps and one annotation on `.github`. Such a
-job passes when a non-Actions check named `<context>: <job name>`, such as
-`ci/circleci: build`, succeeded. A failed job with steps fails, even with that annotation,
+started for billing as a failed check run with no steps and one failure-level annotation on
+`.github`. GitHub may add notice-level annotations on `.github`, such as the `ubuntu-latest`
+migration notice. Such a job passes when its annotations number at most 10 and are all
+these, and a non-Actions check named `<context>: <job name>`, such as `ci/circleci: build`,
+succeeded. A failed job with steps fails, even with that annotation,
 because a job's own output can write it. So does a skipped job whose name a skipped job of
 another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
 check is a failed Actions job. It adds about 0.75 seconds and costs about 12 GraphQL rate-limit
