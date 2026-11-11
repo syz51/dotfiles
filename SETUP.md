@@ -921,13 +921,14 @@ notification and ends the episode. The state is in
 `~/.local/state/disk-space-alert/state.json`, each alert adds a line to
 `events.jsonl` there, and launchd writes errors to `launchd.log`.
 
-While space is low, each check first removes the scratch folders of idle Claude Code
-sessions, `/private/tmp/claude-<uid>/<project>/<session id>`, where Rust `target/`
+A check logs and sends its alert, critical included, before any sweep starts, so a
+slow sweep never delays it. While space is low, the check then removes the scratch
+folders of idle Claude Code sessions, `/private/tmp/claude-<uid>/<project>/<session id>`, where Rust `target/`
 folders and other build output pile up. A folder qualifies only when nothing in it, in
 its transcript or in its subagent transcripts has changed for 24 hours, Claude Code's
 registry of running sessions (`~/.claude/sessions`) does not list it, and no running
 process names the session or works inside the folder. Anything that cannot be read
-keeps the folder, and a sweep that fails still lets the alert go out.
+keeps the folder, and a sweep that fails does not stop the rest of the run.
 
 The same sweep then empties idle Rust build output in agent worktrees: the cargo
 `target/` folders in T3 worktrees (`~/.t3/worktrees/<project>/<name>`, up to six
@@ -943,9 +944,16 @@ same locks, then starts afresh in a folder still tagged. The worktree's sources 
 never touched; its next build is a full one. `--worktrees` points the sweep at
 another folder.
 
-The alert says what was freed, or a notification does when the sweep alone brings
-space back, and `events.jsonl` gets a `swept` line listing the folders.
-`sweep --dry-run` lists what would go now, whatever the free space, `sweep` removes
+The sweep renames each folder it removes into `~/.local/state/disk-space-alert/trash/`,
+so it leaves its place at once, and then deletes it there. If the trash folder cannot
+be made or a rename fails, the folder is deleted in place. A sweep stops after
+`--sweep-minutes` (5 by default), so the run ends and launchd can start the next
+check. Every later check first finishes what the trash still holds, even while space
+is ok.
+
+After the sweep, a separate notification says what was removed, and `events.jsonl`
+gets a `swept` line listing the folders, plus a `sweep_stopped` line when the time
+limit cut it short. `sweep --dry-run` lists what would go now, whatever the free space, `sweep` removes
 it and logs it (exiting 1 when either part of the sweep failed), and `--no-sweep` turns the sweep off for a run. A simulated reading
 (`check --free-gb`) never sweeps.
 
@@ -960,7 +968,9 @@ uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_aler
 
 `install --dry-run` prints the plist without loading it, and `uninstall` unloads and
 removes it. To change a threshold, run `install` again with `--low-gb` or
-`--critical-gb`, which it writes into the plist. A one-off run with
+`--critical-gb`; `--sweep-minutes` works the same way. The LaunchAgent runs with
+`ProcessType` Standard rather than Background, so macOS does not throttle the sweep.
+A one-off run with
 `check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
 the real state.
 
