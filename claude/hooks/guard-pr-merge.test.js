@@ -508,12 +508,23 @@ describe("pins the merge to the head commit it checked", () => {
 
   test("refuses a merge without a pin, and names the SHA and the command to rerun", () => {
     expect(verdict("gh pr merge 12 --squash")).toBe("`gh pr merge 12 --squash`: the checks passed on pull request #12's head commit abc123. "
-      + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge 12 --squash --match-head-commit abc123`.");
+      + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`.");
     // an --auto merge that the guard checks like a direct merge
-    expect(verdict("gh pr merge 12 --auto --squash")).toContain("`gh pr merge 12 --auto --squash --match-head-commit abc123`");
+    expect(verdict("gh pr merge 12 --auto --squash")).toContain("`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --auto --squash`");
     expect(verdict("gh pr merge 12 --auto", { branch: PROTECTED })).toContain("--match-head-commit abc123");
     // the rerun command quotes a word with spaces or quotes
-    expect(verdict("gh pr merge 12 -t \"it's done\" -b 'a body'")).toContain("`gh pr merge 12 -t 'it'\\''s done' -b 'a body' --match-head-commit abc123`");
+    expect(verdict("gh pr merge 12 -t \"it's done\" -b 'a body'")).toContain("`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -t 'it'\\''s done' -b 'a body'`");
+  });
+
+  // A `cd`, `ssh` or the current branch chose the pull request; the URL names it from any directory.
+  test.each([
+    ["cd /other && gh pr merge 12 --squash", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`"],
+    ["gh pr merge --squash", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash`"],
+    ["gh pr merge", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123`"],
+    ["gh -R o/r pr merge -b body -- 12", "`gh -R o/r pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -b body --`"],
+    ["ssh host gh pr merge 12 -R o/r -d", "`gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 -R o/r -d`"],
+  ])("names the pull request by its URL in the rerun command: %s", (command, rerun) => {
+    expect(verdict(command)).toContain(rerun);
   });
 
   test.each([
@@ -525,7 +536,7 @@ describe("pins the merge to the head commit it checked", () => {
     const violation = verdict(command, options);
     expect(violation).toContain("is not pull request #12's head commit abc123.");
     // the rerun command replaces the stale pin
-    expect(violation).toMatch(/rerun with it: `gh pr merge 12 [^`]*--match-head-commit abc123`\.$/);
+    expect(violation).toMatch(/rerun with it: `gh pr merge https:\/\/github\.com\/o\/r\/pull\/12 --match-head-commit abc123[^`]*`\.$/);
     expect(violation.match(/--match-head-commit/g)).toHaveLength(3);
   });
 
@@ -595,7 +606,7 @@ describe("the hook", () => {
     const result = bash("cd /tmp && gh pr merge 12 --squash -R o/r");
     expect(result).toEqual({ code: 2, stdout: "",
       stderr: "Blocked by the guard-pr-merge hook: `gh pr merge 12 --squash -R o/r`: the checks passed on pull request #12's head commit abc123. "
-        + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge 12 --squash -R o/r --match-head-commit abc123`.\n" });
+        + "Pin the merge to that commit, so GitHub refuses it if the head moves: `gh pr merge https://github.com/o/r/pull/12 --match-head-commit abc123 --squash -R o/r`.\n" });
     const stale = bash("gh pr merge 12 --squash --match-head-commit 0000000");
     expect(stale.code).toBe(2);
     expect(stale.stderr).toContain("--match-head-commit 0000000 is not pull request #12's head commit abc123.");
