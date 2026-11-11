@@ -960,6 +960,8 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
     expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
     expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
+    // T3 opens a relative path in the thread's folder, where a worktree-only file is missing (dotfiles-359).
+    expect(workflow).toMatch(/After EnterWorktree, cite files in replies by absolute path: an app such as T3 Code resolves a relative path against the folder the session started in\./);
     expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
     // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
