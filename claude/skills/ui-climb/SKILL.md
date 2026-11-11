@@ -52,7 +52,7 @@ relative to its folder. Start from:
     { "model": "claude-haiku-5-5", "effort": "high", "samples": 2 },
     { "model": "claude-opus-5-5", "effort": "high", "samples": 2 }
   ],
-  "pass": { "min": 8, "gain": 0.5 },
+  "pass": { "min": 8, "gain": 0.5, "references": 0.25 },
   "budgetUsd": { "call": 3, "round": 15, "run": 120 },
   "baseline": "origin/main"
 }
@@ -65,9 +65,13 @@ relative to its folder. Start from:
   (`SELECTOR=TEXT`), `press`, `scroll`, `wait` and `waitFor`.
 - References are public pages of products of the same kind (or `files` of PNGs with a
   `view`), so judges score on a shared scale; check that each renders logged out with
-  `capture`. `pass.references` (optional) also requires every category to beat the best
-  reference by that margin; leave it out unless the owner asks for it or picks the
-  suggested lead at calibration (below).
+  `capture`.
+- The bar is to lead the references: `pass.references` requires every category to beat
+  the best reference by that margin, and `pass.min` is a floor at about the best
+  reference's level. The template's values are placeholders: the run's first calibration
+  derives both from the bar judge's scores (below). An absolute bar (no `pass.references`)
+  is the exception: use it only when the owner asks for one. Judges in a comparison
+  rarely give 9 or more, so an absolute bar that high is seldom reached.
 - A reference page that fails to capture is tried again: `referenceCapture.tries` times
   in all (default 3), waiting `referenceCapture.delayMs` (default 30000), then twice as
   long before each later try. One still missing is left out: the command goes on with the
@@ -107,15 +111,20 @@ Each judge is calibrated on its own, Haiku too: its noise sets its pre-check flo
 (`pass.regression` times it, or main's spread over the run's rounds when larger). Only
 the bar judge, Opus, gets a bar reach check, since Haiku never applies the bar.
 
+Every calibration with references prints a **derived bar**: a `pass` block that leads the
+best reference in every category (`pass.references`, at least 0.25 or the bar judge's
+category noise, rounded up to 0.05) with `pass.min` at about the best reference's level
+(their mean, rounded down to 0.25), both from the calibration's own scores. On the
+climb's first calibration, put the derived `pass` in the configuration and calibrate again
+with `--new-run`, unless the owner asked for the bar the configuration has. Put the
+derived bar in a note. After that, keep the bar: a later derived bar differs only by noise.
+
 Calibration also prints a **bar reach** warning when the bar judge almost never gives the bar:
 the bar is above the best reference by more than twice its noise, or under 5% of its scores of
-main and the references reach it. With references, it also prints a suggested `pass`
-that leads the best reference in every category (`pass.references`, at least 0.25 or the
-judges' noise) with `pass.min` at about the best reference's level, both from the
-calibration's own scores. Then put the warning and the suggestion in a note and ask the
+main and the references reach it. Then put the warning and the derived bar in a note and ask the
 owner (`ask_user`, `Reason: design`) before round 1, with these options in this order:
 
-1. Lead the references: use the suggested `pass` (recommended; judges give it, and it is
+1. Lead the references: use the derived bar (recommended; judges give it, and it is
    the real goal of beating products of the same kind). Start it with `--new-run`.
 2. Go on as is.
 3. Add a reference they rate at the bar.
