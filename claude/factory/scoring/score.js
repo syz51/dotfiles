@@ -261,8 +261,14 @@ export async function run(argv, { now = Date.now() } = {}) {
   const candidates = [];
   const skipped = {};
   for (const { session, explicit } of selectSessions(options, now)) {
-    const sha = transcriptSha(session.file);
-    const reason = ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
+    let sha;
+    try {
+      sha = transcriptSha(session.file);
+    } catch (error) {
+      // A transcript removed after it was listed, such as a temporary session's.
+      if (error.code !== "ENOENT") throw error;
+    }
+    const reason = sha === undefined ? "transcript gone" : ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
     if (reason) {
       skipped[reason] = (skipped[reason] ?? 0) + 1;
       if (explicit) console.error(`Skipping ${session.id}: ${reason}`);

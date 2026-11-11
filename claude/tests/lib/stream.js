@@ -189,6 +189,20 @@ export function backgroundAtAnswer(events) {
   return tasks;
 }
 
+// Whether the session stayed free while a background task ran until event index ended,
+// with a follow-up answered at event index answered: turnEnded is the first result's
+// index, which must come before ended (the follow-up then reached a free session), and
+// waits holds the main-session tool calls issued after that result and before the
+// earlier of ended and answered. A session that waits on the task before it answers
+// issues such a call, such as a blocking read of the task's output or a sleep; one that
+// answers at once issues none, whether the task ends before or after the answer.
+export function freeWhileRunning(events, ended, answered) {
+  const turnEnded = events.findIndex((event) => event.type === "result");
+  const until = Math.min(ended, answered);
+  const waits = toolUses(events.slice(turnEnded + 1, until)).filter((use) => use.parent === null);
+  return { turnEnded, waits };
+}
+
 // Whether a main-session Bash call issued after event index after printed marker from dir
 // (see printedFrom). The check's own output proves which copy of it passed, however the
 // command moved the shell; the command text and the directory the call started in cannot.
