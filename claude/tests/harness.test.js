@@ -86,6 +86,39 @@ const output = (run) => run.stdout + run.stderr;
 
 // config-sync skips its checks while a live run holds a lock, so ~/.claude does not change
 // under the run (config-sync/tests covers the config-sync side).
+// A scenario can move a session's TMPDIR off its fixture, which a hook would otherwise
+// exempt as temporary; the other defaults stay.
+test("a session's env option replaces its default variables", async () => {
+  const seen = join(root, "env.json");
+  const script = join(root, "env-session.js");
+  writeFileSync(script, `
+    import { mkdirSync } from "node:fs";
+    import { join } from "node:path";
+    import { liveSuite } from ${JSON.stringify(join(TESTS, "lib", "live.js"))};
+    const suite = liveSuite("env");
+    suite.setup();
+    try {
+      await suite.scenario("env", async ({ fixture, session }) => {
+        const work = fixture({ "a.txt": "a\\n" });
+        mkdirSync(join(work, "..", "tmp"));
+        await session({ cwd: work, prompt: "Hi.", env: { TMPDIR: join(work, "..", "tmp") } });
+        console.log(JSON.stringify({ root: suite.root, work }));
+      });
+    } finally {
+      await suite.teardown();
+    }
+  `);
+  const env = childEnv(process.env, {
+    HOME: home, TMPDIR: join(root, "tmp"), CLAUDE_LIVE_BIN: join(root, "bin", "claude"), CLAUDE_LIVE_SETTLE_MS: "100",
+    FAKE_MODE: "env", FAKE_RECORD_ENV: seen,
+  });
+  const run = await runProcess([process.execPath, script], { cwd: root, env, timeout: 20_000 });
+  expect(run.code, output(run)).toBe(0);
+  const { root: suiteRoot, work } = JSON.parse(run.stdout.trim().split("\n").find((line) => line.startsWith("{")));
+  expect(JSON.parse(readFileSync(seen, "utf8"))).toEqual({ TMPDIR: join(work, "..", "tmp"), CLAUDE_CODE_TMPDIR: suiteRoot });
+  assertCleanedUp();
+}, 30_000);
+
 describe("config-sync lock", () => {
   const locks = () => join(home, ".local", "state", "config-sync", "locks");
 

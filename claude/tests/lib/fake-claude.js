@@ -34,6 +34,10 @@ if (mode === "malformed") {
   process.exit(0);
 }
 
+// With FAKE_RECORD_ENV (a path), it saves the temporary folders the session was given.
+if (process.env.FAKE_RECORD_ENV)
+  writeFileSync(process.env.FAKE_RECORD_ENV, JSON.stringify({ TMPDIR: process.env.TMPDIR, CLAUDE_CODE_TMPDIR: process.env.CLAUDE_CODE_TMPDIR }));
+
 const settings = JSON.parse(readFileSync(option("--settings"), "utf8"));
 const events = [];
 const emit = (event) => events.push(event);
