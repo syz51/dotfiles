@@ -558,3 +558,49 @@ describe("xargs over ssh", () => {
     expect(verdict("ssh host gh pr merge 12 -R owner/repo", { view: { isDraft: true } })).toContain("is a draft");
   });
 });
+
+describe("commands xargs supplies or extends (dotfiles-338)", () => {
+  // Each passes every check gh would answer, so only the xargs rule can refuse it.
+  test.each([
+    // 1: ssh and watch parse the added words again, so they can start a new command
+    ["echo '; gh pr merge 12 -R o/r --admin' | xargs ssh host true", "xargs runs the words it reads"],
+    ["echo '; gh pr merge 12 -R o/r --admin' | xargs watch true", "xargs runs the words it reads"],
+    // 2: ssh with no host or command, and an option added after the host
+    ["echo 'host gh pr merge 12 -R o/r --admin' | xargs ssh", "xargs runs the words it reads"],
+    ["echo 'host gh pr merge 12 -R o/r --admin' | xargs ssh -p 22", "xargs runs the words it reads"],
+    ["echo '-oProxyCommand=gh\\ pr\\ merge\\ 12\\ -R\\ o/r\\ --admin' | xargs ssh host", "xargs runs the words it reads"],
+    // 3: wrappers with no command, and a shell's -c without its script
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs sudo", "xargs runs the words it reads"],
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs env", "xargs runs the words it reads"],
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs nice", "xargs runs the words it reads"],
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs bash -c", "xargs runs the words it reads"],
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs xargs", "xargs runs the words it reads"],
+    // 4: xargs supplies gh's subcommand, here and over ssh
+    ["echo 'merge 12 -R o/r --admin' | xargs gh pr", "xargs adds arguments"],
+    ["echo 'pr merge 12 -R o/r' | xargs gh", "xargs adds arguments"],
+    ["echo 'merge 12 -R o/r --admin' | xargs ssh host gh pr", "xargs adds arguments"],
+    // 5: find runs an -exec the added words supply
+    ["echo '-exec gh pr merge 12 -R o/r --admin ;' | xargs find . -maxdepth 0", "xargs runs the words it reads"],
+    // 6: a piped reader under xargs gets every line joined into one command
+    ["printf 'gh pr merge 12 -R o/r\\n--admin\\n' | xargs ssh host", "xargs runs the words it reads"],
+    // -I puts the input in a script or the command name
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs -I{} sh -c '{}'", "xargs runs the words it reads"],
+    ["echo gh | xargs -I{} {} pr merge 12 -R o/r --admin", "xargs runs the words it reads"],
+    ["echo merge | xargs -I{} gh pr {} 12 -R o/r --admin", "xargs adds arguments"],
+    ["echo 12 | xargs gh api -X PUT", "xargs adds arguments"],
+  ])("refuses %s", (command, reason) => {
+    const calls = [];
+    expect(verdict(command, { calls })).toContain(reason);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("an added git subcommand counts as one that may move the head", () => {
+    expect(verdict("echo push | xargs git; gh pr merge 12")).toContain("may push a new head");
+  });
+
+  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"],
+    // a read-only gh subcommand stays read-only whatever words xargs adds
+    ["gh pr list -q x | xargs -n1 gh pr view"], ["echo 12 | xargs gh pr checks"]])("allows %s", (command) => {
+    expect(verdict(command)).toBeUndefined();
+  });
+});
