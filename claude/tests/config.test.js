@@ -118,7 +118,7 @@ describe("global instructions", () => {
       /external writes/,
       /read-only/,
       /`\/code-review` is the only review process/,
-      /at `xhigh` on the final diff/,
+      /at `medium` on the final diff/,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -746,19 +746,18 @@ describe("rules the live suites test", () => {
     expect(named(review.match(/The categories are (.*?)\./)[1])).toEqual(CATEGORIES);
   });
 
-  // A review run in the main thread is cut off when a message arrives mid-review; in the
-  // background the thread stays free and the review finishes.
-  test("Review runs in one background agent, pinned to the commit, while this thread keeps answering", () => {
+  // A wrapper agent only called the skill, which forks the real reviewer itself, and its
+  // relay dropped the findings' category and verdict fields (dotfiles-386).
+  test("Review runs in the session itself with the Skill tool, at medium, pinned to the commit", () => {
     const review = section("Review");
-    expect(review).toMatch(/Run that review in one background agent on this session's model, such as `general-purpose` \(not `explorer`\), so this thread stays free to answer me/);
-    expect(review).toMatch(/its own worktree holding exactly the final diff/);
-    expect(review).toMatch(/for a commit, have it run `\/code-review` pinned to its SHA, such as `\/code-review xhigh origin\/main\.\.\.<SHA>`/);
-    // A new worktree lacks uncommitted changes, and committing needs my say-so.
-    expect(review).toMatch(/for uncommitted work, transfer the diff as for any track/);
-    expect(review).toMatch(/return the findings unchanged/);
-    expect(review).toMatch(/answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
-    // The review covers the final diff, so a change to it, mine or the session's, restarts it.
-    expect(review).toMatch(/cancel and restart it whenever the diff under review changes/);
+    expect(review).toMatch(/run it once at `medium` on the final diff before pushing or reporting done; its level also sets the review's reasoning effort/);
+    expect(review).toMatch(/Run that review yourself, without a wrapper agent or an extra worktree/);
+    expect(review).toMatch(/commit the final diff, then call the Skill tool pinned to the commit, such as `\/code-review medium origin\/main\.\.\.<SHA>`/);
+    expect(review).toMatch(/The skill runs the review in its own forked agent on this session's model and returns the findings to you unchanged/);
+    expect(review).toMatch(/While it runs, leave that diff alone, and don't push or report done until its findings are handled/);
+    // The review covers the final diff, so a change to it mid-review restarts it.
+    expect(review).toMatch(/cancel and restart it if the diff changes while it runs/);
+    expect(review).not.toMatch(/xhigh|background agent|its own worktree/);
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {

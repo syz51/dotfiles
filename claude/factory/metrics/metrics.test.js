@@ -365,8 +365,9 @@ describe("pull requests", () => {
   });
 });
 
-// Code reviews (claude/CLAUDE.md, Review): a background agent runs /code-review, whose skill
-// runs forked as its child; the main session then records each finding's outcome.
+// Code reviews (claude/CLAUDE.md, Review): the session runs /code-review, whose skill runs
+// forked, then records each finding's outcome. Older sessions ran it through a background
+// wrapper agent, with the fork as that agent's child; both shapes count.
 describe("code reviews", () => {
   // Opus output at $20 per million tokens: dollars as output tokens.
   const spend = (usd) => ({ use: usage(0, usd * 50_000, { cacheRead: 0, cacheWrite: 0 }) });

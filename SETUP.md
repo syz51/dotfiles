@@ -972,7 +972,7 @@ in CI:
   A codex-skills release that moves `current` passes when every skill link text is
   unchanged, also through `~/.agents/skills`. A retargeted link or an edit to the old
   release fails. A claimed but unsaved artifact or an unwritable report fails too. So do a review
-  the main session runs itself, a follow-up answered only after the background review,
+  the session hands to an agent, a review at `xhigh`,
   and a review whose outcomes are never recorded. Outcomes recorded before the review
   ends, a real finding recorded as no change needed, and a finding without a category
   also fail. When `~/.claude` links to another checkout, the three location checks
@@ -1039,11 +1039,10 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   before its track returns, then brings both back, removes the worktrees and their
   branches, and runs the checks itself. Each check prints its own directory when it
   passes, so the session's output shows that the copy in the checkout, not a
-  worktree's, passed. A high-impact commit's review runs `/code-review xhigh`, pinned to
-  the commit's SHA, in one background agent on the session's model in a worktree. A
-  follow-up sent as soon as the first turn ends is answered while the review runs, and
-  the review still finishes, reaches the reply and leaves the checkout, remote and
-  worktrees as they were. After the review, the session records each finding once
+  worktree's, passed. The session runs a high-impact commit's review itself:
+  one `/code-review medium` Skill call, pinned to the commit's SHA, with no agent of its
+  own and no extra worktree. The review reaches the reply and leaves the checkout, remote
+  and worktrees as they were. After the review, the session records each finding once
   through `ReportFindings`, with a category and an outcome. The real owner-check
   finding is `skipped`, because the checkout stays read-only. The guard hooks block a user-authorized leased force push to the branch the
   remote's HEAD names as its default and a bare
