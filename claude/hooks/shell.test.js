@@ -131,6 +131,26 @@ test("ssh runs its command remotely, in an unknown directory", () => {
   expect(commands("ssh host")).toEqual([]);
 });
 
+test("a directory a remote script names stays unknown here", () => {
+  const visits = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (words, dir, { remote }) => {
+      seen.push([words.join(" "), dir, remote]);
+    });
+    return seen;
+  };
+  expect(visits("ssh host 'cd /abs && make'")).toEqual([["make", undefined, true]]);
+  expect(visits("ssh host 'cd ~/app; pushd /abs; make'")).toEqual([["make", undefined, true]]);
+  expect(visits("ssh host 'cd; make'")).toEqual([["make", undefined, true]]);
+  expect(visits("ssh host sudo -D /abs make")).toEqual([["make", undefined, true]]);
+  expect(visits("ssh host env -C /abs make")).toEqual([["make", undefined, true]]);
+  expect(visits("ssh host 'sh -c \"cd /abs && make\"'")).toEqual([["make", undefined, true], ["sh -c cd /abs && make", undefined, true]]);
+  expect(visits("ssh host bash -s <<'EOF'\ncd /abs\nmake\nEOF")).toEqual([["bash -s", undefined, true], ["make", undefined, true]]);
+  // the local side still follows its directory changes
+  expect(visits("cd /abs && ssh host make; make")).toEqual([["make", undefined, true], ["make", "/abs", false]]);
+  expect(visits("env -C /abs ssh -o ProxyCommand='nc proxy' host make")).toEqual([["make", undefined, true], ["nc proxy", "/abs", false]]);
+});
+
 test("visit learns which commands run on the remote host over ssh", () => {
   const remote = (source) => {
     const seen = [];

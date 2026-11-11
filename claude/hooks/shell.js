@@ -411,8 +411,12 @@ function sshProgram(argv, i, dir) {
   return { words: [], nested: [remote], local, dir: undefined, remote: true, reads };
 }
 
-/** Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run. */
-function program(argv, dir) {
+/**
+ * Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run.
+ * On another host (`remote`), a wrapper's directory change leaves the directory unknown.
+ */
+function program(argv, dir, remote = false) {
+  const chdir = (path) => (remote ? undefined : changeDirectory(dir, path));
   const nested = [];
   let appended = false; // xargs adds words read from standard input
   let i = 0;
@@ -452,11 +456,11 @@ function program(argv, dir) {
     if (name === "env") {
       for (const [option, value] of options) {
         if (option === "-S" || option === "--split-string") nested.push(value ?? "");
-        else if (option === "-C" || option === "--chdir") dir = changeDirectory(dir, value);
+        else if (option === "-C" || option === "--chdir") dir = chdir(value);
       }
     }
     if (name === "sudo") {
-      for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = changeDirectory(dir, value);
+      for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = chdir(value);
     }
     if (name === "timeout") i += 1; // the duration
     if (name === "xargs") appended = true;
@@ -552,7 +556,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       const before = braces.pop();
       if (["|", "|&", "&"].includes(command.next)) state.dir = before;
     }
-    const run = program(command.argv, state.dir);
+    const run = program(command.argv, state.dir, here);
     for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
     const text = run.words.length > 0 ? printed(run.words) : undefined;
     run.printed = text === undefined ? [] : [text];
@@ -597,7 +601,8 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
         if (background || index < pipeline.length - 1) continue;
-        if (name === "popd") state.dir = undefined;
+        // A directory on another host is unknown here, whatever path it names.
+        if (name === "popd" || here) state.dir = undefined;
         else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
       } else if (words.length > 0) {
         const violation = visit(words, dir, { appended: added || appended, remote: here });
@@ -613,7 +618,7 @@ function inspect(source, state, visit, depth, tooDeep) {
 /**
  * Calls `visit(words, dir, { appended, remote })` for every command `source` would run, after
  * wrappers, through shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its directory
- * when known, `appended` says that xargs adds arguments the guard cannot see, and `remote` says
+ * when known, and always undefined for a command on another host, `appended` says that xargs adds arguments the guard cannot see, and `remote` says
  * that it runs on another host over `ssh`.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.

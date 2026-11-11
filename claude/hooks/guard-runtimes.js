@@ -19,8 +19,8 @@
 // that node-repos.json lists, such as T3 Code, whose server needs Node.js. A checkout is a
 // git repository whose origin or upstream remote is such a repository, decided from each
 // command's directory as shell.js follows it through `cd` and wrappers, and as `bun --cwd`
-// and `bunx --cwd` move it. A command whose directory is unknown, such as one over ssh,
-// gets no exception, and node may not start a banned package manager's script there.
+// and `bunx --cwd` move it. A command whose directory is unknown gets no exception, and
+// neither does one over ssh, whatever directory it names, and node may not start a banned package manager's script there.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -186,7 +186,9 @@ export const codexLaunch = (words) => find(words, undefined, (tool) => CODEX.tes
  * must not run, or undefined when it may.
  */
 export function runtimeViolation(words, dir, { remote = false } = {}) {
-  const blocked = blockedRuntime(words, dir) ?? codexLaunch(words);
+  // node-repos.json names local checkouts, so a command on another host, even one that
+  // `bun --cwd` moves to a path that exists here, gets no exception.
+  const blocked = (remote ? blockedRuntime(words, undefined, () => false) : blockedRuntime(words, dir)) ?? codexLaunch(words);
   if (!blocked) return undefined;
   const { tool, via } = blocked;
   const command = `\`${words.join(" ")}\``;
@@ -207,6 +209,11 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
   if (CODEX.test(tool)) {
     return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Do the work `
       + "with Claude instead; in a Codex session, stop and ask the user to continue it in Claude.";
+  }
+  if (JS_TOOL.test(tool) && (remote || blocked.remote)) {
+    return `${command} runs ${tool}${via ? ` through ${via}` : ""} on the remote host over ssh. JavaScript runs through bun there too: `
+      + "`bun <file>`, `bunx <tool>`, `bun install` or `bun run <script>` where bun is on that host. "
+      + "The node-repos.json exception covers only checkouts on this machine.";
   }
   if (NODE.test(tool)) {
     return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead. node runs only in a checkout of a repository `
