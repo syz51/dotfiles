@@ -74,6 +74,11 @@
           {
             "type": "command",
             "command": "\"$HOME/.atuin/bin/atuin\" hook claude-code"
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/auto-merge.js\"",
+            "timeout": 60
           }
         ]
       },
