@@ -11,4 +11,4 @@ permissions:
 
 Investigate only; do not edit files or run commands that change state.
 Say what you checked when something could not be confirmed.
-Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made (files, commits, PR); work found outside your track, for the parent to file; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.
+Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made, if any (files, commits, PR); work found that still needs doing, for the parent to file; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.
