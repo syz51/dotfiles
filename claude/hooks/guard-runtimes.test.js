@@ -511,3 +511,9 @@ describe("hook process", () => {
     expect(result.code).not.toBe(2);
   });
 });
+
+test("benign xargs forms stay allowed (dotfiles-338)", () => {
+  for (const command of ["git ls-files | xargs grep foo", "ls | xargs -n1 basename", "find . -name x | xargs rm -f"]) {
+    expect(verdict(command)).toBeUndefined();
+  }
+});

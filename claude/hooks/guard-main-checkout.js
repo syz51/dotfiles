@@ -18,7 +18,9 @@
 // This is a guardrail against mistakes, not a security
 // boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
 // the command and shows stderr to Claude. The guard fails open: on a crash, on a script
-// nested too deeply, and when it cannot tell the repository.
+// nested too deeply, and when it cannot tell the repository. In a main checkout it also
+// blocks a command xargs supplies, and words xargs adds to a git or gh command that could
+// make it change the branch.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
@@ -54,6 +56,9 @@ const HINTS = {
   merge: " A fast-forward, `git merge --ff-only <commit>`, may run here.",
   pull: " A fast-forward, `git pull --ff-only`, may run here.",
 };
+// The git config forms that only read, so the words xargs adds cannot make them write.
+const CONFIG_READS = ["get", "list", "--get", "--get-all", "--get-regexp", "--list", "-l"];
+const XARGS_ROUTE = "Write the command out literally, or run it from your own worktree (EnterWorktree in Claude Code, a worktree thread in T3).";
 const CONFIG_WRITES = ["set", "unset", "rename-section", "remove-section", "edit", "--unset", "--unset-all", "--add",
   "--replace-all", "--rename-section", "--remove-section", "--edit", "-e"];
 
@@ -156,6 +161,18 @@ export function changesBranch(subcommand, args) {
   }
 }
 
+/**
+ * Whether git `subcommand` with `args` stays a form the guard lets run whatever words xargs adds
+ * after them: paths after `--`, an abort or continue, a stash or bisect read, or a subcommand
+ * that never changes the branch.
+ */
+function keepsForm(subcommand, args) {
+  if (subcommand === "checkout" || subcommand === "reset") return args.includes("--");
+  if (subcommand === "merge" || subcommand === "rebase") return args.some((arg) => SAFE_FORMS[subcommand].some((name) => isLong(arg, name)));
+  if (subcommand === "stash" || subcommand === "bisect") return SAFE_SUBCOMMANDS[subcommand].includes(args[0] ?? "");
+  return subcommand !== undefined && !["switch", "pull"].includes(subcommand);
+}
+
 /** Whether `git config args` writes the override key. */
 function setsOverride(args) {
   const at = args.findIndex((arg) => arg.toLowerCase() === OVERRIDE_KEY);
@@ -230,7 +247,7 @@ function lossReason(top, subcommand, args, dir, git) {
     + "Set them aside first with `git -c claude.mainCheckout=allow stash push -m <why>`, which keeps them recoverable, then run the command again.";
 }
 
-function gitCommand(words, dir, git, tempRoots) {
+function gitCommand(words, dir, git, tempRoots, appended) {
   let i = 1;
   let unknownRepo = false;
   let configured = false;
@@ -250,6 +267,14 @@ function gitCommand(words, dir, git, tempRoots) {
   if (subcommand === "config" && setsOverride(args))
     return "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
       + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}`;
+  if (subcommand === "config" && appended && !CONFIG_READS.includes(args[0])) {
+    return "xargs adds words the guard cannot see to `git config`, and they may set claude.mainCheckout, which only the user sets. Write the command out literally.";
+  }
+  // The words xargs adds can make a safe form change the branch, as `git checkout` plus a branch name does.
+  if (appended && !keepsForm(subcommand, args) && !unknownRepo && dir !== undefined) {
+    const top = sharedMainCheckout(dir, git, tempRoots);
+    if (top !== undefined) return `xargs adds words the guard cannot see, and they may change the branch of ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
+  }
   const configuredFastForward = configured && ["merge", "pull"].includes(subcommand) && fastForwardOnly(args);
   if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) return undefined;
   const top = sharedMainCheckout(dir, git, tempRoots);
@@ -275,18 +300,24 @@ const mergeReason = (top) => `it merges a pull request from ${top}, a main check
  * `tempRoots` (absolute, resolved paths) are never treated as shared.
  */
 export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
-  return visitCommands(command, cwd, (words, dir, { remote }) => {
+  return visitCommands(command, cwd, (words, dir, { appended, opaque, remote }) => {
     // A command over ssh changes a repository on another host, not a checkout here.
     if (remote) return undefined;
     // macOS volumes ignore case, so GIT and Git run git too.
     const name = basename(words[0]).toLowerCase();
     let reason;
-    if (name === "git") reason = gitCommand(words, dir, git, tempRoots);
+    if (opaque) {
+      // xargs runs a command the guard cannot see; in a main checkout it may change the branch.
+      const top = dir === undefined ? undefined : sharedMainCheckout(dir, git, tempRoots);
+      if (top !== undefined) reason = `xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
+    } else if (name === "git") reason = gitCommand(words, dir, git, tempRoots, appended);
     else if (name === "gh" && dir !== undefined) {
       // gh reads options anywhere, and one before the subcommand may take the next word as its
       // value, so with such an option any checkout or merge word counts.
       const { path: [group, subcommand], other } = ghSubcommands(words, 2);
-      const merges = (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
+      // xargs may add the subcommand itself.
+      const hidden = appended && (group === undefined || (group === "pr" && subcommand === undefined) || other !== undefined);
+      const merges = hidden || (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
       const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
         || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
       const top = merges || checksOut ? sharedMainCheckout(dir, git, tempRoots) : undefined;

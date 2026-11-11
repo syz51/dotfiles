@@ -366,3 +366,21 @@ describe("hook process", () => {
     expect(result.code).not.toBe(2);
   });
 });
+
+describe("pushes xargs supplies or extends (dotfiles-338)", () => {
+  // Over ssh, the guard judges a push by its words (dotfiles-333), so words xargs adds block it there too.
+  test.each([
+    ["echo --force | xargs git push origin main", "xargs adds arguments"],
+    ["echo origin | xargs git push --dry-run", "xargs adds arguments"],
+    ["echo 'push -f origin main' | xargs git", "xargs adds arguments"],
+    ["echo --force | xargs ssh host git push origin main", "xargs adds arguments"],
+    ["echo 'git push -f origin main' | xargs sudo", "xargs runs the words it reads"],
+    ["echo '; git push -f origin main' | xargs ssh host true", "xargs runs the words it reads"],
+  ])("blocks %s", (command, reason) => {
+    expect(verdict(command)).toContain(reason);
+  });
+
+  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"], ["git branch --merged | xargs git branch -d"]])("allows %s", (command) => {
+    expect(verdict(command)).toBeUndefined();
+  });
+});
