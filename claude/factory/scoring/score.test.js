@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readJsonl } from "../lib/state.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
+import * as transcripts from "../lib/transcripts.js";
 import { DETECTORS } from "./detectors.js";
 import { GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
 import { isCorrection } from "../metrics/corrections.js";
@@ -214,6 +215,27 @@ describe("score command", () => {
     expect(await run(["--sample", "5", "--days", "3650"])).toBe(0);
     expect(calls()).toHaveLength(3);
     expect(output.join("\n")).toContain("0 eligible sessions (skipped: 3 already scored)");
+  });
+
+  test("a session whose transcript vanished after it was listed is skipped, not fatal", async () => {
+    const gone = new Transcript().prompt("Temporary session").text("Done");
+    const kept = new Transcript().prompt("Fix it").text("Done");
+    write([gone, kept]);
+    judgeAnswer(answer());
+    const listSessions = transcripts.loadSessions;
+    // Remove one transcript between listing and hashing, as a temporary session's cleanup does.
+    const spy = spyOn(transcripts, "loadSessions").mockImplementation((...args) => {
+      const sessions = listSessions(...args);
+      rmSync(sessions.find((session) => session.id === gone.sessionId).file);
+      return sessions;
+    });
+    try {
+      expect(await run(["--days", "3650"])).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(output.join("\n")).toContain("1 eligible sessions (skipped: 1 transcript gone)");
+    expect(scores().map((record) => record.sessionId)).toEqual([kept.sessionId]);
   });
 
   test("an invalid judge answer or a failed call is recorded as an error, never a score, and retried", async () => {
