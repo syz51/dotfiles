@@ -1085,6 +1085,17 @@ describe("lean prompt", () => {
     expect(skill).toContain("When HEAD's design differs from the champion's, run the command status prints");
   });
 
+  // board task dotfiles-273: logged-out GitHub pages scored far below main and set no target.
+  test("the ui-climb skill picks admired references for the same screens and drops one far below main", () => {
+    const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain("choose 2-3 products the owner admires (the `taste` may name them) that show the same screen types as `screens`");
+    expect(skill).toContain("When the product shows those screens only after a login, use `files`: PNGs of its screens, each with a `view`");
+    expect(skill).toContain("A reference whose score in its References column is more than a point under its Main column is far below main");
+    expect(skill).toContain("remove it, add a better one if fewer than 2 remain, and calibrate again with `--new-run` before you take the derived bar");
+    // The columns the rule reads are the calibration table's.
+    expect(read("claude/factory/ui/cli.js")).toContain("| Judge | Main | Control | Drop | Lower in | σ category | σ overall | References | Result |");
+  });
+
   // board task dotfiles-227: one reference page that would not load stopped a climb's run.
   test("the ui-climb skill retries a reference, goes on without it, and never hands over a provisional pass", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
