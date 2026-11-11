@@ -207,6 +207,10 @@ export function validateConfig(raw, file) {
       min: number(file, pass.min, "pass.min", { min: 1, max: 10, fallback: 8.5 }),
       gain: number(file, pass.gain, "pass.gain", { min: 0, max: 9, fallback: 0.5 }),
       references: pass.references === null || pass.references === undefined ? null : number(file, pass.references, "pass.references", { min: -9, max: 9 }),
+      // Judges before the last are regression pre-checks: one fails a candidate whose overall
+      // score is under main's by more than this many times its noise. The last judge alone
+      // applies min, gain and references.
+      regression: number(file, pass.regression, "pass.regression", { min: 0, max: 10, fallback: 2 }),
       // A pass judged while a reference did not capture is provisional, not final.
       allReferences: pass.allReferences ?? true,
     },

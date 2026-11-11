@@ -11,7 +11,7 @@ import { ledger, markIssues, SETTLED_MAX, settledFixes } from "./ledger.js";
 import { ConfigError, DEFAULT_CONTROL_CSS, MAX_IMAGES, productShots, referenceShots, validateConfig } from "./config.js";
 import {
   avoidList, barReach, buildContent, calibrationOf, checkRequestSize, combine, councilVersion, JudgeFailedError, JudgeOutputError, MAX_IMAGE_BYTES, MAX_REQUEST_BYTES,
-  readOutput, RUBRIC, runJudge, shuffle, suggestBar, systemPrompt, topIssues, verdict,
+  precheck, readOutput, RUBRIC, runJudge, shuffle, suggestBar, systemPrompt, topIssues, verdict,
 } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { endLabels, escape, renderReport } from "./report.js";
@@ -50,7 +50,7 @@ describe("config", () => {
     expect(config.rootDir).toBe("/project");
     expect(config.serve).toEqual({ command: ["bun", "server.ts", "--port", "{port}"], ready: "/healthz", timeoutMs: 60_000 });
     expect(config.judges).toEqual([{ model: "claude-haiku-5-5", effort: "medium", samples: 2 }, { model: "claude-opus-5-5", effort: "high", samples: 3 }]);
-    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null, allReferences: true });
+    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null, allReferences: true, regression: 2 });
     expect(config.referenceCapture).toEqual({ tries: 3, delayMs: 30_000 });
     expect(config.budgetUsd).toEqual({ call: 2, round: 15, run: 100 });
     expect(config.baseline).toBe("origin/main");
@@ -66,8 +66,9 @@ describe("config", () => {
     const template = JSON.parse(skill.match(/^```json\n([\s\S]*?)^```$/m)[1]);
     const config = validateConfig(template, FILE);
     expect(config.judges.map((judge) => judge.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(config.pass.regression).toBe(2);
     expect(skill).toContain("The council is a Haiku judge first and one Opus judge second");
-    expect(skill).toContain("Haiku must pass a round before the Opus judge scores it");
+    expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
   });
 
   test.each([
@@ -433,6 +434,24 @@ describe("council", () => {
     expect(pass.baselineLowest).toBe(7.5);
   });
 
+  // board task dotfiles-270: a pre-check judge never applies the bar, only a floor under main.
+  test("a regression pre-check fails only a candidate under main by more than pass.regression times its noise", () => {
+    const scored = (candidate) => ({ judge: "h", overall: { baseline: 7, candidate, "ref:a": 9 }, scores: { baseline: { hierarchy: 7, layout: 7 }, candidate: { hierarchy: candidate, layout: candidate }, "ref:a": { hierarchy: 9, layout: 9 } } });
+    const pass = { min: 8.5, gain: 0.5, references: 0.5, regression: 2 };
+    const noise = { sigmaOverall: 0.25 };
+    // Under the bar, under the gain and behind the reference, but not under main: it passes.
+    expect(precheck({ result: scored(7.2), pass, noise, references: ["ref:a"] })).toMatchObject({ role: "precheck", pass: true, gainBar: -0.5, reasons: [] });
+    // Under main within the noise: it passes.
+    expect(precheck({ result: scored(6.6), pass, noise }).pass).toBe(true);
+    // Under main beyond 2 × 0.25: it fails.
+    const fail = precheck({ result: scored(6.4), pass, noise });
+    expect(fail).toMatchObject({ role: "precheck", pass: false, gainBar: -0.5 });
+    expect(fail.reasons).toEqual(["scores under main by 0.60, more than 0.50 (2× its noise)"]);
+    // pass.regression tunes the floor.
+    expect(precheck({ result: scored(6.4), pass: { ...pass, regression: 3 }, noise }).pass).toBe(true);
+    expect(verdict({ result: scored(9), pass, noise }).role).toBe("bar");
+  });
+
   test("issues in categories under the bar come first, the furthest under first", () => {
     const issue = (category, severity) => ({ version: "candidate", screen: "home.x", category, severity, problem: category, fix: "f" });
     const results = [{ samples: [{ issues: [issue("layout", "high"), issue("layout", "high"), issue("typography", "low"), issue("color", "low"), issue("hierarchy", "medium")] }] }];
@@ -752,6 +771,16 @@ describe("rounds", () => {
       .toMatchObject({ plateau: false, metrics: { references: { moved: true } } });
   });
 
+  test("a plateau on a failing pre-check tracks only its gain over the floor", () => {
+    const stopped = (round, gain) => ({ round, stage: "judges", verdicts: [{ judge: "h", role: "precheck", pass: false, lowest: 6, gain, gainBar: -0.5, referenceMargin: -2 }] });
+    const result = plateau([stopped(1, -1), stopped(2, -1), stopped(3, -1)], { min: 8.5, references: 0, noise: () => ({ lowest: 0.1, gain: 0.25 }) });
+    expect(result).toMatchObject({ plateau: true, judge: "h" });
+    expect(Object.keys(result.metrics)).toEqual(["gain"]);
+    // With every judge passing, the bar judge (the last) binds, not the pre-check.
+    const both = (round) => ({ round, stage: "judges", verdicts: [{ judge: "h", role: "precheck", pass: true, lowest: 6, gain: 0.1, gainBar: -0.5, referenceMargin: null }, { judge: "o", role: "bar", pass: true, lowest: 9, gain: 1, gainBar: 0.5, referenceMargin: null }] });
+    expect(plateau([both(1), both(2), both(3)], { min: 8.5, noise: () => ({ lowest: 0.1, gain: 0.25 }) }).judge).toBe("o");
+  });
+
   test("a climb's noise includes how much main's score moves between rounds", () => {
     const judge = { model: "claude-haiku-5-5", effort: "medium", samples: 2 };
     const calibration = { sigmaOverall: 0.036, sigmaCategory: 0.1, calibrated: true };
@@ -792,7 +821,7 @@ describe("rounds", () => {
     });
     expect(marked).toContain('<span class="pill fail">unfixed since round 2</span> <span class="pill fail">returns after round 1</span> <strong>home</strong>');
     // Two judges configured, one verdict: the report says why.
-    expect(html).toContain("Round 1 stopped at the first judge that failed");
+    expect(html).toContain("Round 1 stopped at a regression pre-check that failed; the bar judge did not score it");
     const partial = (extra) => renderReport({ config, run: { id: "r1", baseline: { rev: "origin/main", sha: "abcdef1234567890" } }, rounds: [{ ...judged(1, 0.3), ...extra, gates: { failures: [], totals: { candidate: checkTotals([]), baseline: checkTotals([]) } } }], calibration: null, spentUSD: 1, versions: {} });
     expect(partial({ stage: "error" })).toContain("a judge could not finish its calls");
     expect(partial({ stage: "budget" })).toContain("the budget ran out before every judge ran");
@@ -1008,14 +1037,15 @@ button { font: inherit; padding: 8px 16px; }
     expect(status).toMatchObject({ passed: false, calibrated: false });
   }, 300_000);
 
-  test("a run's first judged round hears from every judge; later rounds stop at the first that fails", async () => {
+  test("a run's first judged round hears from every judge; later rounds stop at a failed regression pre-check", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
     write("pair.json", JSON.stringify({ ...config, name: "pair", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }] }));
     write("web/home.html", page("This week", "<p>Pair</p>"));
     await commit("pair");
     const round = () => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", "--config", join(repo, "pair.json")], {
       cwd: repo, timeout: 300_000,
-      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "pair", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 7.5, references: 8 }) },
+      // Haiku scores the candidate a point under main; Opus scores it over main, under the bar.
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "pair", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 7.5, references: 8, models: { "claude-haiku-5-5": { candidate: 6 } } }) },
     });
     const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "pair.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
     const before = calls().length;
@@ -1025,23 +1055,26 @@ button { font: inherit; padding: 8px 16px; }
     expect(second.code).toBe(1);
     expect(calls().slice(before).map((call) => call.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5", "claude-haiku-5-5"]);
     let text = await status();
-    expect(text).toContain("Main scored 7.00–7.00 over 2 judged rounds (claude-haiku-5-5@medium; scores are comparative).");
+    // Main's range and the bar come from the bar judge, Opus.
+    expect(text).toContain("Main scored 7.00–7.00 over 1 judged round (claude-opus-5-5@high; scores are comparative).");
     expect(text).toContain("It was judged by 1 of 2 judges: run `ui round --all-judges` on the commit you hand over.");
-    expect(text).toContain("Latest judged round 2: lowest hierarchy 7.50, 0.50 under the bar 8;");
-    // Rounds that move nothing: a plateau. The bar is close, so no structural round is asked for.
+    expect(text).toContain("Latest judged round 2: the regression pre-check claude-haiku-5-5@medium failed it (scores under main by 1.00, more than 0.50 (2× its noise)), so the bar judge did not score it.");
+    expect(text).toContain("Latest round the bar judge scored: 1: lowest hierarchy 7.50, 0.50 under the bar 8;");
+    // Rounds that move nothing: a plateau on the pre-check's gain. The bar is close, so no structural round is asked for.
     expect((await round()).code).toBe(1);
     text = await status();
-    expect(text).toContain("Plateau (claude-haiku-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: lowest category best 7.50 vs 7.50 before");
+    expect(text).toContain("Plateau (claude-haiku-5-5@medium): in the last two judged rounds nothing the bar needs moved beyond the noise: gain");
     expect(text).not.toContain("structural round");
   }, 300_000);
 
-  test("the skill's council: Haiku judges first, and a round Haiku fails never calls the Opus judge", async () => {
+  // board task dotfiles-270: Haiku never gave the bar, so it never let Opus score a candidate.
+  test("the skill's council: Haiku is a regression pre-check and Opus alone applies the bar", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
     write("council.json", JSON.stringify({ ...config, name: "council", judges: [{ model: "claude-haiku-5-5", effort: "high", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }] }));
     write("web/home.html", page("This week", "<p>Council</p>"));
     await commit("council");
     const runs = join(state, "ui", "council", "runs");
-    // Opus rates the candidate above the bar 8.5 throughout; Haiku rates it under it until it is told not to.
+    // Main scores 7 and Opus rates the candidate 9.5, over the bar 8.5 throughout; haiku is Haiku's candidate score.
     const ui = (args, haiku) => runProcess(["bun", CLI, "ui", ...args, "--config", join(repo, "council.json")], {
       cwd: repo, timeout: 300_000,
       env: { ...env, FAKE_UI_RUNS: runs, FAKE_UI_SCORES: JSON.stringify({ baseline: 7, control: 3, candidate: 9.5, references: 8, models: { "claude-haiku-5-5": { candidate: haiku } } }) },
@@ -1051,39 +1084,53 @@ button { font: inherit; padding: 8px 16px; }
     expect((await ui(["calibrate", "--samples", "2"], 8)).code).toBe(0);
     expect(models(before)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
     const [runId] = readdirSync(runs);
-    const verdicts = (round) => JSON.parse(readFileSync(join(runs, runId, "rounds", `round-${round}.json`), "utf8")).verdicts.map((v) => [v.judge, v.pass]);
-    // The run's first judged round hears from both judges, though Haiku fails.
+    const verdicts = (round) => JSON.parse(readFileSync(join(runs, runId, "rounds", `round-${round}.json`), "utf8")).verdicts.map((v) => [v.judge, v.role, v.pass]);
+    // The run's first judged round hears from both judges, though Haiku scores the candidate under main.
     before = calls().length;
-    expect((await ui(["round"], 8)).code).toBe(1);
+    expect((await ui(["round"], 6)).code).toBe(1);
     expect(models(before)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
-    expect(verdicts(1)).toEqual([["claude-haiku-5-5@high", false], ["claude-opus-5-5@high", true]]);
-    // Later, a round Haiku fails stops there: the Opus judge is not called.
+    expect(verdicts(1)).toEqual([["claude-haiku-5-5@high", "precheck", false], ["claude-opus-5-5@high", "bar", true]]);
+    // Later, Haiku scoring the candidate under main beyond its noise stops the round before Opus.
     before = calls().length;
-    expect((await ui(["round"], 8)).code).toBe(1);
+    const stopped = await ui(["round"], 6);
+    expect(stopped.code).toBe(1);
     expect(models(before)).toEqual(["claude-haiku-5-5"]);
-    expect(verdicts(2)).toEqual([["claude-haiku-5-5@high", false]]);
-    // A round Haiku passes goes on to the Opus judge, and passes when both do.
+    expect(verdicts(2)).toEqual([["claude-haiku-5-5@high", "precheck", false]]);
+    expect(stopped.stdout).toMatch(/score: round 2 fail · claude-haiku-5-5@high pre-check -1\.00 vs main \(floor [-+]0\.00\) · /);
+    // Haiku under the bar 8.5 but over main is no regression: Opus judges, and its pass passes the round.
     before = calls().length;
-    expect((await ui(["round"], 9.5)).code).toBe(0);
+    const passed = await ui(["round"], 8);
+    expect(passed.code).toBe(0);
     expect(models(before)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
-    expect(verdicts(3)).toEqual([["claude-haiku-5-5@high", true], ["claude-opus-5-5@high", true]]);
+    expect(verdicts(3)).toEqual([["claude-haiku-5-5@high", "precheck", true], ["claude-opus-5-5@high", "bar", true]]);
   }, 300_000);
 
-  test("a structural round is asked for once, far from the bar, and a judge the round's budget cannot cover is skipped", async () => {
+  test("a judge the round's budget cannot cover after a failed pre-check is skipped", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
-    write("far.json", JSON.stringify({ ...config, name: "far", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }], budgetUsd: { call: 0.5, round: 0.9, run: 20 } }));
+    write("tight.json", JSON.stringify({ ...config, name: "tight", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }], budgetUsd: { call: 0.5, round: 0.9, run: 20 } }));
+    write("web/home.html", page("This week", "<p>Tight</p>"));
+    await commit("tight");
+    // Haiku fails the pre-check, and Opus needs $1.00 of a $0.90 round: skipped, exit 1, not 3.
+    const result = await runProcess(["bun", CLI, "ui", "round", "--uncalibrated", "--config", join(repo, "tight.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "tight", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 6, references: 8 }) },
+    });
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain("did not cover claude-opus-5-5@high, so they did not run");
+  }, 300_000);
+
+  test("a structural round is asked for once, far from the bar", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("far.json", JSON.stringify({ ...config, name: "far", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 2 }] }));
     write("web/home.html", page("This week", "<p>Far</p>"));
     await commit("far");
     const round = (...flags) => runProcess(["bun", CLI, "ui", "round", "--uncalibrated", ...flags, "--config", join(repo, "far.json")], {
       cwd: repo, timeout: 300_000,
-      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "far", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 6, references: 8 }) },
+      env: { ...env, FAKE_UI_RUNS: join(state, "ui", "far", "runs"), FAKE_UI_SCORES: JSON.stringify({ baseline: 7, candidate: 6, references: 8, models: { "claude-haiku-5-5": { candidate: 7 } } }) },
     });
     const status = async () => (await runProcess(["bun", CLI, "ui", "status", "--config", join(repo, "far.json")], { cwd: repo, env, timeout: 60_000 })).stdout;
-    // The first judge fails, and the second needs $1.00 of a $0.90 round: skipped, exit 1, not 3.
-    const first = await round();
-    expect(first.code).toBe(1);
-    expect(first.stdout).toContain("did not cover claude-opus-5-5@high, so they did not run");
-    for (let index = 0; index < 2; index++) expect((await round()).code).toBe(1);
+    // Haiku finds no regression; Opus scores the candidate 2 under the bar every round.
+    for (let index = 0; index < 3; index++) expect((await round()).code).toBe(1);
     let text = await status();
     expect(text).toContain("The bar is 2.00 away with");
     expect(text).toContain("judged with `ui round --structural`");

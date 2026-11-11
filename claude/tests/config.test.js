@@ -1042,6 +1042,16 @@ describe("lean prompt", () => {
     expect(skill).not.toContain("for an issue reported once");
   });
 
+  // board task dotfiles-270: Haiku never gave the bar, so Opus never scored a candidate.
+  test("the ui-climb skill makes Haiku the regression pre-check and Opus the bar judge", () => {
+    const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain("Haiku is the regression pre-check and Opus is the bar judge");
+    expect(skill).toContain("does not score under main by more than `pass.regression` (default 2) times Haiku's noise; a round it fails stops before Opus");
+    expect(skill).toContain("Opus alone applies `pass.min`, `pass.gain` and `pass.references`");
+    expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
+    expect(skill).not.toContain("Haiku gates the Opus judge");
+  });
+
   // board task dotfiles-227: one reference page that would not load stopped a climb's run.
   test("the ui-climb skill retries a reference, goes on without it, and never hands over a provisional pass", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
