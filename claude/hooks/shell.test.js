@@ -190,6 +190,28 @@ test("ssh options that run a command locally run it here", () => {
   expect(commands("ssh host -o KnownHostsCommand='make known' ls")).toContainEqual(["make known", "/repo"]);
 });
 
+test("ssh -o RemoteCommand runs its command on the remote host", () => {
+  expect(commands("ssh -o RemoteCommand='make test' host")).toEqual([["make test", undefined]]);
+  expect(commands("ssh -o 'RemoteCommand make' -o ProxyCommand='nc proxy' host")).toEqual([["make", undefined], ["nc proxy", "/repo"]]);
+  expect(commands("ssh -oRemoteCommand=none host")).toEqual([]);
+  expect(commands("echo make | ssh -o RemoteCommand='bash -s' host")).toContainEqual(["make", undefined]);
+});
+
+test("sshpass runs ssh, past its options that take a value", () => {
+  expect(commands("sshpass -p pw ssh host make")).toEqual([["make", undefined]]);
+  expect(commands("sshpass -e ssh host make")).toEqual([["make", undefined]]);
+  expect(commands("sshpass -f pass.txt -P assword ssh host make")).toEqual([["make", undefined]]);
+});
+
+test("ssh -n, -f and -N keep ssh from reading standard input", () => {
+  for (const option of ["-n", "-f", "-N", "-nT"]) {
+    expect(commands(`echo make | ssh ${option} host`)).not.toContainEqual(["make", undefined]);
+    expect(commands(`ssh ${option} host bash -s <<< make`)).not.toContainEqual(["make", undefined]);
+  }
+  expect(commands("echo make | ssh host -n")).not.toContainEqual(["make", undefined]);
+  expect(commands("echo make | ssh host")).toContainEqual(["make", undefined]);
+});
+
 test("a script nested too deeply returns tooDeep, or nothing by default", () => {
   let source = "make";
   for (let i = 0; i < 10; i++) source = `bash -c ${JSON.stringify(source)}`;
