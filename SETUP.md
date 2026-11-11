@@ -336,17 +336,19 @@ its own. It fetches origin's default branch with a 4-second limit, sharing
 It never changes the worktree. It stays quiet in a main checkout, with tracked changes,
 on a branch with its own commits or another upstream, and when HEAD is current. When the
 fetch fails, it compares with the last fetched branch and says so. It adds about 1 to 2
-seconds to the start of such a session, and about 0.2 seconds offline.
+seconds to the start of such a session, and about 0.2 seconds offline. Claude Code reads
+hooks when a session starts, so a session that started before config-sync installed a
+hook never runs it.
 In a worktree-isolated session, Claude Code refuses each Bash command that it cannot
 verify stays in the worktree. This guard runs inside Bash execution, after every hook,
 and no setting turns it off. `claude/hooks/worktree-rule.js` tells the session which
 forms the guard refuses, as measured on Claude Code 2.1.319, so agents write around them.
-It speaks after a successful EnterWorktree, when a subagent starts, and at session start
-or after compaction, each time only when the working folder is under
-`.claude/worktrees/`. T3 worktree threads live elsewhere and run without the guard.
-Re-measure the forms when a Claude Code update changes the guard's messages. Claude Code reads
-hooks when a session starts, so a session that started before config-sync installed a
-hook never runs it.
+It speaks after a successful EnterWorktree, for the worktree that was entered. It also
+speaks when a subagent starts, and at session start or after compaction, when the working
+folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
+the guard. opencode has no such guard, so the hook stays quiet when opencode's
+`claude-hooks` plugin runs it. Re-measure the forms when a Claude Code update changes the
+guard's messages.
 `claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
 compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
 window, and long threads re-read most of that context on every call. The value applies to

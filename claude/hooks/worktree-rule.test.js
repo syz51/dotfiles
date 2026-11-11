@@ -6,8 +6,11 @@ import { claudeWorktree, output, rule } from "./worktree-rule.js";
 const HOOK = join(import.meta.dir, "worktree-rule.js");
 const WT = "/repo/.claude/worktrees/agent-a47b";
 
-function run(input) {
-  const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(input), encoding: "utf8" });
+// The hook stays quiet under opencode, so the tests drop the marker an opencode parent sets.
+const { OPENCODE_SESSION_ID: _, ...ENV } = process.env;
+
+function run(input, env = ENV) {
+  const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(input), encoding: "utf8", env });
   expect(result.status).toBe(0);
   return result.stdout;
 }
@@ -16,6 +19,7 @@ describe("which paths are Claude Code worktrees", () => {
   test("a path under .claude/worktrees/<name> gives the worktree root", () => {
     expect(claudeWorktree(WT)).toBe(WT);
     expect(claudeWorktree(`${WT}/src/lib`)).toBe(WT);
+    expect(claudeWorktree(`${WT}/.claude/worktrees/inner/src`)).toBe(`${WT}/.claude/worktrees/inner`);
   });
 
   test("a main checkout, a T3 worktree and a bare worktrees folder give none", () => {
@@ -28,10 +32,23 @@ describe("which paths are Claude Code worktrees", () => {
 
 describe("when the hook speaks", () => {
   test("after EnterWorktree it names the new worktree and the subagents to restart", () => {
-    const out = output({ hook_event_name: "PostToolUse", tool_name: "EnterWorktree", cwd: "/repo", tool_response: { worktreePath: "/repo/.claude/worktrees/probe" } });
+    const out = output({ hook_event_name: "PostToolUse", tool_name: "EnterWorktree", cwd: "/repo", tool_response: { worktreePath: "/repo/.claude/worktrees/probe", worktreeBranch: "worktree-probe", message: "Created worktree" } });
     expect(out.hookSpecificOutput.hookEventName).toBe("PostToolUse");
     expect(out.hookSpecificOutput.additionalContext).toContain("stays in /repo/.claude/worktrees/probe.");
     expect(out.hookSpecificOutput.additionalContext).toContain("Subagents started before EnterWorktree");
+  });
+
+  // EnterWorktree with `path` enters an existing worktree, which may lie anywhere.
+  test("after EnterWorktree into a worktree elsewhere it names that worktree", () => {
+    const out = output({ hook_event_name: "PostToolUse", tool_name: "EnterWorktree", cwd: "/repo", tool_response: { worktreePath: "/work/sibling" } });
+    expect(out.hookSpecificOutput.additionalContext).toContain("stays in /work/sibling.");
+  });
+
+  test("an EnterWorktree response without a path falls back to the working folder", () => {
+    const input = { hook_event_name: "PostToolUse", tool_name: "EnterWorktree" };
+    expect(output({ ...input, cwd: WT, tool_response: "entered" }).hookSpecificOutput.additionalContext).toContain(`stays in ${WT}.`);
+    expect(output({ ...input, cwd: WT }).hookSpecificOutput.additionalContext).toContain(`stays in ${WT}.`);
+    expect(output({ ...input, cwd: "/repo", tool_response: "entered" })).toBeUndefined();
   });
 
   test("a subagent whose cwd is a Claude Code worktree gets the rule without the restart line", () => {
@@ -55,6 +72,19 @@ describe("when the hook speaks", () => {
   test("as a command it prints the JSON output, or nothing", () => {
     expect(JSON.parse(run({ hook_event_name: "SubagentStart", cwd: WT })).hookSpecificOutput.additionalContext).toBe(rule(WT));
     expect(run({ hook_event_name: "SubagentStart", cwd: "/repo" })).toBe("");
+  });
+
+  // opencode's claude-hooks plugin runs every hook in settings.json and sets this marker;
+  // opencode has no worktree guard, so the note would be wrong there.
+  test("under opencode it prints nothing", () => {
+    expect(run({ hook_event_name: "SubagentStart", cwd: WT }, { ...ENV, OPENCODE_SESSION_ID: "ses_1" })).toBe("");
+  });
+
+  test("invalid input fails without blocking", () => {
+    const bad = spawnSync(process.execPath, [HOOK], { input: "not json", encoding: "utf8", env: ENV });
+    // Exit 2 would block; any other failure is shown and the session goes on.
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toMatch(/JSON/);
   });
 });
 

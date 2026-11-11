@@ -7,7 +7,9 @@
 // EnterWorktree, at the start of a subagent whose cwd is a Claude Code worktree (worktree
 // isolation, or a parent that entered one), and at session start or after compaction there.
 // Claude Code puts these worktrees under <repo>/.claude/worktrees/<name>; T3 worktree
-// threads live elsewhere and run without the guard, so they get nothing. It never blocks.
+// threads live elsewhere and run without the guard, so they get nothing. opencode's
+// claude-hooks plugin runs these hooks too, but opencode has no such guard, so the hook stays
+// quiet there. It never blocks.
 import { readFileSync } from "node:fs";
 
 const MARKER = "/.claude/worktrees/";
@@ -15,7 +17,8 @@ const MARKER = "/.claude/worktrees/";
 /** The Claude Code worktree that holds `path`, or undefined. */
 export function claudeWorktree(path) {
   if (typeof path !== "string") return undefined;
-  const at = path.indexOf(MARKER);
+  // The last marker: a worktree entered from inside another one is the inner worktree.
+  const at = path.lastIndexOf(MARKER);
   if (at === -1) return undefined;
   const name = path.slice(at + MARKER.length).split("/")[0];
   return name ? path.slice(0, at + MARKER.length + name.length) : undefined;
@@ -41,7 +44,9 @@ export function output(input) {
   const event = input.hook_event_name;
   if (event === "PostToolUse") {
     if (input.tool_name !== "EnterWorktree") return undefined;
-    const worktree = claudeWorktree(input.tool_response?.worktreePath ?? input.cwd);
+    // EnterWorktree may enter an existing worktree anywhere, and the guard applies there too.
+    const entered = input.tool_response?.worktreePath;
+    const worktree = typeof entered === "string" && entered ? entered : claudeWorktree(input.cwd);
     return worktree && { hookSpecificOutput: { hookEventName: event, additionalContext: rule(worktree, { entered: true }) } };
   }
   if (event !== "SubagentStart" && event !== "SessionStart") return undefined;
@@ -49,7 +54,7 @@ export function output(input) {
   return worktree && { hookSpecificOutput: { hookEventName: event, additionalContext: rule(worktree) } };
 }
 
-if (import.meta.main) {
+if (import.meta.main && !process.env.OPENCODE_SESSION_ID) {
   const result = output(JSON.parse(readFileSync(0, "utf8")));
   if (result) process.stdout.write(JSON.stringify(result));
 }
