@@ -171,14 +171,32 @@ if (mode.startsWith("chinese-")) {
   answer = "我会参加明天的会议。";
 }
 if (mode.startsWith("review-")) {
-  // review-direct runs the review itself with the Skill tool at medium, pinned to the
-  // commit, then records the outcomes; review-wrapped hands it to an agent in a worktree;
-  // review-xhigh runs it at xhigh, review-unpinned without the commit, review-twice two
-  // times, review-unforked without a forked reviewer, and review-failed has it refused;
-  // review-unrecorded never records the outcomes through
-  // ReportFindings, review-early records them before the review, review-dismissed
+  // A conversation over stream-json input: each turn's events go out when the turn ends,
+  // and the session exits once stdin ends. review-background starts the `reviewer` agent
+  // in the background with the commit's range and answers the follow-up while it runs;
+  // review-late answers only after the review; review-foreground runs /code-review
+  // itself; review-general starts another agent type, review-worktree gives the reviewer
+  // a worktree, review-unpinned leaves the commit out, and review-skill has the reviewer
+  // call /code-review; review-unrecorded never records the outcomes through
+  // ReportFindings, review-early records them before the review ends, review-dismissed
   // records the real finding as no change needed, and review-uncategorized leaves out
-  // its category.
+  // its category. As in Claude Code, agents run in the background without a flag, and
+  // stdin ending while the review still runs stops it.
+  const lines = (async function* () {
+    let pending = "";
+    for await (const chunk of process.stdin) {
+      pending += chunk;
+      for (let i; (i = pending.indexOf("\n")) >= 0; pending = pending.slice(i + 1)) yield pending.slice(0, i);
+    }
+  })();
+  const nextMessage = async () => {
+    const { value, done } = await lines.next();
+    return done ? null : JSON.parse(value).message.content;
+  };
+  const turn = (text) => {
+    emit({ type: "result", subtype: "success", is_error: false, result: text, total_cost_usd: 0.001, num_turns: counter + 1 });
+    for (const event of events.splice(0)) console.log(JSON.stringify(event));
+  };
   const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
   const findings = "canEdit now lets anyone who is not the owner edit: `!==` should be `===`.";
   // The outcomes, once decided: read-only, so the real finding is skipped.
@@ -188,21 +206,50 @@ if (mode.startsWith("review-")) {
       ...(mode === "review-uncategorized" ? {} : { category: "correctness" }), outcome: mode === "review-dismissed" ? "no_change_needed" : "skipped" };
     tool("ReportFindings", { findings: [finding] }, () => ({ text: "Reported." }));
   };
-  // The skill runs forked: the reviewer's messages carry the Skill call as their parent.
-  const review = (parent) => tool("Skill", { skill: "code-review", args: `${mode === "review-xhigh" ? "xhigh" : "medium"}${mode === "review-unpinned" ? "" : ` origin/main...${sha}`}` }, () => {
-    if (mode === "review-failed") return { text: "The user doesn't want to proceed with this tool use.", isError: true };
-    if (mode !== "review-unforked")
-      emit({ type: "assistant", parent_tool_use_id: `toolu_fake_${counter}`, message: { id: `msg_fork_${counter}`, model: option("--model"), content: [{ type: "text", text: findings }] } });
-    return { text: findings };
-  }, parent);
-  if (mode === "review-early") record();
-  if (mode === "review-wrapped") {
-    const spawn = tool("Agent", { subagent_type: "general-purpose", isolation: "worktree", prompt: "Review it." }, () => ({ text: findings }));
-    review(spawn);
-  } else review();
-  if (mode === "review-twice") review();
-  if (mode !== "review-early") record();
-  answer = findings;
+  await nextMessage();
+  if (mode === "review-foreground") {
+    tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }));
+    turn(findings);
+    await nextMessage();
+    turn("391");
+  } else {
+    const spawn = tool("Agent", {
+      subagent_type: mode === "review-general" ? "general-purpose" : "reviewer",
+      ...(mode === "review-worktree" ? { isolation: "worktree" } : {}),
+      prompt: mode === "review-unpinned" ? "Review the latest commit." : `origin/main...${sha}`,
+    }, () => ({ text: "Async agent launched successfully." }));
+    emit({ type: "system", subtype: "task_started", task_id: "task_review", tool_use_id: spawn, is_backgrounded: true });
+    emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
+    // The reviewer's own messages carry the Agent call as their parent.
+    if (mode === "review-skill") tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }), spawn);
+    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: option("--model"), content: [{ type: "text", text: findings }] } });
+    const finish = (status = "completed") => {
+      emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
+      emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    };
+    turn("The review is running in the background.");
+    if (await nextMessage() === null) {
+      finish("stopped");
+      turn("Stopped.");
+      process.exit(0);
+    }
+    if (mode === "review-late") finish();
+    turn("391");
+    if (mode !== "review-late") {
+      // The review takes a moment; stdin closing meanwhile stops it.
+      const closed = await Promise.race([nextMessage().then((message) => message === null), Bun.sleep(300).then(() => false)]);
+      if (!closed && mode === "review-early") record();
+      finish(closed ? "stopped" : "completed");
+      if (!closed && mode !== "review-early") record();
+      turn(closed ? "The review was stopped." : findings);
+      if (closed) process.exit(0);
+    } else {
+      record();
+      turn(findings);
+    }
+  }
+  while (await nextMessage() !== null);
+  process.exit(0);
 }
 if (mode === "article-claim") {
   skill("content-research-writer");

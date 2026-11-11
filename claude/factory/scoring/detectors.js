@@ -10,7 +10,7 @@ import { basename, join } from "node:path";
 import { blockedRuntime, nodeCheckout } from "../../hooks/guard-runtimes.js";
 import { visitCommands } from "../../hooks/shell.js";
 import { mayInvoke } from "../../tests/lib/command.js";
-import { isCodeReview, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
+import { isCodeReview, isReviewerRun, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
 import { boardCheckouts, gitIgnored, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
 const EVIDENCE = 300;
@@ -641,9 +641,10 @@ function absolute(path, cwd, moved) {
 
 const REVIEW_SKILL = /^(?:[\w.-]+:)?code-review$/;
 const REVIEW_COMMAND = /^\/(?:[\w.-]+:)?(?:code-)?review$/;
-const isReview = (call) => isCodeReview(call) || (call.name === "Skill" && REVIEW_SKILL.test(String(call.input.skill)) && call.ok !== false);
+const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.name === "Skill" && REVIEW_SKILL.test(String(call.input.skill)) && call.ok !== false);
 
-// Pushes and merges of high-impact changes with no /code-review: a session edited a
+// Pushes and merges of high-impact changes with no review, which is a `reviewer` agent
+// run or a /code-review: a session edited a
 // file on its repository's high-impact list (high-impact.toml), then pushed or merged
 // with no review started since the first such edit. Edits after the review, such as
 // fixes for its findings, need no second one, and neither do later fixes to files a
@@ -707,7 +708,7 @@ export function reviewSkipped(actions, context) {
       if (reviewed) for (const [key] of settled) covered.add(key);
       else {
         const files = [...new Set(settled.map(([, { repo, path }]) => `${repo.replace(/^github\.com\//, "")}:${path}`))];
-        hits.push(hit(event.call, `pushed ${files.join(", ")} with no /code-review: ${event.call.input.command}`, { files }));
+        hits.push(hit(event.call, `pushed ${files.join(", ")} with no review: ${event.call.input.command}`, { files }));
       }
       for (const [key] of settled) pending.delete(key);
       reviewed &&= pending.size > 0;

@@ -1,5 +1,5 @@
 # High-impact paths for each repository with a work board. A pushed or merged change
-# that touches one needs a /code-review first (claude/CLAUDE.md, Review); the
+# that touches one needs a review first (claude/CLAUDE.md, Review); the
 # review-skipped detector flags sessions that pushed such a change without one.
 #
 # Globs match paths relative to the repository root (Bun.Glob syntax). `default`

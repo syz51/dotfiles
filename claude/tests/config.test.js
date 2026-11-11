@@ -42,6 +42,8 @@ const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS] },
   worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS] },
   solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS] },
+  // The Review rule's reviewer: this session's model at medium, with its recipe preloaded.
+  reviewer: { model: "inherit", effort: "medium", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -53,7 +55,8 @@ describe("agents", () => {
 
   test.each(Object.entries(POLICY))("%s frontmatter matches the policy", (name, policy) => {
     const { meta, body } = frontmatter(`claude/agents/${name}.md`);
-    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", "effort", "model", "name"]);
+    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", "effort", "model", "name", ...(policy.skills ? ["skills"] : [])]);
+    expect(meta.skills).toBe(policy.skills);
     expect(meta.name).toBe(name);
     expect(meta.model).toBe(policy.model);
     expect(meta.effort).toBe(policy.effort);
@@ -88,7 +91,9 @@ describe("agents", () => {
 describe("global instructions", () => {
   test("every agent the Delegation section names exists, and every agent is named", () => {
     const named = [...section("Delegation").matchAll(/ to `([\w-]+)`/g)].map((match) => match[1]);
-    expect(named.sort()).toEqual(Object.keys(POLICY).sort());
+    // The Review section names the reviewer; Delegation names the agents for tracks.
+    expect(named.sort()).toEqual(Object.keys(POLICY).filter((name) => name !== "reviewer").sort());
+    expect(section("Review")).toMatch(/start the `reviewer` agent/);
   });
 
   test("every ~/.claude file they reference is tracked in this repository", () => {
@@ -117,8 +122,8 @@ describe("global instructions", () => {
       /production/,
       /external writes/,
       /read-only/,
-      /`\/code-review` is the only review process/,
-      /at `medium` on the final diff/,
+      /The `reviewer` agent is the only review process/,
+      /it reviews at `medium` effort/,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -746,19 +751,41 @@ describe("rules the live suites test", () => {
     expect(named(review.match(/The categories are (.*?)\./)[1])).toEqual(CATEGORIES);
   });
 
-  // A wrapper agent only called the skill, which forks the real reviewer itself, and its
-  // relay dropped the findings' category and verdict fields (dotfiles-386).
-  test("Review runs in the session itself with the Skill tool, at medium, pinned to the commit", () => {
+  // A wrapper agent only called /code-review, which forks the real reviewer itself at the
+  // level's effort, and its relay dropped the findings' category fields (dotfiles-386). A
+  // skill's own background fork waits in an SDK session, so the session starts the agent.
+  test("Review runs once in the background reviewer agent, at medium, pinned to the commit", () => {
     const review = section("Review");
-    expect(review).toMatch(/run it once at `medium` on the final diff before pushing or reporting done; its level also sets the review's reasoning effort/);
-    expect(review).toMatch(/Run that review yourself, without a wrapper agent or an extra worktree/);
-    expect(review).toMatch(/commit the final diff, then call the Skill tool pinned to the commit, such as `\/code-review medium origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/The skill runs the review in its own forked agent on this session's model and returns the findings to you unchanged/);
-    expect(review).toMatch(/While it runs, leave that diff alone, and don't push or report done until its findings are handled/);
-    // A message that arrives mid-review cuts the Skill call off, and the review covers the
-    // final diff: either way it runs again.
-    expect(review).toMatch(/run it again if it is cut off or the diff changes while it runs/);
-    expect(review).not.toMatch(/xhigh|background agent|its own worktree/);
+    expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
+    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews at `medium` effort as its `diff-review` skill says/);
+    expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
+    expect(review).toMatch(/Run that review in the background, so this thread stays free to answer me/);
+    expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
+    expect(review).toMatch(/It works in this checkout on this session's model, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It returns its findings as JSON, each with a category/);
+    expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
+    expect(review).toMatch(/cancel and restart it whenever the diff under review changes/);
+    expect(review).not.toMatch(/xhigh|general-purpose|its own worktree/);
+    expect(section("Delegation")).toMatch(/Don't use subagents to verify your own work beyond the Review section's `reviewer` agent/);
+  });
+
+  // The reviewer does the whole review itself from one skill: read-only, the diff pinned
+  // to the commit, and findings in the shape ReportFindings and factory metrics take.
+  test("the diff-review skill gives the reviewer its recipe and its findings' shape", () => {
+    const { meta, body } = frontmatter("claude/skills/diff-review/SKILL.md");
+    expect(Object.keys(meta).sort()).toEqual(["argument-hint", "description", "name"]);
+    expect(meta.name).toBe("diff-review");
+    expect(tracked("claude/skills/diff-review/SKILL.md")).toBe(true);
+    expect(frontmatter("claude/agents/reviewer.md").body).toMatch(/Review it as the `diff-review` skill says/);
+    expect(body).toMatch(/Change nothing: no edits, no commits, no pushes, no board or network writes\. Do every\nstep yourself, without agents\./);
+    expect(body).toMatch(/Run `git diff <target>`/);
+    expect(body).toMatch(/read a file as the commit has it: `git show <commit>:<path>`/);
+    expect(body).toMatch(/keep at most 10/);
+    expect(body).toMatch(/Reply with only a JSON array, `\[\]` when nothing remains/);
+    for (const field of ["file", "line", "category", "summary", "failure_scenario"]) expect(body).toContain(`"${field}":`);
+    const named = (text) => [...text.matchAll(/`([a-z_-]+)`/g)].map((match) => match[1]);
+    expect(named(body.match(/`category` is one of ([\s\S]*?)\./)[1])).toEqual(CATEGORIES);
+    expect(body).toMatch(/Do not call `ReportFindings`/);
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
@@ -944,7 +971,7 @@ describe("lean prompt", () => {
       "keybindings-help": "user-invocable-only",
     });
     // Skills these instructions or the Artifact tool tell agents to load stay listed.
-    for (const name of ["work-stages", "headless-browser", "frontend-ui", "code-review", "artifact-design", "cheat-sheets"]) {
+    for (const name of ["work-stages", "headless-browser", "frontend-ui", "code-review", "diff-review", "artifact-design", "cheat-sheets"]) {
       expect(settings.skillOverrides[name]).toBeUndefined();
     }
   });
