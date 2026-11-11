@@ -475,7 +475,9 @@ describe("code reviews", () => {
       .tool("Agent", { subagent_type: "reviewer", prompt: "origin/main...def5678" }, "[]", { use: free })
       .tool("Agent", { subagent_type: "reviewer", prompt: "HEAD" }, "The user doesn't want to proceed with this tool use.", { isError: true, use: free })
       .tool("Agent", { subagent_type: "explorer", prompt: "Review the commit" }, "done", { use: free });
-    const reviewer = new Transcript({ start: at("2026-11-05T14:00:10Z") }).prompt("origin/main...abc1234").text("[]", { ...spend(2), effort: "medium" });
+    // The reviewer calls /code-review against its instructions: still one review.
+    const reviewer = new Transcript({ start: at("2026-11-05T14:00:10Z") }).prompt("origin/main...abc1234")
+      .tool("Skill", { skill: "code-review", args: "low" }, "done", { use: free, effort: "medium" }).text("[]", { ...spend(2), effort: "medium" });
     const fetcher = new Transcript({ start: at("2026-11-05T14:00:20Z") }).prompt("Read the page").text("page", spend(0.5));
     write([{ transcript: main, subagents: [
       { id: "agent-r1", meta: { agentType: "reviewer", toolUseId: "toolu_1", spawnDepth: 1 }, transcript: reviewer },
@@ -486,6 +488,8 @@ describe("code reviews", () => {
     expect(reviews.cost.totalUSD).toBeCloseTo(2.5);
     expect([reviews.cost.unpriced, reviews.cost.mainThread]).toEqual([1, 0]);
     expect(reviews.recorded).toMatchObject({ triages: 1, findings: 1, outcomes: { fixed: 1 } });
+    const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(markdown).toContain("every agent below it. 1 reviews left no agent of their own to price, so their cost stays in the session's.");
   });
 
   test("compares the revert rate of reviewed and unreviewed merged PRs, and reports it all", async () => {

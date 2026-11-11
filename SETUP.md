@@ -353,7 +353,9 @@ session. Then set the chosen value, update this paragraph and the test and its c
 `claude/tests/config.test.js`.
 Do not replace an existing tool home without backing up its local data.
 
-Three skills live here: `headless-browser`; `cheat-sheets`; and `work-stages`, which the
+Four skills live here: `headless-browser`; `cheat-sheets`; `diff-review`, the recipe of
+the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts; and
+`work-stages`, which the
 Workflow sections of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at,
 for Claude Code and Codex alike. Claude Code finds them through `~/.claude/skills` when
 `~/.claude` links to `~/.config/claude`; otherwise link each skill into `~/.claude/skills`.
@@ -413,7 +415,8 @@ in `opencode/` apply without a link. They give opencode the Claude Code setup:
   tells the model that the Claude-only rule means the configured GPT models here.
 - `agents/` holds `explorer`, `worker`, `solver` and `reviewer`. They keep the Claude
   agents' descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, the Haiku
-  explorer runs GPT-6 Luna at `max`, and the reviewer runs GPT-6.1 Sol at `medium`. `claude/tests/opencode.test.js` keeps them in step.
+  explorer runs GPT-6 Luna at `max`, and the reviewer runs GPT-6.1 Sol at `medium`.
+  `claude/tests/opencode.test.js` keeps them in step.
 - `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
   `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
   refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
@@ -485,8 +488,8 @@ CI workflows, hooks and guards, settings, installers and deployment, Terraform, 
 migrations and auth, minus docs and tests. Each repository can add its own paths. The
 Review rule treats a change to a listed path as high-impact. The `review-skipped`
 detector fails a session that pushed or merged such a change with no review, a
-`reviewer` agent run or a `/code-review`, started since the first edit. It finds each edited file's repository through the board
-client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
+`reviewer` agent run or a `/code-review`, started since the first edit. It finds each
+edited file's repository through the board client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
 as `~/.claude`, and skips files git ignores. A push settles only the edits of the
 repository its folder belongs to. List changes apply to sessions scored afterwards; bump
 the rubric version to rescore past ones.

@@ -48,12 +48,15 @@ export function sessionReviews(session) {
     const review = reviews.findLast((candidate) => time(candidate.at) <= time(agent.startedAt));
     if (review) review.costUSD = (review.costUSD ?? 0) + treeCost(agent);
   }
-  // A reviewer agent the main thread started is the review itself.
+  // A reviewer agent the main thread started is the review itself, also when it calls
+  // /code-review against its instructions.
+  const reviewers = new Set();
   for (const call of session.toolCalls.filter(isReviewerRun)) {
     const agent = session.subagents.find((candidate) => candidate.toolUseId === call.id);
+    if (agent) reviewers.add(agent);
     reviews.push({ level: agent?.effort ?? "default", at: call.at, agent: agent?.id ?? call.id, costUSD: agent ? treeCost(agent) : null });
   }
-  for (const agent of session.subagents) {
+  for (const agent of session.subagents.filter((agent) => !reviewers.has(agent))) {
     const runs = agent.codeReviews ?? [];
     // An agent that ran several reviews splits its cost evenly among them.
     for (const run of runs) reviews.push({ level: reviewLevel(run.args), at: run.at, agent: agent.id, costUSD: treeCost(agent) / runs.length });
