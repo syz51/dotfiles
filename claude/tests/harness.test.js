@@ -288,6 +288,10 @@ describe("direct review", () => {
   for (const [mode, message] of [
     ["review-wrapped", "the session handed the review to an agent"],
     ["review-xhigh", "the review did not run at medium"],
+    ["review-unpinned", "the review was not pinned to"],
+    ["review-twice", "the session did not run /code-review once"],
+    ["review-unforked", "no messages from the skill's forked reviewer"],
+    ["review-failed", "the review did not finish"],
     ["review-unrecorded", "the session did not record the outcomes once through ReportFindings"],
     ["review-early", "the outcomes were recorded before the review ended"],
     ["review-dismissed", "the real owner-check finding was not recorded as skipped"],

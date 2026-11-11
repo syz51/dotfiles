@@ -56,7 +56,7 @@ export function parseConfigs(text) {
   });
 }
 
-// The session calls the Skill tool, as the Review rule's background agent does. The skill
+// The session calls the Skill tool, as the Review rule's session does. The skill
 // runs in a forked context and returns its result as the tool result. A bare /code-review
 // prompt in --print mode forks too, but leaves only a <synthetic> relay at the top level.
 export const reviewPrompt = (benchCase, level) =>

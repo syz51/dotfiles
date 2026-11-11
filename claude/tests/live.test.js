@@ -387,19 +387,20 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           + "finds. Keep this checkout read-only: report the findings, but don't fix, commit or push anything.",
       });
 
-      // The session ran the review itself, once, at medium, pinned to the commit; it
-      // started no agent of its own. The skill's forked reviewer ran on the session's model.
-      expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null), "the session handed the review to an agent").toEqual([]);
+      // The session ran the review itself, once, at medium, pinned to the commit, not
+      // through an agent. The skill's forked reviewer ran on the session's model.
       const reviews = toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review");
-      expect(reviews.filter((use) => use.parent !== null), "an agent ran the review").toEqual([]);
+      expect(reviews.filter((use) => use.parent !== null), "the session handed the review to an agent").toEqual([]);
       expect(reviews.length, "the session did not run /code-review once").toBe(1);
       const [review] = reviews;
       const args = review.input.args ?? "";
       expect(args, `the review did not run at medium: ${args}`).toMatch(/^medium\b/);
       expect((args.match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((hash) => sha.startsWith(hash)), `the review was not pinned to ${sha}: ${args}`).toBe(true);
-      for (const message of subagentMessages(run.events, [review])) expect(message.message.model).toBe(MODEL);
+      expect(toolResults(run.events).get(review.id)?.isError, "the review did not finish").toBe(false);
+      const messages = subagentMessages(run.events, [review]).filter((message) => message.message.model !== "<synthetic>");
+      expect(messages.length, "no messages from the skill's forked reviewer").toBeGreaterThan(0);
+      for (const message of messages) expect(message.message.model).toBe(MODEL);
       const ended = spawnEnds(run.events, [review]).get(review.id);
-      expect(ended, "the review did not finish").toBeDefined();
       const reply = finalText(run.events);
       expect(reply).toMatch(/owner/i);
       expect(reply).toMatch(/!==|invert|revers|negat|flip|anyone|any user|non-?owner|not the owner|other users|everyone/i);

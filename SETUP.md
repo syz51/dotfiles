@@ -972,8 +972,8 @@ in CI:
   A codex-skills release that moves `current` passes when every skill link text is
   unchanged, also through `~/.agents/skills`. A retargeted link or an edit to the old
   release fails. A claimed but unsaved artifact or an unwritable report fails too. So do a review
-  the session hands to an agent, a review at `xhigh`,
-  and a review whose outcomes are never recorded. Outcomes recorded before the review
+  the session hands to an agent, a review at `xhigh`, not pinned to the commit, run
+  twice, refused or without a forked reviewer, and a review whose outcomes are never recorded. Outcomes recorded before the review
   ends, a real finding recorded as no change needed, and a finding without a category
   also fail. When `~/.claude` links to another checkout, the three location checks
   are skipped with one notice and the other tests still run; from the linked checkout

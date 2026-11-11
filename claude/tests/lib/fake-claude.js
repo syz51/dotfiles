@@ -173,7 +173,9 @@ if (mode.startsWith("chinese-")) {
 if (mode.startsWith("review-")) {
   // review-direct runs the review itself with the Skill tool at medium, pinned to the
   // commit, then records the outcomes; review-wrapped hands it to an agent in a worktree;
-  // review-xhigh runs it at xhigh; review-unrecorded never records the outcomes through
+  // review-xhigh runs it at xhigh, review-unpinned without the commit, review-twice two
+  // times, review-unforked without a forked reviewer, and review-failed has it refused;
+  // review-unrecorded never records the outcomes through
   // ReportFindings, review-early records them before the review, review-dismissed
   // records the real finding as no change needed, and review-uncategorized leaves out
   // its category.
@@ -186,12 +188,19 @@ if (mode.startsWith("review-")) {
       ...(mode === "review-uncategorized" ? {} : { category: "correctness" }), outcome: mode === "review-dismissed" ? "no_change_needed" : "skipped" };
     tool("ReportFindings", { findings: [finding] }, () => ({ text: "Reported." }));
   };
-  const review = (parent) => tool("Skill", { skill: "code-review", args: `${mode === "review-xhigh" ? "xhigh" : "medium"} origin/main...${sha}` }, () => ({ text: findings }), parent);
+  // The skill runs forked: the reviewer's messages carry the Skill call as their parent.
+  const review = (parent) => tool("Skill", { skill: "code-review", args: `${mode === "review-xhigh" ? "xhigh" : "medium"}${mode === "review-unpinned" ? "" : ` origin/main...${sha}`}` }, () => {
+    if (mode === "review-failed") return { text: "The user doesn't want to proceed with this tool use.", isError: true };
+    if (mode !== "review-unforked")
+      emit({ type: "assistant", parent_tool_use_id: `toolu_fake_${counter}`, message: { id: `msg_fork_${counter}`, model: option("--model"), content: [{ type: "text", text: findings }] } });
+    return { text: findings };
+  }, parent);
   if (mode === "review-early") record();
   if (mode === "review-wrapped") {
     const spawn = tool("Agent", { subagent_type: "general-purpose", isolation: "worktree", prompt: "Review it." }, () => ({ text: findings }));
     review(spawn);
   } else review();
+  if (mode === "review-twice") review();
   if (mode !== "review-early") record();
   answer = findings;
 }

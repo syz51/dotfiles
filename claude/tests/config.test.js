@@ -755,8 +755,9 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/commit the final diff, then call the Skill tool pinned to the commit, such as `\/code-review medium origin\/main\.\.\.<SHA>`/);
     expect(review).toMatch(/The skill runs the review in its own forked agent on this session's model and returns the findings to you unchanged/);
     expect(review).toMatch(/While it runs, leave that diff alone, and don't push or report done until its findings are handled/);
-    // The review covers the final diff, so a change to it mid-review restarts it.
-    expect(review).toMatch(/cancel and restart it if the diff changes while it runs/);
+    // A message that arrives mid-review cuts the Skill call off, and the review covers the
+    // final diff: either way it runs again.
+    expect(review).toMatch(/run it again if it is cut off or the diff changes while it runs/);
     expect(review).not.toMatch(/xhigh|background agent|its own worktree/);
   });
 

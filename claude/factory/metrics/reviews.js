@@ -1,9 +1,9 @@
 // Code reviews in sessions and what came of their findings (claude/CLAUDE.md, Review).
 // A review is one /code-review Skill call that was not refused or interrupted. The Review
-// rule runs it in a background agent, whose skill runs forked as a child agent; the
-// review's cost is that agent's and every agent below it. Outcomes come from the main
-// session's ReportFindings calls, made after it decides on the findings, each finding
-// with a category and an outcome.
+// rule has the session run it; the skill runs forked as a child agent. Older sessions ran
+// it through a background agent. The review's cost is the agent that ran it and every
+// agent below it. Outcomes come from the main session's ReportFindings calls, made after
+// it decides on the findings, each finding with a category and an outcome.
 import { isCodeReview } from "../lib/transcripts.js";
 import { quantile, ratio, sum } from "./stats.js";
 
