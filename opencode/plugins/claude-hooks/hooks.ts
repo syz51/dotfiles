@@ -86,9 +86,9 @@ export function loadHooks(settingsPath: string): HookConfig {
   return settings.hooks ?? {};
 }
 
-// Variables a parent T3 or Claude Code session leaks into opencode. Left in place,
-// `board` and the guards would act as that parent instead of this session.
-const LEAKED = /^(T3CODE_|CLAUDE_CODE_|CLAUDECODE$)/;
+// Variables a parent T3, Claude Code or opencode session leaks into opencode. Left in
+// place, `board` and the guards would act as that parent instead of this session.
+const LEAKED = /^(T3CODE_|CLAUDE_CODE_|CLAUDECODE$|OPENCODE_SESSION_ID$|BOARD_HOOK_RUNTIME$)/;
 
 export function leakedKeys(env: Record<string, string | undefined>): string[] {
   return Object.keys(env).filter((key) => LEAKED.test(key));
@@ -97,7 +97,10 @@ export function leakedKeys(env: Record<string, string | undefined>): string[] {
 export function hookEnv(base: Record<string, string | undefined>, sessionID: string, projectDir: string) {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) if (value !== undefined && !LEAKED.test(key)) env[key] = value;
-  env.CLAUDE_CODE_SESSION_ID = sessionID;
+  // The board knows this session as `opencode:<id>` with runtime opencode, which the
+  // Claude usage hold skips.
+  env.OPENCODE_SESSION_ID = sessionID;
+  env.BOARD_HOOK_RUNTIME = "opencode";
   env.CLAUDE_PROJECT_DIR = projectDir;
   return env;
 }

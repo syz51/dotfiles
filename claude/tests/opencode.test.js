@@ -58,7 +58,7 @@ describe("opencode config", () => {
   test("runs the board MCP server without a leaked parent identity", () => {
     const board = config.mcp.servers.board;
     expect(board.codemode).toBe(false);
-    expect(board.command).toEqual(["/usr/bin/env", "-u", "T3CODE_THREAD_ID", "-u", "CLAUDE_CODE_SESSION_ID", "{env:HOME}/.cargo/bin/board", "mcp"]);
+    expect(board.command).toEqual(["/usr/bin/env", "-u", "T3CODE_THREAD_ID", "-u", "CLAUDE_CODE_SESSION_ID", "-u", "OPENCODE_SESSION_ID", "{env:HOME}/.cargo/bin/board", "mcp"]);
   });
 
   test("runs the computer-use server from the dotfiles marketplace", () => {
@@ -121,9 +121,18 @@ describe("claude-hooks translation", () => {
     expect(matches("startup", undefined)).toBe(true);
   });
 
-  test("hook env drops leaked T3 and Claude Code ids and names this session", () => {
-    const env = hookEnv({ PATH: "/bin", T3CODE_THREAD_ID: "t3:x", CLAUDE_CODE_SESSION_ID: "c", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" }, "ses_1", "/p");
-    expect(env).toEqual({ PATH: "/bin", CLAUDE_CODE_SESSION_ID: "ses_1", CLAUDE_PROJECT_DIR: "/p" });
+  test("hook env drops leaked T3, Claude Code and opencode ids and names this session for the board's opencode runtime", () => {
+    const leaked = {
+      PATH: "/bin",
+      T3CODE_THREAD_ID: "t3:x",
+      CLAUDE_CODE_SESSION_ID: "c",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      OPENCODE_SESSION_ID: "parent",
+      BOARD_HOOK_RUNTIME: "codex",
+    };
+    const env = hookEnv(leaked, "ses_1", "/p");
+    expect(env).toEqual({ PATH: "/bin", OPENCODE_SESSION_ID: "ses_1", BOARD_HOOK_RUNTIME: "opencode", CLAUDE_PROJECT_DIR: "/p" });
   });
 
   test("names StopFailure types and memory directories as Claude does", () => {
@@ -191,7 +200,7 @@ describe("claude-hooks plugin", () => {
   const saved = {};
 
   const logger = (event, extra = "") =>
-    `input=$(cat); printf '%s %s %s %s\\n' ${event} "$CLAUDE_CODE_SESSION_ID" "\${T3CODE_THREAD_ID:-none}" "$input" >> "$HOOK_LOG"; ${extra}`;
+    `input=$(cat); printf '%s %s %s %s\\n' ${event} "$OPENCODE_SESSION_ID" "\${T3CODE_THREAD_ID:-none}" "$input" >> "$HOOK_LOG"; ${extra}`;
 
   beforeAll(async () => {
     home = mkdtempSync(join(tmpdir(), "claude-hooks-home-"));
@@ -293,16 +302,17 @@ describe("claude-hooks plugin", () => {
     reset();
     const input = { id: "dotfiles-1" };
     await hooks["tool.execute.before"]({ tool: "board_task_show", sessionID: "ses_child", id: "c2", input });
-    expect(input.agent).toBe("claude:ses_root");
+    expect(input.agent).toBe("opencode:ses_root");
     expect(logged()[0].input.tool_name).toBe("mcp__board__task_show");
-    const explicit = { id: "dotfiles-1", agent: "claude:other" };
+    const explicit = { id: "dotfiles-1", agent: "opencode:other" };
     await hooks["tool.execute.before"]({ tool: "board_task_show", sessionID: "ses_child", id: "c3", input: explicit });
-    expect(explicit.agent).toBe("claude:other");
+    expect(explicit.agent).toBe("opencode:other");
 
     await hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_child", id: "c4", input: { command: "board status" } });
     const shell = { command: "board status", env: {} };
     await hooks["shell.create.before"](shell);
-    expect(shell.env.CLAUDE_CODE_SESSION_ID).toBe("ses_root");
+    expect(shell.env.OPENCODE_SESSION_ID).toBe("ses_root");
+    expect(shell.env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
     expect("T3CODE_THREAD_ID" in shell.env && shell.env.T3CODE_THREAD_ID === undefined).toBe(true);
   });
 

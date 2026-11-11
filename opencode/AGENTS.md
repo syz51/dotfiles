@@ -9,7 +9,7 @@ The instructions in `~/.claude/CLAUDE.md` were written for Claude Code. In openc
 - `AskUserQuestion` is `question`.
 - `Agent` is `subagent`. The `explorer`, `worker` and `solver` agents keep the roles that the Delegation section gives them; `general` stands in for `general-purpose`. A subagent has no worktree isolation: create one with `opencode_worktree_create` and name it in the brief.
 - `EnterWorktree` is `opencode_worktree_create`.
-- The board's MCP tools are `board_<tool>`, such as `board_board_snapshot` and `board_task_claim`. Never pass their `agent` argument: the `claude-hooks` plugin fills in this session's board identity. The `board` CLI in `shell` gets the same identity from `CLAUDE_CODE_SESSION_ID`.
+- The board's MCP tools are `board_<tool>`, such as `board_board_snapshot` and `board_task_claim`. Never pass their `agent` argument: the `claude-hooks` plugin fills in this session's board identity. The `board` CLI in `shell` gets the same identity, `opencode:<session id>`, from `OPENCODE_SESSION_ID`. The board's weekly usage hold covers only Claude Code, so it does not stop opencode sessions; a paused board still does.
 - The computer-use tools are `desktop_<tool>`.
 - opencode has no `ToolSearch`, `Artifact`, `ReportFindings`, `Monitor`, `ScheduleWakeup` or T3 tools. Skip the instructions that depend only on them.
 
