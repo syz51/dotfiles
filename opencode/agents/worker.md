@@ -1,7 +1,7 @@
 ---
 description: "Owns one independent track that changes files or other state, in parallel with other work, within the files it was given."
 mode: subagent
-model: opencode/claude-opus-5-5#high
+model: opencode/gpt-6.1-sol#xhigh
 permissions:
   - { action: subagent, resource: "*", effect: deny }
 ---

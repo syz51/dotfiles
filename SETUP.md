@@ -226,7 +226,8 @@ requiring Git and network access. Inspect `nvim/lazyvim.json` and
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 
 Agents run on Claude models only: `claude/CLAUDE.md` forbids the `codex` CLI, `gpt-*`
-models and the Codex delegate provider. As a backstop, guard-runtimes blocks a Bash command
+models and the Codex delegate provider. opencode is the exception: by the user's choice, it
+runs GPT models (see "opencode" below). As a backstop, guard-runtimes blocks a Bash command
 named `codex`, also through `bunx @openai/codex`; it does not see other launchers or the T3
 delegate tools. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
 files below stay until their removal is decided.
@@ -404,12 +405,15 @@ git config --global core.excludesFile "$HOME/.config/git/ignore"
 opencode 2 reads its global configuration from `~/.config/opencode`, so the tracked files
 in `opencode/` apply without a link. They give opencode the Claude Code setup:
 
-- `opencode.json` loads `~/.claude/CLAUDE.md` as instructions, uses Opus by default, allows
+- `opencode.json` loads `~/.claude/CLAUDE.md` as instructions, uses GPT-6.1 Sol at
+  `xhigh` by default, allows
   every tool as Claude Code's `bypassPermissions` does, and runs two MCP servers: the board
   and computer use (`desktop`). opencode 2 does not read `CLAUDE.md` files by itself.
-- `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's.
+- `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's, and
+  tells the model that the Claude-only rule means the configured GPT models here.
 - `agents/` holds `explorer`, `worker` and `solver`. They keep the Claude agents'
-  descriptions, prompts, models and effort; `claude/tests/opencode.test.js` keeps them in step.
+  descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, and the Haiku
+  explorer runs GPT-6 Luna at `max`. `claude/tests/opencode.test.js` keeps them in step.
 - `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
   `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
   refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands

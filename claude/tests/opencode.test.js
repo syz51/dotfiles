@@ -31,7 +31,8 @@ function frontmatter(path) {
   return { meta: Bun.YAML.parse(match[1]), body: match[2] };
 }
 
-const ALLOWED_MODEL = /^opencode\/claude-(opus|haiku)-5-5(#[a-z]+)?$/;
+// The user chose GPT models for opencode: Opus maps to Sol at xhigh, Haiku to Luna at max.
+const OPENCODE_MODEL = { opus: "opencode/gpt-6.1-sol#xhigh", haiku: "opencode/gpt-6-luna#max" };
 
 describe("opencode config", () => {
   const config = JSON.parse(read("opencode/opencode.json"));
@@ -44,9 +45,14 @@ describe("opencode config", () => {
     expect(ignored.status).toBe(0);
   });
 
-  test("loads the Claude Code instructions and uses only Opus or Haiku", () => {
+  test("loads the Claude Code instructions and runs GPT-6.1 Sol at xhigh", () => {
     expect(config.instructions).toEqual(["{env:HOME}/.claude/CLAUDE.md"]);
-    expect(config.model).toMatch(ALLOWED_MODEL);
+    expect(config.model).toBe(OPENCODE_MODEL.opus);
+  });
+
+  test("tells the model which models the Claude-only rule means here", () => {
+    const notes = read("opencode/AGENTS.md");
+    for (const model of Object.values(OPENCODE_MODEL)) expect(notes).toContain(model);
   });
 
   test("runs the board MCP server without a leaked parent identity", () => {
@@ -64,7 +70,6 @@ describe("opencode config", () => {
 });
 
 describe("opencode agents", () => {
-  const VARIANT = { haiku: "claude-haiku-5-5", opus: "claude-opus-5-5" };
   const agents = readdirSync(join(REPO, "claude/agents")).filter((name) => name.endsWith(".md"));
 
   test("mirror the Claude Code agents", () => {
@@ -72,14 +77,14 @@ describe("opencode agents", () => {
   });
 
   for (const name of agents) {
-    test(`${name} keeps the Claude agent's description, prompt, model and effort`, () => {
+    test(`${name} keeps the Claude agent's description and prompt, on its GPT model`, () => {
       const claude = frontmatter(`claude/agents/${name}`);
       const opencode = frontmatter(`opencode/agents/${name}`);
       expect(tracked(`opencode/agents/${name}`)).toBe(true);
       expect(opencode.meta.description).toBe(claude.meta.description);
       expect(opencode.body).toBe(claude.body);
       expect(opencode.meta.mode).toBe("subagent");
-      expect(opencode.meta.model).toBe(`opencode/${VARIANT[claude.meta.model]}#${claude.meta.effort}`);
+      expect(opencode.meta.model).toBe(OPENCODE_MODEL[claude.meta.model]);
       const denied = opencode.meta.permissions.filter((rule) => rule.effect === "deny").map((rule) => rule.action);
       expect(denied).toContain("subagent");
       if (claude.meta.disallowedTools.includes("Edit")) expect(denied).toEqual(expect.arrayContaining(["edit", "write", "patch"]));

@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "opencode/claude-opus-5-5#high",
+  "model": "opencode/gpt-6.1-sol#xhigh",
   "instructions": ["{env:HOME}/.claude/CLAUDE.md"],
   "permissions": [{ "action": "*", "resource": "*", "effect": "allow" }],
   "mcp": {

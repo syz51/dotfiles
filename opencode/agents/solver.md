@@ -1,7 +1,7 @@
 ---
 description: "One independent hard problem in parallel with other work: difficult debugging, algorithms, concurrency, performance, and reasoning-heavy analysis."
 mode: subagent
-model: opencode/claude-opus-5-5#xhigh
+model: opencode/gpt-6.1-sol#xhigh
 permissions:
   - { action: subagent, resource: "*", effect: deny }
 ---
