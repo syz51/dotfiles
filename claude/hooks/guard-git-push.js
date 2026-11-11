@@ -9,7 +9,8 @@
 // given push configuration by `-c` or an earlier `git config`; a push without refspecs is
 // checked against its remote's push and mirror configuration. A push over `ssh` runs in a
 // repository on another host, so the guard reads no local configuration or branch for it
-// and judges its refspecs alone. Aliases and GIT_CONFIG_*
+// and judges its refspecs alone. A push that xargs adds words to, or a command xargs supplies
+// (shell.js's `opaque`), is blocked, locally and over ssh. Aliases and GIT_CONFIG_*
 // variables are not seen.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -207,7 +208,7 @@ function judge(push, dir, git, configChanged) {
 }
 
 /** `state.configChanged` records a `git config` earlier in the same command that sets push configuration. */
-function gitPush(words, dir, git, state, remote) {
+function gitPush(words, dir, git, state, { appended, remote }) {
   let i = 1;
   let pushConfigOption;
   while (i < words.length && words[i].startsWith("-")) {
@@ -221,6 +222,9 @@ function gitPush(words, dir, git, state, remote) {
   if (words[i] === "config" && words.slice(i + 1).some(isPushConfig)) state.configChanged = true;
   const fail = (reason) => `\`${words.join(" ")}\`: ${reason}`;
   if (words[i] !== undefined && expands(words[i])) return fail(`the shell fills in the git subcommand \`${words[i]}\`, so the guard cannot see whether it pushes.`);
+  if (appended && (words[i] === undefined || words[i] === "push")) {
+    return fail("xargs adds arguments the guard cannot see, such as --force or a refspec. Write the push out literally.");
+  }
   if (words[i] !== "push") return undefined;
   if (pushConfigOption !== undefined) return fail(`\`${pushConfigOption}\` sets push configuration the guard does not read. Push with an explicit refspec and no -c.`);
   const push = parsePush(words.slice(i + 1));
@@ -238,9 +242,10 @@ function gitPush(words, dir, git, state, remote) {
  */
 export function findViolation(command, cwd, git) {
   const state = { configChanged: false };
-  return visitCommands(command, cwd, (words, dir, { remote }) => (basename(words[0]) === "git" || (expands(words[0]) && words.includes("push"))
-    ? gitPush(words, dir, git, state, remote)
-    : undefined), TOO_DEEP);
+  return visitCommands(command, cwd, (words, dir, flags) => {
+    if (flags.opaque) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command or script the guard cannot see, so it may push. Write the command out literally.`;
+    return basename(words[0]) === "git" || (expands(words[0]) && words.includes("push")) ? gitPush(words, dir, git, state, flags) : undefined;
+  }, TOO_DEEP);
 }
 
 function runGit(dir, args) {
