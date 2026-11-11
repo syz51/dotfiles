@@ -1,0 +1,12 @@
+{
+  "name": "opencode-setup-typecheck",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun ./node_modules/typescript/bin/tsc --project tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "typescript": "7.0.2"
+  }
+}

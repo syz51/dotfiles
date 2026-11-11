@@ -71,7 +71,9 @@ function runLive(file, name, mode, extra = {}) {
   });
   delete env.CLAUDE_LIVE_MODEL;
   delete env.CLAUDE_LIVE_EFFORT;
-  return runProcess([process.execPath, "test", join(TESTS, file), "-t", name], { cwd: TESTS, env, timeout: 60_000 });
+  const report = join(root, "test-results.xml");
+  return runProcess([process.execPath, "test", join(TESTS, file), "-t", name, "--reporter=junit", `--reporter-outfile=${report}`], { cwd: TESTS, env, timeout: 60_000 })
+    .then((run) => ({ ...run, report: existsSync(report) ? readFileSync(report, "utf8").replace(/&apos;|&#39;|&#x27;/gi, "'") : "" }));
 }
 
 // Cleanup removed every entry the fake wrote for its fixture, kept the others, and left
@@ -380,9 +382,10 @@ describe("location checks", () => {
     expect(text.split(notice)).toHaveLength(2);
     expect(text).toContain(`${notice}${home} (~/.claude is ${join(home, ".claude")}), not this checkout ${realpathSync(join(TESTS, "..", ".."))}.`);
     expect(text).toContain("live-tested only after merge and config-sync");
-    expect(text).toContain("(pass) live Claude Code > a high-impact review runs in the background while the session answers");
+    expect(run.report).toContain('name="a high-impact review runs in the background while the session answers"');
     expect(text).toMatch(/ 1 pass\n 3 skip\n/);
-    expect(text).toMatch(/\(skip\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
+    expect(run.report).toContain(`name="~/.claude resolves to this checkout's claude directory"`);
+    expect(run.report).toContain("<skipped");
     assertCleanedUp();
   }, 30_000);
 
@@ -392,7 +395,7 @@ describe("location checks", () => {
     const run = await runLive("live.test.js", "resolves to this checkout", "unused");
     expect(run.code, output(run)).toBe(0);
     expect(output(run)).not.toContain(notice);
-    expect(output(run)).toMatch(/\(pass\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
+    expect(run.report).toContain(`name="~/.claude resolves to this checkout's claude directory"`);
     expect(output(run)).toMatch(/ 1 pass\n/);
   }, 30_000);
 });

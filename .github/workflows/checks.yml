@@ -108,6 +108,10 @@ jobs:
         with:
           path: ${{ steps.gitleaks.outputs.cache }}
           key: ${{ steps.gitleaks.outputs.archive }}-${{ steps.gitleaks.outputs.checksum }}
+      - name: Type-check OpenCode plugins
+        run: |
+          bun install --cwd claude/tests/opencode-types --frozen-lockfile
+          bun run --cwd claude/tests/opencode-types check
       - name: Scan history and run isolated tests
         shell: bash
         env:

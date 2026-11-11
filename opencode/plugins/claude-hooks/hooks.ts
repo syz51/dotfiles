@@ -23,6 +23,8 @@ export type HookConfig = Record<string, HookGroup[]>;
 export interface Outcome {
   // Reason a PreToolUse hook refused the call, or a Stop hook asked to continue.
   block?: string;
+  halt?: string;
+  ask?: string;
   context: string[];
 }
 
@@ -30,7 +32,8 @@ const TOOL_NAMES: Record<string, string> = {
   shell: "Bash",
   read: "Read",
   edit: "Edit",
-  patch: "Edit",
+  // board hook already understands the multi-file apply_patch wire format.
+  patch: "apply_patch",
   write: "Write",
   glob: "Glob",
   grep: "Grep",
@@ -60,6 +63,8 @@ export function claudeToolInput(tool: string, input: Json): Json {
       return { file_path: input.path, old_string: input.oldString, new_string: input.newString, replace_all: input.replaceAll };
     case "write":
       return { file_path: input.path, content: input.content };
+    case "patch":
+      return { command: input.patchText };
     case "subagent":
       return {
         subagent_type: input.agent,
@@ -111,30 +116,58 @@ interface Run {
   stderr: string;
 }
 
-function run(command: string, stdin: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<Run> {
+function run(command: string, stdin: string, cwd: string, env: Record<string, string>, timeoutMs: number, signal?: AbortSignal): Promise<Run> {
   return new Promise((resolve) => {
-    const child = spawn("/bin/sh", ["-c", command], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    // A dedicated process group lets cancellation stop descendants that hold stdout open.
+    const child = spawn("/bin/sh", ["-c", command], { cwd, env, detached: true, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    let settled = false;
+    let finalTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(finalTimer);
+      signal?.removeEventListener("abort", abort);
+      resolve({ code, stdout, stderr });
+    };
+    const terminate = (reason: string) => {
+      if (settled || finalTimer) return;
+      stderr += `\n${reason}`;
+      if (child.pid !== undefined) {
+        try { process.kill(-child.pid, "SIGKILL"); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") stderr += `\nCould not kill hook group: ${error}`;
+        }
+      }
+      // Escaped descendants must not extend the caller's deadline through open pipes.
+      finalTimer = setTimeout(() => {
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.stdin.destroy();
+        finish(null);
+      }, 100);
+    };
+    const abort = () => terminate("Hook cancelled");
+    const timer = setTimeout(() => terminate(`Hook timed out after ${timeoutMs} ms`), timeoutMs);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk) => (stdout += chunk));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     // A hook may exit without reading stdin; the resulting EPIPE is not a hook failure.
     child.stdin.on("error", () => {});
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, stdout, stderr: String(error) });
+      stderr += String(error);
+      finish(null);
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stdout, stderr });
-    });
+    child.on("close", finish);
     child.stdin.end(stdin);
+    if (signal?.aborted) abort();
   });
 }
 
 // Events whose plain stdout Claude adds to the model's context.
-const STDOUT_CONTEXT = new Set(["SessionStart", "UserPromptSubmit"]);
+const STDOUT_CONTEXT = new Set(["SessionStart", "UserPromptSubmit", "PreCompact"]);
 
 export function readResult(event: string, result: Run, command: string, outcome: Outcome) {
   if (result.code === 2) {
@@ -142,7 +175,11 @@ export function readResult(event: string, result: Run, command: string, outcome:
     return;
   }
   if (result.code !== 0) {
-    console.warn(`claude-hooks: ${event} hook failed (exit ${result.code}): ${command}: ${result.stderr.trim()}`);
+    const reason = `claude-hooks: ${event} hook failed (exit ${result.code}): ${command}: ${result.stderr.trim()}`;
+    // Optional logging/board/freshness hooks preserve Claude's non-blocking error behavior.
+    // A broken safety guard must not silently authorize the operation it failed to judge.
+    if (event === "PreToolUse" && /[/\\]guard-[\w-]+\.js(?:["'\s]|$)/.test(command)) outcome.block = [outcome.block, reason].filter(Boolean).join("\n");
+    else console.warn(reason);
     return;
   }
   const stdout = result.stdout.trim();
@@ -159,11 +196,13 @@ export function readResult(event: string, result: Run, command: string, outcome:
     return;
   }
   const specific = (output.hookSpecificOutput ?? {}) as Json;
+  if (output.continue === false) outcome.halt = String(output.stopReason ?? `Hook stopped execution: ${command}`);
   if (specific.permissionDecision === "deny") {
     outcome.block = [outcome.block, String(specific.permissionDecisionReason ?? `hook refused: ${command}`)]
       .filter(Boolean)
       .join("\n");
   }
+  if (specific.permissionDecision === "ask") outcome.ask = String(specific.permissionDecisionReason ?? `Hook approval required: ${command}`);
   if (output.decision === "block") {
     const reason = String(output.reason ?? `hook blocked: ${command}`);
     // Claude feeds a PostToolUse block reason to the model; it cannot undo the call.
@@ -184,6 +223,7 @@ export interface RunOptions {
   cwd: string;
   projectDir: string;
   env: Record<string, string | undefined>;
+  signal?: AbortSignal;
 }
 
 export async function runHooks(options: RunOptions): Promise<Outcome> {
@@ -192,7 +232,11 @@ export async function runHooks(options: RunOptions): Promise<Outcome> {
     if (!matches(group.matcher, options.target)) continue;
     for (const hook of group.hooks) {
       // Claude runs identical commands once.
-      if (hook.type === "command" && hook.command && !commands.has(hook.command)) commands.set(hook.command, hook.timeout ?? 600);
+      if (hook.type === "command" && hook.command && !commands.has(hook.command)) {
+        const timeout = hook.timeout ?? 600;
+        if (!Number.isFinite(timeout) || timeout <= 0) throw new Error(`Invalid timeout for hook: ${hook.command}`);
+        commands.set(hook.command, timeout);
+      }
     }
   }
   const outcome: Outcome = { context: [] };
@@ -207,7 +251,7 @@ export async function runHooks(options: RunOptions): Promise<Outcome> {
   });
   const env = hookEnv(options.env, options.sessionID, options.projectDir);
   const results = await Promise.all(
-    [...commands].map(async ([command, timeout]) => [command, await run(command, stdin, options.cwd, env, timeout * 1000)] as const),
+    [...commands].map(async ([command, timeout]) => [command, await run(command, stdin, options.cwd, env, timeout * 1000, options.signal)] as const),
   );
   for (const [command, result] of results) readResult(options.event, result, command, outcome);
   return outcome;

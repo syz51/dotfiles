@@ -211,7 +211,8 @@ describe("session", () => {
   // helper's focused reply; `front` is the focused app when `focus` is not given.
   // `approval` is the policy's mode, or a function returning it (read at each request_access).
   function fakeMac({ under = () => SAFARI, front = SAFARI, focus, frontmost = front, allow = true, approval = "dialog", pid = 100, holds = () => true } = {}) {
-    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK, Helium: HELIUM, Terminal: TERMINAL, T3: T3 };
+    const apps = { Safari: SAFARI, Notes: NOTES, Chase: BANK, Helium: HELIUM, Terminal: TERMINAL, T3: T3,
+      Finder: FINDER, Spotlight: { name: "Spotlight", bundleId: "com.apple.Spotlight" }, OpenCode: { name: "OpenCode" } };
     const toScene = (value) => (value === null ? { ...scene([]), finder: null } : "windows" in value ? value : scene([win(value)]));
     const mac = { actions: [], dialogs: [], overlays: [] };
     mac.desktop = createDesktop({
@@ -621,6 +622,15 @@ describe("session", () => {
       expect(mac.dialogs).toHaveLength(2);
     });
 
+    test.each(["Finder", "Spotlight", "OpenCode"])("auto policy cannot approve %s without the dialog", async (app) => {
+      const mac = fakeMac({ approval: "auto", allow: () => false });
+      const response = await mac.call("request_access", { apps: [app], reason: "Inspect the app." });
+      expect(response.text).toContain(`Not approved: ${app}. A dialog was shown`);
+      expect(mac.dialogs).toHaveLength(1);
+      expect(mac.overlays).toHaveLength(0);
+      expect(existsSync(join(stateDir, "session.json"))).toBe(false);
+    });
+
     test("a Stop makes every session and a restarted server ask until the user allows in a dialog", async () => {
       const first = fakeMac({ approval: "auto", pid: 100, holds: () => false });
       await first.call("request_access", { apps: ["Helium"], reason: "r" });
@@ -764,6 +774,9 @@ describe("apps that always need the dialog", () => {
     [{ name: "kitty", bundleId: "net.kovidgoyal.kitty" }],
     [{ name: "WezTerm", bundleId: "com.github.wez.wezterm" }],
     [{ name: "T3 Code (Alpha)", bundleId: "com.t3tools.t3code" }],
+    [{ name: "OpenCode" }],
+    [{ name: "访达", bundleId: "com.apple.finder" }],
+    [{ name: "聚焦", bundleId: "com.apple.Spotlight" }],
     [{ name: "Claude", bundleId: "com.anthropic.claudefordesktop" }],
     [{ name: "System Settings", bundleId: "com.apple.systempreferences" }],
     [{ name: "Script Editor", bundleId: "com.apple.ScriptEditor2" }],

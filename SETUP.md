@@ -430,6 +430,10 @@ Root session-end hooks run on archive, deletion, or plugin unload, not ordinary 
 Idle sessions can still own live/background leases. Reactivation resumes root hooks.
 Shell identity binds to each invocation. Native multi-file patches use the board's
 supported `apply_patch` telemetry shape, including adds, deletions, and moves.
+Pre-tool explanations reach the result, and plain PreCompact output reaches the summary request.
+V2 does not expose the compaction reason to this hook; both manual/auto matchers remain eligible.
+Hook approval requests use native permission prompts even under full-access sessions.
+Prompt vetoes and board `continue: false` responses are enforced, not swallowed.
 
 Claude's permissions, environment, compaction window, enabled plugins, status line,
 and other UI/settings values are not imported. OpenCode owns those settings separately.
@@ -449,20 +453,33 @@ cache, and config directories. `OPENCODE_CONFIG_DIR` alone adds a config directo
 do not treat it as complete isolation from user settings. Use `--standalone` for
 CLI probes rather than the running shared service.
 
-`bun test claude/tests/opencode-policy*.js` runs offline callback fixtures.
-`RUN_OPENCODE_RUNTIME=1 bun test claude/tests/opencode-policy*.js` also checks the
+`bun test claude/tests/opencode*.js` runs offline callback fixtures.
+`RUN_OPENCODE_RUNTIME=1 bun test claude/tests/opencode*.js` also checks the
 installed runtime using isolated temporary servers and a local mock model, with no paid generation.
+This includes actual nested Code Mode worktree dispatch, board actor propagation, shell identity,
+guard refusal, and multi-file patch telemetry. Fixtures remove inherited host configuration and identities.
+The hook plugin's optional `settingsPath` package option selects synthetic settings for these probes;
+ordinary sessions keep `~/.claude/settings.json`.
 The [models guide](https://opencode.ai/docs/models),
 [permission hooks](https://opencode.ai/docs/build/plugins/server),
 and [skill precedence](https://opencode.ai/docs/skills#precedence) describe these interfaces.
 
 ## Factory
 
-`claude/factory/` measures and improves this Claude Code setup. It reads the session
-transcripts under `~/.claude/projects`, and for metrics also the Codex rollouts under
-`${CODEX_HOME:-~/.codex}/sessions`, and keeps its reports, scores, benchmark results
+`claude/factory/` measures and improves the agent setup. It reads Claude session
+transcripts under `~/.claude/projects`, Codex rollouts under
+`${CODEX_HOME:-~/.codex}/sessions`, and OpenCode sessions through authenticated,
+read-only `opencode api get` calls. It keeps its reports, scores, benchmark results
 and proposal records in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/`, never in this
 repository. Commands that call a model state a budget and stay within it.
+
+OpenCode observation needs `opencode` on the scheduled job's PATH. Reinstall `friction`
+and `weekly` jobs after updating this setup. The adapter reads paginated API projections;
+it neither reads the database directly nor saves transcript snapshots. Parent and descendant
+messages count once, including fork ownership. Partial or unknown costs remain explicit,
+and unavailable OpenCode coverage displays `n/a` instead of a false zero.
+Correction and tool-error metrics include OpenCode; session scoring and review-specific
+metrics remain Claude-only, as before for Codex.
 
 ```sh
 bun ~/.claude/factory/cli.js metrics            # last 7 days vs the week before
@@ -524,11 +541,14 @@ reports with it. `setups --check` validates the schema and ids and checks that t
 repository paths in `covers` exist; add an entry when you add a component.
 
 Most friction never gets reported, so `friction run` looks for it. It reads the main
-sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
+sessions of Claude Code, Codex and OpenCode turns that ended since its last run (at most 48 hours
 back), skipping automation, the factory's own runs and turns that ran the `feedback` tool
 or `board feedback`. A turn has ended at the next prompt, when Claude Code's Stop hooks let
 it end or Codex marks it complete; one with no such mark counts as ended after 6 hours
-without activity, and until then holds the cursor. Turns with board or other failed calls
+without activity. OpenCode's explicit `idle` event ends a turn. Synthetic turns have stable
+replay keys, and an actively busy OpenCode turn holds the cursor rather than being filed early;
+other incomplete turns use the same stale-turn policy. Until then, they hold the cursor.
+Turns with board or other failed calls
 (a search that found nothing does not count), hook blocks, retries of the same program, or
 phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
 points. A turn whose only friction is board errors the server counts itself scores
@@ -961,6 +981,8 @@ skip with a warning. It only downloads what is missing, and git ignores what it 
 
 ```sh
 sh claude/skills/headless-browser/scripts/setup.sh
+bun install --cwd claude/tests/opencode-types --frozen-lockfile
+bun run --cwd claude/tests/opencode-types check
 bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v

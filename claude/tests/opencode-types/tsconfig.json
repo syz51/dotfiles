@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["bun"],
+    "typeRoots": ["./node_modules/@types"],
+    "skipLibCheck": true
+  },
+  "include": ["../../../opencode/plugins/**/*.ts"]
+}

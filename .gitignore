@@ -35,6 +35,7 @@ uv
 !/opencode/plugins/
 /opencode/plugins/*
 !/opencode/plugins/claude-hooks/
+!/opencode/plugins/setup-policy/
 /claude/*
 !/claude/CLAUDE.md
 !/claude/frontend-avoid.md

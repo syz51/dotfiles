@@ -12,6 +12,7 @@ import {
   hookEnv,
   matches,
   memoryDir,
+  readResult,
   runHooks,
   stopFailureType,
 } from "../../opencode/plugins/claude-hooks/hooks.ts";
@@ -47,7 +48,8 @@ describe("opencode config", () => {
 
   test("loads the Claude Code instructions and runs GPT-6.1 Sol at xhigh", () => {
     expect(config.instructions).toEqual(["{env:HOME}/.claude/CLAUDE.md"]);
-    expect(config.model).toBe(OPENCODE_MODEL.opus);
+    expect(config.model).toBe("opencode/gpt-6.1-sol");
+    expect(config.providers.opencode.models["gpt-6.1-sol"].settings.reasoningEffort).toBe("xhigh");
   });
 
   test("tells the model which models the Claude-only rule means here", () => {
@@ -107,6 +109,9 @@ describe("claude-hooks translation", () => {
     expect(claudeToolInput("edit", { path: "/a", oldString: "x", newString: "y" })).toMatchObject({ file_path: "/a", old_string: "x", new_string: "y" });
     expect(claudeToolInput("subagent", { agent: "worker", prompt: "p" })).toMatchObject({ subagent_type: "worker", prompt: "p" });
     expect(claudeToolInput("board_task_show", { id: "t-1" })).toEqual({ id: "t-1" });
+    const patch = "*** Begin Patch\n*** Add File: a\n+x\n*** Delete File: b\n*** Update File: c\n*** Move to: d\n*** End Patch";
+    expect(claudeToolName("patch")).toBe("apply_patch");
+    expect(claudeToolInput("patch", { patchText: patch })).toEqual({ command: patch });
   });
 
   test("follows Claude's matcher rules", () => {
@@ -188,6 +193,52 @@ describe("claude-hooks runner", () => {
     const hooks = { PreToolUse: [{ hooks: [hook("exit 1"), { type: "command", command: "sleep 5", timeout: 0.2 }] }] };
     expect(await runHooks({ ...base, hooks, event: "PreToolUse", target: "Bash", payload: {} })).toEqual({ context: [] });
   });
+
+  test("critical guard failures fail closed, while optional hooks remain non-blocking", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "opencode-guard-"));
+    try {
+      const script = join(dir, "guard-broken.js");
+      writeFileSync(script, "process.exit(1)\n");
+      const outcome = await runHooks({ ...base, hooks: { PreToolUse: [{ hooks: [hook(`'${process.execPath}' '${script}'`)] }] }, event: "PreToolUse", payload: {} });
+      expect(outcome.block).toContain("hook failed");
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
+  test("timeouts terminate descendants instead of waiting for inherited output pipes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "opencode-timeout-"));
+    const pidPath = join(dir, "child.pid");
+    try {
+      const started = performance.now();
+      const outcome = await runHooks({ ...base, hooks: { PreToolUse: [{ hooks: [{ type: "command", command: `sleep 3 & echo $! > '${pidPath}'; wait`, timeout: 0.1 }] }] }, event: "PreToolUse", payload: {} });
+      expect(outcome).toEqual({ context: [] });
+      expect(performance.now() - started).toBeLessThan(1800);
+      const pid = readFileSync(pidPath, "utf8").trim();
+      const state = spawnSync("ps", ["-p", pid, "-o", "stat="], { encoding: "utf8" }).stdout.trim();
+      expect(state === "" || state.startsWith("Z")).toBe(true);
+    } finally { rmSync(dir, { recursive: true }); }
+  });
+
+  test("cancellation bounds a hook and kills its process group", async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 75);
+    const started = performance.now();
+    try {
+      await runHooks({ ...base, signal: controller.signal, hooks: { PreToolUse: [{ hooks: [hook("sleep 3 & wait")] }] }, event: "PreToolUse", payload: {} });
+      expect(performance.now() - started).toBeLessThan(1800);
+    } finally { clearTimeout(timer); }
+  });
+
+  test("preserves plain compaction guidance, approval requests and board halt decisions", () => {
+    const context = { context: [] };
+    readResult("PreCompact", { code: 0, stdout: "preserve agent and task IDs", stderr: "" }, "board", context);
+    expect(context.context).toEqual(["preserve agent and task IDs"]);
+    const ask = { context: [] };
+    readResult("PreToolUse", { code: 0, stdout: JSON.stringify({ hookSpecificOutput: { permissionDecision: "ask", permissionDecisionReason: "confirm" } }), stderr: "" }, "guard", ask);
+    expect(ask.ask).toBe("confirm");
+    const halt = { context: [] };
+    readResult("UserPromptSubmit", { code: 0, stdout: JSON.stringify({ continue: false, stopReason: "board is paused" }), stderr: "" }, "board", halt);
+    expect(halt.halt).toBe("board is paused");
+  });
 });
 
 // Drives index.ts through a fake opencode plugin context. HOME points at a temporary
@@ -197,6 +248,7 @@ describe("claude-hooks plugin", () => {
   let project;
   let log;
   let plugin;
+  const cleanups = [];
   const saved = {};
 
   const logger = (event, extra = "") =>
@@ -211,9 +263,9 @@ describe("claude-hooks plugin", () => {
         PreToolUse: [{ matcher: "^Bash$", hooks: [{ type: "command", command: logger("PreToolUse", `case "$input" in *npm*) echo 'no npm' >&2; exit 2;; esac`) }] }, { matcher: "^mcp__board__", hooks: [{ type: "command", command: logger("PreToolUse") }] }],
         PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: logger("PostToolUse", `echo '{"hookSpecificOutput":{"additionalContext":"post ctx"}}'`) }] }],
         PostToolUseFailure: [{ hooks: [{ type: "command", command: logger("PostToolUseFailure", `echo '{"hookSpecificOutput":{"additionalContext":"failure ctx"}}'`) }] }],
-        SessionStart: [{ matcher: "startup|compact", hooks: [{ type: "command", command: logger("SessionStart", "echo start ctx") }] }],
+        SessionStart: [{ matcher: "startup|resume|compact", hooks: [{ type: "command", command: logger("SessionStart", "echo start ctx") }] }],
         UserPromptSubmit: [{ hooks: [{ type: "command", command: logger("UserPromptSubmit", `echo '{"hookSpecificOutput":{"additionalContext":"prompt ctx"}}'`) }] }],
-        PreCompact: [{ matcher: "manual|auto", hooks: [{ type: "command", command: logger("PreCompact") }] }],
+        PreCompact: [{ matcher: "manual|auto", hooks: [{ type: "command", command: logger("PreCompact", "echo preserve-task-identity") }] }],
         Stop: [{ hooks: [{ type: "command", command: logger("Stop", `case "$input" in *'"stop_hook_active":false'*) echo '{"decision":"block","reason":"keep going"}';; esac`) }] }],
         StopFailure: [{ matcher: "rate_limit", hooks: [{ type: "command", command: logger("StopFailure") }] }],
         SessionEnd: [{ hooks: [{ type: "command", command: logger("SessionEnd") }] }],
@@ -231,7 +283,8 @@ describe("claude-hooks plugin", () => {
     plugin = (await import("../../opencode/plugins/claude-hooks/index.ts")).default;
   });
 
-  afterAll(() => {
+  afterAll(async () => {
+    await Promise.all(cleanups.map((cleanup) => cleanup()));
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -243,6 +296,7 @@ describe("claude-hooks plugin", () => {
   async function start() {
     const hooks = {};
     const entries = [];
+    const currentEntries = new Map();
     const synthetic = [];
     const queue = [];
     let wake = () => {};
@@ -252,28 +306,43 @@ describe("claude-hooks plugin", () => {
       session: {
         get: async ({ sessionID }) => sessions[sessionID],
         hook: async (name, fn) => (hooks[`session.${name}`] = fn),
-        instructions: { entry: { put: async (entry) => entries.push(["put", entry]), remove: async (entry) => entries.push(["remove", entry]) } },
+        instructions: { entry: {
+          list: async ({ sessionID }) => [...currentEntries.values()].filter((entry) => entry.sessionID === sessionID),
+          put: async (entry) => { currentEntries.set(`${entry.sessionID}:${entry.key}`, entry); entries.push(["put", entry]); },
+          remove: async (entry) => { currentEntries.delete(`${entry.sessionID}:${entry.key}`); entries.push(["remove", entry]); },
+        } },
         synthetic: async (message) => synthetic.push(message),
       },
       tool: { hook: async (name, fn) => (hooks[`tool.${name}`] = fn) },
       shell: { hook: async (name, fn) => (hooks[`shell.${name}`] = fn) },
+      permission: {
+        hook: async (name, fn) => (hooks[`permission.${name}`] = fn),
+        assert: async (input) => { const event = { ...input, effect: "allow" }; await hooks["permission.evaluate"](event); return event; },
+      },
       event: {
-        subscribe: () =>
+        subscribe: ({ signal }) =>
           (async function* () {
-            for (;;) {
-              while (queue.length) yield queue.shift();
-              await new Promise((resolve) => (wake = resolve));
+            while (!signal.aborted) {
+              while (queue.length && !signal.aborted) yield queue.shift();
+              if (signal.aborted) return;
+              await new Promise((resolve) => {
+                wake = () => { signal.removeEventListener("abort", wake); resolve(); };
+                signal.addEventListener("abort", wake, { once: true });
+              });
             }
           })(),
       },
     };
-    const cleanup = await plugin.setup(ctx);
+    const dispose = await plugin.setup(ctx);
+    let cleaned = false;
+    const cleanup = async () => { if (!cleaned) { cleaned = true; await dispose(); } };
+    cleanups.push(cleanup);
     const emit = async (event) => {
       queue.push(event);
       wake();
       await Bun.sleep(300);
     };
-    return { hooks, entries, synthetic, emit, cleanup };
+    return { hooks, entries, synthetic, emit, cleanup, currentEntries, project };
   }
 
   const logged = () => {
@@ -287,6 +356,14 @@ describe("claude-hooks plugin", () => {
     }
   };
   const reset = () => writeFileSync(log, "");
+
+  async function withHookSettings(hooks, action) {
+    const path = join(home, ".claude", "settings.json");
+    const previous = readFileSync(path, "utf8");
+    writeFileSync(path, JSON.stringify({ hooks }));
+    try { await action(); }
+    finally { writeFileSync(path, previous); }
+  }
 
   test("a guard's refusal refuses the opencode tool call, in the root session's name", async () => {
     const { hooks } = await start();
@@ -305,19 +382,20 @@ describe("claude-hooks plugin", () => {
     expect(input.agent).toBe("opencode:ses_root");
     expect(logged()[0].input.tool_name).toBe("mcp__board__task_show");
     const explicit = { id: "dotfiles-1", agent: "opencode:other" };
-    await hooks["tool.execute.before"]({ tool: "board_task_show", sessionID: "ses_child", id: "c3", input: explicit });
-    expect(explicit.agent).toBe("opencode:other");
+    await expect(hooks["tool.execute.before"]({ tool: "board_task_show", sessionID: "ses_child", id: "c3", input: explicit })).rejects.toThrow("Board actor");
 
-    await hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_child", id: "c4", input: { command: "board status" } });
-    const shell = { command: "board status", env: {} };
+    const command = { command: "board status" };
+    await hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_child", id: "c4", input: command });
+    const shell = { command: command.command, env: {} };
     await hooks["shell.create.before"](shell);
-    expect(shell.env.OPENCODE_SESSION_ID).toBe("ses_root");
+    expect(shell.command).toStartWith("export OPENCODE_SESSION_ID='ses_root';\n");
+    expect(shell.env.OPENCODE_SESSION_ID).toBeUndefined();
     expect(shell.env.CLAUDE_CODE_SESSION_ID).toBeUndefined();
     expect("T3CODE_THREAD_ID" in shell.env && shell.env.T3CODE_THREAD_ID === undefined).toBe(true);
   });
 
   test("PostToolUse context reaches the tool result, and failure context the session", async () => {
-    const { hooks, entries } = await start();
+    const { hooks, entries, currentEntries } = await start();
     reset();
     const result = { output: { output: "hi" }, content: [{ type: "text", text: "hi" }] };
     await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses_root", id: "c5", input: { path: "/a" }, status: "completed", result });
@@ -326,6 +404,52 @@ describe("claude-hooks plugin", () => {
     await hooks["tool.execute.after"]({ tool: "shell", sessionID: "ses_root", id: "c6", input: { command: "false" }, status: "error", error: { message: "boom" } });
     expect(logged()[1]).toMatchObject({ event: "PostToolUseFailure", input: { error: "boom", tool_name: "Bash" } });
     expect(entries.at(-1)).toEqual(["put", { sessionID: "ses_root", key: "claude-hooks.tool-failure", value: "failure ctx" }]);
+    await hooks["tool.execute.after"]({ tool: "read", sessionID: "ses_root", id: "c7", input: { path: "/a" }, status: "completed", result: { content: [] } });
+    expect(currentEntries.has("ses_root:claude-hooks.tool-failure")).toBe(false);
+  });
+
+  test("identical concurrent commands execute with the correct per-invocation identity", async () => {
+    const { hooks } = await start();
+    const a = { command: 'printf "%s" "$OPENCODE_SESSION_ID"' };
+    const b = { ...a };
+    await Promise.all([
+      hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_root", id: "same", input: a }),
+      hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_other", id: "same", input: b }),
+    ]);
+    for (const [input, identity] of [[a, "ses_root"], [b, "ses_other"]]) {
+      const shell = { command: input.command, env: { PATH: process.env.PATH } };
+      await hooks["shell.create.before"](shell);
+      const result = spawnSync("/bin/sh", ["-c", shell.command], { encoding: "utf8", env: shell.env });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe(identity);
+    }
+  });
+
+  test("post hooks keep the actual cwd and supported multi-file patch payload", async () => {
+    const { hooks } = await start();
+    reset();
+    const input = { command: "true", workdir: tmpdir() };
+    await hooks["tool.execute.before"]({ tool: "shell", sessionID: "ses_root", id: "cwd", input });
+    await hooks["tool.execute.after"]({ tool: "shell", sessionID: "ses_root", id: "cwd", status: "completed", result: { content: [] } });
+    expect(logged().at(-1).input).toMatchObject({ cwd: tmpdir(), tool_input: { command: "true" } });
+    const patch = "*** Begin Patch\n*** Add File: a\n+x\n*** Delete File: b\n*** Update File: c\n*** Move to: d\n*** End Patch";
+    await hooks["tool.execute.before"]({ tool: "patch", sessionID: "ses_root", id: "patch", input: { patchText: patch } });
+    await hooks["tool.execute.after"]({ tool: "patch", sessionID: "ses_root", id: "patch", status: "completed", result: { content: [] } });
+    expect(logged().at(-1).input).toMatchObject({ tool_name: "apply_patch", tool_input: { command: patch } });
+  });
+
+  test("approval hooks force a native ask even under an allow-all session", async () => {
+    const { hooks } = await start();
+    const evaluation = { action: "claude_hook_approval", effect: "allow", metadata: { reason: "confirm operation" } };
+    await hooks["permission.evaluate"](evaluation);
+    expect(evaluation).toMatchObject({ effect: "ask", message: "confirm operation" });
+  });
+
+  test("prompt blocking and board continue:false are not swallowed", async () => {
+    const { hooks } = await start();
+    await withHookSettings({ UserPromptSubmit: [{ hooks: [{ type: "command", command: `echo '{"continue":false,"stopReason":"board paused"}'` }] }] }, async () => {
+      await expect(hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text: "hello" } })).rejects.toThrow("board paused");
+    });
   });
 
   test("the first prompt starts the session with hook context and memory; later prompts do not", async () => {
@@ -342,10 +466,22 @@ describe("claude-hooks plugin", () => {
     const startEntry = entries.find(([, entry]) => entry.key === "claude-hooks.session-start")[1];
     expect(startEntry.value).toStartWith("start ctx");
     expect(startEntry.value).toContain("- [Fact](fact.md) — remembered");
+    expect(entries.find(([, entry]) => entry.sessionID === "ses_child" && entry.key === "claude-hooks.memory")[1].value).toContain("remembered");
     expect(entries.filter(([, entry]) => entry.key === "claude-hooks.prompt").map(([op, entry]) => [op, entry.value])).toEqual([
       ["put", "prompt ctx"],
       ["put", "prompt ctx"],
     ]);
+  });
+
+  test("concurrent startup runs once and child context gets memory without board lifecycle hooks", async () => {
+    const { hooks } = await start();
+    reset();
+    await Promise.all(["a", "b"].map((text) => hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text } })));
+    expect(logged().filter((entry) => entry.event === "SessionStart")).toHaveLength(1);
+    const child = { sessionID: "ses_child", system: [] };
+    await hooks["session.context"](child);
+    expect(child.system[0].text).toContain("remembered");
+    expect(logged().some((entry) => entry.session === "ses_child")).toBe(false);
   });
 
   test("a Stop block continues the session once, then lets it stop", async () => {
@@ -361,10 +497,16 @@ describe("claude-hooks plugin", () => {
   test("compaction runs PreCompact, then SessionStart compact on the next request", async () => {
     const { hooks } = await start();
     reset();
-    await hooks["session.compaction"]({ sessionID: "ses_root" });
-    await hooks["session.context"]({ sessionID: "ses_root" });
-    await hooks["session.context"]({ sessionID: "ses_root" });
-    expect(logged().map((entry) => `${entry.event} ${entry.input.trigger ?? entry.input.source}`)).toEqual(["PreCompact auto", "SessionStart compact"]);
+    await hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text: "hello" } });
+    reset();
+    const compaction = { sessionID: "ses_root", system: [] };
+    await hooks["session.compaction"](compaction);
+    const request = { sessionID: "ses_root", system: [] };
+    await hooks["session.context"](request);
+    await hooks["session.context"]({ sessionID: "ses_root", system: [] });
+    expect(logged().map((entry) => `${entry.event} ${entry.input.trigger ?? entry.input.source}`)).toEqual(["PreCompact undefined", "SessionStart compact"]);
+    expect(compaction.system).toEqual([{ type: "text", text: "preserve-task-identity" }]);
+    expect(request.system[0].text).toContain("start ctx");
   });
 
   test("failures and session ends run StopFailure and SessionEnd once", async () => {
@@ -375,5 +517,32 @@ describe("claude-hooks plugin", () => {
     await emit({ type: "session.deleted", data: { sessionID: "ses_root" } });
     await cleanup();
     expect(logged().map((entry) => `${entry.event} ${entry.input.error ?? entry.input.reason}`)).toEqual(["StopFailure rate_limit", "SessionEnd other"]);
+  });
+
+  test("archive ends a root once; later prompts resume it; unrelated events are ignored", async () => {
+    const { hooks, emit, cleanup } = await start();
+    await hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text: "hello" } });
+    reset();
+    await emit({ type: "session.execution.failed", data: { sessionID: "unknown", error: { status: 429 } } });
+    await emit({ type: "session.execution.failed", location: { directory: "/another-location" }, data: { sessionID: "ses_root", error: { status: 429 } } });
+    expect(logged()).toEqual([]);
+    await emit({ type: "session.archived", data: { sessionID: "ses_root" } });
+    await emit({ type: "session.archived", data: { sessionID: "ses_root" } });
+    expect(logged().filter((entry) => entry.event === "SessionEnd")).toHaveLength(1);
+    await hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text: "resume" } });
+    expect(logged().some((entry) => entry.event === "SessionStart" && entry.input.source === "resume")).toBe(true);
+    await cleanup();
+    reset();
+    await emit({ type: "session.execution.failed", data: { sessionID: "ses_root", error: { status: 429 } } });
+    expect(logged()).toEqual([]);
+  });
+
+  test("a moved root belongs to its destination, not the old location's cleanup", async () => {
+    const { hooks, emit, cleanup } = await start();
+    await hooks["session.prompt"]({ sessionID: "ses_root", prompt: { text: "hello" } });
+    reset();
+    await emit({ type: "session.moved", location: { directory: "/destination" }, data: { sessionID: "ses_root", location: { directory: "/destination" } } });
+    await cleanup();
+    expect(logged()).toEqual([]);
   });
 });
