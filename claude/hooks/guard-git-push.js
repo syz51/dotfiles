@@ -10,12 +10,13 @@
 // checked against its remote's push and mirror configuration. A push over `ssh` runs in a
 // repository on another host, so the guard reads no local configuration or branch for it
 // and judges its refspecs alone. A push that xargs adds words to, or a command xargs supplies
-// (shell.js's `opaque`), is blocked, locally and over ssh. Aliases and GIT_CONFIG_*
-// variables are not seen.
+// (shell.js's `opaque`), is blocked, locally and over ssh. An alias that `-c` sets on the
+// command is followed, and one the guard cannot read is blocked; aliases in config files and
+// GIT_CONFIG_* variables are not seen.
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
-import { changeDirectory, expands, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
+import { expands, gitAlias, gitGlobalOptions, visitCommands } from "./shell.js";
 
 const DEFAULT_BRANCHES = ["main", "master"];
 const TOO_DEEP = "it nests shell commands too deeply to check.";
@@ -209,25 +210,26 @@ function judge(push, dir, git, configChanged) {
 
 /** `state.configChanged` records a `git config` earlier in the same command that sets push configuration. */
 function gitPush(words, dir, git, state, { appended, remote }) {
-  let i = 1;
-  let pushConfigOption;
-  while (i < words.length && words[i].startsWith("-")) {
-    // A repository on another host is unknown here, whatever path -C names.
-    if (words[i] === "-C" && i + 1 < words.length && !remote) dir = changeDirectory(dir, words[i + 1]);
-    // `-c key=value` and `--config-env key=VAR` set configuration for this one command.
-    const setting = words[i] === "-c" || words[i] === "--config-env" ? words[i + 1] : /^--config-env=(.*)$/s.exec(words[i])?.[1];
-    if (setting !== undefined && (expands(setting) || isPushConfig(setting.split("=")[0]))) pushConfigOption ??= setting;
-    i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
-  }
-  if (words[i] === "config" && words.slice(i + 1).some(isPushConfig)) state.configChanged = true;
+  const globals = gitGlobalOptions(words, dir);
+  // A repository on another host is unknown here, whatever path -C names.
+  if (!remote) dir = globals.dir;
+  // `-c key=value` and `--config-env key=VAR` set configuration for this one command.
+  const pushConfigOption = globals.settings.find(({ setting, key }) => expands(setting) || isPushConfig(key))?.setting;
   const fail = (reason) => `\`${words.join(" ")}\`: ${reason}`;
-  if (words[i] !== undefined && expands(words[i])) return fail(`the shell fills in the git subcommand \`${words[i]}\`, so the guard cannot see whether it pushes.`);
-  if (appended && (words[i] === undefined || words[i] === "push")) {
+  let [subcommand, ...args] = words.slice(globals.index);
+  const alias = gitAlias(globals.settings, subcommand);
+  if (alias?.unknown !== undefined) {
+    return fail(`\`${alias.unknown}\` makes the git subcommand an alias the guard cannot read, so it may push. Run the command it stands for instead.`);
+  }
+  if (alias !== undefined) [subcommand, ...args] = [...alias.words, ...args];
+  if (subcommand === "config" && args.some(isPushConfig)) state.configChanged = true;
+  if (subcommand !== undefined && expands(subcommand)) return fail(`the shell fills in the git subcommand \`${subcommand}\`, so the guard cannot see whether it pushes.`);
+  if (appended && (subcommand === undefined || subcommand === "push")) {
     return fail("xargs adds arguments the guard cannot see, such as --force or a refspec. Write the push out literally.");
   }
-  if (words[i] !== "push") return undefined;
+  if (subcommand !== "push") return undefined;
   if (pushConfigOption !== undefined) return fail(`\`${pushConfigOption}\` sets push configuration the guard does not read. Push with an explicit refspec and no -c.`);
-  const push = parsePush(words.slice(i + 1));
+  const push = parsePush(args);
   // A word the shell fills in could turn the dry run off, as --no-dry-run does.
   if (push.dryRun && push.unresolved === undefined) return undefined;
   const reason = judge(push, dir, git, state.configChanged);
