@@ -309,12 +309,21 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
   };
 }
 
-// Sessions whose transcript changed at or after since (a Date or ms), newest first.
+// Sessions whose transcript changed at or after since (a Date or ms), newest first. A
+// transcript removed after listing, such as a temporary session's at cleanup, is left
+// out as if it had never been listed; every other read error stays fatal.
 export function loadSessions({ root = projectsRoot(), since = 0, until = Infinity } = {}) {
   const from = +since;
   const to = +until;
   return sessionFiles(root)
     .filter(({ mtimeMs }) => mtimeMs >= from)
-    .map(({ file, project }) => parseSession(file, { project }))
+    .flatMap(({ file, project }) => {
+      try {
+        return [parseSession(file, { project })];
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+        return [];
+      }
+    })
     .filter((session) => !session.endedAt || (Date.parse(session.endedAt) >= from && Date.parse(session.startedAt) <= to));
 }
