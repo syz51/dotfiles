@@ -174,7 +174,9 @@ if (mode.startsWith("review-")) {
   // A conversation over stream-json input: each turn's events go out when the turn ends,
   // and the session exits once stdin ends. review-background starts the `reviewer` agent
   // in the background with the commit's range and answers the follow-up while it runs;
-  // review-late answers only after the review; review-foreground runs /code-review
+  // review-first lets the review end before it answers, without waiting on it;
+  // review-late waits on the review with a tool call before it answers; review-blocked
+  // waits on it before its first turn ends; review-foreground runs /code-review
   // itself; review-general starts another agent type, review-worktree gives the reviewer
   // a worktree, review-unpinned leaves the commit out, and review-skill has the reviewer
   // call /code-review; review-unrecorded never records the outcomes through
@@ -227,15 +229,25 @@ if (mode.startsWith("review-")) {
       emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
     };
+    // A wait on the review: a call issued while it runs that returns once it has ended.
+    const wait = () => tool("Bash", { command: "sleep 60" }, () => { finish(); return { text: "" }; });
+    if (mode === "review-blocked") wait();
     turn("The review is running in the background.");
     if (await nextMessage() === null) {
       finish("stopped");
       turn("Stopped.");
       process.exit(0);
     }
-    if (mode === "review-late") finish();
+    if (mode === "review-late") wait();
+    if (mode === "review-first") {
+      // The review ends before the session answers; it answers and records the findings.
+      finish();
+      record();
+      turn(`391\n\n${findings}`);
+      process.exit(0);
+    }
     turn("391");
-    if (mode !== "review-late") {
+    if (!["review-late", "review-blocked"].includes(mode)) {
       // The review takes a moment; stdin closing meanwhile stops it.
       const closed = await Promise.race([nextMessage().then((message) => message === null), Bun.sleep(300).then(() => false)]);
       if (!closed && mode === "review-early") record();
