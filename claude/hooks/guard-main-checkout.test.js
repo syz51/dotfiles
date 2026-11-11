@@ -413,6 +413,13 @@ describe("hook process", () => {
     expect(result.stderr).toStartWith(`Blocked by the guard-main-checkout hook: \`git switch feature\`: it changes the branch of ${main}, a main checkout`);
   });
 
+  test("blocks a branch switch inside a function body", () => {
+    for (const command of ["function f { git switch feature; }; f", "function f() { git switch feature; }; f", "function { git switch feature; }"]) {
+      expect(run(command, main).code).toBe(2);
+    }
+    expect(run("function f { git status; }; f", main)).toEqual({ code: 0, stderr: "" });
+  });
+
   test("allows a reset over ssh from the main checkout", () => {
     expect(run("ssh host 'cd ~/.config && git reset --hard'", main)).toEqual({ code: 0, stderr: "" });
     expect(run(`ssh host 'cd ${main} && git reset --hard HEAD~1'`, main)).toEqual({ code: 0, stderr: "" });
