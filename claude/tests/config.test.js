@@ -237,6 +237,17 @@ describe("settings", () => {
     expect(tracked("claude/hooks/stale-base.js")).toBe(true);
   });
 
+  // Claude Code's worktree guard runs after every hook and has no off switch, so the forms it
+  // refuses reach the session or subagent when isolation starts, and again after compaction
+  // (dotfiles-111). PostToolUse fires only once EnterWorktree succeeded.
+  test("a hook tells worktree-isolated sessions and subagents which Bash forms the guard refuses", () => {
+    const groups = (event) => settings.hooks[event].filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/worktree-rule.js")));
+    expect(groups("PostToolUse").map((group) => group.matcher)).toEqual(["^EnterWorktree$"]);
+    expect(groups("SubagentStart").map((group) => group.matcher)).toEqual([undefined]);
+    expect(groups("SessionStart").map((group) => group.matcher)).toEqual(["startup|resume|clear|compact"]);
+    expect(tracked("claude/hooks/worktree-rule.js")).toBe(true);
+  });
+
   // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
   // signs in only on claude.ai, so it loads only through claude.ai connectors.
   test("claude.ai connectors load, so the Gmail connector is available", () => {
@@ -857,17 +868,21 @@ describe("rules the live suites test", () => {
     expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories; when I asked for that change in that checkout, run the git command yourself as `git -c claude\.mainCheckout=allow <subcommand> \.\.\.`, never hand it back to me; the hook still refuses it where it would discard tracked changes or stashed work\./);
   });
 
-  // Worktree isolation can't be turned off, and 173 of one week's Bash errors were its
-  // refusals; plain one-command calls pass its checks the first time.
-  // The guard also refuses commands that are not git (sed -i with heredocs, cd to computed
-  // paths, CLI text naming git, terraform with a variable path): feedback items 9, 13, 24.
-  test("Workflow says which forms pass the guard in a worktree-isolated session", () => {
+  // Worktree isolation can't be turned off (the worktrees docs say so), and 173 of one week's
+  // Bash errors were its refusals. A broad ban on loops, variables and heredocs did not stop
+  // them (board-feedback-109: 50+ reports from 8 agents), so worktree-rule.js gives the
+  // measured forms when isolation starts, and this line points at it (dotfiles-111). An
+  // explorer started before EnterWorktree had every Bash call refused (board-feedback-247).
+  test("Workflow points a worktree-isolated session at the hook's list of refused forms", () => {
     const workflow = section("Workflow");
-    expect(workflow).toMatch(/In a worktree-isolated session, Claude Code refuses any Bash command, not only git, that it cannot verify stays in the worktree/);
-    expect(workflow).toMatch(/Give each git command its own Bash call; use literal program paths and directories, without loops, variables, `\$\(…\)` or `cd` to a computed path/);
-    expect(workflow).toMatch(/edit files with the Edit and Write tools, not `sed -i` or heredocs/);
-    expect(workflow).toMatch(/pass long text that may mention git through MCP tools \(such as `task_add`\) or a file, not as a command-line argument or ssh script/);
+    expect(workflow).toMatch(/In a worktree-isolated session \(after EnterWorktree, or in a subagent with worktree isolation\), Claude Code refuses each Bash command that it cannot verify stays in the worktree, and nothing turns this off\./);
+    expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
+    expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
+    expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
+    expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
+    // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
+    expect(workflow).not.toMatch(/without loops, variables/);
     // Codex has no such guard, so its instructions leave the rule out.
     expect(read("codex/AGENTS.md")).not.toMatch(/worktree-isolated/);
   });
