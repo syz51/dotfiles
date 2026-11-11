@@ -862,7 +862,7 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/It works in this checkout on this session's model, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
-    expect(review).toMatch(/Restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);
+    expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);
     expect(review).not.toMatch(/whenever the diff under review changes|instead of reviewing again/);
     expect(review).not.toMatch(/xhigh|general-purpose|its own worktree/);
     expect(section("Delegation")).toMatch(/Don't use subagents to verify your own work beyond the Review section's `reviewer` agent/);
