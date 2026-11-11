@@ -438,29 +438,69 @@ class SweepTest(unittest.TestCase):
         path = self.config.state_dir / "events.jsonl"
         return [json.loads(line) for line in path.read_text().splitlines()]
 
-    def test_low_space_check_sweeps_then_alerts_with_what_it_freed(self):
+    def test_low_space_check_alerts_then_sweeps_and_says_what_it_freed(self):
         folder = self.session(size=20_000_000)
         runner = FakeRunner()
         with contextlib.redirect_stdout(io.StringIO()):
-            code = alert.run_check(self.config, runner, self.readings(25.0, 26.5), self.now)
+            code = alert.run_check(self.config, runner, self.readings(25.0), self.now)
         self.assertEqual(code, 0)
         self.assertFalse(folder.exists())
-        self.assertEqual(runner.kinds(), ["ps", "lsof", "start", "notify"])
-        self.assertIn("removed 1 idle Claude Code session scratch folder (about 20 MB)", runner.calls[2][1])
+        self.assertEqual(runner.kinds(), ["start", "notify", "ps", "lsof", "notify"])
+        self.assertEqual(runner.calls[4][0][-2], "Disk space: idle build output removed")
+        self.assertIn("removed 1 idle Claude Code session scratch folder (about 20 MB)", runner.calls[4][0][-1])
         events = self.events()
-        self.assertEqual([event["event"] for event in events], ["swept", "escalated"])
-        self.assertEqual(events[0]["removed"], [str(folder)])
-        self.assertEqual(events[1]["free_gb"], 26.5)
+        self.assertEqual([event["event"] for event in events], ["escalated", "swept"])
+        self.assertEqual(events[0]["free_gb"], 25.0)
+        self.assertEqual(events[1]["removed"], [str(folder)])
+        self.assertEqual(list((self.config.state_dir / "trash").iterdir()), [])
 
-    def test_sweep_that_restores_space_still_notifies(self):
+    def test_critical_alert_is_logged_and_sent_before_any_sweep_starts(self):
         self.session()
         runner = FakeRunner()
+        seen = []
+
+        def sweep(config, *args, **kwargs):
+            # What the sweep finds when it starts: the alert already sent and logged.
+            seen.append((runner.kinds(), [event["event"] for event in self.events()],
+                         json.loads((config.state_dir / "state.json").read_text())["level"]))
+            return [], [], None
+
+        with mock.patch.object(alert, "sweep", side_effect=sweep), contextlib.redirect_stdout(io.StringIO()):
+            alert.run_check(self.config, runner, self.readings(5.0), self.now)
+        self.assertEqual(seen, [(["start", "notify"], ["escalated"], "critical")])
+        self.assertIn("Critical disk space", runner.calls[1][0][-2])
+
+    def test_sweep_stops_at_its_time_limit_and_the_run_ends(self):
+        first = self.session()
+        second = self.session(OTHER)
+        runner = FakeRunner()
+        # Each read of the clock moves it on a minute; the limit is 3 minutes.
+        ticks = iter(range(0, 6000, 60))
+        config = replace(self.config, sweep_minutes=3)
         with contextlib.redirect_stdout(io.StringIO()):
-            code = alert.run_check(self.config, runner, self.readings(29.0, 35.0), self.now)
+            code = alert.run_check(config, runner, self.readings(25.0), self.now, clock=lambda: next(ticks))
         self.assertEqual(code, 0)
-        self.assertEqual(runner.kinds(), ["ps", "lsof", "notify"])
-        self.assertIn("idle build output removed", runner.calls[2][0][-2])
-        self.assertEqual([event["event"] for event in self.events()], ["swept"])
+        events = self.events()
+        self.assertEqual([event["event"] for event in events], ["escalated", "swept", "sweep_stopped"])
+        self.assertEqual(events[2]["limit_minutes"], 3)
+        # The first session left its place at once; the second was never touched.
+        self.assertEqual(events[1]["removed"], [str(first)])
+        self.assertFalse(first.exists())
+        self.assertTrue(second.exists())
+        # What the stopped deletion left waits in the trash, and the next sweep removes it.
+        trash = self.config.state_dir / "trash"
+        self.assertEqual(len(list(trash.iterdir())), 1)
+        alert.sweep(self.config, runner, self.now, "low")
+        self.assertEqual(list(trash.iterdir()), [])
+        self.assertFalse(second.exists())
+
+    def test_folder_that_cannot_move_to_the_trash_is_removed_in_place(self):
+        folder = self.session()
+        (self.config.state_dir).mkdir(parents=True)
+        (self.config.state_dir / "trash").write_text("not a folder")
+        (swept,) = self.sweep()
+        self.assertIsNone(swept.error)
+        self.assertFalse(folder.exists())
 
     def test_failed_sweep_still_alerts(self):
         self.session()
@@ -470,7 +510,7 @@ class SweepTest(unittest.TestCase):
             code = alert.run_check(self.config, runner, self.readings(25.0), self.now)
         self.assertEqual(code, 1)
         self.assertEqual(runner.kinds(), ["start", "notify"])
-        self.assertEqual([event["event"] for event in self.events()], ["sweep_failed", "escalated"])
+        self.assertEqual([event["event"] for event in self.events()], ["escalated", "sweep_failed"])
 
     def test_ok_space_or_no_sweep_leaves_sessions(self):
         folder = self.session()
@@ -480,6 +520,32 @@ class SweepTest(unittest.TestCase):
             alert.run_check(replace(self.config, claude_tmp=None), runner, self.readings(25.0), self.now)
         self.assertTrue(folder.exists())
         self.assertNotIn("ps", runner.kinds())
+
+    def test_ok_space_still_finishes_the_trash(self):
+        folder = self.session()
+        bin_ = self.config.state_dir / "trash" / "left"
+        (bin_ / "deps").mkdir(parents=True)
+        (bin_ / "deps" / "libx.rlib").write_bytes(b"x")
+        runner = FakeRunner()
+        alert.run_check(self.config, runner, self.readings(50.0), self.now)
+        self.assertFalse(bin_.exists())
+        self.assertTrue(folder.exists())
+        self.assertEqual(runner.calls, [])
+
+    def test_trash_entry_that_fails_keeps_neither_the_others_nor_quiet(self):
+        trash = self.config.state_dir / "trash"
+        for name in ("a", "b"):
+            (trash / name).mkdir(parents=True)
+        real = alert.remove_tree
+
+        def remove(path, limit):
+            if path.name == "a":
+                raise PermissionError("denied")
+            real(path, limit)
+
+        with mock.patch.object(alert, "remove_tree", side_effect=remove), self.assertRaises(PermissionError):
+            alert.empty_trash(trash, alert.Limit())
+        self.assertEqual([entry.name for entry in trash.iterdir()], ["a"])
 
     def test_config_defaults_follow_the_module_defaults(self):
         config = alert.Config()
@@ -649,10 +715,26 @@ class TargetSweepTest(unittest.TestCase):
     def test_failing_session_sweep_keeps_the_target_sweep(self):
         target = self.target(self.t3_worktree() / "target")
         with mock.patch.object(alert, "sweep_sessions", side_effect=PermissionError("denied")):
-            swept, failures = alert.sweep(self.config, FakeRunner(), self.now)
+            swept, failures, stopped = alert.sweep(self.config, FakeRunner(), self.now)
+        self.assertIsNone(stopped)
         self.assertEqual([item.path for item in swept], [str(target)])
         self.assertEqual([(failure["sweep"], failure["error"]) for failure in failures], [("sessions", "denied")])
         self.assert_emptied(target)
+
+    def test_target_sweep_stopped_mid_deletion_empties_the_folder_and_frees_its_locks(self):
+        first = self.target(self.t3_worktree("t3-1") / "target")
+        second = self.target(self.t3_worktree("t3-2") / "target")
+        ticks = iter(range(100))
+        limit = alert.Limit(3, lambda: next(ticks))
+        swept = alert.sweep_targets(self.config, FakeRunner(), self.now, limit=limit)
+        self.assertTrue(limit.reached)
+        self.assertEqual([(item.path, item.error) for item in swept], [(str(first), None)])
+        self.assert_emptied(first)
+        self.assertTrue((second / "debug" / "deps" / "libx.rlib").exists())
+        self.assertEqual(len(list((self.config.state_dir / "trash").iterdir())), 1)
+        held = alert.take_build_locks(alert.build_lock_files(first))
+        self.assertIsNotNone(held)
+        alert.release(held)
 
     def test_running_processes_keep_their_targets(self):
         named = self.target(self.t3_worktree("t3-1") / "target")
@@ -704,7 +786,7 @@ class TargetSweepTest(unittest.TestCase):
             code = alert.run_check(self.config, runner, lambda: next(values), self.now)
         self.assertEqual(code, 0)
         self.assert_emptied(target)
-        self.assertIn("removed 1 idle Rust target folder in agent worktrees (about 3 MB)", runner.calls[2][1])
+        self.assertIn("removed 1 idle Rust target folder in agent worktrees (about 3 MB)", runner.calls[-1][0][-1])
 
     def test_note_names_both_kinds(self):
         swept = [
@@ -760,9 +842,11 @@ class LaunchAgentTest(unittest.TestCase):
             decoded["ProgramArguments"],
             ["/bin/uv", "run", "--no-project", "--python", "3.11", "python", "-B",
              "/repo/disk-alert/disk_space_alert.py", "check", "--low-gb", "30",
-             "--critical-gb", "20"],
+             "--critical-gb", "20", "--sweep-minutes", "5"],
         )
         self.assertEqual(decoded["StartInterval"], 600)
+        # Background would let macOS throttle the sweep's disk I/O and CPU.
+        self.assertEqual(decoded["ProcessType"], "Standard")
         self.assertTrue(decoded["RunAtLoad"])
         self.assertEqual(decoded["StandardErrorPath"], "/state/launchd.log")
 
@@ -770,14 +854,21 @@ class LaunchAgentTest(unittest.TestCase):
         run = FakeRunner()
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = alert.main(["install", "--dry-run", "--low-gb", "50", "--critical-gb", "25"], run=run)
+            code = alert.main(
+                ["install", "--dry-run", "--low-gb", "50", "--critical-gb", "25", "--sweep-minutes", "2.5"], run=run
+            )
         self.assertEqual(code, 0)
         self.assertEqual(run.calls, [])
         decoded = plistlib.loads(out.getvalue().encode())
         self.assertEqual(
-            decoded["ProgramArguments"][-6:],
-            [str(SCRIPT), "check", "--low-gb", "50", "--critical-gb", "25"],
+            decoded["ProgramArguments"][-8:],
+            [str(SCRIPT), "check", "--low-gb", "50", "--critical-gb", "25", "--sweep-minutes", "2.5"],
         )
+
+    def test_sweep_minutes_must_be_above_zero(self):
+        for value in ("0", "-1", "nan"):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                alert.main(["check", "--sweep-minutes", value, "--free-gb", "50"])
 
     def test_install_rejects_inverted_thresholds(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
