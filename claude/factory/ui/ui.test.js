@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { runProcess } from "../../tests/lib/process.js";
 import { browseArgv, CaptureError, captureShots, prepareRevision, serve } from "./capture.js";
 import { checkTotals } from "./checks.js";
-import { climbNoise, plateau, run as runCli, scoreLine, structuralTried } from "./cli.js";
+import { championOf, climbNoise, plateau, run as runCli, scoreLine, structuralTried } from "./cli.js";
 import { ledger, markIssues, SETTLED_MAX, settledFixes } from "./ledger.js";
 import { ConfigError, DEFAULT_CONTROL_CSS, MAX_IMAGES, productShots, referenceShots, validateConfig } from "./config.js";
 import {
@@ -16,6 +16,7 @@ import {
 import { evaluateGates } from "./gates.js";
 import { endLabels, escape, renderReport } from "./report.js";
 import { identity, lockRun, referenceVersions, RunError } from "./run.js";
+import { championResult } from "./council.js";
 
 const CLI = join(import.meta.dir, "..", "cli.js");
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
@@ -50,7 +51,7 @@ describe("config", () => {
     expect(config.rootDir).toBe("/project");
     expect(config.serve).toEqual({ command: ["bun", "server.ts", "--port", "{port}"], ready: "/healthz", timeoutMs: 60_000 });
     expect(config.judges).toEqual([{ model: "claude-haiku-5-5", effort: "medium", samples: 2 }, { model: "claude-opus-5-5", effort: "high", samples: 3 }]);
-    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null, allReferences: true, regression: 2 });
+    expect(config.pass).toEqual({ min: 8.5, gain: 0.5, references: null, allReferences: true, regression: 2, champion: 1 });
     expect(config.referenceCapture).toEqual({ tries: 3, delayMs: 30_000 });
     expect(config.budgetUsd).toEqual({ call: 2, round: 15, run: 100 });
     expect(config.baseline).toBe("origin/main");
@@ -95,6 +96,7 @@ describe("config", () => {
     [{ judges: [{ model: "m" }, { model: "m" }] }, "same model and effort twice"],
     [{ budgetUsd: { call: 20, round: 10 } }, "call must not exceed"],
     [{ pass: { min: 11 } }, "pass.min must be"],
+    [{ pass: { champion: -1 } }, "pass.champion must be"],
     [{ pass: { allReferences: "yes" } }, "pass.allReferences must be true or false"],
     [{ referenceCapture: { tries: 0 } }, "referenceCapture.tries must be an integer from 1 to 10"],
     [{ referenceCapture: { delayMs: -1 } }, "referenceCapture.delayMs must be"],
@@ -110,12 +112,12 @@ describe("config", () => {
     expect(config.pass.allReferences).toBe(false);
   });
 
-  test("keeps a judge call within the API's image limit", () => {
+  test("keeps a judge call within the API's image limit, counting main, the candidate and the champion", () => {
     const views = ["desktop-light", "desktop-dark", "phone-light", "phone-dark"];
-    const screens = Array.from({ length: 12 }, (_, index) => ({ id: `s${index}`, title: "S", path: "/", views }));
-    expect(() => validateConfig(base({ screens }), FILE)).toThrow(`would carry 96 images`);
-    expect(2 * 4 * 11).toBeLessThanOrEqual(MAX_IMAGES);
-    expect(() => validateConfig(base({ screens: screens.slice(0, 11) }), FILE)).not.toThrow();
+    const screens = Array.from({ length: 8 }, (_, index) => ({ id: `s${index}`, title: "S", path: "/", views }));
+    expect(() => validateConfig(base({ screens }), FILE)).toThrow(`would carry 96 images (three versions of every screen view`);
+    expect(3 * 4 * 7).toBeLessThanOrEqual(MAX_IMAGES);
+    expect(() => validateConfig(base({ screens: screens.slice(0, 7) }), FILE)).not.toThrow();
   });
 
   test("names reference shots by reference and view", () => {
@@ -690,6 +692,32 @@ describe("rounds", () => {
     expect(scoreLine(judged(7, 0.9, { structural: true }), config)).toBe("score: round 7 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · structural · $1.23 · abcdef123456");
   });
 
+  test("a round replaces the champion beyond the noise, is rejected that far under it, and holds between", () => {
+    // margin is pass.champion times the bar judge's noise.
+    expect(championResult({ lead: 0.5, margin: 0.3, pass: false, eligible: true })).toBe("replaced");
+    expect(championResult({ lead: 0.2, margin: 0.3, pass: false, eligible: true })).toBe("held");
+    expect(championResult({ lead: -0.2, margin: 0.3, pass: false, eligible: true })).toBe("held");
+    expect(championResult({ lead: -0.5, margin: 0.3, pass: false, eligible: true })).toBe("rejected");
+    // A pass that is not rejected becomes the champion, so hand-over uses a passing commit.
+    expect(championResult({ lead: 0.1, margin: 0.3, pass: true, eligible: true })).toBe("replaced");
+    expect(championResult({ lead: -0.5, margin: 0.3, pass: true, eligible: true })).toBe("rejected");
+    // A trial or a dirty tree cannot be handed over, so it never replaces the champion.
+    expect(championResult({ lead: 2, margin: 0.3, pass: false, eligible: false })).toBe("held");
+    expect(championResult({ lead: -2, margin: 0.3, pass: false, eligible: false })).toBe("rejected");
+    // A round of the champion's own commit has no lead.
+    expect(championResult({ lead: null, margin: 0.3, pass: false, eligible: true })).toBe("held");
+
+    const run = { baseline: { sha: "main0" } };
+    expect(championOf([], run)).toEqual({ round: null, sha: "main0" });
+    const round = (number, result) => ({ round: number, sha: `sha${number}`, champion: { round: null, sha: "x", result } });
+    expect(championOf([round(1, "replaced"), round(2, "rejected"), round(3, null), round(4, "held")], run)).toEqual({ round: 1, sha: "sha1" });
+    expect(championOf([round(1, "held"), round(2, "replaced"), round(3, "replaced")], run)).toEqual({ round: 3, sha: "sha3" });
+    // Rounds recorded before champions were tracked: the run has none.
+    expect(championOf([{ round: 1, sha: "sha1", verdicts: [] }], run)).toBeNull();
+    expect(scoreLine({ ...judged(10, 0.9), champion: { round: 3, sha: "sha3", lead: -0.6, margin: 0.2, result: "rejected" } }, config))
+      .toBe("score: round 10 fail · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · rejected, champion round 3 · $1.23 · abcdef123456");
+  });
+
   test("the score line names the references a round was judged without, and marks a provisional pass", () => {
     expect(scoreLine(judged(8, 0.9, { provisional: true, missingReferences: ["peer"] }), config))
       .toBe("score: round 8 provisional pass · claude-haiku-5-5@medium min 8.25 (bar 8.5) · +0.90 vs main · missing reference: peer · $1.23 · abcdef123456");
@@ -951,7 +979,7 @@ button { font: inherit; padding: 8px 16px; }
     const first = await commit("tweak");
     result = await ui(["round"], { candidate: 8 });
     expect(result.code).toBe(1);
-    expect(result.stdout).toContain(`score: round 1 fail · claude-haiku-5-5@medium min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · $0.10 · ${first.slice(0, 12)}`);
+    expect(result.stdout).toContain(`score: round 1 fail · claude-haiku-5-5@medium min 8.00 (bar 8.5) · +1.00 vs main · +0.00 vs refs · new champion · $0.10 · ${first.slice(0, 12)}`);
     expect(result.stdout).toContain("1. [under bar] home.desktop-light · color · high ×2: <b>low contrast</b>");
     // Every category is under the bar and only color has issues: the judges' summaries follow.
     expect(result.stdout).toContain("Under the bar with few issues named: hierarchy (8.00)");
@@ -1040,7 +1068,9 @@ button { font: inherit; padding: 8px 16px; }
     expect(result.code).toBe(1);
     expect(result.stdout).toContain("UNCALIBRATED");
     expect(result.stdout).toContain("a trial and does not pass");
-    expect(result.stdout).toMatch(/score: round 1 fail · claude-haiku-5-5@medium min 9\.50 \(bar 8\) · \+2\.50 vs main · \+1\.50 vs refs · uncalibrated · /);
+    expect(result.stdout).toMatch(/score: round 1 fail · claude-haiku-5-5@medium min 9\.50 \(bar 8\) · \+2\.50 vs main · \+1\.50 vs refs · held, champion main · uncalibrated · /);
+    // A trial is judged against the champion but never replaces it.
+    expect(result.stdout).toContain("Champion: main stays the champion (+2.50 vs it, noise margin");
     const status = JSON.parse((await runProcess(["bun", CLI, "ui", "status", "--json", "--config", join(repo, "trial.json")], { cwd: repo, env, timeout: 60_000 })).stdout);
     expect(status).toMatchObject({ passed: false, calibrated: false });
   }, 300_000);
@@ -1112,6 +1142,95 @@ button { font: inherit; padding: 8px 16px; }
     expect(models(before)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
     expect(verdicts(3)).toEqual([["claude-haiku-5-5@high", "precheck", true], ["claude-opus-5-5@high", "bar", true]]);
   }, 300_000);
+
+  // board task dotfiles-272: a climb kept every round, so it handed over a branch worse than an earlier round.
+  test("the bar judge scores the champion beside the candidate; a round under it is rejected and reverted, one over it replaces it", async () => {
+    const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));
+    write("champ.json", JSON.stringify({ ...config, name: "champ", judges: [{ model: "claude-haiku-5-5", samples: 1 }, { model: "claude-opus-5-5", effort: "high", samples: 1 }], pass: { min: 8.5, gain: 0.5, references: 0.5 } }));
+    const runs = join(state, "ui", "champ", "runs");
+    const ui = (args, scores) => runProcess(["bun", CLI, "ui", ...args, "--config", join(repo, "champ.json")], {
+      cwd: repo, timeout: 300_000,
+      env: { ...env, FAKE_UI_RUNS: runs, FAKE_UI_SCORES: JSON.stringify({ baseline: 7, control: 3, references: 8, ...scores }) },
+    });
+    const record = (number) => JSON.parse(readFileSync(join(runs, readdirSync(runs)[0], "rounds", `round-${number}.json`), "utf8"));
+    write("web/home.html", page("This week", "<p>Champion A</p>"));
+    const a = await commit("champion a");
+    expect((await ui(["calibrate", "--samples", "2"], { candidate: 8 })).code).toBe(0);
+
+    // Round 1 against main, the first champion: no extra design, and it beats main.
+    let before = calls().length;
+    let result = await ui(["round"], { candidate: 8 });
+    expect(result.code).toBe(1);
+    expect(calls().slice(before).map((call) => Object.values(call.order).sort())).toEqual([["baseline", "candidate", "references"], ["baseline", "candidate", "references"]]);
+    expect(record(1).champion).toMatchObject({ round: null, sha: (await git("rev-parse", "main")), lead: 1, result: "replaced" });
+    expect(result.stdout).toContain("Champion: this round replaces main (+1.00 vs it, noise margin 0.00)");
+
+    // Round 2, a worse design: Opus alone sees round 1 as a third version, and rejects round 2.
+    write("web/home.html", page("This week", "<p>Champion B</p>"));
+    await commit("champion b");
+    before = calls().length;
+    result = await ui(["round"], { candidate: 7.5, champion: 8 });
+    expect(result.code).toBe(1);
+    expect(calls().slice(before).map((call) => [call.model, Object.values(call.order).sort()])).toEqual([
+      ["claude-haiku-5-5", ["baseline", "candidate", "references"]],
+      ["claude-opus-5-5", ["baseline", "candidate", "champion", "references"]],
+    ]);
+    expect(record(2).champion).toMatchObject({ round: 1, sha: a, overall: 8, lead: -0.5, margin: 0, result: "rejected" });
+    expect(result.stdout).toContain("REJECTED: this round scored under the champion, round 1, by more than the noise (-0.50 vs it, noise margin 0.00)");
+    expect(result.stdout).toMatch(/score: round 2 fail · .* · rejected, champion round 1 · /);
+    let status = await ui(["status"], {});
+    expect(status.stdout).toContain(`Champion: round 1 (${a.slice(0, 12)}), the best commit so far.`);
+    expect(status.stdout).toContain("Round 2 scored under the champion by more than the noise: revert to the champion's design");
+
+    // The printed command brings round 1's design back and keeps the configuration.
+    const restore = result.stdout.split("\n").find((line) => line.startsWith("  git restore"));
+    expect(restore).toContain(`--source=${a.slice(0, 12)}`);
+    const identityEnv = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.invalid", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.invalid", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "commit.gpgsign", GIT_CONFIG_VALUE_0: "false" };
+    expect((await runProcess(["sh", "-c", restore.trim()], { cwd: repo, env: { ...process.env, ...identityEnv } })).code).toBe(0);
+    expect(await git("diff", "--stat", a, "HEAD", "--", "web")).toBe("");
+    expect(existsSync(join(repo, "champ.json"))).toBe(true);
+    expect(await git("status", "--porcelain")).toBe("");
+
+    // Round 3 on the restored design scores level with the champion: held, round 1 stays.
+    result = await ui(["round"], { candidate: 8, champion: 8 });
+    expect(record(3).champion).toMatchObject({ round: 1, lead: 0, result: "held" });
+    expect(result.stdout).toContain("Champion: round 1 stays the champion (+0.00 vs it");
+
+    // Round 4 beats the champion and the bar: it replaces it, and hand-over uses it.
+    write("web/home.html", page("This week", "<p>Champion C</p>"));
+    const c = await commit("champion c");
+    result = await ui(["round"], { candidate: 9, champion: 8 });
+    expect(result.code).toBe(0);
+    expect(record(4).champion).toMatchObject({ round: 1, sha: a, lead: 1, result: "replaced" });
+    status = JSON.parse((await ui(["status", "--json"], {})).stdout);
+    expect(status.champion).toMatchObject({ round: 4, sha: c });
+    expect(status.champion.restore).toContain(`--source=${c.slice(0, 12)}`);
+    expect((await ui(["report", "--out", join(scratch, "champ.html")], {})).code).toBe(0);
+    const html = readFileSync(join(scratch, "champ.html"), "utf8");
+    expect(html).toContain(`round 4 · <code>${c.slice(0, 12)}</code>`);
+    expect(html).toContain(`<span class="pill fail">rejected</span> <span class="muted">vs round 1 -0.50</span>`);
+
+    // A run recorded before champions were tracked still loads, shows its status and reports.
+    const legacyRuns = join(state, "ui", "legacy", "runs");
+    const legacy = join(legacyRuns, readdirSync(runs)[0]);
+    mkdirSync(join(legacy, "rounds"), { recursive: true });
+    const champRun = join(runs, readdirSync(runs)[0]);
+    writeFileSync(join(legacy, "run.json"), readFileSync(join(champRun, "run.json")));
+    writeFileSync(join(legacy, "calibration.json"), readFileSync(join(champRun, "calibration.json")));
+    const strip = ({ champion, ...rest }) => rest;
+    writeFileSync(join(legacy, "rounds.jsonl"), readFileSync(join(champRun, "rounds.jsonl"), "utf8").trim().split("\n").map((line) => JSON.stringify(strip(JSON.parse(line)))).join("\n") + "\n");
+    for (const number of [1, 2, 3, 4]) writeFileSync(join(legacy, "rounds", `round-${number}.json`), JSON.stringify(strip(record(number))));
+    write("legacy.json", JSON.stringify({ ...JSON.parse(readFileSync(join(repo, "champ.json"), "utf8")), name: "legacy" }));
+    await commit("legacy");
+    const old = (args) => runProcess(["bun", CLI, "ui", ...args, "--config", join(repo, "legacy.json")], { cwd: repo, env: { ...env, FAKE_UI_SCORES: "{}" }, timeout: 60_000 });
+    result = await old(["status"]);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("score: round 4 pass");
+    expect(result.stdout).not.toContain("Champion");
+    expect(JSON.parse((await old(["status", "--json"])).stdout)).toMatchObject({ passed: true, champion: null });
+    expect((await old(["report", "--out", join(scratch, "legacy.html")])).code).toBe(0);
+    expect(readFileSync(join(scratch, "legacy.html"), "utf8")).toContain("<div><dt>Champion</dt><dd>–</dd></div>");
+  }, 600_000);
 
   test("a judge the round's budget cannot cover after a failed pre-check is skipped", async () => {
     const config = JSON.parse(readFileSync(join(repo, "ui-climb.json"), "utf8"));

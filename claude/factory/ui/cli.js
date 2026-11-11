@@ -2,19 +2,19 @@
 // judges tell main from a degraded control and measures their noise; round gates and
 // judges the committed candidate against main and the references; report and status
 // summarize the run. State lives in the factory's state folder, per configuration name.
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { realpathSync, writeFileSync } from "node:fs";
+import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { appendJsonl, readJson, writeJsonAtomic } from "../lib/state.js";
-import { CaptureError, resolveRev, runChecks, treeState } from "./capture.js";
+import { CaptureError, repoRoot, resolveRev, runChecks, treeState } from "./capture.js";
 import { ConfigError, loadConfig } from "./config.js";
-import { barReach, barVerdict, calibrationOf, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, precheck, runJudge, sd, signed, topIssues, verdict } from "./council.js";
+import { barReach, barVerdict, calibrationOf, championResult, DEFAULT_NOISE, fixed, JudgeFailedError, judgeKey, money, precheck, runJudge, sd, signed, topIssues, verdict } from "./council.js";
 import { evaluateGates } from "./gates.js";
 import { ledger, markIssues, settledFixes } from "./ledger.js";
 import { renderReport } from "./report.js";
 import {
   baselineVersions, calibrationPath, candidateShots, capturedShots, findRun, fullRounds, identity, lockRun, openRun, record, referenceVersions,
-  RunError, rounds, roundsPath, spent, versionDir, withSource,
+  RunError, rounds, roundShots, roundsPath, spent, versionDir, withSource,
 } from "./run.js";
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js ui <subcommand> [options]
@@ -31,7 +31,11 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js ui <subcommand> [options]
                until a round of the run has heard from every judge. Exit 0 when the
                pre-checks and the bar pass, 1 when one fails, 3 when the budget ran out,
                4 when they pass but a reference did not capture (a provisional pass).
-  status       Rounds so far, spending, and whether the climb has plateaued.
+               The bar judge also scores the run's champion, its best commit so far
+               (main at first): a candidate more than pass.champion times its noise
+               over the champion replaces it; one that far under it is rejected, and
+               the round prints the command that brings the champion back.
+  status       Rounds so far, spending, the champion, and whether the climb has plateaued.
   report       Write the run's HTML report: scores per round, screenshots, issues.
 
 Options
@@ -119,6 +123,26 @@ const verdictLine = (v, pass) => v.role === "precheck"
   ? `${v.judge} pre-check ${signed(v.gain)} vs main (floor ${signed(v.gainBar)})`
   : `${v.judge} min ${v.lowest.toFixed(2)} (bar ${pass.min}) · ${signed(v.gain)} vs main${v.referenceMargin === null ? "" : ` · ${signed(v.referenceMargin)} vs refs`}`;
 
+// The run's champion, its best commit so far: { round, sha }, round null for main. Every
+// round names the champion it was judged against, and one that replaced it becomes the
+// champion. A run whose rounds were recorded before champions were tracked has none (null).
+export function championOf(list, run) {
+  if (list.length && !list.some((round) => round.champion)) return null;
+  let champion = { round: null, sha: run.baseline.sha };
+  for (const round of list) if (round.champion?.result === "replaced") champion = { round: round.round, sha: round.sha };
+  return champion;
+}
+
+const championName = (champion) => (champion.round === null ? "main" : `round ${champion.round}`);
+
+// The commands that bring the champion's design back, keeping the climb's configuration file
+// (repoRoot: the repository's top folder; config.file is absolute).
+export const restoreCommand = (champion, config, repoRoot) =>
+  `git restore --source=${short(champion.sha)} --staged --worktree -- :/ && git restore --source=HEAD --staged --worktree -- ${relative(repoRoot, realpathSync(config.file))} && git commit -m "Back to the champion, ${championName(champion)}"`;
+
+// What a round's champion record says, for the score line.
+const championPart = (champion) => ({ replaced: "new champion", held: `held, champion ${championName(champion)}`, rejected: `rejected, champion ${championName(champion)}` })[champion.result];
+
 // The references a round was judged without, for notes and the report.
 export const missingLine = (ids) => `missing reference${ids.length === 1 ? "" : "s"}: ${ids.join(", ")}`;
 
@@ -127,6 +151,7 @@ export function scoreLine(round, config) {
   if (round.stage === "gates") parts.push(`gates: ${firstLine(round.gates.failures[0])}`);
   parts.push(...round.verdicts.map((v) => verdictLine(v, config.pass)));
   if (round.missingReferences?.length) parts.push(missingLine(round.missingReferences));
+  if (round.champion?.result) parts.push(championPart(round.champion));
   if (round.stage === "budget") parts.push("budget spent");
   if (round.stage === "error") parts.push(`error: ${firstLine(round.error)}`);
   if (round.calibrated === false) parts.push("uncalibrated");
@@ -353,13 +378,28 @@ async function roundCommand(config, values) {
       return { checks, shots: checks.ok ? await candidateShots(config, run, name, root) : [] };
     });
     const gates = evaluateGates({ checks, candidate: shots, baseline });
-    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, ...(values.structural ? { structural: true } : {}), ...(missing.length ? { missingReferences: missing.map((ref) => ref.id) } : {}), gates };
+    // The champion the round is judged against. A run recorded before champions were
+    // tracked starts with main as its champion.
+    const champion = championOf(previous, run) ?? { round: null, sha: run.baseline.sha };
+    const base = { round: number, at: new Date().toISOString(), sha: tree.commit, dirty: tree.dirty, calibrated: calibration.ok, ...(values.structural ? { structural: true } : {}), ...(missing.length ? { missingReferences: missing.map((ref) => ref.id) } : {}), champion: { ...champion, result: null }, gates };
     let result;
     if (!gates.ok) {
       result = { ...base, stage: "gates", pass: false, verdicts: [], costUSD: 0 };
     } else {
       const versions = [{ key: "baseline", kind: "product", shots: baseline }, { key: "candidate", kind: "product", shots }, ...references];
       const referenceKeys = references.map((ref) => ref.key);
+      // The bar judge scores the champion in the same call, as a third version of the
+      // product: main is already there, and a round of the champion's own commit needs none.
+      const sameCommit = champion.sha === tree.commit && !tree.dirty;
+      const championKey = champion.round === null ? "baseline" : sameCommit ? null : "champion";
+      const barVersions = [...versions];
+      if (championKey === "champion") {
+        const championShots = roundShots(config, run, champion.round);
+        if (!championShots) throw new RunError(`the champion, round ${champion.round}, has no complete screenshots in ${versionDir(run, `round-${champion.round}`)}`);
+        barVersions.push({ key: "champion", kind: "product", shots: championShots });
+      }
+      let barOutcome = null;
+      let barNoise = null;
       const judged = [];
       const verdicts = [];
       let cost = 0;
@@ -382,7 +422,7 @@ async function roundCommand(config, values) {
         let outcome;
         try {
           outcome = await runJudge({
-            judge, versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call, settled,
+            judge, versions: index === config.judges.length - 1 ? barVersions : versions, config, seed: `${run.id}:${number}`, budgetUsd: config.budgetUsd.call, settled,
             room: () => Math.min(config.budgetUsd.round - cost, config.budgetUsd.run - spent(run)),
             spend: (usd) => {
               cost += usd;
@@ -401,6 +441,10 @@ async function roundCommand(config, values) {
         // Every judge but the last is a regression pre-check; the last applies the bar.
         const judgeVerdict = index < config.judges.length - 1 ? precheck : verdict;
         const v = judgeVerdict({ result: outcome, pass: config.pass, noise, references: referenceKeys });
+        if (index === config.judges.length - 1) {
+          barOutcome = outcome;
+          barNoise = noise;
+        }
         verdicts.push({ ...v, calibrated: noise.calibrated !== false, references: Object.fromEntries(referenceKeys.map((key) => [key, outcome.overall[key]])), baseline: outcome.overall.baseline, scores: outcome.scores });
         if (!v.pass && !everyJudge) break;
       }
@@ -409,6 +453,14 @@ async function roundCommand(config, values) {
       const passed = calibration.ok && stage === "judges" && verdicts.length === config.judges.length && verdicts.every((v) => v.pass);
       const provisional = passed && missing.length > 0 && config.pass.allReferences;
       const pass = passed && !provisional;
+      // Whether the candidate replaced the champion, held, or was rejected: by the bar judge.
+      let championRecord = base.champion;
+      if (barOutcome && stage === "judges") {
+        const score = championKey ? barOutcome.overall[championKey] : null;
+        const lead = championKey ? barOutcome.overall.candidate - score : null;
+        const margin = config.pass.champion * barNoise.sigmaOverall;
+        championRecord = { ...champion, overall: score, lead, margin, result: championResult({ lead, margin, pass, eligible: calibration.ok && !tree.dirty }) };
+      }
       // How far each category is under the bar, by the bar judge (pre-checks do not apply it).
       const deficits = {};
       for (const v of verdicts.filter((item) => item.role !== "precheck"))
@@ -416,7 +468,7 @@ async function roundCommand(config, values) {
           if (score !== null && score < config.pass.min) deficits[category] = Math.max(deficits[category] ?? 0, config.pass.min - score);
       // Every issue, so the round can fix them all and the ledger misses none.
       result = {
-        ...base, stage, pass, ...(provisional ? { provisional: true } : {}), verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
+        ...base, champion: championRecord, stage, pass, ...(provisional ? { provisional: true } : {}), verdicts, costUSD: cost, ...(error ? { error } : {}), ...(skipped.length ? { skipped } : {}), underBar: deficits,
         // The settled fixes the judges were told, when any judge was asked.
         issues: markIssues(topIssues(judged, "candidate", Infinity, deficits), entries), settled: verdicts.length || error ? settled : [],
         samples: judged.map((outcome) => ({ judge: outcome.judge, samples: outcome.samples })),
@@ -425,7 +477,7 @@ async function roundCommand(config, values) {
     writeJsonAtomic(join(run.dir, "rounds", `${name}.json`), result);
     const { samples: _, issues: __, settled: ___, ...summary } = result;
     appendJsonl(roundsPath(run), { ...summary, gates: { ok: gates.ok, failures: gates.failures, totals: gates.totals }, verdicts: result.verdicts.map(({ scores, ...rest }) => rest) });
-    printRound(result, config, run, values.json);
+    printRound(result, config, run, values.json, await repoRoot(config.rootDir));
     if (result.stage === "budget") return 3;
     if (result.stage === "error") return 2;
     if (result.provisional) return 4;
@@ -435,7 +487,18 @@ async function roundCommand(config, values) {
   }
 }
 
-function printRound(result, config, run, json) {
+// What the round's champion record tells the climber, or null when the bar judge did not
+// score the round. repo is the repository's top folder.
+function championAdvice(record, config, repo) {
+  if (!record?.result) return null;
+  const name = championName(record);
+  const lead = record.lead === null ? "" : ` (${signed(record.lead)} vs it, noise margin ${fixed(record.margin)})`;
+  if (record.result === "replaced") return `Champion: this round replaces ${name}${lead}. Hand-over uses it unless a later round beats it.`;
+  if (record.result === "held") return `Champion: ${name} stays the champion${lead}. Keep this round's commits and go on; hand-over uses the champion unless a later round beats it.`;
+  return `REJECTED: this round scored under the champion, ${name}, by more than the noise${lead}. Revert to the champion's design, keeping the configuration:\n  ${restoreCommand(record, config, repo)}\nThen try a different fix for its issues.`;
+}
+
+function printRound(result, config, run, json, repo) {
   if (json) {
     const { samples, ...rest } = result;
     console.log(JSON.stringify({ ...rest, scoreLine: scoreLine(result, config) }, null, 2));
@@ -476,6 +539,8 @@ function printRound(result, config, run, json) {
     console.log(`\nUnder the bar with few issues named: ${thin.map(([category, deficit]) => `${category} (${fixed(config.pass.min - deficit)})`).join(", ")}. What the judges said of this design:`);
     for (const summary of summaries) console.log(`- ${summary}`);
   }
+  const advice = championAdvice(result.champion, config, repo);
+  if (advice) console.log(`\n${advice}`);
   if (result.stage === "budget") console.log("\nThe budget ran out before every judge ran.");
   if (result.skipped) console.log(`\nA judge failed, and the round's budget did not cover ${result.skipped.join(", ")}, so they did not run.`);
   if (result.stage === "error") console.log(`\nA judge could not finish, so the round has no verdict (its cost is counted): ${result.error}\nRun the round again.`);
@@ -493,9 +558,10 @@ function printRound(result, config, run, json) {
 const METRIC = { lowest: "lowest category", shortfall: "total shortfall under the bar", gain: "gain over main", references: "lead over the best reference" };
 const describeMetrics = (metrics) => Object.entries(metrics).map(([name, m]) => `${METRIC[name]} best ${fixed(m.recent)} vs ${fixed(m.before)} before (noise ${fixed(m.noise)})`).join("; ");
 
-function statusCommand(config, values) {
+async function statusCommand(config, values) {
   const run = existingRun(config, values);
   const list = rounds(run);
+  const champion = championOf(list, run);
   const first = config.judges[0];
   const barJudge = config.judges.at(-1);
   const latest = [...list].reverse().find((round) => round.verdicts?.length);
@@ -520,6 +586,8 @@ function statusCommand(config, values) {
     lowestCategory: latestBar?.lowestCategory ?? null,
     judgesInLatest: latest ? { judged: latest.verdicts.length, of: config.judges.length } : null,
     main: { calibration: calibration?.judges?.[judgeKey(barJudge)]?.baseline ?? null, rounds: mainRange(list, barJudge) },
+    // The best commit so far, which hand-over uses; null for a run recorded before champions.
+    champion: champion && { ...champion, restore: champion.round === null ? null : restoreCommand(champion, config, await repoRoot(config.rootDir)) },
   };
   if (values.json) {
     console.log(JSON.stringify(status, null, 2));
@@ -537,6 +605,13 @@ function statusCommand(config, values) {
   if (barRound) {
     const v = latestBar;
     console.log(`${barRound === latest ? "Latest judged round" : "Latest round the bar judge scored:"} ${barRound.round}: lowest ${v.lowestCategory} ${fixed(v.lowest)}, ${status.barGap > 0 ? `${fixed(status.barGap)} under` : "at or over"} the bar ${config.pass.min}; gain ${signed(v.gain)} (bar ${fixed(v.gainBar)}).`);
+  }
+  if (champion) {
+    console.log(champion.round === null
+      ? "Champion: main. No round has beaten it by more than the noise yet."
+      : `Champion: round ${champion.round} (${short(champion.sha)}), the best commit so far. Hand over its design; when HEAD's design differs, bring it back with:\n  ${status.champion.restore}`);
+    if (barRound === latest && barRound.champion?.result === "rejected")
+      console.log(`Round ${barRound.round} scored under the champion by more than the noise: revert to the champion's design (the round printed the command) unless you have, and try a different fix.`);
   }
   if (latest) {
     if (latest.verdicts.length < config.judges.length)
@@ -575,7 +650,7 @@ function reportCommand(config, values) {
   // The latest round with screenshots: a round whose checks failed has none.
   const shown = [...list].reverse().find((round) => capturedShots(run, `round-${round.round}`));
   const versions = { baseline: capturedShots(run, "baseline"), ...(shown ? { [`round-${shown.round}`]: capturedShots(run, `round-${shown.round}`) } : {}) };
-  writeFileSync(out, renderReport({ config, run, rounds: list, calibration: readJson(calibrationPath(run), null), spentUSD: spent(run), versions }));
+  writeFileSync(out, renderReport({ config, run, rounds: list, calibration: readJson(calibrationPath(run), null), spentUSD: spent(run), versions, champion: championOf(rounds(run), run) }));
   console.log(out);
   return 0;
 }

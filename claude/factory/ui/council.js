@@ -177,7 +177,11 @@ export function councilVersion() {
   const reference = (key) => ({ key, kind: "reference", title: "R", shots: [shot] });
   const framing = (versions) => buildContent(versions, new Map()).content.filter((block) => block.type === "text").map((block) => block.text);
   const prompts = [systemPrompt({ taste: [], product: "" }, []), systemPrompt({ taste: ["t"], product: "p" }, ["a"], [{ screen: "s", fix: "f" }])];
-  const calls = [framing([product("a"), product("b"), reference("r")]), framing([product("a"), product("b"), reference("r"), reference("q")])];
+  // The bar judge's call adds the champion as a third version of the product.
+  const calls = [
+    framing([product("a"), product("b"), reference("r")]), framing([product("a"), product("b"), reference("r"), reference("q")]),
+    framing([product("a"), product("b"), product("c"), reference("r")]),
+  ];
   return createHash("sha256").update(JSON.stringify([RUBRIC, prompts, outputSchema(), calls])).digest("hex").slice(0, 12);
 }
 
@@ -349,6 +353,18 @@ export function precheck({ result, pass, noise, candidate = "candidate", baselin
   const gainBar = -pass.regression * noise.sigmaOverall;
   const reasons = full.gain < gainBar ? [`scores under main by ${(-full.gain).toFixed(2)}, more than ${(-gainBar).toFixed(2)} (${pass.regression}× its noise)`] : [];
   return { ...full, role: "precheck", pass: reasons.length === 0, gainBar, reasons };
+}
+
+// Whether a candidate replaces the run's champion, from the bar judge's call that scored
+// both: lead is the candidate's overall score minus the champion's (null when the round
+// judged the champion's own commit), margin is pass.champion times the judge's noise. Under
+// the champion by more than the margin is "rejected"; over it by more, or a pass not
+// rejected, "replaced", when the round can be handed over (eligible: calibrated and
+// committed); otherwise "held", and the champion stays.
+export function championResult({ lead, margin, pass, eligible }) {
+  if (lead !== null && lead < -margin) return "rejected";
+  if (eligible && ((lead !== null && lead > margin) || pass)) return "replaced";
+  return "held";
 }
 
 // A round's verdict from the judge that applies the bar (the last judge), or undefined when

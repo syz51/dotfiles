@@ -211,6 +211,10 @@ export function validateConfig(raw, file) {
       // score is under main's by more than this many times its noise. The last judge alone
       // applies min, gain and references.
       regression: number(file, pass.regression, "pass.regression", { min: 0, max: 10, fallback: 2 }),
+      // The bar judge scores the run's champion (its best commit so far) beside the candidate:
+      // a candidate more than this many times the judge's noise over the champion replaces
+      // it, and one that far under it is rejected, to be reverted.
+      champion: number(file, pass.champion, "pass.champion", { min: 0, max: 10, fallback: 1 }),
       // A pass judged while a reference did not capture is provisional, not final.
       allReferences: pass.allReferences ?? true,
     },
@@ -224,8 +228,9 @@ export function validateConfig(raw, file) {
     controlCss: control.css === undefined ? DEFAULT_CONTROL_CSS : text(file, control.css, "control.css", { max: 10_000 }),
   };
   if (config.budgetUsd.call > config.budgetUsd.round) fail(file, "budgetUsd.call must not exceed budgetUsd.round");
-  const images = 2 * productShots(config).length + referenceShots(config).length;
-  if (images > MAX_IMAGES) fail(file, `a judge call would carry ${images} images (two versions of every screen view plus the references); keep it at most ${MAX_IMAGES}`);
+  // The bar judge's call carries main, the candidate and the champion.
+  const images = 3 * productShots(config).length + referenceShots(config).length;
+  if (images > MAX_IMAGES) fail(file, `a judge call would carry ${images} images (three versions of every screen view plus the references); keep it at most ${MAX_IMAGES}`);
   return config;
 }
 

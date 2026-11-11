@@ -223,5 +223,13 @@ export async function candidateShots(config, run, name, root) {
   return withMeta(records, shots);
 }
 
+// A past round's shots as a judge version (the run's champion), or null when its capture
+// is gone or does not cover every shot of the configuration.
+export function roundShots(config, run, round) {
+  const shots = productShots(config);
+  const capture = saved(versionDir(run, `round-${round}`), shots);
+  return capture ? withMeta(capture.shots, shots) : null;
+}
+
 // A captured version's shot records, or null.
 export const capturedShots = (run, name) => readJson(join(versionDir(run, name), "capture.json"), null)?.shots ?? null;

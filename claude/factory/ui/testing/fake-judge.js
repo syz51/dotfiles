@@ -2,7 +2,7 @@
 // a real judge sees: the content blocks on stdin and the system prompt file. It tells the
 // designs apart the only honest way a fake can, by matching each image's bytes against
 // the run's captured versions (the newest run under FAKE_UI_RUNS), and scores them from
-// FAKE_UI_SCORES ({ baseline, control, candidate, references }, with models: { model:
+// FAKE_UI_SCORES ({ baseline, control, candidate, champion, references }, with models: { model:
 // scores } for one judge's own, broken: true for output that never fits, or quiet: true for no
 // issues). It appends to FAKE_UI_LEAKS any word in the prompts that would tell a judge which
 // version is which, and to FAKE_UI_CALLS the version behind each design number and the
@@ -19,12 +19,17 @@ function versionsByHash() {
   const runs = process.env.FAKE_UI_RUNS;
   const run = join(runs, readdirSync(runs).sort().at(-1), "versions");
   const map = new Map();
-  // The baseline first, so a candidate identical to main counts as main.
-  const names = readdirSync(run).sort((a, b) => (a === "baseline" ? -1 : b === "baseline" ? 1 : a.localeCompare(b)));
+  // The baseline first, so a candidate identical to main counts as main; then the newest
+  // round, the candidate, so a champion identical to it counts as the candidate. Older rounds
+  // are the champion.
+  const order = (name) => (name === "baseline" ? -Infinity : /^(round|preview)-/.test(name) ? -Number(name.split("-")[1]) || 0 : 1);
+  const names = readdirSync(run).sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+  const newest = names.find((name) => /^round-/.test(name));
   for (const name of names)
     for (const file of readdirSync(join(run, name)).filter((item) => item.endsWith(".png"))) {
       const key = hash(readFileSync(join(run, name, file)).toString("base64"));
-      if (!map.has(key)) map.set(key, name === "references" ? "references" : /^(round|preview)-/.test(name) ? "candidate" : name);
+      const version = name === "references" ? "references" : name.startsWith("preview-") || name === newest ? "candidate" : name.startsWith("round-") ? "champion" : name;
+      if (!map.has(key)) map.set(key, version);
     }
   return map;
 }
@@ -61,11 +66,12 @@ export default async function ({ stdin, emit, option }) {
   if (scores.broken) output.designs.push({ design: 99, scores: {}, summary: "" });
   const order = {};
   for (const [design, entry] of designs) {
-    // A version some of whose shots match main and some a candidate is the candidate.
+    // A version some of whose shots match main and some a candidate (or the champion) is the
+    // candidate (or the champion).
     const versions = [...entry.versions];
-    const version = versions.includes("candidate") ? "candidate" : versions[0];
+    const version = ["candidate", "champion"].find((item) => versions.includes(item)) ?? versions[0];
     order[design] = version;
-    const score = scores[version] ?? 5;
+    const score = scores[version] ?? (version === "champion" ? scores.candidate : undefined) ?? 5;
     output.designs.push({ design, scores: Object.fromEntries(CATEGORIES.map((id) => [id, id === "responsive" && !entry.phone ? null : score])), summary: `${version} summary` });
     if (!scores.quiet) output.issues.push({ design, screen: entry.shots[0], category: "color", severity: "high", problem: `<b>low contrast</b> in ${entry.shots[0]}`, fix: "darken the <i>muted</i> text" });
     output.strengths.push({ design, text: "clear layout" });

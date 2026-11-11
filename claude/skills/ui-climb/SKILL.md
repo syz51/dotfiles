@@ -17,7 +17,7 @@ UI="bun ~/.claude/factory/cli.js ui"   # every subcommand takes --config PATH (d
 $UI capture     # screenshots of the working tree, main and the references, page checks; no judges
 $UI calibrate   # can the judges tell main from a degraded control, and how noisy are they
 $UI round       # gates, then judges, on HEAD; exit 0 pass, 1 fail, 2 error, 3 budget spent, 4 provisional pass
-$UI status      # rounds, spending, plateau
+$UI status      # rounds, spending, the champion, plateau
 $UI report      # one HTML file: scores per round, main beside the latest round, issues
 ```
 
@@ -88,6 +88,12 @@ relative to its folder. Start from:
   `pass.references`. In general every judge before the last is a pre-check and the last
   applies the bar. Until a round has heard from every judge, rounds run them all, so you
   learn whether they agree.
+- The run keeps a **champion**, its best commit so far; main is the first. The bar judge
+  scores the champion beside the candidate in the same call. A candidate more than
+  `pass.champion` (default 1) times the bar judge's noise over the champion replaces it,
+  and so does a pass that is not rejected. One that far under it is **rejected**. One in
+  between is held: keep it and go on, and the champion stays. Trials and dirty rounds never
+  replace it. Change `pass.champion` only on the owner's word, with `--new-run`.
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
@@ -141,7 +147,10 @@ Repeat:
    table, every issue with its ledger marks, and the last line, which starts `score:`.
 3. Record the round on the task: `task_note` with the `score:` line as printed, then
    update your handoff.
-4. Stop when the round passes, when the run's budget is spent (exit 3), after 10
+4. When the round says `REJECTED`, it scored under the champion by more than the noise.
+   Run the command it prints: it brings back the champion's design, keeps the
+   configuration and commits. Then try a different fix for its issues, not the same one.
+5. Stop when the round passes, when the run's budget is spent (exit 3), after 10
    rounds, or on a plateau: `$UI status` reports one when, over two judged rounds,
    neither the lowest category nor (while it is under its bar) the gain over main moved
    beyond the judges' noise. On a plateau with the bar more than 0.5 away and over half
@@ -154,7 +163,7 @@ Repeat:
    says so for every structural round since a metric last moved; a structural round that
    moved one earns a new one at the next plateau. Say why you stopped in the last note,
    with the calibration's bar-reach warning when status repeats it.
-5. Otherwise fix every issue the round reported, `×1` included: failed gates first, then
+6. Otherwise fix every issue the round reported, `×1` included: failed gates first, then
    the issues marked `[under bar]` (in categories under the bar, furthest first), then
    the rest. Keep an issue only when its fix would undo an earlier round's fix (see the
    rules below) or contradict another issue, and say in the round's `note:` which issues
@@ -191,15 +200,21 @@ Rules:
 
 ## 4. Hand over
 
-1. Unless the last round already ran every judge, run `$UI round --all-judges` on the
-   commit you hand over, so the owner sees every judge's score. Record its `score:` line.
-2. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
+Hand over the champion, never a later round that scored lower.
+
+1. `$UI status` names the champion. When it is main, no round beat main: say so in the
+   last note and open no PR. When HEAD's design differs from the champion's, run the
+   command status prints, which brings the champion's design back and commits it.
+2. Unless the last round already ran every judge on that design, run
+   `$UI round --all-judges` on the commit you hand over, so the owner sees every judge's
+   score. Record its `score:` line.
+3. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
    Artifact: load that tool with ToolSearch `select:Artifact`. Attach the file's path only
    when ToolSearch cannot load it.
-3. Push the branch and open a PR with the climb's commits. Its body has the last `score:`
-   line, the rounds table from `$UI status`, what changed and why, the conflicts left
+4. Push the branch and open a PR with the climb's commits. Its body names the champion
+   round and has the last `score:` line, the rounds table from `$UI status`, what changed and why, the conflicts left
    open, and the report link.
-4. `ask_user` on the task (`Reason: design`): the result in one line with each judge's lowest score, the PR
+5. `ask_user` on the task (`Reason: design`): the result in one line with each judge's lowest score, the PR
    and the report, with the options Merge, Keep climbing (with notes), Discard. Set the
    task `blocked` until the answer. A design change merges only on the owner's word.
 
@@ -220,7 +235,8 @@ Rules:
   again (its `score:` line still goes in a note).
 - `--uncalibrated` runs a trial round that never passes; never hand one over.
 - State lives in `${XDG_DATA_HOME:-~/.local/share}/claude-factory/ui/<name>/runs/<id>/`:
-  screenshots per version, `rounds/round-N.json` with every judge's scores and issues
+  screenshots per version, `rounds/round-N.json` with every judge's scores and issues,
+  the champion it was judged against and whether it replaced it
   (the ledger reads them) and the fixes the judges were told are settled,
   `calibration.json` and the spending ledger.
 
