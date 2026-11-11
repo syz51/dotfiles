@@ -1075,6 +1075,16 @@ describe("lean prompt", () => {
     expect(skill).not.toContain("Haiku gates the Opus judge");
   });
 
+  // board task dotfiles-272: a climb kept every round and handed over a branch worse than an earlier round.
+  test("the ui-climb skill keeps a champion, reverts rejected rounds, and hands over the champion", () => {
+    const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
+    expect(skill).toContain("The run keeps a **champion**, its best commit so far; main is the first");
+    expect(skill).toContain("A candidate more than `pass.champion` (default 1) times the bar judge's noise over the champion replaces it");
+    expect(skill).toContain("When the round says `REJECTED`, it scored under the champion by more than the noise. Run the command it prints");
+    expect(skill).toContain("Hand over the champion, never a later round that scored lower");
+    expect(skill).toContain("When HEAD's design differs from the champion's, run the command status prints");
+  });
+
   // board task dotfiles-227: one reference page that would not load stopped a climb's run.
   test("the ui-climb skill retries a reference, goes on without it, and never hands over a provisional pass", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");

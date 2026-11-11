@@ -10,6 +10,16 @@ import { barVerdict, fixed, judgeKey, money, RUBRIC, signed } from "./council.js
 export const escape = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const image = (file) => (file && existsSync(file) ? `data:${IMAGE_TYPES[extname(file).toLowerCase()] ?? "image/png"};base64,${readFileSync(file).toString("base64")}` : null);
 const OUTCOME = { gates: "gates failed", budget: "budget", error: "error" };
+const CHAMPION = { replaced: ["pass", "new champion"], held: ["", "held"], rejected: ["fail", "rejected"] };
+
+// A round's result against the run's champion, for the rounds table.
+function championCell(round) {
+  const record = round.champion;
+  if (!record?.result) return `<td class="muted">${record ? "not scored" : "–"}</td>`;
+  const [tone, label] = CHAMPION[record.result];
+  const against = record.round === null ? "main" : `round ${record.round}`;
+  return `<td><span class="pill ${tone}">${label}</span> <span class="muted">vs ${against}${record.lead === null ? "" : ` ${signed(record.lead)}`}</span></td>`;
+}
 
 // Labels at the end of the lines, moved apart so none overlaps: [[y, text]] by y.
 export function endLabels(labels, gap = 14) {
@@ -57,13 +67,13 @@ ${endLabels([[y(bar), `bar ${bar}`], [y(points[last].main), `main ${fixed(points
 function roundsTable(rounds, config) {
   if (!rounds.length) return `<p class="muted">No rounds yet.</p>`;
   return `<div class="scroll"><table>
-<thead><tr><th>Round</th><th>Commit</th><th>Result</th>${config.judges.map((judge) => `<th>${escape(judgeKey(judge))}<br><span class="muted">lowest · gain · refs</span></th>`).join("")}<th class="num">Cost</th></tr></thead>
+<thead><tr><th>Round</th><th>Commit</th><th>Result</th>${config.judges.map((judge) => `<th>${escape(judgeKey(judge))}<br><span class="muted">lowest · gain · refs</span></th>`).join("")}<th>Champion</th><th class="num">Cost</th></tr></thead>
 <tbody>${rounds.map((round) => `<tr><td>${round.round}</td><td><code>${escape(round.sha.slice(0, 12))}${round.dirty ? "+dirty" : ""}</code></td>
 <td>${round.pass ? `<span class="pill pass">pass</span>` : `<span class="pill fail">${round.provisional ? "provisional pass" : OUTCOME[round.stage] ?? "fail"}</span>`}${round.calibrated === false ? ` <span class="muted">uncalibrated</span>` : ""}${round.missingReferences?.length ? ` <span class="muted">without ${escape(round.missingReferences.join(", "))}</span>` : ""}</td>
 ${config.judges.map((judge) => {
     const v = round.verdicts?.find((item) => item.judge === judgeKey(judge));
     return v ? `<td class="num">${fixed(v.lowest)} · ${signed(v.gain)} · ${v.referenceMargin === null ? "–" : signed(v.referenceMargin)}</td>` : `<td class="muted">not run</td>`;
-  }).join("")}<td class="num">${money(round.costUSD)}</td></tr>`).join("\n")}</tbody></table></div>`;
+  }).join("")}${championCell(round)}<td class="num">${money(round.costUSD)}</td></tr>`).join("\n")}</tbody></table></div>`;
 }
 
 function categoryTable(round) {
@@ -124,8 +134,10 @@ function partialReason(round) {
   return `Round ${round.round} stopped at a regression pre-check that failed; the bar judge did not score it.`;
 }
 
-// rounds are the full round records; versions maps a version name to its shot records.
-export function renderReport({ config, run, rounds, calibration, spentUSD, versions }) {
+// rounds are the full round records; versions maps a version name to its shot records;
+// champion is the run's best commit ({ round, sha }, round null for main), or null for a run
+// recorded before champions were tracked.
+export function renderReport({ config, run, rounds, calibration, spentUSD, versions, champion = null }) {
   const latest = rounds.at(-1);
   const judged = [...rounds].reverse().find((round) => round.verdicts?.length);
   const onBar = [...rounds].reverse().map(barVerdict).find(Boolean);
@@ -211,11 +223,12 @@ th { font-weight: 600; font-size: 13px; }
 <div><dt>Rounds</dt><dd>${rounds.length}</dd></div>
 <div><dt>Latest lowest</dt><dd>${onBar ? `${fixed(onBar.lowest)} / ${config.pass.min}` : "–"}</dd></div>
 <div><dt>Latest gain over main</dt><dd>${onBar ? signed(onBar.gain) : "–"}</dd></div>
+<div><dt>Champion</dt><dd>${champion ? (champion.round === null ? "main" : `round ${champion.round} · <code>${escape(champion.sha.slice(0, 12))}</code>`) : "–"}</dd></div>
 <div><dt>Spent</dt><dd>${money(spentUSD)} of ${money(config.budgetUsd.run)}</dd></div>
 </dl>
 ${latest?.missingReferences?.length ? `<p style="margin-top:12px"><span class="pill fail">${escape(latest.missingReferences.length === 1 ? "missing reference" : "missing references")}</span> Round ${latest.round} was judged without ${escape(latest.missingReferences.join(", "))}, which did not capture.${config.pass.allReferences ? " A pass without every reference is provisional, not final: judge the round again once it captures." : ""}</p>` : ""}
 ${judged && judged.verdicts.length < config.judges.length ? `<p style="margin-top:12px"><span class="pill fail">${judged.verdicts.length} of ${config.judges.length} judges</span> ${escape(partialReason(judged))}</p>` : ""}
-<p class="muted" style="margin-top:12px">${config.judges.length > 1 ? `Judges before the last are regression pre-checks: a round stops when one scores the candidate under main by more than ${config.pass.regression} times its noise. ` : ""}A round passes when the last judge scores each category at least ${config.pass.min}, the overall at least ${config.pass.gain} above main (or twice the judge's noise, if larger)${config.pass.references === null ? "" : `, and each category ${signed(config.pass.references)} or more over the best reference`}. Judges see every version unlabeled and shuffled.</p>
+<p class="muted" style="margin-top:12px">${config.judges.length > 1 ? `Judges before the last are regression pre-checks: a round stops when one scores the candidate under main by more than ${config.pass.regression} times its noise. ` : ""}A round passes when the last judge scores each category at least ${config.pass.min}, the overall at least ${config.pass.gain} above main (or twice the judge's noise, if larger)${config.pass.references === null ? "" : `, and each category ${signed(config.pass.references)} or more over the best reference`}. Judges see every version unlabeled and shuffled. The last judge also scores the run's champion, its best commit so far: a round more than ${config.pass.champion} times that judge's noise over it becomes the champion, and one that far under it is rejected.</p>
 <h2>Score by round</h2>
 ${chart(rounds, config.pass.min)}
 <h2>Rounds</h2>
