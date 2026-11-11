@@ -940,6 +940,8 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
     expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
     expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
+    // T3 opens a relative path in the thread's folder, where a worktree-only file is missing (dotfiles-359).
+    expect(workflow).toMatch(/After EnterWorktree, cite files in replies by absolute path: an app such as T3 Code resolves a relative path against the folder the session started in\./);
     expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
     // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
@@ -1086,6 +1088,46 @@ describe("lean prompt", () => {
     // Skills these instructions or the Artifact tool tell agents to load stay listed.
     for (const name of ["work-stages", "headless-browser", "frontend-ui", "code-review", "diff-review", "artifact-design", "cheat-sheets"]) {
       expect(settings.skillOverrides[name]).toBeUndefined();
+    }
+  });
+});
+
+// The repository is public, so no tracked file may hold the login of the Mac it is edited
+// on. The login comes from HOME at run time. CI's login is an ordinary word ("runner")
+// that tracked files use, so the test runs only on a dev Mac.
+describe("local login", () => {
+  const login = process.env.CI ? undefined : /^\/Users\/([^/]+)$/.exec(process.env.HOME ?? "")?.[1];
+
+  // Tracked files of `cwd` that hold `name` as a whole word, which covers /Users/<name>,
+  // or attached to ssh's -l.
+  function filesNaming(name, cwd) {
+    const word = name.replace(/[.[\]{}()*+?^$|\\]/g, "\\$&");
+    const result = spawnSync("git", ["grep", "-I", "-l", "-E", "-e", `(^|[^[:alnum:]_])${word}([^[:alnum:]_]|$)`, "-e", `-l${word}`], { cwd, encoding: "utf8" });
+    if (result.error) throw result.error;
+    if (result.status > 1) throw new Error(result.stderr);
+    return result.stdout.split("\n").filter(Boolean);
+  }
+
+  test.skipIf(login === undefined)("is in no tracked file", () => {
+    expect(filesNaming(login, REPO)).toEqual([]);
+  });
+
+  test("the search finds a whole word, a home path and an attached -l value only", () => {
+    const repo = mkdtempSync(join(tmpdir(), "login-"));
+    try {
+      const git = (...args) => {
+        const result = spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+        if (result.status !== 0) throw new Error(result.stderr);
+      };
+      git("init", "-q");
+      writeFileSync(join(repo, "word.txt"), "owner: someone\n");
+      writeFileSync(join(repo, "home.txt"), "/Users/someone/.config\n");
+      writeFileSync(join(repo, "ssh.txt"), "ssh -lsomeone host\n");
+      writeFileSync(join(repo, "other.txt"), "someoneelse and notsomeone\n");
+      git("add", ".");
+      expect(filesNaming("someone", repo).sort()).toEqual(["home.txt", "ssh.txt", "word.txt"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 });

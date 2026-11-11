@@ -48,7 +48,7 @@ describe("blocks", () => {
     ["sudo -uubuntu python3 check.py"],
     ["xargs -IFILE python3 FILE"],
     ["env -uTMP python3 check.py"],
-    ["ssh -lsunyizhe host python3 check.py"],
+    ["ssh -lme host python3 check.py"],
     ["ssh host -t python3 check.py"],
     ["ssh host -- python3 check.py"],
     ["echo 'python3 x' | ssh -lme host"],
