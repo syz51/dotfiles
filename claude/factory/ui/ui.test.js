@@ -67,6 +67,10 @@ describe("config", () => {
     const config = validateConfig(template, FILE);
     expect(config.judges.map((judge) => judge.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
     expect(config.pass.regression).toBe(2);
+    // The default bar leads the best reference; calibration replaces the placeholders.
+    expect(config.pass.references).toBe(0.25);
+    expect(skill.replace(/\s+/g, " ")).toContain("The template's values are placeholders: the run's first calibration derives both from the bar judge's scores");
+    expect(skill.replace(/\s+/g, " ")).toContain("Every calibration with references prints a **derived bar**");
     expect(skill).toContain("The council is a Haiku judge first and one Opus judge second");
     expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
   });
@@ -535,7 +539,10 @@ describe("council", () => {
     // With the warning comes a bar the judge gives: lead the references, floor at their level.
     expect(reach.suggestion).toEqual({ min: 8.5, references: 0.25 });
     // Within the reference's reach, and given often enough: no warning. The control's low scores do not count.
-    expect(barReach(result, { min: 8.5, references: ["ref:a"], sigmaCategory: 0.1 })).toMatchObject({ warnings: [], suggestion: null });
+    // The derived bar still comes with it: every calibration with references derives one.
+    expect(barReach(result, { min: 8.5, references: ["ref:a"], sigmaCategory: 0.1 })).toMatchObject({ warnings: [], suggestion: { min: 8.5, references: 0.25 } });
+    // Without references there is nothing to lead.
+    expect(barReach(result, { min: 9, references: [], sigmaCategory: 0.1 }).suggestion).toBeNull();
     // A bar a little over the best reference, inside twice the noise, is not beyond it.
     expect(barReach(result, { min: 8.75, references: ["ref:a"], sigmaCategory: 0.2 }).beyond).toEqual([]);
   });
@@ -549,10 +556,10 @@ describe("council", () => {
     const level = ids.reduce((sum, id) => sum + result.scores["ref:b"][id], 0) / ids.length;
     expect(reach.suggestion).toEqual({ min: Math.floor(4 * level) / 4, references: 0.35 });
     // Other reference scores give another floor: it is not a fixed number.
-    expect(suggestBar({ min: 9, bestReference: { hierarchy: 8.4, color: 8.6 }, sigmaCategory: 0 })).toEqual({ min: 8.5, references: 0.25 });
-    // Never above the current bar, and nothing to lead without references.
-    expect(suggestBar({ min: 8, bestReference: { hierarchy: 8.6 }, sigmaCategory: 0.1 }).min).toBe(8);
-    expect(suggestBar({ min: 9, bestReference: {}, sigmaCategory: 0.1 })).toBeNull();
+    expect(suggestBar({ bestReference: { hierarchy: 8.4, color: 8.6 }, sigmaCategory: 0 })).toEqual({ min: 8.5, references: 0.25 });
+    // The floor follows the references, above the configured bar too, and nothing to lead without references.
+    expect(suggestBar({ bestReference: { hierarchy: 8.6 }, sigmaCategory: 0.1 }).min).toBe(8.5);
+    expect(suggestBar({ bestReference: {}, sigmaCategory: 0.1 })).toBeNull();
   });
 
   test("a change to what the judges are asked changes the council version and the run's identity", () => {
@@ -933,10 +940,11 @@ button { font: inherit; padding: 8px 16px; }
     // The reference scores 8 and main 7, so a bar of 8.5 is out of the judge's reach.
     expect(result.stdout).toContain("Bar reach: the bar 8.5 may be out of the judges' range.");
     expect(calibration.judges["claude-haiku-5-5@medium"].barReach).toMatchObject({ min: 8.5, share: 0, suggestion: { min: 8, references: 0.25 } });
-    // It suggests a bar from the reference's score (8): lead it, with its level as the floor.
-    expect(result.stdout).toContain("lead the best reference by 0.25 in every category, with 8 (about the best reference's level) as the floor");
+    // It derives a bar from the reference's score (8): lead it, with its level as the floor.
+    expect(result.stdout).toContain("Derived bar, from the bar judge's reference scores: lead the best reference by 0.25 in every category, with 8 (about the best reference's level) as the floor");
     expect(result.stdout).toContain('  "pass": { "min": 8, "gain": 0.5, "references": 0.25 }');
-    expect(result.stdout).toContain("ask the owner whether to use the suggested lead over the references, go on as is");
+    expect(result.stdout).toContain("The configuration has min 8.5 and a lead of 0.5. On a climb's first calibration, put the derived bar in the configuration and calibrate again with --new-run");
+    expect(result.stdout).toContain("ask the owner whether to use the derived bar above, go on as is");
 
     // Round 1: a change the judges rate below the bar.
     write("web/home.html", page("This week", "<p>Due soon</p>"));
@@ -1270,6 +1278,10 @@ button { font: inherit; padding: 8px 16px; }
       expect(result.stderr).toContain("peer did not capture; trying again in 0 s (try 2 of 2)");
       expect(result.stdout).toContain("Reference peer (Peer app) did not capture, so the judges compare without it: peer.desktop-light: HTTP 503");
       expect(Object.values(calls().at(-1).order).sort()).toEqual(["baseline", "control", "references"]);
+      // The bar 8 is within the reference's reach (8): no warning, but the derived bar still prints.
+      expect(result.stdout).not.toContain("Bar reach");
+      expect(result.stdout).toContain('  "pass": { "min": 8, "gain": 0.5, "references": 0.25 }');
+      expect(result.stdout).toContain("The configuration has an absolute bar with no lead over the references.");
 
       // Every judge passes, but without the reference: a provisional pass, exit 4.
       result = await partial(["round"]);

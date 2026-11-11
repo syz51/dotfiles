@@ -291,20 +291,22 @@ async function calibrateCommand(config, values) {
       console.log("");
       printMissing(missing);
     }
+    // The bar judge's derived bar, on every calibration with references: lead the best
+    // reference in every category, with a floor at its level, both from these scores.
+    const derived = Object.values(results).find((result) => result.barReach)?.barReach?.suggestion ?? null;
+    if (derived) {
+      console.log(`\nDerived bar, from the bar judge's reference scores: lead the best reference by ${derived.references} in every category, with ${derived.min} (about the best reference's level) as the floor. In the configuration (with --new-run):`);
+      console.log(`  "pass": { "min": ${derived.min}, "gain": ${config.pass.gain}, "references": ${derived.references} }`);
+      const current = config.pass.references === null ? "an absolute bar with no lead over the references" : `min ${config.pass.min} and a lead of ${config.pass.references}`;
+      const same = config.pass.min === derived.min && config.pass.references === derived.references;
+      console.log(same ? "The configuration already uses this bar." : `The configuration has ${current}. On a climb's first calibration, put the derived bar in the configuration and calibrate again with --new-run, unless the owner asked for the bar it has. After that, keep the bar: a later derived bar differs by noise.`);
+    }
     const unreachable = barWarnings(results);
     if (unreachable.length) {
       console.log(`\nBar reach: the bar ${config.pass.min} may be out of the judges' range.`);
       for (const [key, result] of unreachable)
         console.log(`- ${key}: ${result.barReach.warnings.join("; ")}. Best reference per category: ${Object.entries(result.barReach.bestReference).map(([id, score]) => `${id} ${fixed(score)}`).join(", ") || "none"}.`);
-      // One bar every warned judge gives: the lowest floor and the largest lead.
-      const suggestions = unreachable.map(([, result]) => result.barReach.suggestion).filter(Boolean);
-      if (suggestions.length) {
-        const min = Math.min(...suggestions.map((item) => item.min));
-        const lead = Math.max(...suggestions.map((item) => item.references));
-        console.log(`Suggested bar, from these reference scores: lead the best reference by ${lead} in every category, with ${min} (about the best reference's level) as the floor. In the configuration (with --new-run):`);
-        console.log(`  "pass": { "min": ${min}, "gain": ${config.pass.gain}, "references": ${lead} }`);
-      }
-      console.log(`Before round 1, put this in a note and ask the owner whether to ${suggestions.length ? "use the suggested lead over the references, " : ""}go on as is, add a reference they rate at the bar, use a bar judge that uses the top of the scale, or lower the bar.`);
+      console.log(`Before round 1, put this in a note and ask the owner whether to ${derived ? "use the derived bar above, " : ""}go on as is, add a reference they rate at the bar, use a bar judge that uses the top of the scale, or lower the bar.`);
     }
     if (errored) {
       console.log("\nA judge could not finish its calls (its cost is counted): see the reason in the table, then calibrate again.");
