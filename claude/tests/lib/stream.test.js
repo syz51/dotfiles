@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
-  agentSpawns, backgroundAtAnswer, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, initEvent, mainBashPrinted, parseStream,
+  agentSpawns, backgroundAtAnswer, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, freeWhileRunning, initEvent, mainBashPrinted, parseStream,
   partialEvents, printedFrom, refusedBeforeWork, retryRefused, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
 
@@ -204,6 +204,33 @@ describe("delegation", () => {
       text("working", { parent: a.id }), { type: "system", subtype: "task_notification", tool_use_id: a.id }];
     expect(Object.fromEntries(spawnEnds(events, [a, b]))).toEqual({ [a.id]: 5, [b.id]: 3 });
     expect(spawnEnds([a.event], [a]).has(a.id)).toBe(false);
+  });
+
+  test("a follow-up answered while a background spawn runs passes in either order, a wait fails", () => {
+    const review = toolUse("Agent", { subagent_type: "reviewer" });
+    const launched = toolResult(review.id, "Async agent launched successfully.");
+    const done = { type: "system", subtype: "task_notification", tool_use_id: review.id, status: "completed" };
+    const answer = result({ result: "391" });
+    const check = (events) => {
+      const ended = spawnEnds(events, [review]).get(review.id);
+      const answered = events.findIndex((event) => event.type === "result" && /\b391\b/.test(event.result ?? ""));
+      const { turnEnded, waits } = freeWhileRunning(events, ended, answered);
+      return { free: turnEnded < ended, waits: waits.map((use) => use.name) };
+    };
+    // The answer comes before the review ends.
+    expect(check([review.event, launched, result(), text("391"), answer, done, result()])).toEqual({ free: true, waits: [] });
+    // The review ends first, then the session answers and records the findings.
+    const record = toolUse("ReportFindings", { findings: [] });
+    expect(check([review.event, launched, result(), done, text("391"), record.event, answer])).toEqual({ free: true, waits: [] });
+    // The session blocks on the review in its first turn, then answers.
+    const block = toolUse("TaskOutput", { task_id: review.id, block: true });
+    expect(check([review.event, launched, block.event, done, result(), answer]).free).toBe(false);
+    // The session ends its first turn, then waits on the review before it answers.
+    const sleep = toolUse("Bash", { command: "sleep 60" });
+    expect(check([review.event, launched, result(), sleep.event, done, answer])).toEqual({ free: true, waits: ["Bash"] });
+    // Subagent tool calls are the review's own work, not the session's wait.
+    const own = toolUse("Read", { file_path: "a.js" }, { parent: review.id });
+    expect(check([review.event, launched, result(), own.event, answer, done])).toEqual({ free: true, waits: [] });
   });
 
   test("assistant events without content are ignored", () => {
