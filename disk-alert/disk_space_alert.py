@@ -365,6 +365,7 @@ def remove_tree(path: Path, limit: Limit) -> None:
         return
     full = stat.S_IRWXU
     for folder, dirs, _files in os.walk(path):
+        limit.check()
         if os.lstat(folder).st_mode & full != full:
             os.chmod(folder, os.lstat(folder).st_mode | full)
         for name in dirs:
@@ -415,11 +416,18 @@ def discard(paths: list, trash: Path, limit: Limit) -> None:
 
 
 def empty_trash(trash: Path, limit: Limit) -> None:
-    """Finish removing what an earlier sweep moved to the trash and did not finish."""
+    """Finish removing what an earlier sweep moved to the trash and did not finish. An
+    entry that fails does not keep the others; the first failure is raised at the end."""
     if not trash.is_dir():
         return
+    failure = None
     for entry in sorted(trash.iterdir()):
-        remove_tree(entry, limit)
+        try:
+            remove_tree(entry, limit)
+        except OSError as error:
+            failure = failure or error
+    if failure:
+        raise failure
 
 
 def session_candidates(tmp_root: Path, projects: Path, cutoff: float) -> list:
@@ -657,10 +665,10 @@ def sweep_targets(
 
 def sweep(
     config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.monotonic, trash_only: bool = False,
 ) -> tuple:
-    """What earlier sweeps left in the trash, then idle session scratch, then idle cargo
-    target folders, all within config.sweep_minutes. Returns what they removed, a
+    """What earlier sweeps left in the trash, then (unless trash_only) idle session
+    scratch, then idle cargo target folders, all within config.sweep_minutes. Returns what they removed, a
     failure record for each step that raised, and a `sweep_stopped` record or None; one
     step failing does not stop the next or lose what it removed."""
     limit = Limit(clock() + config.sweep_minutes * 60, clock)
@@ -676,7 +684,7 @@ def sweep(
         ("targets", lambda: sweep_targets(config, run, now, level, dry_run, limit=limit)),
     )
     for name, step in steps:
-        if dry_run and name == "trash":
+        if (dry_run and name == "trash") or (trash_only and name != "trash"):
             continue
         try:
             swept += step()
@@ -916,9 +924,10 @@ def run_check(
     if record is not None:
         log(config, record)
         failed = bool(record.get("t3_error") or record.get("notify_error"))
-    if (config.claude_tmp or config.worktrees) and state.level != "ok":
-        # A sweep that fails must not stop the rest of the run.
-        swept, failures, stopped = sweep(config, run, now, state.level, clock=clock)
+    if config.claude_tmp or config.worktrees:
+        # A sweep that fails must not stop the rest of the run. While space is ok it only
+        # finishes what an earlier sweep left in the trash.
+        swept, failures, stopped = sweep(config, run, now, state.level, clock=clock, trash_only=state.level == "ok")
         for failure in failures:
             failed = True
             log(config, failure)
@@ -927,6 +936,8 @@ def run_check(
             log(config, removed)
             failed = failed or bool(removed["errors"])
             note = sweep_note(swept)
+            if note and stopped:
+                note += " It reached its time limit; the next sweep finishes the deletion."
             if note:
                 failed = bool(notify(run, config, "Disk space: idle build output removed", note)) or failed
         if stopped:

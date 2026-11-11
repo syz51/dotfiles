@@ -521,6 +521,32 @@ class SweepTest(unittest.TestCase):
         self.assertTrue(folder.exists())
         self.assertNotIn("ps", runner.kinds())
 
+    def test_ok_space_still_finishes_the_trash(self):
+        folder = self.session()
+        bin_ = self.config.state_dir / "trash" / "left"
+        (bin_ / "deps").mkdir(parents=True)
+        (bin_ / "deps" / "libx.rlib").write_bytes(b"x")
+        runner = FakeRunner()
+        alert.run_check(self.config, runner, self.readings(50.0), self.now)
+        self.assertFalse(bin_.exists())
+        self.assertTrue(folder.exists())
+        self.assertEqual(runner.calls, [])
+
+    def test_trash_entry_that_fails_keeps_neither_the_others_nor_quiet(self):
+        trash = self.config.state_dir / "trash"
+        for name in ("a", "b"):
+            (trash / name).mkdir(parents=True)
+        real = alert.remove_tree
+
+        def remove(path, limit):
+            if path.name == "a":
+                raise PermissionError("denied")
+            real(path, limit)
+
+        with mock.patch.object(alert, "remove_tree", side_effect=remove), self.assertRaises(PermissionError):
+            alert.empty_trash(trash, alert.Limit())
+        self.assertEqual([entry.name for entry in trash.iterdir()], ["a"])
+
     def test_config_defaults_follow_the_module_defaults(self):
         config = alert.Config()
         self.assertEqual(config.claude_projects, alert.DEFAULT_CLAUDE_PROJECTS)
@@ -694,6 +720,21 @@ class TargetSweepTest(unittest.TestCase):
         self.assertEqual([item.path for item in swept], [str(target)])
         self.assertEqual([(failure["sweep"], failure["error"]) for failure in failures], [("sessions", "denied")])
         self.assert_emptied(target)
+
+    def test_target_sweep_stopped_mid_deletion_empties_the_folder_and_frees_its_locks(self):
+        first = self.target(self.t3_worktree("t3-1") / "target")
+        second = self.target(self.t3_worktree("t3-2") / "target")
+        ticks = iter(range(100))
+        limit = alert.Limit(3, lambda: next(ticks))
+        swept = alert.sweep_targets(self.config, FakeRunner(), self.now, limit=limit)
+        self.assertTrue(limit.reached)
+        self.assertEqual([(item.path, item.error) for item in swept], [(str(first), None)])
+        self.assert_emptied(first)
+        self.assertTrue((second / "debug" / "deps" / "libx.rlib").exists())
+        self.assertEqual(len(list((self.config.state_dir / "trash").iterdir())), 1)
+        held = alert.take_build_locks(alert.build_lock_files(first))
+        self.assertIsNotNone(held)
+        alert.release(held)
 
     def test_running_processes_keep_their_targets(self):
         named = self.target(self.t3_worktree("t3-1") / "target")
