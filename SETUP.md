@@ -339,6 +339,16 @@ fetch fails, it compares with the last fetched branch and says so. It adds about
 seconds to the start of such a session, and about 0.2 seconds offline. Claude Code reads
 hooks when a session starts, so a session that started before config-sync installed a
 hook never runs it.
+In a worktree-isolated session, Claude Code refuses each Bash command that it cannot
+verify stays in the worktree. This guard runs inside Bash execution, after every hook,
+and no setting turns it off. `claude/hooks/worktree-rule.js` tells the session which
+forms the guard refuses, as measured on Claude Code 2.1.319, so agents write around them.
+It speaks after a successful EnterWorktree, for the worktree that was entered. It also
+speaks when a subagent starts, and at session start or after compaction, when the working
+folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
+the guard. opencode has no such guard, so the hook stays quiet when opencode's
+`claude-hooks` plugin runs it. Re-measure the forms when a Claude Code update changes the
+guard's messages.
 `claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
 compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
 window, and long threads re-read most of that context on every call. The value applies to
@@ -352,6 +362,23 @@ it by total cache-read tokens per day and per board task done, and watch compact
 session. Then set the chosen value, update this paragraph and the test and its comment in
 `claude/tests/config.test.js`.
 Do not replace an existing tool home without backing up its local data.
+
+Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
+what most turns need. Procedures that few turns need are in `claude/reference/`, each
+behind one pointer line in the section it belongs to: `storage.md`, `review-findings.md`,
+`merge.md` and `t3-delegation.md`. A session reads one through
+`~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
+rules word for word and states that they have the instructions' force. To move another
+rule, move its lines unchanged, leave a pointer that names when to read the file, and
+change the pins in `claude/tests/config.test.js`, which also holds the size budget of
+`claude/CLAUDE.md`. `codex/AGENTS.md` reads no reference files and keeps its rules in
+place. The factory reads the instructions too: the judge in
+`claude/factory/scoring/score.js` gets the reference files appended, the proposer in
+`claude/factory/scoring/propose.js` may edit them, and
+`claude/factory/board/proposal.js` requires the Work board section to be identical in
+both files, so no Work board rule moves. The four agents in `claude/agents/` deny the tools no subagent uses
+(`ReportFindings`, `ListAgents`, the claude.ai connectors, and computer use for the two
+read-only agents), which shortens each subagent request.
 
 Four skills live here: `headless-browser`; `cheat-sheets`; `diff-review`, the recipe of
 the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts; and
@@ -959,7 +986,8 @@ The `claude/tests` suites check the Claude Code configuration. These run offline
 in CI:
 
 - `config.test.js`: agent frontmatter against the delegation policy, files and agents
-  that `claude/CLAUDE.md` references, hook scripts in `claude/settings.json`, the rules
+  that `claude/CLAUDE.md` references, the rules in `claude/reference/` and their
+  pointers, hook scripts in `claude/settings.json`, the rules
   the live suites test, and the root `CLAUDE.md`. It also checks `claude/frontend-avoid.md`,
   which the installed `frontend-ui` skill tells sessions to read rather than
   `claude/CLAUDE.md`: its rule and the one-line Patterns section that skill feedback

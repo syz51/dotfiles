@@ -9,6 +9,8 @@ import { join } from "node:path";
 
 export const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
 export const GLOBAL_INSTRUCTIONS = join(REPO_ROOT, "claude", "CLAUDE.md");
+// Rules that few turns need, which the global instructions point at and sessions read on need.
+export const REFERENCE_DIR = join(REPO_ROOT, "claude", "reference");
 
 export const RUBRIC = JSON.parse(readFileSync(join(import.meta.dir, "rubric.json"), "utf8"));
 

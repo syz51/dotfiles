@@ -2,7 +2,7 @@
 // storing one record per session in the state folder's scores.jsonl.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -13,7 +13,7 @@ import { loadSessions } from "../lib/transcripts.js";
 import { countCorrections } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
 import { buildDigest, DIGEST_CHARS } from "./digest.js";
-import { GLOBAL_INSTRUCTIONS, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
+import { GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js score [options]
 
@@ -117,6 +117,14 @@ export function instructionsRevision(file, text) {
   const commit = git("log", "-1", "--format=%H", "--", file) || null;
   const status = commit === null ? null : git("status", "--porcelain", "--", file);
   return { file, sha256: sha256(text), commit, modified: status === null ? null : status !== "" };
+}
+
+// The global instructions as the judge reads them: the file, then each reference file it
+// points at, since a session reads those on need and the judge cannot. The revision stays
+// that of the instructions file alone.
+export function withReferences(globalInstructions, dir = REFERENCE_DIR) {
+  const files = readdirSync(dir).filter((name) => name.endsWith(".md")).sort();
+  return [globalInstructions.trimEnd(), ...files.map((name) => `<reference file="~/.claude/reference/${name}">\n${readFileSync(join(dir, name), "utf8").trimEnd()}\n</reference>`)].join("\n\n");
 }
 
 // The judge's input in two parts. system is the same for every session of a run (the
@@ -327,7 +335,7 @@ export async function run(argv, { now = Date.now() } = {}) {
     const detectors = runDetectors(candidate.session, records);
     const digest = buildDigest(candidate.session, { records: records.main });
     const projectFiles = projectInstructions(candidate.session.cwd);
-    const { system, prompt } = judgeParts({ digest, globalInstructions, projectFiles });
+    const { system, prompt } = judgeParts({ digest, globalInstructions: withReferences(globalInstructions), projectFiles });
     // The instructions as the judge saw them (project files may be cut at their limit).
     const instructions = { global: globalRevision, project: projectFiles.map(({ file, text }) => ({ file, sha256: sha256(text) })) };
     const record = { ...base(candidate, detectors), model: options.model, effort: options.effort, instructions, digestChars: digest.length, costUSD: 0, dimensions: null, corrections: null, summary: null, error: null };

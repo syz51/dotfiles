@@ -62,6 +62,7 @@ paths = [
 [repos."github.com/syz51/dotfiles"]
 paths = [
   "claude/CLAUDE.md",
+  "claude/reference/**",
   "claude/agents/**",
   "claude/marketplace/**",
   "setups.toml",
