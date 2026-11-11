@@ -285,13 +285,21 @@ describe("background review", () => {
     assertCleanedUp();
   }, 30_000);
 
+  test("a review that ends before the follow-up is answered, with no wait on it, passes", async () => {
+    const run = await runLive("live.test.js", name, "review-first");
+    expect(run.code, output(run)).toBe(0);
+    expect(output(run)).toMatch(/1 pass/);
+    assertCleanedUp();
+  }, 30_000);
+
   for (const [mode, message] of [
     ["review-foreground", "the review was not one background reviewer agent"],
     ["review-general", "the review was not the reviewer agent"],
     ["review-worktree", "the review got a worktree of its own"],
     ["review-unpinned", "the review was not pinned to"],
     ["review-skill", "the review ran /code-review"],
-    ["review-late", "the follow-up was answered only after the review ended"],
+    ["review-late", "the session waited on the review before it answered the follow-up"],
+    ["review-blocked", "the first turn ended only after the review ended"],
     ["review-unrecorded", "the session did not record the outcomes once through ReportFindings"],
     ["review-early", "the outcomes were recorded before the review ended"],
     ["review-dismissed", "the real owner-check finding was not recorded as skipped"],
