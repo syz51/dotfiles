@@ -19,7 +19,10 @@
 // that GitHub never started for billing, with no steps, the billing annotation and at most
 // GitHub's notices besides, counts as passed when a passing non-Actions check is named
 // "<context>: <job name>", such as "ci/circleci: build"; one GraphQL call reads those jobs'
-// steps and annotations, and only when every failed check is a failed Actions job. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
+// steps and annotations, and only when every failed check is a failed Actions job. A merge it
+// checks like a direct merge must pin the head commit it judged with --match-head-commit, so
+// GitHub refuses the merge if the head moves after the check; the refusal names the SHA and the
+// command to rerun. A pin that is not the head is refused for every merge. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
 // block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
@@ -68,9 +71,10 @@ class Refusal extends Error {}
 
 /** The options and selector of `gh pr merge args`; `repo` is the -R value given before `merge`, if any. */
 export function parseMerge(args, repo) {
-  const merge = { admin: false, auto: false, disableAuto: false, help: false, repo, selector: undefined, unresolved: undefined, unknown: undefined };
+  const merge = { admin: false, auto: false, disableAuto: false, help: false, repo, matchHead: undefined, selector: undefined, unresolved: undefined, unknown: undefined };
   const set = (name, value) => {
     if (name === "--repo") merge.repo = value;
+    else if (name === "--match-head-commit") merge.matchHead = value;
     else if (name === "--admin") merge.admin = value;
     else if (name === "--auto") merge.auto = value;
     else if (name === "--disable-auto") merge.disableAuto = value;
@@ -242,7 +246,7 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
 }
 
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
-function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, remote }) {
+function judgeMerge(merge, words, dir, query, { setsHost, setsRepo, setsGitDir, remote }) {
   if (merge.unresolved !== undefined) {
     return `the shell fills in \`${merge.unresolved}\`, so the guard cannot see which pull request it merges or how. Write the pull request, repository and options out literally. `
       + "The guard cannot see quotes, so for a body with `$`, backticks or braces, write it to a file and pass --body-file.";
@@ -270,6 +274,11 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, remote 
   const api = ["api", "--hostname", url.host];
   const repo = `repos/${owner}/${name}`;
   const pr = `pull request #${view.number}`;
+  // The rollup is the checks of this commit, read in the same query.
+  const head = view.headRefOid;
+  if (merge.matchHead !== undefined && merge.matchHead !== head) {
+    return `--match-head-commit ${merge.matchHead} is not ${pr}'s head commit ${head}. Wait for that commit's checks to pass, then rerun with it: ${rerun(words, head)}.`;
+  }
   if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
   if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
   if (view.mergeStateStatus === "BEHIND") {
@@ -286,7 +295,7 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, remote 
   // The GraphQL call costs time and rate-limit points, so it runs only when billing can decide
   // the merge: every failed check is a failed Actions job.
   if (checks.failed.length > 0 && checks.failed.length === checks.actionsFailed) {
-    checks = classifyChecks(rollup, billingSkippedJobs(query, where, api, owner, name, view.headRefOid));
+    checks = classifyChecks(rollup, billingSkippedJobs(query, where, api, owner, name, head));
   }
   const { pending, failed } = checks;
   if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
@@ -298,7 +307,23 @@ function judgeMerge(merge, dir, query, { setsHost, setsRepo, setsGitDir, remote 
       return `${pr}'s head commit has no checks yet, but the repository has Actions workflows, so CI may not have started. Wait for its checks to appear and pass, then merge.`;
     }
   }
+  // GitHub refuses a merge whose --match-head-commit is not the head, so a commit pushed after
+  // this check cannot merge on the checks of the one before.
+  if (merge.matchHead === undefined) {
+    return `the checks passed on ${pr}'s head commit ${head}. Pin the merge to that commit, so GitHub refuses it if the head moves: ${rerun(words, head)}.`;
+  }
   return undefined;
+}
+
+/** `gh pr merge` command `words` with `--match-head-commit sha` in place of any pin, quoted to rerun. */
+function rerun(words, sha) {
+  const shell = (word) => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+  const kept = [];
+  for (let i = 0; i < words.length; i += 1) {
+    if (words[i] === "--match-head-commit") i += 1;
+    else if (!words[i].startsWith("--match-head-commit=")) kept.push(shell(words[i]));
+  }
+  return `\`${[...kept, "--match-head-commit", sha].join(" ")}\``;
 }
 
 const quoted = (words) => `\`${words.join(" ")}\``;
@@ -389,7 +414,7 @@ function ghCommand(words, dir, query, state, merges) {
     words,
     check: () => {
       try {
-        const reason = judgeMerge(parseMerge(words.slice(next), repo), dir, query, state);
+        const reason = judgeMerge(parseMerge(words.slice(next), repo), words, dir, query, state);
         return reason && fail(reason);
       } catch (error) {
         if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
