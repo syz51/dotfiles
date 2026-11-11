@@ -15,7 +15,7 @@ until the message gets through, without repeating the notification; a start that
 timed out or printed no thread id is not retried, since it may have gone through.
 Recovering to `ok` posts one notification and ends the episode.
 
-While space is low, each check first removes the scratch folders of idle Claude Code
+While space is low, each check, after it has alerted, removes the scratch folders of idle Claude Code
 sessions, `/private/tmp/claude-<uid>/<project>/<session id>`: those whose folder,
 transcript and subagent transcripts have not changed for 24 hours, that Claude Code's
 registry of running sessions (`~/.claude/sessions`) does not list, and that no
@@ -32,8 +32,11 @@ are taken first and held to the end. Emptying keeps the tag and the lock files, 
 build that starts meanwhile waits on the same locks and then starts afresh in a
 folder still tagged.
 
-The alert says what was freed, and a sweep that brings space back without an alert
-posts a notification. `sweep --dry-run` lists what would go now, whatever the free
+Sweeping moves each folder to remove into `trash/` in the state folder with one
+rename, so it leaves its place at once, and then deletes it there. A sweep stops after
+`--sweep-minutes` (5 by default), so the run ends and launchd can start the next
+check; the next sweep first finishes what the trash still holds. A notification says
+what a sweep removed. `sweep --dry-run` lists what would go now, whatever the free
 space; a simulated reading (`check --free-gb`) never sweeps.
 
 State lives in `~/.local/state/disk-space-alert/state.json` and every alert adds
@@ -54,6 +57,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -68,6 +72,8 @@ DEFAULT_CRITICAL_GB = 20.0
 HYSTERESIS_GB = 2.0
 REMIND_AFTER = timedelta(hours=24)
 INTERVAL_SECONDS = 600
+# A sweep stops after this long, so the run ends and launchd can start the next check.
+DEFAULT_SWEEP_MINUTES = 5.0
 DEFAULT_STATE_DIR = HOME / ".local" / "state" / "disk-space-alert"
 DEFAULT_T3 = HOME / ".t3" / "bin" / "t3"
 DEFAULT_T3_PROJECT = HOME / ".t3" / "scratch"
@@ -131,6 +137,7 @@ class Config:
     # T3's worktree folder, whose cargo target folders are swept while space is low;
     # None turns that sweep off.
     worktrees: Optional[Path] = None
+    sweep_minutes: float = DEFAULT_SWEEP_MINUTES
 
 
 @dataclass(frozen=True)
@@ -321,9 +328,41 @@ def idle_size(path: Path, cutoff: float) -> Optional[int]:
     return None if unreadable else total
 
 
-def remove_tree(path: Path) -> None:
-    """Remove a folder of this user's own scratch, first giving back the owner's access
-    to any folder in it that lacks it (Go module caches are read-only, for one)."""
+class SweepStopped(Exception):
+    """The sweep reached its time limit. in_place says a folder that could not be moved
+    to the trash was left half removed."""
+
+    def __init__(self, in_place: bool = False):
+        super().__init__("stopped at the sweep time limit")
+        self.in_place = in_place
+
+
+@dataclass
+class Limit:
+    """The sweep's deadline on clock; reached records that it stopped a sweep."""
+
+    deadline: float = float("inf")
+    clock: Callable[[], float] = time.monotonic
+    reached: bool = False
+
+    def passed(self) -> bool:
+        if self.clock() >= self.deadline:
+            self.reached = True
+        return self.reached
+
+    def check(self) -> None:
+        if self.passed():
+            raise SweepStopped()
+
+
+def remove_tree(path: Path, limit: Limit) -> None:
+    """Remove a file or a folder of this user's own scratch, first giving back the
+    owner's access to any folder in it that lacks it (Go module caches are read-only, for
+    one). The limit is checked before each entry, so a large folder stops part way."""
+    if path.is_symlink() or not path.is_dir():
+        limit.check()
+        path.unlink()
+        return
     full = stat.S_IRWXU
     for folder, dirs, _files in os.walk(path):
         if os.lstat(folder).st_mode & full != full:
@@ -333,7 +372,54 @@ def remove_tree(path: Path) -> None:
             mode = os.lstat(child).st_mode
             if stat.S_ISDIR(mode) and mode & full != full:
                 os.chmod(child, mode | full)
-    shutil.rmtree(path)
+    for folder, dirs, files in os.walk(path, topdown=False):
+        for name in files + dirs:
+            limit.check()
+            child = os.path.join(folder, name)
+            if name in dirs and not os.path.islink(child):
+                os.rmdir(child)
+            else:
+                os.unlink(child)
+    os.rmdir(path)
+
+
+def to_trash(paths: list, trash: Path) -> tuple:
+    """Move each path into a new folder in trash with one rename, so it leaves its place
+    at once. Returns that folder (None when it could not be made, as on a full disk) and
+    the paths that could not be moved (on another volume, say), to remove in place."""
+    try:
+        trash.mkdir(parents=True, exist_ok=True)
+        bin_ = Path(tempfile.mkdtemp(dir=trash))
+    except OSError:
+        return None, list(paths)
+    left = []
+    for index, path in enumerate(paths):
+        try:
+            os.rename(path, bin_ / str(index))
+        except OSError:
+            left.append(path)
+    return bin_, left
+
+
+def discard(paths: list, trash: Path, limit: Limit) -> None:
+    """Move paths to the trash, then remove them under the limit. Stopping while the
+    trash is emptied leaves the rest there for the next sweep."""
+    bin_, left = to_trash(paths, trash)
+    for path in left:
+        try:
+            remove_tree(path, limit)
+        except SweepStopped:
+            raise SweepStopped(in_place=True) from None
+    if bin_ is not None:
+        remove_tree(bin_, limit)
+
+
+def empty_trash(trash: Path, limit: Limit) -> None:
+    """Finish removing what an earlier sweep moved to the trash and did not finish."""
+    if not trash.is_dir():
+        return
+    for entry in sorted(trash.iterdir()):
+        remove_tree(entry, limit)
 
 
 def session_candidates(tmp_root: Path, projects: Path, cutoff: float) -> list:
@@ -360,11 +446,14 @@ def session_candidates(tmp_root: Path, projects: Path, cutoff: float) -> list:
 
 
 def sweep_sessions(
-    config: Config, run: Runner, now: datetime, dry_run: bool = False, clock: Callable[[], float] = time.monotonic
+    config: Config, run: Runner, now: datetime, dry_run: bool = False, clock: Callable[[], float] = time.monotonic,
+    limit: Optional[Limit] = None,
 ) -> list:
     """Remove the scratch folders of idle Claude Code sessions (see the module doc).
     The process snapshot is taken once there is something to remove and renewed every
-    few seconds, so a session resumed during a long sweep is still seen."""
+    few seconds, so a session resumed during a long sweep is still seen. Stops at the
+    limit, returning what it removed so far."""
+    limit = limit or Limit()
     if config.claude_tmp is None or not config.claude_tmp.is_dir():
         return []
     cutoff = (now - SWEEP_IDLE).timestamp()
@@ -372,6 +461,8 @@ def sweep_sessions(
     swept = []
     processes, taken = None, 0.0
     for session, size in candidates:
+        if limit.passed():
+            break
         if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
             processes, taken = running_processes(run, config.claude_sessions), clock()
             if processes is None:
@@ -384,11 +475,20 @@ def sweep_sessions(
         error = None
         if not dry_run:
             try:
-                remove_tree(session)
+                discard([session], trash_dir(config), limit)
+            except SweepStopped as stop:
+                swept.append(Swept(str(session), size, str(stop) if stop.in_place else None))
+                break
             except OSError as failure:
                 error = str(failure)
         swept.append(Swept(str(session), size, error))
     return swept
+
+
+def trash_dir(config: Config) -> Path:
+    """Where swept folders wait to be removed: in the state folder, on the same volume as
+    what is swept, so moving them there is one rename."""
+    return config.state_dir / "trash"
 
 
 def subfolders(folder: Path) -> list:
@@ -499,21 +599,17 @@ def removable(target: Path, lock_files: list) -> list:
     return sorted(entries)
 
 
-def remove_entry(entry: Path) -> None:
-    if entry.is_dir() and not entry.is_symlink():
-        remove_tree(entry)
-    else:
-        entry.unlink()
-
-
 def sweep_targets(
     config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
-    clock: Callable[[], float] = time.monotonic,
+    clock: Callable[[], float] = time.monotonic, limit: Optional[Limit] = None,
 ) -> list:
     """Empty idle cargo target folders in agent worktrees (see the module doc). Each one's
     build locks are taken first and held to the end, so its idleness is read while no
     build can start in it. The process snapshot is taken only once an idle folder turns
-    up, and renewed every few seconds."""
+    up, and renewed every few seconds. The entries move to the trash while the locks are
+    held, so the folder is empty at once; they are removed after. Stops at the limit,
+    returning what it emptied so far."""
+    limit = limit or Limit()
     if config.worktrees is None or not config.worktrees.is_dir():
         return []
     cutoff = (now - TARGET_IDLE.get(level, TARGET_IDLE["low"])).timestamp()
@@ -521,6 +617,8 @@ def sweep_targets(
     processes, taken = None, 0.0
     for worktree in agent_worktrees(config.worktrees):
         for target in cargo_targets(worktree):
+            if limit.passed():
+                return swept
             lock_files = build_lock_files(target)
             held = take_build_locks(lock_files)
             if held is None:
@@ -545,8 +643,10 @@ def sweep_targets(
                 error = None
                 if not dry_run:
                     try:
-                        for entry in entries:
-                            remove_entry(entry)
+                        discard(entries, trash_dir(config), limit)
+                    except SweepStopped as stop:
+                        swept.append(Swept(str(target), size, str(stop) if stop.in_place else None, "target"))
+                        return swept
                     except OSError as failure:
                         error = str(failure)
                 swept.append(Swept(str(target), size, error, "target"))
@@ -555,23 +655,43 @@ def sweep_targets(
     return swept
 
 
-def sweep(config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False) -> tuple:
-    """Both sweeps, idle session scratch and then idle cargo target folders. Returns
-    what they removed and a failure record for each that raised; one failing does not
-    stop the other or lose what it removed."""
+def sweep(
+    config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic,
+) -> tuple:
+    """What earlier sweeps left in the trash, then idle session scratch, then idle cargo
+    target folders, all within config.sweep_minutes. Returns what they removed, a
+    failure record for each step that raised, and a `sweep_stopped` record or None; one
+    step failing does not stop the next or lose what it removed."""
+    limit = Limit(clock() + config.sweep_minutes * 60, clock)
     swept, failures = [], []
+
+    def empty() -> list:
+        empty_trash(trash_dir(config), limit)
+        return []
+
     steps = (
-        ("sessions", lambda: sweep_sessions(config, run, now, dry_run)),
-        ("targets", lambda: sweep_targets(config, run, now, level, dry_run)),
+        ("trash", empty),
+        ("sessions", lambda: sweep_sessions(config, run, now, dry_run, limit=limit)),
+        ("targets", lambda: sweep_targets(config, run, now, level, dry_run, limit=limit)),
     )
     for name, step in steps:
+        if dry_run and name == "trash":
+            continue
         try:
             swept += step()
+        except SweepStopped:
+            pass
         except OSError as error:
             failures.append(
                 {"at": now.isoformat(timespec="seconds"), "event": "sweep_failed", "sweep": name, "error": str(error)}
             )
-    return swept, failures
+        if limit.reached:
+            break
+    stopped = None
+    if limit.reached:
+        stopped = {"at": now.isoformat(timespec="seconds"), "event": "sweep_stopped", "limit_minutes": config.sweep_minutes}
+    return swept, failures, stopped
 
 
 def format_size(size: int) -> str:
@@ -606,13 +726,13 @@ def thread_title(level: str, free: float) -> str:
     return f"{prefix}: {free:.1f} GB free"
 
 
-def start_message(level: str, free: float, config: Config, note: str = "") -> str:
+def start_message(level: str, free: float, config: Config) -> str:
     return (
         "This thread was started by the disk space monitor "
         f"(`~/.config/disk-alert/disk_space_alert.py`, LaunchAgent `{LABEL}`).\n\n"
         f"Free space on {config.volume} is {free:.1f} GB, {describe(level, config)}. "
         f"The monitor alerts below {config.low_gb:g} GB and again below "
-        f"{config.critical_gb:g} GB.{' ' + note if note else ''}\n\n"
+        f"{config.critical_gb:g} GB.\n\n"
         "Make a read-only check of where the space is going: the largest folders in the "
         "home directory, Docker and Colima disks, caches, build output such as Rust "
         "`target/` folders, and anything that grew recently. Reply with a short summary "
@@ -622,10 +742,10 @@ def start_message(level: str, free: float, config: Config, note: str = "") -> st
     )
 
 
-def update_message(level: str, free: float, config: Config, note: str = "") -> str:
+def update_message(level: str, free: float, config: Config) -> str:
     return (
         f"Update from the disk space monitor: free space on {config.volume} is now "
-        f"{free:.1f} GB, {describe(level, config)}.{' ' + note if note else ''} Refresh your read-only summary in a "
+        f"{free:.1f} GB, {describe(level, config)}. Refresh your read-only summary in a "
         "few lines. Still do not delete, move or change anything."
     )
 
@@ -715,10 +835,9 @@ def deliver(
 
 
 def check(
-    free: float, state: State, now: datetime, config: Config, run: Runner, note: str = ""
+    free: float, state: State, now: datetime, config: Config, run: Runner
 ) -> tuple:
-    """Act on one reading; note says what the sweep before it freed. Returns (new state,
-    event record or None)."""
+    """Act on one reading. Returns (new state, event record or None)."""
     level = classify(free, state.level, config.low_gb, config.critical_gb)
     event = plan(state, level, now)
     record = {
@@ -744,8 +863,8 @@ def check(
         config,
         state.thread_id,
         title,
-        start_message(level, free, config, note),
-        update_message(level, free, config, note),
+        start_message(level, free, config),
+        update_message(level, free, config),
     )
     record["thread_id"] = delivery.thread_id
     record["t3_error"] = delivery.error
@@ -757,8 +876,6 @@ def check(
     )
     if event != "retry":
         body = f"{free:.1f} GB free on {config.volume}, {describe(level, config)}."
-        if note:
-            body += " " + note
         if delivery.retry:
             body += " T3 Code could not be reached; retrying."
         elif delivery.error:
@@ -780,47 +897,52 @@ def sweep_record(swept: list, now: datetime) -> dict:
     }
 
 
-def run_check(config: Config, run: Runner, measure: Callable[[], float], now: datetime) -> int:
-    free = measure()
-    state_path = config.state_dir / "state.json"
-    state = load_state(state_path)
-    note = ""
-    failed = False
-    level = classify(free, state.level, config.low_gb, config.critical_gb)
-    if (config.claude_tmp or config.worktrees) and level != "ok":
-        # A sweep that fails must not stop the alert.
-        swept, failures = sweep(config, run, now, level)
-        for failure in failures:
-            failed = True
-            append_event(config.state_dir, failure)
-            print(json.dumps(failure, ensure_ascii=False))
-        if swept:
-            record = sweep_record(swept, now)
-            append_event(config.state_dir, record)
-            print(json.dumps(record, ensure_ascii=False))
-            failed = failed or bool(record["errors"])
-            note = sweep_note(swept)
-            free = measure()
-    state, record = check(free, state, now, config, run, note)
-    save_state(state_path, state)
-    # Escalations and reminders carry the note; any other outcome, such as a sweep that
-    # brought the reading back to ok, still says what was removed.
-    if note and (record is None or record["event"] not in ("escalated", "reminder")):
-        failed = bool(notify(run, config, "Disk space: idle build output removed", note)) or failed
-    if record is None:
-        return 1 if failed else 0
+def log(config: Config, record: dict) -> None:
     append_event(config.state_dir, record)
     print(json.dumps(record, ensure_ascii=False))
-    return 1 if failed or record.get("t3_error") or record.get("notify_error") else 0
+
+
+def run_check(
+    config: Config, run: Runner, measure: Callable[[], float], now: datetime,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Alert on the reading first, so a slow sweep never delays it, then sweep within the
+    time limit and say what went."""
+    free = measure()
+    state_path = config.state_dir / "state.json"
+    state, record = check(free, load_state(state_path), now, config, run)
+    save_state(state_path, state)
+    failed = False
+    if record is not None:
+        log(config, record)
+        failed = bool(record.get("t3_error") or record.get("notify_error"))
+    if (config.claude_tmp or config.worktrees) and state.level != "ok":
+        # A sweep that fails must not stop the rest of the run.
+        swept, failures, stopped = sweep(config, run, now, state.level, clock=clock)
+        for failure in failures:
+            failed = True
+            log(config, failure)
+        if swept:
+            removed = sweep_record(swept, now)
+            log(config, removed)
+            failed = failed or bool(removed["errors"])
+            note = sweep_note(swept)
+            if note:
+                failed = bool(notify(run, config, "Disk space: idle build output removed", note)) or failed
+        if stopped:
+            log(config, stopped)
+    return 1 if failed else 0
 
 
 def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
-    swept, failures = sweep(config, run, now, "low", dry_run)
+    swept, failures, stopped = sweep(config, run, now, "low", dry_run)
     if not dry_run:
         for failure in failures:
             append_event(config.state_dir, failure)
         if swept:
             append_event(config.state_dir, sweep_record(swept, now))
+        if stopped:
+            append_event(config.state_dir, stopped)
     print(json.dumps(
         {
             "dry_run": dry_run,
@@ -828,6 +950,7 @@ def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
             "sessions": [asdict(item) for item in swept if item.kind == "session"],
             "targets": [asdict(item) for item in swept if item.kind == "target"],
             "failures": failures,
+            "stopped": stopped is not None,
         },
         indent=2,
         ensure_ascii=False,
@@ -861,7 +984,8 @@ def plist_path() -> Path:
 
 
 def launch_agent(
-    uv: str, script: Path, state_dir: Path, low_gb: float, critical_gb: float
+    uv: str, script: Path, state_dir: Path, low_gb: float, critical_gb: float,
+    sweep_minutes: float = DEFAULT_SWEEP_MINUTES,
 ) -> dict:
     return {
         "Label": LABEL,
@@ -879,23 +1003,27 @@ def launch_agent(
             f"{low_gb:g}",
             "--critical-gb",
             f"{critical_gb:g}",
+            "--sweep-minutes",
+            f"{sweep_minutes:g}",
         ],
         "StartInterval": INTERVAL_SECONDS,
         "RunAtLoad": True,
-        "ProcessType": "Background",
+        # Not Background: macOS throttles a background job's disk I/O and CPU while other
+        # work runs, and under parallel builds that made one sweep take 20 minutes.
+        "ProcessType": "Standard",
         "EnvironmentVariables": {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
         "StandardOutPath": str(state_dir / "launchd.log"),
         "StandardErrorPath": str(state_dir / "launchd.log"),
     }
 
 
-def run_install(run: Runner, dry_run: bool, low_gb: float, critical_gb: float) -> int:
+def run_install(run: Runner, dry_run: bool, low_gb: float, critical_gb: float, sweep_minutes: float) -> int:
     uv = shutil.which("uv")
     if uv is None:
         print("uv is not on PATH; install it first.", file=sys.stderr)
         return 1
     agent = launch_agent(
-        str(Path(uv).resolve()), Path(__file__).resolve(), DEFAULT_STATE_DIR, low_gb, critical_gb
+        str(Path(uv).resolve()), Path(__file__).resolve(), DEFAULT_STATE_DIR, low_gb, critical_gb, sweep_minutes
     )
     if dry_run:
         sys.stdout.write(plistlib.dumps(agent).decode())
@@ -940,6 +1068,13 @@ def run_status(config: Config, run: Runner) -> int:
     return 0
 
 
+def positive(value: str) -> float:
+    number = float(value)
+    if not number > 0:
+        raise argparse.ArgumentTypeError(f"must be above 0: {value}")
+    return number
+
+
 def parse_args(argv: list) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -967,6 +1102,13 @@ def parse_args(argv: list) -> argparse.Namespace:
         command.add_argument(
             "--no-sweep", action="store_true", help="never remove session or target folders"
         )
+        add_sweep_minutes(command)
+
+    def add_sweep_minutes(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--sweep-minutes", type=positive, default=DEFAULT_SWEEP_MINUTES,
+            help="stop a sweep after this many minutes; the next one goes on",
+        )
 
     check_command = commands.add_parser("check", help="measure once and alert if needed")
     add_common(check_command)
@@ -980,6 +1122,7 @@ def parse_args(argv: list) -> argparse.Namespace:
     install.add_argument("--dry-run", action="store_true", help="print the plist only")
     install.add_argument("--low-gb", type=float, default=DEFAULT_LOW_GB)
     install.add_argument("--critical-gb", type=float, default=DEFAULT_CRITICAL_GB)
+    add_sweep_minutes(install)
     commands.add_parser("uninstall", help="unload and remove the LaunchAgent")
     sweep_command = commands.add_parser(
         "sweep", help="remove idle session scratch and worktree target folders now"
@@ -998,7 +1141,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
     args = parse_args(sys.argv[1:] if argv is None else argv)
     now = now or datetime.now(timezone.utc)
     if args.command == "install":
-        return run_install(run, args.dry_run, args.low_gb, args.critical_gb)
+        return run_install(run, args.dry_run, args.low_gb, args.critical_gb, args.sweep_minutes)
     if args.command == "uninstall":
         return run_uninstall(run)
     # A simulated reading never sweeps: it must not touch real folders.
@@ -1014,6 +1157,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
             claude_projects=args.claude_projects,
             claude_sessions=args.claude_sessions,
             worktrees=worktrees,
+            sweep_minutes=args.sweep_minutes,
         )
         return run_sweep(config, run, now, args.dry_run)
     config = Config(
@@ -1028,6 +1172,7 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
         claude_projects=args.claude_projects,
         claude_sessions=args.claude_sessions,
         worktrees=worktrees,
+        sweep_minutes=args.sweep_minutes,
     )
     if args.command == "check":
         measure = (lambda: args.free_gb) if simulated else (lambda: free_gb(config.volume))
