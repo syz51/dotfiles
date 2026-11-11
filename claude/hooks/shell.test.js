@@ -73,7 +73,8 @@ test("wrappers are skipped, reading options as getopt does", () => {
   // The first letter that takes a value takes the rest of the word, whatever it ends in.
   expect(commands("sudo -uubuntu make")).toEqual([["make", "/repo"]]);
   expect(commands("sudo -uhugh make")).toEqual([["make", "/repo"]]);
-  expect(commands("xargs -IFILE make FILE")).toEqual([["make FILE", "/repo"]]);
+  // the input fills in the word that holds the replace string
+  expect(commands("xargs -IFILE make FILE")).toEqual([["make ${xargs}", "/repo"]]);
   expect(commands("env -uTMP make")).toEqual([["make", "/repo"]]);
   expect(commands("timeout --signal=KILL 5 make")).toEqual([["make", "/repo"]]);
   expect(commands("sudo -- make")).toEqual([["make", "/repo"]]);
@@ -324,12 +325,12 @@ test("visit reports a command that xargs supplies or parses again as opaque", ()
     return seen;
   };
   // 1: ssh and watch parse the added words again as a script
-  expect(opaque("echo '; gh pr merge 12 -R o/r --admin' | xargs ssh host true")).toEqual([["xargs ssh host true", "/repo", true, true]]);
+  expect(opaque("echo '; gh pr merge 12 -R o/r --admin' | xargs ssh host true")).toEqual([["xargs ssh host true", "/repo", true, false]]);
   expect(opaque("echo '; gh pr merge 12 -R o/r --admin' | xargs watch true")).toEqual([["xargs watch true", "/repo", true, false]]);
   // 2: ssh with no host or command, and options added after the host
-  expect(opaque("echo 'host gh pr merge 12' | xargs ssh")).toEqual([["xargs ssh", "/repo", true, true]]);
-  expect(opaque("echo 'host gh pr merge 12' | xargs ssh -p 22")).toEqual([["xargs ssh -p 22", "/repo", true, true]]);
-  expect(opaque("echo '-oProxyCommand=gh\\ pr\\ merge\\ 12' | xargs ssh host")).toEqual([["xargs ssh host", "/repo", true, true]]);
+  expect(opaque("echo 'host gh pr merge 12' | xargs ssh")).toEqual([["xargs ssh", "/repo", true, false]]);
+  expect(opaque("echo 'host gh pr merge 12' | xargs ssh -p 22")).toEqual([["xargs ssh -p 22", "/repo", true, false]]);
+  expect(opaque("echo '-oProxyCommand=gh\\ pr\\ merge\\ 12' | xargs ssh host")).toEqual([["xargs ssh host", "/repo", true, false]]);
   // 3: wrappers with no command, a second xargs, an empty env -S, and a shell's -c without its script
   for (const wrapper of ["sudo", "env", "nice", "xargs", "env -S ''", "env FOO=1", "bash -c", "sh -ec", "fish --command", "eval"]) {
     expect(opaque(`echo 'gh pr merge 12' | xargs ${wrapper}`)).toEqual([[`xargs ${wrapper}`.replace("''", ""), "/repo", true, false]]);
@@ -338,16 +339,23 @@ test("visit reports a command that xargs supplies or parses again as opaque", ()
   expect(opaque("echo 'gh pr merge 12' | xargs env -S 'sudo -u me'")).toEqual([["sudo -u me", "/repo", true, false]]);
   // 4: xargs supplies gh's subcommand; the gh command is appended, and over ssh the whole ssh command is opaque
   expect(opaque("echo 'merge 12' | xargs gh pr")).toEqual([]);
-  expect(opaque("echo 'merge 12' | xargs ssh host gh pr")).toEqual([["xargs ssh host gh pr", "/repo", true, true]]);
+  expect(opaque("echo 'merge 12' | xargs ssh host gh pr")).toEqual([["xargs ssh host gh pr", "/repo", true, false]]);
   // 5: find runs an -exec the added words supply
   expect(opaque("echo '-exec gh pr merge 12 ;' | xargs find . -maxdepth 0")).toEqual([["xargs find . -maxdepth 0", "/repo", true, false]]);
   // 6: a piped reader joins the lines into one command
-  expect(opaque("printf 'gh pr merge 12\\n--admin\\n' | xargs ssh host")).toEqual([["xargs ssh host", "/repo", true, true]]);
+  expect(opaque("printf 'gh pr merge 12\\n--admin\\n' | xargs ssh host")).toEqual([["xargs ssh host", "/repo", true, false]]);
+  // inside a remote script, an opaque command runs on that host
+  expect(opaque("ssh host 'echo x | xargs sudo'")).toEqual([["xargs sudo", undefined, true, true]]);
+  // -I puts the input in a shell's script, an env -S script or the command name
+  expect(opaque("echo x | xargs -I{} sh -c 'git push origin {}'")).toEqual([["xargs -I{} sh -c git push origin {}", "/repo", true, false]]);
+  expect(opaque("echo x | xargs -I % env -S 'gh %'")).toEqual([["xargs -I % env -S gh %", "/repo", true, false]]);
+  expect(opaque("echo gh | xargs --replace={} {} pr merge 12")).toEqual([["xargs --replace={} {} pr merge 12", "/repo", true, false]]);
+  expect(opaque("echo x | xargs -i sh -c '{}'")).toEqual([["xargs -i sh -c {}", "/repo", true, false]]);
   // 7: a push that xargs adds to is appended, not opaque
   expect(opaque("echo --force | xargs git push origin main")).toEqual([]);
   // benign forms, xargs alone (it runs echo), a shell with its script, and the same commands without xargs
   for (const source of ["git ls-files | xargs grep foo", "ls | xargs -n1 basename", "find . -name x | xargs rm -f", "echo a | xargs",
-    "ls | xargs sh -c 'wc -l \"$@\"' _", "ssh host true", "sudo", "watch true", "find . -exec rm {} ;", "env -S 'gh pr view' 12"]) {
+    "ls | xargs sh -c 'wc -l \"$@\"' _", "find . -name x | xargs -I{} rm -f {}", "ssh host true", "sudo", "watch true", "find . -exec rm {} ;", "env -S 'gh pr view' 12"]) {
     expect(opaque(source)).toEqual([]);
   }
 });

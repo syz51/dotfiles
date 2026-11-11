@@ -267,7 +267,11 @@ function gitCommand(words, dir, git, tempRoots, appended) {
   if (subcommand === "config" && setsOverride(args))
     return "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
       + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}`;
-  if (subcommand === "config" && appended && !CONFIG_READS.includes(args[0])) {
+  // The words xargs adds to a bare `git` can hold `-C <path>`, which names any repository.
+  if (appended && subcommand === undefined) {
+    return "xargs adds the git subcommand and options the guard cannot see, and they may switch a main checkout other threads share. Write the command out literally.";
+  }
+  if (subcommand === "config" && appended && !args.some((arg) => CONFIG_READS.includes(arg))) {
     return "xargs adds words the guard cannot see to `git config`, and they may set claude.mainCheckout, which only the user sets. Write the command out literally.";
   }
   // The words xargs adds can make a safe form change the branch, as `git checkout` plus a branch name does.

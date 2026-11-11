@@ -63,7 +63,7 @@ const WRAPPERS = {
   sudo: ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--chdir"],
   time: ["-f", "-o"],
   timeout: ["-s", "-k", "--signal", "--kill-after"],
-  xargs: ["-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "--arg-file", "--delimiter", "--eof", "--replace",
+  xargs: ["-a", "-d", "-E", "-I", "-J", "-L", "-n", "-P", "-R", "-S", "-s", "--arg-file", "--delimiter", "--eof",
     "--max-lines", "--max-args", "--max-procs", "--max-chars"],
   xcrun: ["--sdk", "--toolchain"],
 };
@@ -75,6 +75,9 @@ const SSH_LOCAL_COMMAND = /^\s*(?:ProxyCommand|LocalCommand|KnownHostsCommand)\s
 const SSH_REMOTE_COMMAND = /^\s*RemoteCommand\s*(?:=\s*|\s+)(.+)$/is;
 // ssh options that keep it from reading standard input.
 const SSH_NO_STDIN = new Set(["-n", "-f", "-N"]);
+// What a word that holds xargs' replace string (`-I {}`) reads as: the input fills it in, so
+// `expands` reports it as unknown.
+const FILLED = "${xargs}";
 // find actions that run a command up to `;` or `+`.
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 
@@ -429,6 +432,7 @@ function program(argv, dir, remote = false) {
   // Whether a skipped word runs the words after it as a command: a wrapper, an assignment, or
   // a second xargs. The first xargs alone runs echo.
   let runner = false;
+  let replace; // xargs' -I or -J string, which each input line replaces
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
@@ -475,12 +479,23 @@ function program(argv, dir, remote = false) {
       for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = chdir(value);
     }
     if (name === "timeout") i += 1; // the duration
-    if (name === "xargs") appended = true;
+    if (name === "xargs") {
+      appended = true;
+      for (const [option, value] of options) {
+        if (option === "-I" || option === "-J" || option === "--replace") replace = value || "{}";
+        else if (option === "-i") replace = "{}";
+      }
+    }
   }
   // `bare`: wrappers or assignments with no command and no `env -S` script after them, so the
   // command is the words xargs adds, if any.
   const bare = i === argv.length && runner && nested.every((script) => script.trim() === "");
-  return { words: argv.slice(i), nested, dir, appended, bare };
+  const fill = (word) => (replace === undefined ? word : word.replaceAll(replace, FILLED));
+  const words = argv.slice(i).map(fill);
+  const scripts = nested.map(fill);
+  // `fills`: the input fills in the command's name or an `env -S` script.
+  const fills = (words[0] ?? "").includes(FILLED) || scripts.some((script) => script.includes(FILLED));
+  return { words, nested: scripts, dir, appended, bare, fills };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -593,7 +608,7 @@ function inspect(source, state, visit, depth, tooDeep) {
     // there moves nothing after it. zsh, the shell Claude Code runs commands in, runs the last
     // part in the current shell, so a `cd` there moves later commands; bash would not.
     const background = pipeline.at(-1).command.next === "&";
-    for (const [index, { command: { argv, inputs, substitutions }, run: { words, nested, local, dir, remote, printed: text, appended, reparses, bare }, before }] of pipeline.entries()) {
+    for (const [index, { command: { argv, inputs, substitutions }, run: { words, nested, local, dir, remote, printed: text, appended, reparses, bare, fills }, before }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
@@ -616,11 +631,13 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
       // Words xargs adds that make a command the guard cannot see: ssh and watch parse them
       // again as a script, wrappers with no command run them as one, a shell's `-c` without its
-      // script and eval run them as a script, and find runs an `-exec` they add.
-      const opaque = (added || appended) && (reparses === true || bare === true || name === "find" || name === "eval"
-        || (SHELLS.has(name) && shellScripts(words).includes(undefined)));
+      // script and eval run them as a script, find runs an `-exec` they add, and with `-I` the
+      // input can be the command's name or part of a script. Options xargs adds to ssh, such
+      // as ProxyCommand, run here, so the opaque command is not remote.
+      const opaque = (added || appended) && (reparses === true || bare === true || fills === true || name === "find" || name === "eval"
+        || (SHELLS.has(name) && shellScripts(words).some((script) => script === undefined || script.includes(FILLED))));
       if (opaque) {
-        const violation = visit(argv, dir ?? before, { appended: true, opaque: true, remote: here || Boolean(remote) });
+        const violation = visit(argv, dir ?? before, { appended: true, opaque: true, remote: here });
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
@@ -646,7 +663,8 @@ function inspect(source, state, visit, depth, tooDeep) {
  * that xargs adds arguments the guard cannot see, and `remote` says that it runs on another
  * host over `ssh`. `opaque` says that the words xargs adds may run a command the guard cannot
  * see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or `xargs find`; then
- * `words` are the xargs command's own words, and the command they name is visited too.
+ * `words` are the xargs command's own words, and the command they name is visited too. A word
+ * that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.
  */

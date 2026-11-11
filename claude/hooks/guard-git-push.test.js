@@ -376,11 +376,13 @@ describe("pushes xargs supplies or extends (dotfiles-338)", () => {
     ["echo --force | xargs ssh host git push origin main", "xargs adds arguments"],
     ["echo 'git push -f origin main' | xargs sudo", "xargs runs the words it reads"],
     ["echo '; git push -f origin main' | xargs ssh host true", "xargs runs the words it reads"],
+    ["echo +main | xargs -I{} sh -c 'git push origin {}'", "the shell fills in `${xargs}`"],
+    ["echo push | xargs -I{} git {} -f origin main", "the shell fills in the git subcommand"],
   ])("blocks %s", (command, reason) => {
     expect(verdict(command)).toContain(reason);
   });
 
-  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"], ["git branch --merged | xargs git branch -d"]])("allows %s", (command) => {
+  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"], ["git branch --merged | xargs git branch -d"], ["find . -name x | xargs -I{} rm -f {}"]])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
 });

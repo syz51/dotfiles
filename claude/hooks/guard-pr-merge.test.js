@@ -583,6 +583,11 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
     ["echo '-exec gh pr merge 12 -R o/r --admin ;' | xargs find . -maxdepth 0", "xargs runs the words it reads"],
     // 6: a piped reader under xargs gets every line joined into one command
     ["printf 'gh pr merge 12 -R o/r\\n--admin\\n' | xargs ssh host", "xargs runs the words it reads"],
+    // -I puts the input in a script or the command name
+    ["echo 'gh pr merge 12 -R o/r --admin' | xargs -I{} sh -c '{}'", "xargs runs the words it reads"],
+    ["echo gh | xargs -I{} {} pr merge 12 -R o/r --admin", "xargs runs the words it reads"],
+    ["echo merge | xargs -I{} gh pr {} 12 -R o/r --admin", "xargs adds arguments"],
+    ["echo 12 | xargs gh api -X PUT", "xargs adds arguments"],
   ])("refuses %s", (command, reason) => {
     const calls = [];
     expect(verdict(command, { calls })).toContain(reason);
@@ -593,7 +598,9 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
     expect(verdict("echo push | xargs git; gh pr merge 12")).toContain("may push a new head");
   });
 
-  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"]])("allows %s", (command) => {
+  test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"],
+    // a read-only gh subcommand stays read-only whatever words xargs adds
+    ["gh pr list -q x | xargs -n1 gh pr view"], ["echo 12 | xargs gh pr checks"]])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
 });

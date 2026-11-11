@@ -416,10 +416,14 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
     // macOS volumes ignore case, so GH and Gh run gh too, and a glob such as [g]h can name it.
     const name = basename(words[0]).toLowerCase();
     const isGh = name === "gh" || (GLOB.test(name) && globMatches(name, "gh"));
-    // The words xargs adds can be the subcommand, the pull request or any option, such as --admin.
+    // The words xargs adds can be the subcommand, the pull request or any option, such as --admin;
+    // after a read-only subcommand they only change what it reads.
     if (isGh && appended) {
-      return `${quoted(words)}: xargs adds arguments the guard cannot see, so it cannot tell what this gh command does. `
-        + "Write the gh command out literally: `gh pr merge <number>`.";
+      const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+      if (other !== undefined || !(GH_READ_ONLY[group] ?? []).includes(subcommand)) {
+        return `${quoted(words)}: xargs adds arguments the guard cannot see, so it cannot tell whether this gh command merges a pull request. `
+          + "Write the gh command out literally, such as `gh pr merge <number>`.";
+      }
     }
     let reason;
     if (isGh) reason = ghCommand(words, dir, query, { ...env, remote }, merges);

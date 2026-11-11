@@ -487,7 +487,9 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
     ["echo HEAD~1 | xargs git reset", "xargs adds words"],
     ["echo '-s ours x' | xargs git merge --ff-only", "xargs adds words"],
     ["echo drop | xargs git stash", "xargs adds words"],
-    ["echo 'switch feature' | xargs git", "xargs adds words"],
+    ["echo 'switch feature' | xargs git", "xargs adds the git subcommand"],
+    ["echo '-oProxyCommand=git\\ switch\\ feature' | xargs ssh host", "xargs runs the words it reads"],
+    ["echo '; git switch x' | xargs ssh host true", "xargs runs the words it reads"],
     ["echo 'claude.mainCheckout allow' | xargs git config", "may set claude.mainCheckout"],
     // xargs supplies gh's subcommand, or the whole command
     ["echo 'merge 12' | xargs gh pr", "merges a pull request"],
@@ -499,15 +501,17 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
 
   test.each([
     ["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"],
-    ["git ls-files -m | xargs git checkout --"], ["git ls-files | xargs git add"], ["echo a | xargs git config --get"],
+    ["git ls-files -m | xargs git checkout --"], ["git ls-files | xargs git add"], ["echo a | xargs git config --get"], ["echo user.name | xargs git config --global --get"],
     ["git branch --merged | xargs git branch -d"], ["echo 12 | xargs gh pr view"],
   ])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
 
-  test("a linked worktree, a temporary directory and ssh stay open to xargs", () => {
+  test("a linked worktree, a temporary directory and a remote script stay open to xargs", () => {
     expect(verdict("echo feature | xargs git switch", "/linked")).toBeUndefined();
     expect(verdict("echo 'git switch x' | xargs sudo", "/scratch/repo")).toBeUndefined();
-    expect(verdict("echo '; git switch x' | xargs ssh host true")).toBeUndefined();
+    // `-C <path>` that xargs adds to a bare git can name the main checkout from anywhere
+    expect(verdict("echo '-C /main switch feature' | xargs git", "/linked")).toContain("xargs adds the git subcommand");
+    expect(verdict("ssh host 'echo x | xargs sudo'")).toBeUndefined();
   });
 });
