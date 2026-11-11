@@ -172,7 +172,12 @@ export function parseScript(source) {
     if (destination === "argv") {
       current.argv.push(word);
       const first = firstWord(current.argv);
-      if (word === "in" && first === "case" && current.argv.length === current.argv.indexOf("case") + 3) {
+      if (word === "{" && first === "function") {
+        // `function NAME … { …; }` defines a function, and zsh's `function { …; }` runs one
+        // at once. Drop the keyword and names so the body reads as a `{ …; }` group, checked
+        // like the body of `NAME() { …; }`.
+        current.argv.splice(current.argv.indexOf("function"), Infinity, "{");
+      } else if (word === "in" && first === "case" && current.argv.length === current.argv.indexOf("case") + 3) {
         nesting.push("case");
         pattern = current.argv.length;
       } else if (word === "esac" && first === "esac" && nesting.at(-1) === "case") {
