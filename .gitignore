@@ -22,6 +22,7 @@ jj
 mole
 mpv/watch_later
 uv
+/opencode/
 /codex/*
 !/codex/AGENTS.md
 !/codex/trust-hooks.js
