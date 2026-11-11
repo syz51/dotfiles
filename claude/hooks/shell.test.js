@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { homedir } from "node:os";
-import { ghSubcommands, parseScript, visitCommands } from "./shell.js";
+import { ghSubcommands, gitAlias, gitGlobalOptions, parseScript, visitCommands } from "./shell.js";
 
 /** Every command `source` runs, with the directory it runs in. */
 function commands(source, cwd = "/repo") {
@@ -390,4 +390,37 @@ test("ghSubcommands skips options and reports -R and others before the subcomman
   expect(ghSubcommands(["gh", "-R", "o/r", "pr", "--repo=a/b", "merge", "-R", "x/y"], 2)).toEqual({ path: ["pr", "merge"], next: 6, repo: "a/b", other: undefined });
   expect(ghSubcommands(["gh", "-Ro/r", "pr", "merge"], 2).repo).toBe("o/r");
   expect(ghSubcommands(["gh", "-b", "x", "pr", "merge"], 2)).toEqual({ path: ["x", "pr"], next: 4, repo: undefined, other: "-b" });
+});
+
+test("gitGlobalOptions reads the directory, the settings in order, another repository and the subcommand", () => {
+  const words = ["git", "-C", "sub", "-c", "Alias.P=push", "--config-env", "core.pager=PAGER", "--config-env=user.name=NAME", "-p", "push", "-c", "x=y"];
+  expect(gitGlobalOptions(words, "/repo")).toEqual({
+    dir: "/repo/sub",
+    settings: [
+      { option: "-c", setting: "Alias.P=push", key: "alias.p", value: "push" },
+      { option: "--config-env", setting: "core.pager=PAGER", key: "core.pager", value: "PAGER" },
+      { option: "--config-env", setting: "user.name=NAME", key: "user.name", value: "NAME" },
+    ],
+    otherRepo: false,
+    index: 9,
+  });
+  expect(gitGlobalOptions(["git", "--work-tree=.", "-c", "flag", "status"], "/repo")).toMatchObject({
+    otherRepo: true, settings: [{ key: "flag", value: undefined }], index: 4,
+  });
+  expect(gitGlobalOptions(["git", "--git-dir", ".git"], "/repo")).toMatchObject({ otherRepo: true, index: 3 });
+  // -C as the last word changes nothing, and the subcommand index is past the end
+  expect(gitGlobalOptions(["git", "-C"], "/repo")).toMatchObject({ dir: "/repo", index: 3 });
+});
+
+test("gitAlias follows -c aliases and reports those it cannot read", () => {
+  const settings = (...words) => gitGlobalOptions(["git", ...words], "/repo").settings;
+  expect(gitAlias(settings("-c", "alias.p=push --force"), "p")).toEqual({ words: ["push", "--force"] });
+  expect(gitAlias(settings("-c", "alias.a=b x", "-c", "alias.b=push -f"), "a")).toEqual({ words: ["push", "-f", "x"] });
+  expect(gitAlias(settings("-c", "alias.push=status"), "push")).toBeUndefined();
+  expect(gitAlias(settings("-c", "alias.p=push"), "q")).toBeUndefined();
+  expect(gitAlias(settings("-c", "alias.p=push"), undefined)).toBeUndefined();
+  for (const words of [["--config-env", "alias.p=V"], ["-c", "alias.p=!sh"], ["-c", "alias.p"], ["-c", "alias.p= "],
+    ["-c", "alias.p=-C x push"], ["-c", "alias.p='push'"], ["-c", "alias.p=$X"], ["-c", "alias.p=q", "-c", "alias.q=p"]]) {
+    expect(gitAlias(settings(...words), "p")).toEqual({ unknown: words.at(-1) === "alias.q=p" ? "alias.p=q" : words[1] });
+  }
 });

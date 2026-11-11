@@ -348,6 +348,65 @@ export function changeDirectory(dir, path) {
 }
 
 /**
+ * Reads git's global options in `words` (a git command), from `words[1]` to the subcommand.
+ * Returns the directory after each `-C`, starting from `dir`; the `-c` and `--config-env`
+ * settings in order, each { option, setting, key, value }, where `key` is lower case and a
+ * --config-env value names a variable; whether --git-dir or --work-tree names another
+ * repository (`otherRepo`); and the subcommand's index (`index`, at or past the end when none).
+ */
+export function gitGlobalOptions(words, dir) {
+  const settings = [];
+  let otherRepo = false;
+  let i = 1;
+  while (i < words.length && words[i].startsWith("-")) {
+    const word = words[i];
+    if (word === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
+    if (/^--(?:git-dir|work-tree)(?:=|$)/.test(word)) otherRepo = true;
+    const setting = word === "-c" || word === "--config-env" ? words[i + 1] : /^--config-env=(.*)$/s.exec(word)?.[1];
+    if (setting !== undefined) {
+      const equals = setting.indexOf("=");
+      settings.push({
+        option: word === "-c" ? "-c" : "--config-env",
+        setting,
+        key: (equals === -1 ? setting : setting.slice(0, equals)).toLowerCase(),
+        value: equals === -1 ? undefined : setting.slice(equals + 1),
+      });
+    }
+    i += GIT_VALUE_OPTIONS.has(word) ? 2 : 1;
+  }
+  return { dir, settings, otherRepo, index: i };
+}
+
+// Built-in git commands, which git runs even when an alias has the same name.
+const GIT_BUILTINS = new Set(["add", "bisect", "branch", "checkout", "cherry-pick", "commit", "config", "diff", "fetch", "log",
+  "merge", "pull", "push", "rebase", "reset", "restore", "revert", "show", "stash", "status", "switch", "tag", "worktree"]);
+
+/**
+ * What git subcommand `name` runs when the `settings` of gitGlobalOptions define it as an alias.
+ * Returns { words } with the words that replace `name`, following aliases of aliases;
+ * { unknown } with the setting the guard cannot read: a variable's value, a shell (`!`) alias,
+ * quoting, options, a variable in the shell, or a loop; or undefined for no such alias.
+ */
+export function gitAlias(settings, name) {
+  let words;
+  const seen = new Set();
+  while (name !== undefined && !GIT_BUILTINS.has(name)) {
+    const key = `alias.${name.toLowerCase()}`;
+    const alias = settings.findLast((setting) => setting.key === key);
+    if (alias === undefined) break;
+    const expansion = alias.value?.trim().split(/\s+/) ?? [];
+    if (alias.option !== "-c" || seen.has(key) || expansion[0] === "" || expansion[0] === undefined
+      || /^[!-]/.test(expansion[0]) || /["'\\]/.test(alias.value) || expands(alias.value)) {
+      return { unknown: alias.setting };
+    }
+    seen.add(key);
+    words = [...expansion, ...(words ?? [name]).slice(1)];
+    name = expansion[0];
+  }
+  return words && { words };
+}
+
+/**
  * Skips getopt-style options from `argv[start]`. A short option group ends at its first letter
  * that takes a value, which is the rest of the word or else the next word; `--long=value`
  * carries its value; `--` ends the options. Returns the index of the first operand and each

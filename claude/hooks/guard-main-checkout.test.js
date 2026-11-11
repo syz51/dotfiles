@@ -515,3 +515,25 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
     expect(verdict("ssh host 'echo x | xargs sudo'")).toBeUndefined();
   });
 });
+
+describe("an alias set on the command line (dotfiles-278)", () => {
+  test.each([
+    ["git -c alias.sw=switch sw other", "it changes the branch of /main"],
+    ["git -c alias.co=checkout co feature", "it changes the branch of /main"],
+    ["git -c alias.c=config c claude.mainCheckout allow", "only the user sets it"],
+    ["git -c alias.b=sw -c alias.sw=switch b other", "it changes the branch of /main"],
+    ["git --config-env=alias.sw=V sw other", "alias the guard cannot read"],
+    ["git -c 'alias.sw=!git switch other' sw", "alias the guard cannot read"],
+  ])("blocks %s", (command, reason) => {
+    expect(verdict(command)).toContain(reason);
+  });
+  test.each([
+    ["git -c alias.sw=switch sw main"],
+    ["git -c alias.l=log l"],
+    ["git -c alias.sw=switch -c claude.mainCheckout=allow sw other"],
+    ["git -c alias.sw=switch sw other", "/linked"],
+    ["git --config-env=alias.sw=V sw other", "/linked"],
+  ])("allows %s", (...row) => {
+    expect(verdict(...row)).toBeUndefined();
+  });
+});

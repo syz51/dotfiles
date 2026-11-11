@@ -16,7 +16,9 @@
 // clear. The user can allow every such command for one repository with
 // `git config claude.mainCheckout allow`, which the guard refuses to let a session run.
 // This is a guardrail against mistakes, not a security
-// boundary: it cannot see aliases, scripts or direct edits of .git/config. Exit 2 blocks
+// boundary: it follows an alias that `-c` sets on the command, and blocks one it cannot read
+// in a main checkout, but it cannot see aliases in config files, scripts or direct edits of
+// .git/config. Exit 2 blocks
 // the command and shows stderr to Claude. The guard fails open: on a crash, on a script
 // nested too deeply, and when it cannot tell the repository. In a main checkout it also
 // blocks a command xargs supplies, and words xargs adds to a git or gh command that could
@@ -25,7 +27,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join, resolve, sep } from "node:path";
-import { changeDirectory, ghSubcommands, GIT_VALUE_OPTIONS, visitCommands } from "./shell.js";
+import { ghSubcommands, gitAlias, gitGlobalOptions, visitCommands } from "./shell.js";
 
 const OVERRIDE_KEY = "claude.maincheckout"; // git config keys ignore case
 // `git -c claude.mainCheckout=allow <command>`: the user asked for this one change here.
@@ -247,23 +249,22 @@ function lossReason(top, subcommand, args, dir, git) {
     + "Set them aside first with `git -c claude.mainCheckout=allow stash push -m <why>`, which keeps them recoverable, then run the command again.";
 }
 
-function gitCommand(words, dir, git, tempRoots, appended) {
-  let i = 1;
-  let unknownRepo = false;
-  let configured = false;
-  let userAsked = false;
-  while (i < words.length && words[i].startsWith("-")) {
-    if (words[i] === "-C" && i + 1 < words.length) dir = changeDirectory(dir, words[i + 1]);
-    if (/^--(?:git-dir|work-tree)(?:=|$)/.test(words[i])) unknownRepo = true;
-    // `-c merge.autostash=true` and the like can turn a fast-forward into something else.
-    if (words[i] === "-c" || /^--config-env(?:=|$)/.test(words[i])) configured = true;
-    // Git uses the last value given for a key. --config-env takes its value from a variable,
-    // which the guard cannot see, so it never counts as the user's request.
-    const setting = ["-c", "--config-env"].includes(words[i]) ? words[i + 1] : words[i].match(/^--config-env=(.*)/)?.[1];
-    if (setting?.split("=")[0].toLowerCase() === OVERRIDE_KEY) userAsked = words[i] === "-c" && setting.toLowerCase() === USER_ASKED;
-    i += GIT_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
+function gitCommand(words, cwd, git, tempRoots, appended) {
+  const { dir, settings, otherRepo: unknownRepo, index } = gitGlobalOptions(words, cwd);
+  // `-c merge.autostash=true` and the like can turn a fast-forward into something else.
+  const configured = settings.length > 0;
+  // Git uses the last value given for a key. --config-env takes its value from a variable,
+  // which the guard cannot see, so it never counts as the user's request.
+  const override = settings.findLast(({ key }) => key === OVERRIDE_KEY);
+  const userAsked = override?.option === "-c" && override.setting.toLowerCase() === USER_ASKED;
+  let [subcommand, ...args] = words.slice(index);
+  const alias = gitAlias(settings, subcommand);
+  if (alias?.unknown !== undefined) {
+    const top = unknownRepo || dir === undefined ? undefined : sharedMainCheckout(dir, git, tempRoots);
+    return top && `\`${alias.unknown}\` makes the git subcommand an alias the guard cannot read, and it may change the branch of ${top}, `
+      + "a main checkout other threads share. Run the command it stands for instead.";
   }
-  const [subcommand, ...args] = words.slice(i);
+  if (alias !== undefined) [subcommand, ...args] = [...alias.words, ...args];
   if (subcommand === "config" && setsOverride(args))
     return "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
       + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}`;
