@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyChecks, findMergeViolation, globMatches, parseMerge, runGh } from "./guard-pr-merge.js";
+import { classifyChecks, findMergeViolation, globMatches, parseMerge, runGh, runsOnEveryPullRequest } from "./guard-pr-merge.js";
 
 const HOOK = join(import.meta.dir, "guard-pr-merge.js");
 
@@ -10,6 +10,7 @@ const run = (name, status, conclusion, extra = {}) => ({ __typename: "CheckRun",
 const context = (name, state) => ({ __typename: "StatusContext", context: name, state });
 const PASSING = [run("Portable tests", "COMPLETED", "SUCCESS")];
 const VIEW = { number: 12, url: "https://github.com/o/r/pull/12", state: "OPEN", isDraft: false, mergeStateStatus: "CLEAN", baseRefName: "main", headRefOid: "abc123", statusCheckRollup: PASSING };
+const HEAD = VIEW.headRefOid;
 const ok = (value) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
 const NOT_FOUND = { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
 const PROTECTED = { protection: { enabled: true, required_status_checks: { enforcement_level: "everyone", contexts: ["Portable tests"], checks: [] } } };
@@ -26,13 +27,26 @@ const NOTICE = { path: ".github", message: "The ubuntu-latest label will migrate
 const billingRun = (id, ...others) => graphRun(id, 0, [BILLING, ...others]);
 const graph = (runs, slug = "github-actions") => ({ data: { repository: { object: { checkSuites: { nodes: [{ app: { slug: "vercel" }, checkRuns: { nodes: [] } }, { app: { slug }, checkRuns: { nodes: runs } }] } } } } });
 
-// A stubbed gh. `view` overrides the pull request fields; `branch`, `rules`, `workflows` and
-// `graphql` are the API answers (undefined: none). `calls` records { dir, args } for each call.
-function fakeGh({ view = {}, branch, rules, workflows, graphql, calls = [] } = {}) {
+// The answer to the guard's GraphQL query for the CI configuration at the head commit: `files`
+// maps each name in .github/workflows to its text (an object: the entry itself), and `circleci`
+// says whether .circleci/config.yml exists.
+const ciFiles = ({ files = {}, circleci = false, head = HEAD } = {}) => ({ data: { repository: {
+  head: head === null ? null : { oid: head },
+  workflows: Object.keys(files).length === 0 ? null : { entries: Object.entries(files).map(([name, text]) =>
+    (typeof text === "object" ? { name, ...text } : { name, type: "blob", object: { text, isTruncated: false } })) },
+  circleci: circleci ? { oid: "c1" } : null } } });
+const isCiQuery = (args) => args.some((arg) => arg.startsWith("query=") && arg.includes("workflows: object"));
+const PR_WORKFLOW = "name: Checks\non: [push, pull_request]\njobs: {}\n";
+
+// A stubbed gh. `view` overrides the pull request fields; `branch`, `rules`, `workflows`, `ci`
+// (ciFiles' options, or a function returning gh's result) and `graphql` (the failed-jobs query)
+// are the API answers (undefined: none). `calls` records { dir, args } for each call.
+function fakeGh({ view = {}, branch, rules, workflows, ci, graphql, calls = [] } = {}) {
   return (dir, args) => {
     calls.push({ dir, args });
     if (args[0] === "pr") return ok({ ...VIEW, ...view });
     const path = args[3];
+    if (path === "graphql" && isCiQuery(args)) return typeof ci === "function" ? ci() : ok(ciFiles({ head: view.headRefOid ?? HEAD, ...ci }));
     if (path === "graphql") {
       if (graphql === undefined) throw new Error("unexpected GraphQL call");
       return typeof graphql === "function" ? graphql() : ok(graphql);
@@ -47,7 +61,6 @@ function fakeGh({ view = {}, branch, rules, workflows, graphql, calls = [] } = {
 const verdict = (command, options = {}, cwd = "/repo") => findMergeViolation(command, cwd, fakeGh(options));
 // A merge that passes must pin the head commit the guard judged (dotfiles-290). The cases that test
 // something else pin it with this, after the first " merge".
-const HEAD = VIEW.headRefOid;
 const pinned = (command) => command.replace(" merge", ` merge --match-head-commit ${HEAD}`);
 
 describe("refuses", () => {
@@ -78,15 +91,15 @@ describe("refuses", () => {
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "COMPLETED", "ACTION_REQUIRED")] } }, "checks failed"],
     ["gh pr merge 12", { view: { statusCheckRollup: [context("ci/x", "FAILURE")] } }, "checks failed"],
     ["gh pr merge 12", { view: { statusCheckRollup: [context("ci/x", "ERROR")] } }, "checks failed"],
-    // no checks yet while the repository has workflows: CI may not have started
-    ["gh pr merge 12", { view: { statusCheckRollup: [] }, workflows: WORKFLOWS }, "CI may not have started"],
+    // no check yet from a workflow that runs on every pull request: CI may not have started
+    ["gh pr merge 12", { view: { statusCheckRollup: [] }, ci: { files: { "checks.yml": PR_WORKFLOW } } }, 'no check yet from workflow "Checks"'],
     // --auto is a direct merge where the base branch requires no checks
     ["gh pr merge 12 --auto", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],
     ["gh pr merge 12 --auto", { view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("t", "IN_PROGRESS", "")] }, branch: { protection: { required_status_checks: { enforcement_level: "off", contexts: ["x"] } } } }, "still running"],
     ["gh pr merge 12 --auto", { view: { isDraft: true, mergeStateStatus: "BLOCKED" }, branch: PROTECTED }, "is a draft"],
     // gh merges at once rather than enabling auto-merge when the pull request can merge now
     ["gh pr merge 12 --auto", { view: { mergeStateStatus: "UNSTABLE", statusCheckRollup: [...PASSING, run("Lint", "COMPLETED", "FAILURE")] }, branch: PROTECTED }, "checks failed"],
-    ["gh pr merge 12 --auto", { view: { mergeStateStatus: "CLEAN", statusCheckRollup: [] }, branch: PROTECTED, workflows: WORKFLOWS }, "CI may not have started"],
+    ["gh pr merge 12 --auto", { view: { mergeStateStatus: "CLEAN", statusCheckRollup: [] }, branch: PROTECTED, ci: { files: { "checks.yml": PR_WORKFLOW } } }, "CI may not have started"],
     // the shell fills in the selector, repository, an option or the subcommand
     ["gh pr merge $PR", {}, "the shell fills in `$PR`"],
     ["gh pr merge \"$(gh pr list -q .[0].number)\"", {}, "the shell fills in"],
@@ -193,7 +206,7 @@ describe("refuses", () => {
 
   test("when a later API query fails", () => {
     const gh = (dir, args) => (args[0] === "pr" ? ok({ ...VIEW, statusCheckRollup: [] }) : { code: 1, stdout: "", stderr: "HTTP 500" });
-    expect(findMergeViolation("gh pr merge 12", "/repo", gh)).toContain("gh could not list the repository's workflows (HTTP 500)");
+    expect(findMergeViolation("gh pr merge 12", "/repo", gh)).toContain("gh could not read the head commit's CI configuration (HTTP 500)");
   });
 
   test("once the time budget is spent", () => {
@@ -209,9 +222,10 @@ describe("allows", () => {
     ["gh pr merge 12 -sd", {}],
     ["gh pr merge 12 --admin=false", {}],
     ["gh pr merge 12", { view: { statusCheckRollup: [run("a", "COMPLETED", "SUCCESS"), run("b", "COMPLETED", "NEUTRAL"), run("c", "COMPLETED", "SKIPPED"), context("ci/x", "SUCCESS")] } }],
-    // no checks in a repository without active workflows
+    // no checks where no CI runs on every pull request
     ["gh pr merge 12", { view: { statusCheckRollup: [] } }],
-    ["gh pr merge 12", { view: { statusCheckRollup: [] }, workflows: { workflows: [{ path: ".github/workflows/old.yml", state: "disabled_manually" }, { path: "dynamic/dependabot/dependabot-updates", state: "active" }] } }],
+    // the Actions API lists a workflow as active that the head commit no longer has
+    ["gh pr merge 12", { view: { statusCheckRollup: [] }, workflows: WORKFLOWS }],
     // --auto where the base branch requires checks, by protection or a ruleset: GitHub waits for them
     ["gh pr merge 12 --auto --squash", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }],
     ["gh pr merge 12 --auto", { rules: [{ type: "required_status_checks" }], view: { mergeStateStatus: "BEHIND", statusCheckRollup: [] }, workflows: WORKFLOWS }],
@@ -332,7 +346,9 @@ describe("resolves the pull request", () => {
     expect(calls.slice(1).map((call) => call.args)).toEqual([
       ["api", "--hostname", "ghe.example", "repos/team/app/branches/release%2F1"],
       ["api", "--hostname", "ghe.example", "repos/team/app/rules/branches/release%2F1"],
+      ["api", "--hostname", "ghe.example", "graphql", ...calls[3].args.slice(4)],
     ]);
+    expect(calls[3].args).toContain("owner=team");
   });
 });
 
@@ -343,7 +359,7 @@ describe("an Actions job GitHub never started for billing", () => {
   const FALLBACKS = [context("ci/circleci: build", "SUCCESS"), context("ci/circleci: test", "SUCCESS")];
   const BOTH = graph([billingRun(11), billingRun(12)]);
   const merge = (rollup, graphql, calls) => verdict(pinned("gh pr merge 12 --merge"), { view: { statusCheckRollup: rollup }, graphql, calls });
-  const graphCalls = (calls) => calls.filter((call) => call.args[3] === "graphql");
+  const graphCalls = (calls) => calls.filter((call) => call.args[3] === "graphql" && !isCiQuery(call.args));
 
   test("passes when a non-Actions check of the same job passed, after one GraphQL call on the head commit", () => {
     const calls = [];
@@ -481,6 +497,119 @@ describe("an Actions job GitHub never started for billing", () => {
   });
 });
 
+// The guard expects a check from each workflow at the head commit that runs on every pull
+// request, and from CircleCI where it is configured (dotfiles-291).
+describe("CI that runs on every pull request", () => {
+  test.each([
+    ["pull_request", true],
+    ["pull_request_target", true],
+    ["push", false],
+    [["push", "pull_request"], true],
+    [["push", "schedule"], false],
+    [{ pull_request: null }, true],
+    [{ pull_request: {} }, true],
+    [{ pull_request_target: null, push: { branches: ["main"] } }, true],
+    // a filter the guard does not evaluate: the workflow may not run on a given pull request
+    [{ pull_request: { paths: ["src/**"] } }, false],
+    [{ pull_request: { "paths-ignore": ["docs/**"] } }, false],
+    [{ pull_request: { branches: ["main"] } }, false],
+    [{ pull_request: { "branches-ignore": ["dev"] } }, false],
+    [{ pull_request: { types: ["opened"] } }, false],
+    [{ pull_request: { types: ["opened"] }, pull_request_target: null }, true],
+    // marketing-frontend's shape: dispatch only, and dispatch with tag pushes
+    [{ workflow_dispatch: null }, false],
+    [{ workflow_dispatch: null, push: { tags: ["v*"] } }, false],
+    [{ schedule: [{ cron: "0 0 * * *" }] }, false],
+    [{ workflow_call: null }, false],
+    [{ pull_request: ["opened"] }, false],
+    [null, false],
+    [undefined, false],
+  ])("on: %j runs on every pull request: %p", (on, expected) => {
+    expect(runsOnEveryPullRequest(on)).toBe(expected);
+  });
+
+  const merge = (options) => verdict(pinned("gh pr merge 12"), options);
+  const CHECKS = run("test", "COMPLETED", "SUCCESS", { workflowName: "Checks" });
+
+  test.each([
+    ["no checks yet", [], { "checks.yml": PR_WORKFLOW }, 'workflow "Checks"'],
+    // a fast third-party status passed before the Actions runs appeared
+    ["only a third-party status", [context("license/cla", "SUCCESS")], { "checks.yml": PR_WORKFLOW }, 'workflow "Checks"'],
+    ["a run of another workflow only", [run("lint", "COMPLETED", "SUCCESS", { workflowName: "Lint" })], { "checks.yml": PR_WORKFLOW }, 'workflow "Checks"'],
+    ["a workflow without a name, named by its path", [], { "ci.yaml": "on:\n  pull_request_target:\n" }, 'workflow ".github/workflows/ci.yaml"'],
+    ["two missing workflows", [], { "a.yml": "name: A\non: pull_request\n", "b.yml": "name: B\non: [pull_request]\n" }, 'workflow "A", workflow "B"'],
+  ])("refuses with %s", (_, rollup, files, missing) => {
+    expect(merge({ view: { statusCheckRollup: rollup }, ci: { files } })).toContain(`pull request #12's head commit has no check yet from ${missing}, which run on every pull request`);
+  });
+
+  test("keeps expecting a workflow that Actions lists as active", () => {
+    const workflows = { workflows: [{ path: ".github/workflows/checks.yml", state: "active" }] };
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { files: { "checks.yml": PR_WORKFLOW } }, workflows })).toContain('workflow "Checks"');
+  });
+
+  test("refuses when CircleCI is configured and has not reported, also with only a CircleCI check run", () => {
+    for (const rollup of [[], [CHECKS], [run("ci/circleci: build", "COMPLETED", "SUCCESS", { workflowName: undefined })]]) {
+      expect(merge({ view: { statusCheckRollup: rollup }, ci: { circleci: true } })).toContain("no check yet from CircleCI");
+    }
+    expect(merge({ view: { statusCheckRollup: [] }, ci: { circleci: true, files: { "checks.yml": PR_WORKFLOW } } })).toContain('workflow "Checks", CircleCI');
+  });
+
+  test.each([
+    ["the workflow file does not parse", { "checks.yml": "on: [pull_request\n" }, ".github/workflows/checks.yml at the head commit does not parse as YAML"],
+    ["the workflow file is not a mapping", { "checks.yml": "- pull_request\n" }, ".github/workflows/checks.yml at the head commit is not a YAML mapping"],
+    ["the workflow file is truncated", { "checks.yml": { type: "blob", object: { text: "on: push", isTruncated: true } } }, "gh could not read the text of .github/workflows/checks.yml"],
+    ["the workflow file is binary", { "checks.yml": { type: "blob", object: { text: null, isTruncated: false } } }, "gh could not read the text of .github/workflows/checks.yml"],
+  ])("refuses when %s", (_, files, reason) => {
+    const violation = merge({ ci: { files } });
+    expect(violation).toContain(reason);
+    expect(violation).toContain("The guard refuses a merge it cannot check");
+  });
+
+  test.each([
+    ["the query fails", () => ({ code: 1, stdout: "", stderr: "GraphQL: Something went wrong" }), "gh could not read the head commit's CI configuration (GraphQL: Something went wrong)"],
+    ["the query times out", () => { throw new Error("spawnSync gh ETIMEDOUT"); }, "gh could not read the head commit's CI configuration (spawnSync gh ETIMEDOUT)"],
+    ["the head commit is not found", () => ok(ciFiles({ head: null })), "gh could not find the head commit abc123"],
+  ])("refuses when %s", (_, ci, reason) => {
+    expect(merge({ ci })).toContain(reason);
+  });
+
+  test.each([
+    ["no CI configuration", [], {}],
+    ["dispatch, push, schedule, tag and reusable workflows only", [], {
+      "ci.yml": "on:\n  workflow_dispatch:\n", "image.yml": "on:\n  workflow_dispatch:\n  push:\n    tags:\n      - v*\n",
+      "nightly.yml": "on:\n  schedule:\n    - cron: '0 3 * * *'\n", "main.yml": "on:\n  push:\n    branches: [main]\n", "reuse.yml": "on: workflow_call\n" }],
+    ["workflows with filtered pull request triggers", [], { "docs.yml": "on:\n  pull_request:\n    paths: [docs/**]\n", "rel.yml": "on:\n  pull_request:\n    branches: [release]\n" }],
+    ["a check from the workflow", [CHECKS], { "checks.yml": PR_WORKFLOW }],
+    ["a check from the workflow named by its path", [run("t", "COMPLETED", "SUCCESS", { workflowName: ".github/workflows/ci.yml" })], { "ci.yml": "on: pull_request\n" }],
+    // GitHub runs only YAML files directly in .github/workflows
+    ["files GitHub does not run", [], { "README.md": "on: pull_request\n", "ci.yml.disabled": "on: pull_request\n", nested: { type: "tree", object: {} } }],
+  ])("passes with %s", (_, rollup, files) => {
+    const calls = [];
+    expect(verdict(pinned("gh pr merge 12"), { view: { statusCheckRollup: rollup }, ci: { files }, calls })).toBeUndefined();
+    // one added call: the CI configuration query, and no workflow list
+    expect(calls.map((call) => (call.args[0] === "pr" ? "pr" : call.args[3]))).toEqual(["pr", "graphql"]);
+    expect(calls[1].args).toContain("oid=abc123");
+    expect(calls[1].args).toContain("circleci=abc123:.circleci/config.yml");
+  });
+
+  test("passes when CircleCI reported a status", () => {
+    expect(merge({ view: { statusCheckRollup: [context("ci/circleci: build", "SUCCESS")] }, ci: { circleci: true } })).toBeUndefined();
+  });
+
+  test("does not expect a workflow that Actions lists as disabled", () => {
+    const calls = [];
+    const workflows = { workflows: [{ path: ".github/workflows/checks.yml", state: "disabled_manually" }] };
+    expect(verdict(pinned("gh pr merge 12"), { view: { statusCheckRollup: [] }, ci: { files: { "checks.yml": PR_WORKFLOW } }, workflows, calls })).toBeUndefined();
+    expect(calls.at(-1).args[3]).toBe("repos/o/r/actions/workflows?per_page=100");
+  });
+
+  test("waits for pending and failed checks before reading the CI configuration", () => {
+    const calls = [];
+    expect(verdict(pinned("gh pr merge 12"), { view: { statusCheckRollup: [run("t", "QUEUED", "")] }, calls })).toContain("still running");
+    expect(calls).toHaveLength(1);
+  });
+});
+
 test("parseMerge reads short option groups and values", () => {
   expect(parseMerge(["-sdR", "o/r", "12"])).toMatchObject({ repo: "o/r", selector: "12", admin: false });
   expect(parseMerge(["-b", "--admin", "12"])).toMatchObject({ admin: false, selector: "12" });
@@ -553,8 +682,9 @@ describe("pins the merge to the head commit it checked", () => {
   test("checks the pin against the SHA from the same query as the checks", () => {
     const calls = [];
     expect(verdict("gh pr merge 12 --match-head-commit def456", { view: { headRefOid: "def456" }, calls })).toBeUndefined();
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2);
     expect(calls[0].args.at(-1)).toContain("headRefOid,statusCheckRollup");
+    expect(calls[1].args).toContain("workflows=def456:.github/workflows");
   });
 });
 
@@ -567,7 +697,8 @@ describe("the hook", () => {
     return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
   };
   const bash = (command, extraEnv) => hook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command }, cwd: root }), extraEnv);
-  const reply = (value) => writeFileSync(join(root, "reply"), JSON.stringify(value));
+  // Every reply also answers the CI configuration query: no workflows at the head commit.
+  const reply = (value) => writeFileSync(join(root, "reply"), JSON.stringify({ ...value, data: { ...value.data, repository: { ...ciFiles().data.repository, ...value.data?.repository } } }));
 
   beforeAll(() => {
     root = mkdtempSync(join(tmpdir(), "guard-pr-merge-"));

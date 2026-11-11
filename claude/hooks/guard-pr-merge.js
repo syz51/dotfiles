@@ -2,7 +2,11 @@
 // Autonomy section: agents merge their pull requests only once the checks pass. Before a
 // `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses --admin, a draft,
 // a branch that is BEHIND its base or DIRTY with conflicts, and a head commit with a pending or
-// failed check, or with no checks while the repository has active Actions workflows. --auto
+// failed check, or with no check yet from CI that runs on every pull request: an Actions workflow
+// at the head commit whose pull_request or pull_request_target trigger has no branch, path or
+// type filter, and CircleCI where .circleci/config.yml exists; one GraphQL call reads those
+// files. A workflow with a filtered trigger is not expected, so its check can still arrive after
+// the merge. A workflow that Actions lists as disabled is not expected either. --auto
 // passes when the base branch requires status checks and gh will enable auto-merge rather than
 // merge at once, because GitHub then waits for the required checks; otherwise it is checked like
 // a direct merge. It also refuses `gh api` calls to the pulls/<n>/merge endpoint and the
@@ -22,8 +26,9 @@
 // steps and annotations, and only when every failed check is a failed Actions job. A merge it
 // checks like a direct merge must pin the head commit it judged with --match-head-commit, so
 // GitHub refuses the merge if the head moves after the check; the refusal names the SHA and the
-// command to rerun. A pin that is not the head is refused for every merge. It fails closed: a gh query that fails or times out, an unknown merge option and a crash all
-// block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
+// command to rerun. A pin that is not the head is refused for every merge. It fails closed:
+// a gh query that fails or times out, a workflow file that does not parse, an unknown merge
+// option and a crash all block the merge (exit 2, with the reason on stderr). It cannot see gh aliases,
 // scripts, a merge endpoint held wholly in a variable, a mutation read from a file, or other
 // HTTP clients such as curl.
 import { spawnSync } from "node:child_process";
@@ -57,7 +62,19 @@ const FAILED_RUNS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjec
     checkSuites(first: 20, filterBy: {appId: 15368}) { nodes { app { slug }
       checkRuns(first: 30, filterBy: {checkType: ALL, conclusions: [FAILURE]}) { nodes {
         databaseId steps(first: 1) { totalCount } annotations(first: 10) { totalCount nodes { path message annotationLevel } } } } } } } } } }`;
-const MERGE_ENDPOINT = /(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
+// The CI configuration at the head commit: each file in .github/workflows with its text, and
+// whether .circleci/config.yml exists. `head` confirms the commit was found.
+const WORKFLOW_DIR = ".github/workflows";
+const CIRCLECI_CONFIG = ".circleci/config.yml";
+const CI_FILES_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!, $workflows: String!, $circleci: String!) {
+  repository(owner: $owner, name: $name) { head: object(oid: $oid) { oid }
+    workflows: object(expression: $workflows) { ... on Tree { entries { name type object { ... on Blob { text isTruncated } } } } }
+    circleci: object(expression: $circleci) { oid } } }`;
+const PR_EVENTS = ["pull_request", "pull_request_target"];
+// A workflow with one of these under its pull request trigger may not run on a given pull
+// request; the guard does not evaluate them, so it does not expect a check from it.
+const PR_FILTERS = ["paths", "paths-ignore", "branches", "branches-ignore", "types"];
+const MERGE_ENDPOINT =/(?:^|\/)pulls\/[^/\s]+\/merge(?:$|[/?#\s])/;
 const MERGE_MUTATIONS = /\b(?:mergePullRequest|enablePullRequestAutoMerge)\b/;
 // Each gh call gets at most this long, and the hook stops querying once the budget is spent,
 // so it refuses before settings.json's 45-second timeout, which would let the command through.
@@ -247,6 +264,65 @@ function billingSkippedJobs(query, dir, api, owner, name, oid) {
   return skipped;
 }
 
+/**
+ * Whether a workflow's `on:` value runs it on every pull request: pull_request or
+ * pull_request_target with no branch, path or type filter, in string, list or map form.
+ */
+export function runsOnEveryPullRequest(on) {
+  if (typeof on === "string") return PR_EVENTS.includes(on);
+  if (Array.isArray(on)) return on.some((event) => PR_EVENTS.includes(event));
+  if (on === null || typeof on !== "object") return false;
+  return PR_EVENTS.some((event) => {
+    if (!Object.hasOwn(on, event)) return false;
+    const filters = on[event];
+    return filters === null || (typeof filters === "object" && !Array.isArray(filters) && !PR_FILTERS.some((filter) => Object.hasOwn(filters, filter)));
+  });
+}
+
+/**
+ * The CI the head commit `oid` should have a check from, but has none in `rollup`: each Actions
+ * workflow in .github/workflows at that commit that runs on every pull request, named by its
+ * `name:` or else its path, and CircleCI, when .circleci/config.yml exists there. One GraphQL
+ * call reads both. Only when a workflow is missing, a REST call reads the workflows' states, so
+ * one that is disabled in Actions is not expected. A file that does not parse refuses the merge.
+ */
+function missingCi(query, dir, api, repo, owner, name, oid, rollup) {
+  const answer = query(dir, [...api, "graphql", "-f", `query=${CI_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
+    "-f", `oid=${oid}`, "-f", `workflows=${oid}:${WORKFLOW_DIR}`, "-f", `circleci=${oid}:${CIRCLECI_CONFIG}`],
+  "read the head commit's CI configuration");
+  const repository = answer?.data?.repository;
+  // Without the commit, the files read as absent, and nothing would be expected.
+  if (repository?.head?.oid !== oid) throw new Refusal(`gh could not find the head commit ${oid} to read its CI configuration.`);
+  const expected = [];
+  for (const entry of repository.workflows?.entries ?? []) {
+    // GitHub runs only the YAML files directly in .github/workflows.
+    if (entry?.type !== "blob" || !/\.ya?ml$/.test(entry.name)) continue;
+    const path = `${WORKFLOW_DIR}/${entry.name}`;
+    const text = entry.object?.text;
+    if (typeof text !== "string" || entry.object.isTruncated) throw new Refusal(`gh could not read the text of ${path} at the head commit.`);
+    let workflow;
+    try {
+      workflow = Bun.YAML.parse(text);
+    } catch (error) {
+      throw new Refusal(`${path} at the head commit does not parse as YAML (${firstLine(error.message)}), so the guard cannot tell whether it runs on pull requests.`);
+    }
+    if (workflow === null || typeof workflow !== "object" || Array.isArray(workflow)) {
+      throw new Refusal(`${path} at the head commit is not a YAML mapping, so the guard cannot tell whether it runs on pull requests.`);
+    }
+    if (runsOnEveryPullRequest(workflow.on)) expected.push({ path, name: typeof workflow.name === "string" && workflow.name !== "" ? workflow.name : path });
+  }
+  const ran = new Set(rollup.filter((check) => check.__typename === "CheckRun").map((check) => check.workflowName));
+  let missing = expected.filter((workflow) => !ran.has(workflow.name));
+  if (missing.length > 0) {
+    const listed = query(dir, [...api, `${repo}/actions/workflows?per_page=100`], "list the repository's workflows", { workflows: [] });
+    const disabled = new Set((listed.workflows ?? []).filter((workflow) => workflow.state !== "active").map((workflow) => workflow.path));
+    missing = missing.filter((workflow) => !disabled.has(workflow.path));
+  }
+  const names = missing.map((workflow) => `workflow "${workflow.name}"`);
+  if (repository.circleci && !rollup.some((check) => check.__typename === "StatusContext" && check.context?.startsWith("ci/circleci"))) names.push("CircleCI");
+  return names;
+}
+
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
 function judgeMerge(merge, words, next, dir, query, { setsHost, setsRepo, setsGitDir, remote }) {
   if (merge.unresolved !== undefined) {
@@ -302,12 +378,9 @@ function judgeMerge(merge, words, next, dir, query, { setsHost, setsRepo, setsGi
   const { pending, failed } = checks;
   if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
   if (pending.length > 0) return `checks are still running on ${pr}'s head commit: ${list(pending)}. Wait until they finish and pass, then merge.`;
-  if (rollup.length === 0) {
-    const workflows = query(where, [...api, `${repo}/actions/workflows?per_page=100`], "list the repository's workflows", { workflows: [] });
-    const active = (workflows.workflows ?? []).filter((workflow) => workflow.state === "active" && workflow.path?.startsWith(".github/workflows/"));
-    if (active.length > 0) {
-      return `${pr}'s head commit has no checks yet, but the repository has Actions workflows, so CI may not have started. Wait for its checks to appear and pass, then merge.`;
-    }
+  const missing = missingCi(query, where, api, repo, owner, name, head, rollup);
+  if (missing.length > 0) {
+    return `${pr}'s head commit has no check yet from ${list(missing)}, which run on every pull request, so CI may not have started. Wait for their checks to appear and pass, then merge.`;
   }
   // GitHub refuses a merge whose --match-head-commit is not the head, so a commit pushed after
   // this check cannot merge on the checks of the one before.
