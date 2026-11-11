@@ -502,14 +502,13 @@ describe("work board", () => {
     });
   });
 
-  // opencode's claude-hooks plugin runs Claude's hook commands with BOARD_HOOK_RUNTIME, so
-  // the board registers its sessions as runtime opencode, which the Claude usage hold skips.
-  test("BOARD_HOOK_RUNTIME replaces the runtime argument", () => {
+  // The opencode port that set BOARD_HOOK_RUNTIME is gone; the runtime argument alone counts.
+  test("BOARD_HOOK_RUNTIME no longer replaces the runtime argument", () => {
     withHome((home, run) => {
       fakeBoard(home);
       for (const event of ["stop", "pre-tool-use"]) {
         expect(run([event, "claude"], { BOARD_HOOK_RUNTIME: "opencode" }).status, event).toBe(0);
-        expect(readFileSync(join(home, "args"), "utf8")).toBe(`hook ${event} --runtime opencode `);
+        expect(readFileSync(join(home, "args"), "utf8")).toBe(`hook ${event} --runtime claude `);
       }
     });
   });

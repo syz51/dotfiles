@@ -28,13 +28,6 @@ uv
 !/codex/config.example.toml
 !/codex/hooks.json
 !/codex/keybindings.json
-/opencode/*
-!/opencode/opencode.json
-!/opencode/AGENTS.md
-!/opencode/agents/
-!/opencode/plugins/
-/opencode/plugins/*
-!/opencode/plugins/claude-hooks/
 /claude/*
 !/claude/CLAUDE.md
 !/claude/frontend-avoid.md
