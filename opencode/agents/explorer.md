@@ -1,7 +1,7 @@
 ---
 description: "Read-only investigation of one independent area in parallel with other work: codebase search, audits, and evidence gathering."
 mode: subagent
-model: opencode/claude-haiku-5-5#xhigh
+model: opencode/gpt-6-luna#max
 permissions:
   - { action: edit, resource: "*", effect: deny }
   - { action: write, resource: "*", effect: deny }

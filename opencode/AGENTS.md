@@ -30,4 +30,6 @@ The instructions in `~/.claude/CLAUDE.md` were written for Claude Code. In openc
 
 ## Models
 
-- Use only `opencode/claude-opus-5-5` and `opencode/claude-haiku-5-5`, with a `#variant` for the effort level.
+- In opencode, the user chose GPT models over Claude. `CLAUDE.md`'s Claude-only rule covers Claude Code; here it means: use only the models that the user configured.
+- The main session runs `opencode/gpt-6.1-sol#xhigh`. `worker` and `solver` run the same model, and `explorer` runs `opencode/gpt-6-luna#max`.
+- Never pass a `model` to `subagent`; each agent keeps its configured model. Never start the `codex` CLI.
