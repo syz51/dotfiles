@@ -435,7 +435,7 @@ guard's messages.
 `claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
 compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
 window, and long threads re-read most of that context on every call. The value applies to
-every session, subagents included, on both Macs. It was 300000, which compacts near 267K,
+every session, subagents included, on the Air. It was 300000, which compacts near 267K,
 from 2026-11-06. From 2026-11-08 it is 200000, which compacts near 167K, as a trial. At
 300000, on the Air from 2026-11-06 to part of 2026-11-08, a main-thread call read 150K
 cached tokens on average, 26% of calls carried more than 200K of context, and all calls
@@ -709,8 +709,10 @@ provides. It runs `~/.cargo/bin/board` and does nothing until that is installed.
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
 `board` rejects that call's `pre-tool-use` event, which the script reports as a failed hook
-rather than the exit code that would block the call. On the Air, with a device token created
-on the server host (the Pro runs no board daemon, since its coordinators would run Claude):
+rather than the exit code that would block the call. On each Mac, with a device token created
+on the server host. The Pro keeps `board` and its token for config-sync's reports, but skips
+the last three lines: it runs no Claude MCP server and no `board watch`, whose coordinators
+would run Claude:
 
 ```sh
 cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
