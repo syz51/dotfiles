@@ -568,12 +568,12 @@ describe("spend", () => {
 });
 
 describe("end to end", () => {
-  // A fake claude that records its argv, its process id and whether a key variable
-  // reached it, then exits with FAKE_EXIT.
+  // A fake claude that records its argv, its process id, its ANTHROPIC_BASE_URL and whether
+  // a key variable reached it, then exits with FAKE_EXIT.
   function fakeClaude() {
     const dir = join(root, "real");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\necho $$ > "${join(root, "pid.txt")}"\n[ -n "\${ANTHROPIC_API_KEY:-}" ] && echo visible > "${join(root, "key-env.txt")}"\n[ -n "\${FAKE_HOOKS:-}" ] && "${process.execPath}" "${join(root, "hooks.js")}" "$@"\nexit "\${FAKE_EXIT:-0}"\n`);
+    writeFileSync(join(dir, "claude"), `#!/bin/sh\nprintf '%s\\n' "$@" > "${join(root, "argv.txt")}"\necho $$ > "${join(root, "pid.txt")}"\nprintf '%s' "\${ANTHROPIC_BASE_URL:-}" > "${join(root, "base-url.txt")}"\n[ -n "\${ANTHROPIC_API_KEY:-}" ] && echo visible > "${join(root, "key-env.txt")}"\n[ -n "\${FAKE_HOOKS:-}" ] && "${process.execPath}" "${join(root, "hooks.js")}" "$@"\nexit "\${FAKE_EXIT:-0}"\n`);
     // With FAKE_HOOKS ({ event: input }), it ends as Claude Code ends a run: it runs those
     // events' hooks of its --settings, in order, each given its input.
     writeFileSync(join(root, "hooks.js"), `import { spawnSync } from "node:child_process";
@@ -658,6 +658,15 @@ for (const [event, input] of Object.entries(JSON.parse(process.env.FAKE_HOOKS)))
     expect(run.argv).toEqual(["-p", "hello"]);
     expect(readFileSync(join(root, "key-env.txt"), "utf8").trim()).toBe("visible");
     expect(decisions().at(-1)).toMatchObject({ mode: "passthrough", reason: "caller set ANTHROPIC_API_KEY" });
+  });
+
+  test("claude-experiment's proxy becomes claude's base URL, and the run is still billed as planned", async () => {
+    const proxied = await runWrapper(["-p", "hello"], { extraEnv: { API_FIRST_PROXY_URL: "http://127.0.0.1:9" } });
+    expect(proxied.argv[2]).toBe("--settings");
+    expect(readFileSync(join(root, "base-url.txt"), "utf8")).toBe("http://127.0.0.1:9");
+    expect(decisions().at(-1).mode).toBe("api");
+    await runWrapper(["-p", "hello"]);
+    expect(readFileSync(join(root, "base-url.txt"), "utf8")).toBe("");
   });
 
   test("a loop through the shim stops at the nesting limit", async () => {
