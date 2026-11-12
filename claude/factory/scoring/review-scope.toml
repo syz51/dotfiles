@@ -1,0 +1,39 @@
+# Which changes need a review (claude/CLAUDE.md, Review). Every pushed or merged change
+# in any repository needs one, unless every file it changes is on the `trivial` list
+# below. The review-skipped detector reads this file and flags sessions that pushed or
+# merged a change with a file off the list and no review.
+#
+# The list is by file kind, never by repository: no repository skips review. Globs match
+# paths relative to the repository root (Bun.Glob syntax). A file on the list is
+# generated or binary, so a diff review has nothing to read in it. Tune the list here at
+# any time. A change applies to sessions scored afterwards; to rescore past sessions,
+# bump the version in rubric.json. The repository is public, so name only paths, never
+# hosts, logins or private contents.
+
+trivial = [
+  # Lockfiles, which package managers write.
+  "**/bun.lock",
+  "**/bun.lockb",
+  "**/package-lock.json",
+  "**/yarn.lock",
+  "**/pnpm-lock.yaml",
+  "**/Cargo.lock",
+  "**/uv.lock",
+  "**/poetry.lock",
+  "**/Pipfile.lock",
+  "**/Gemfile.lock",
+  "**/composer.lock",
+  "**/go.sum",
+  "**/flake.lock",
+  # Test snapshots, which test runners write.
+  "**/__snapshots__/**",
+  "**/*.snap",
+  # Raster images, which a diff cannot show. SVG is text and can hold script, so it is
+  # reviewed.
+  "**/*.png",
+  "**/*.jpg",
+  "**/*.jpeg",
+  "**/*.gif",
+  "**/*.webp",
+  "**/*.ico",
+]

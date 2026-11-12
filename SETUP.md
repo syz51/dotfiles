@@ -575,15 +575,16 @@ share of correctness, security and reliability findings. A PR counts as reviewed
 session that linked it ran a review. The section compares the revert rate of reviewed
 and unreviewed merged PRs.
 
-[`claude/factory/scoring/high-impact.toml`](claude/factory/scoring/high-impact.toml)
-lists the high-impact paths of each repository with a work board. A default list covers
-CI workflows, hooks and guards, settings, installers and deployment, Terraform, Vault,
-migrations and auth, minus docs and tests. Each repository can add its own paths. The
-Review rule treats a change to a listed path as high-impact. The `review-skipped`
-detector fails a session that pushed or merged such a change with no review, a
-`reviewer` agent run or a `/code-review`, started since the first edit. It finds each
-edited file's repository through the board client's `[projects]` checkouts and their worktrees, after resolving symbolic links such
-as `~/.claude`, and skips files git ignores. A push settles only the edits of the
+The Review rule asks for a review of every pushed or merged change, in every repository.
+[`claude/factory/scoring/review-scope.toml`](claude/factory/scoring/review-scope.toml)
+lists the trivial file kinds a change may skip review for: lockfiles, test snapshots and
+raster images. The list is by file kind, never by repository, and the loader refuses
+repository entries. The `review-skipped` detector fails a session that pushed or merged a
+change to a file off the list with no review, a `reviewer` agent run or a
+`/code-review`, started since the first edit. It finds each edited file's repository
+through the board client's `[projects]` checkouts and their worktrees, then through git
+and the `origin` remote for any other checkout on the device. It resolves symbolic links
+such as `~/.claude` first, and skips files git ignores. A push settles only the edits of the
 repository its folder belongs to. List changes apply to sessions scored afterwards; bump
 the rubric version to rescore past ones.
 
@@ -1170,7 +1171,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   before its track returns, then brings both back, removes the worktrees and their
   branches, and runs the checks itself. Each check prints its own directory when it
   passes, so the session's output shows that the copy in the checkout, not a
-  worktree's, passed. The session hands a high-impact commit's review to one
+  worktree's, passed. The session hands a commit's review to one
   `reviewer` agent in the background, in the same checkout, with the commit's SHA in its
   prompt and no `/code-review` call. It answers a follow-up question while the review
   runs. The review reaches the reply and leaves the checkout, remote and worktrees as

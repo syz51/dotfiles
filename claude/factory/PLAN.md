@@ -237,6 +237,17 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   14 pass, 245 na); agent-board has the most flagged files, then dotfiles, email-agent
   and vps. Deletes, moves and patches are not seen. The Review rule now says a listed
   path is always high-impact.
+- [x] Rubric v14 (2026-11-12, board task dotfiles-487): the user asked for a review of
+  every change in every repository they own or work in. The Review rule now asks for one
+  `reviewer` run on every pushed or merged change. The high-impact path lists are retired:
+  `scoring/review-scope.toml` lists only trivial file kinds (lockfiles, test snapshots,
+  raster images) a change may skip review for, by file kind, never by repository.
+  `review-skipped` counts every edit off that list, and maps files in checkouts the board
+  does not list through git and their `origin` remote. Over 30 days to 2026-11-12 it
+  fails 277 of 1813 sessions (636 unreviewed pushes; 153 pass, 1383 na); vps, dotfiles
+  and agent-board have the most flagged files, then research-factory, email-agent, t3code
+  and papers. A removed T3 worktree of a repository the board does not list is not seen,
+  so the count is a lower bound for those repositories (dotfiles-495).
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
@@ -553,7 +564,8 @@ Review docs on code.claude.com, read 2026-11-07.
 - Decision (user, 2026-11-07, ask #37): a circuit breaker. Agents keep merging, and PRs to
   high-impact paths wait for the user while the revert rate of reviewed PRs is above a
   limit. The limit, window, reset rule and paths stay in one config file the user can
-  change at any time.
+  change at any time. Since dotfiles-487 retired `high-impact.toml`, the breaker's own
+  config holds its path list; the retired lists in git history are a starting point.
 - Tasks, all p1 and accepted: dotfiles-100 (outcome records), 101 (level bench), 102
   (path tiers and skipped-review detector), 103 (review briefs), 104 (weekly review of
   main), 105 (fixes for recurring finding classes) and 107 (the breaker). The board holds

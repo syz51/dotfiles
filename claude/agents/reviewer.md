@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: "Read-only review of one git diff for defects, as the Review section asks for a high-impact change: one independent track in the background, in parallel with other work. Its prompt is only the range, such as `origin/main...<SHA>`; it returns typed findings as JSON."
+description: "Read-only review of one git diff for defects, as the Review section asks for every pushed or merged change: one independent track in the background, in parallel with other work. Its prompt is only the range, such as `origin/main...<SHA>`; it returns typed findings as JSON."
 model: opus
 effort: high
 skills: diff-review

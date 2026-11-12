@@ -1,6 +1,6 @@
 ---
 name: diff-review
-description: Review one git diff for defects and return typed findings as JSON. The `reviewer` agent has it preloaded and runs the review the Review section of `CLAUDE.md` asks for on a high-impact change. The target is a range such as `origin/main...<SHA>`.
+description: Review one git diff for defects and return typed findings as JSON. The `reviewer` agent has it preloaded and runs the review the Review section of `CLAUDE.md` asks for on every pushed or merged change. The target is a range such as `origin/main...<SHA>`.
 argument-hint: <base>...<commit>
 ---
 
