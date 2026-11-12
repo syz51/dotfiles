@@ -551,7 +551,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           + "Each module's check.js must also assert its CODE. When done, the fixes belong in this checkout.",
       });
       const spawns = assertAgentRan(run, "worker", { count: 2 });
-      // The Review rule's reviewer run on the final diff owns no track.
+      // The Review rule's reviewer run on the final diff owns no track; it is checked below.
       expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null && spawn.input.subagent_type !== "reviewer").map((spawn) => spawn.input.subagent_type),
         "a track went to another agent, or one area passed between agents").toEqual(["worker", "worker"]);
       expect(concurrentSpawns(run.events, spawns), "the tracks ran one after another").toBe(true);
@@ -604,6 +604,17 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           run.bash.filter((bash) => bash.parent === null).map((bash) => ({
             command: bash.command, cwd: bash.cwd, at: usedAt(bash.id), returned, checks: bash.output.split("\n").filter((line) => line.includes("-check:ok")),
           })))}`).toBe(true);
+      }
+
+      // The Review rule allows one reviewer run, in the background, on the final diff:
+      // after both tracks returned.
+      const reviewers = agentSpawns(run.events).filter((spawn) => spawn.parent === null && spawn.input.subagent_type === "reviewer");
+      expect(reviewers.length, "the final diff was reviewed more than once").toBeLessThanOrEqual(1);
+      for (const reviewer of reviewers) {
+        const started = run.events.find((event) => event.type === "system" && event.subtype === "task_started" && event.tool_use_id === reviewer.id);
+        expect(started?.is_backgrounded, "the review ran in the foreground").toBe(true);
+        expect(reviewer.input.isolation, "the review got a worktree of its own").toBeUndefined();
+        expect(usedAt(reviewer.id), "the review started before both tracks returned").toBeGreaterThan(Math.max(...ends.values()));
       }
 
       // Both tracks' work is in this checkout, and their worktrees and branches are gone.
