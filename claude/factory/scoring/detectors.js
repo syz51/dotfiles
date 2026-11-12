@@ -607,6 +607,64 @@ export function shellEdits(command) {
   return [...new Map(edits.map((edit) => [`${edit.how}\0${edit.file}`, edit])).values()];
 }
 
+// The paths a patch changes: both sides of each `diff --git`, `---` and `+++` line.
+function patchPaths(patch) {
+  const paths = [];
+  for (const line of patch.split("\n")) {
+    const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
+    if (header) paths.push(header[1], header[2]);
+    const side = /^(?:---|\+\+\+) [ab]\/(\S+)/.exec(line);
+    if (side) paths.push(side[1]);
+  }
+  return paths;
+}
+
+// Files one Bash command deletes, moves, copies over or patches, as written (relative
+// paths are from the folder the command runs in, or its last `git -C`): `rm`, `mv`,
+// `cp`, `git rm`, `git mv`, `git checkout … -- <path>` and `git apply` of a patch given
+// on stdin (a heredoc, a here-string or text piped in). A move or copy into a folder
+// also names the file it makes there. Patch files on disk are not read, and scratch
+// paths and paths built at run time do not count.
+export function shellChanges(command) {
+  const files = [];
+  const add = (paths, dir = null) => {
+    for (const path of paths)
+      if (path && !isScratch(path) && !/[$`]/.test(path)) files.push(dir && !/^[/~]/.test(path) ? join(dir, path) : path);
+  };
+  const positional = (args) => {
+    const end = args.indexOf("--");
+    return [...(end < 0 ? args : args.slice(0, end)).filter((arg) => !arg.startsWith("-")), ...(end < 0 ? [] : args.slice(end + 1))];
+  };
+  // A move or copy: the target, and for each source the file it makes inside a target folder.
+  const moves = (paths, dir, sources = true) => {
+    if (paths.length < 2) return;
+    const target = paths.at(-1);
+    add(sources ? paths : [target], dir);
+    add(paths.slice(0, -1).map((source) => join(target, basename(source))), dir);
+  };
+  for (const entry of shellCommands(command)) {
+    const { words } = entry;
+    const program = basename(words[0]);
+    if (program === "rm") add(positional(words.slice(1)));
+    else if (program === "mv") moves(positional(words.slice(1)), null);
+    else if (program === "cp") moves(positional(words.slice(1)), null, false);
+    if (program !== "git") continue;
+    let i = 1;
+    let dir = null;
+    for (; i < words.length && words[i].startsWith("-"); i += GIT_GLOBAL_WITH_VALUE.has(words[i]) ? 2 : 1) if (words[i] === "-C") dir = join(dir ?? "", words[i + 1] ?? "");
+    const [sub, ...args] = words.slice(i);
+    if (sub === "rm") add(positional(args), dir);
+    else if (sub === "mv") moves(positional(args), dir);
+    else if (sub === "checkout" && args.includes("--")) add(args.slice(args.indexOf("--") + 1), dir);
+    // `--check`, `--stat` and the like only report, unless `--apply` comes with them.
+    else if (sub === "apply" && (args.includes("--apply") || !args.some((arg) => ["--check", "--stat", "--numstat", "--summary"].includes(arg)))) {
+      const stdin = entry.stdin.length ? entry.stdin : entry.from?.stdin ?? [];
+      add(patchPaths(stdin.join("\n")), dir);
+    }
+  }
+  return [...new Set(files)];
+}
+
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 
 export function shellFileEdit(actions) {
@@ -653,8 +711,10 @@ const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.na
 // fixes for its findings, need no second one, and neither do later fixes to files a
 // reviewed push sent. A push settles the edits of the repository its folder belongs to,
 // or every repository's when the folder is unknown; a review counts for every
-// repository. Edits by subagents count, through Bash too; files git ignores do not.
-// Deletes, moves and patches are not seen. na when the session pushed no high-impact edit.
+// repository. Edits by subagents count, through Bash too, including the deletes, moves,
+// copies and patches shellChanges finds; files git ignores do not. Writes through MCP
+// tools and pushes other than `git push` and `gh pr merge` are not seen. na when the
+// session pushed no high-impact edit.
 export function reviewSkipped(actions, context) {
   const events = [];
   for (const call of actions.calls) {
@@ -679,7 +739,7 @@ export function reviewSkipped(actions, context) {
     } else if (call.name === "Bash" && typeof call.input.command === "string") {
       // A failed command may still have made its edits before the part that failed.
       const moved = simpleCommands(call.input.command).some((words) => ["cd", "pushd"].includes(basename(words[0] ?? "")));
-      files = shellEdits(call.input.command).map((edit) => absolute(edit.file, call.cwd, moved));
+      files = [...shellEdits(call.input.command).map((edit) => edit.file), ...shellChanges(call.input.command)].map((file) => absolute(file, call.cwd, moved));
     }
     const located = files.filter(Boolean).map((file) => locate(realFile(file), checkouts)).filter((file) => file && matcher(file) && !ignored(file));
     if (located.length) events.push({ kind: "edit", at: call.at, located });
