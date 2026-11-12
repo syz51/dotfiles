@@ -11,7 +11,7 @@ import { blockedRuntime, nodeCheckout } from "../../hooks/guard-runtimes.js";
 import { visitCommands } from "../../hooks/shell.js";
 import { mayInvoke } from "../../tests/lib/command.js";
 import { isCodeReview, isReviewerRun, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
-import { boardCheckouts, gitCheckout, gitIgnored, loadReviewScope, locate, realFile, reviewMatcher } from "./review-scope.js";
+import { boardCheckouts, gitCheckout, gitIgnored, loadReviewScope, locate, realFile, reviewMatcher, t3Checkout, t3Projects } from "./review-scope.js";
 
 const EVIDENCE = 300;
 const clip = (text, max = EVIDENCE) => {
@@ -677,10 +677,10 @@ export function shellFileEdit(actions) {
   return verdictOf(actions.calls.some((call) => EDIT_TOOLS.has(call.name)), hits);
 }
 
-// This device's trivial-file list, board checkouts, other git checkouts and git ignore
-// rules, read once per process.
+// This device's trivial-file list, board checkouts, other git checkouts, T3 Code project
+// roots and git ignore rules, read once per process.
 let reviewContext = null;
-const defaultReviewContext = () => (reviewContext ??= { matcher: reviewMatcher(loadReviewScope()), checkouts: boardCheckouts(), git: gitCheckout, ignored: gitIgnored });
+const defaultReviewContext = () => (reviewContext ??= { matcher: reviewMatcher(loadReviewScope()), checkouts: boardCheckouts(), git: gitCheckout, projects: t3Projects(), ignored: gitIgnored });
 
 // A push that sends commits: not a dry run, a branch delete or a tags-only push.
 function sendsCommits(args) {
@@ -708,7 +708,8 @@ const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.na
 // /code-review: a session edited a file in any repository that is not on the trivial
 // list (review-scope.toml), then pushed or merged with no review started since the
 // first such edit. Files map to repositories through the board's checkouts, then
-// through git for other checkouts on this device. Edits after the review, such as
+// through git for other checkouts on this device, then, for a removed T3 Code worktree,
+// through T3's project list. Edits after the review, such as
 // fixes for its findings, need no second one, and neither do later fixes to files a
 // reviewed push sent. A push settles the edits of the repository its folder belongs to,
 // or every repository's when the folder is unknown; a review counts for every
@@ -730,8 +731,8 @@ export function reviewSkipped(actions, context) {
   }
   if (!events.length) return verdictOf(false, []);
 
-  const { matcher, checkouts, git = () => null, ignored } = context ?? defaultReviewContext();
-  const where = (file) => locate(file, checkouts) ?? git(file);
+  const { matcher, checkouts, git = () => null, projects = [], ignored } = context ?? defaultReviewContext();
+  const where = (file) => locate(file, checkouts) ?? git(file) ?? t3Checkout(file, projects, git);
   const repoOf = (dir) => where(realFile(join(dir, "_")))?.repo ?? "";
   for (const event of events) event.repo = event.dir ? repoOf(event.dir) : null;
   for (const call of actions.calls) {
