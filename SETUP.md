@@ -756,8 +756,12 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
   `EXPERIMENT_ALLOW_REMINDERS=1`.
 - It adds `-p`, `--tools ""`, `--setting-sources ""`, `--strict-mcp-config` and
   `--disable-slash-commands` unless the caller passes them, and sets
-  `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (no
-  claude.ai connectors, no session-title side call). It refuses a run without
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` over the caller's values (no claude.ai connectors,
+  no session-title side call, no auto-memory). Inside a project with an auto-memory
+  folder, Claude Code 2.1.322 puts the memory index in the first message as a
+  `<system-reminder>`, which the proxy refuses, so without the variable every call there
+  failed. It refuses a run without
   `--system-prompt` or `--system-prompt-file`: the default system prompt holds the
   environment.
 - Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription. A
@@ -1197,8 +1201,9 @@ in CI:
   reaches the proxy. With `RUN_CLAUDE_LIVE=1` (use `API_FIRST_SUBSCRIPTION=1` to spend no
   API credit), a Haiku probe asks the model for its environment and account, and fails
   when the reply names the working directory, home, login name or an `oauthAccount` field
-  from `~/.claude.json`. Two live preflights check that the proxy removed both blocks, one
-  with a system prompt over 1500 tokens.
+  from `~/.claude.json`. Three live preflights check that the proxy removed both blocks:
+  one plain, one with a system prompt over 1500 tokens, and one in a project with an
+  auto-memory folder (it creates and removes `~/.claude/projects/<slug>/memory`).
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.
