@@ -1269,16 +1269,27 @@ describe("CI release downloads", () => {
   });
 });
 
-// Since 2026-11-08 the user allows only Opus or Haiku models. Pricing keeps the other rows
-// to price past sessions; tests may name any model as data. Installed packages, such as the
-// headless-browser skill's Playwright, are not ours to change, so the scan skips node_modules.
+// The user allows only Opus, Haiku or Fable 5.2 models: Opus or Haiku since 2026-11-08, and
+// Fable 5.2 since 2026-11-12. Pricing keeps the other rows to price past sessions; tests may
+// name any model as data. Installed packages, such as the headless-browser skill's
+// Playwright, are not ours to change, so the scan skips node_modules.
 describe("models", () => {
   const exempt = /(?:^|\/)node_modules\/|\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/;
+  // Sonnet, or a Fable with a version other than 5.2. The bare `fable` alias names the
+  // current Fable, which is 5.2.
+  const disallowed = /\b(?:claude-)?sonnet\b|\bfable[- ]?\d+(?![-.]2\b)(?:[-.]\d+)?\b/i;
 
-  test("no default, agent or skill template selects Sonnet or Fable", () => {
+  test("the rule allows Opus, Haiku and Fable 5.2 but not Sonnet or another Fable", () => {
+    for (const name of ["claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2", "Fable 5.2", "fable"])
+      expect(disallowed.test(name)).toBe(false);
+    for (const name of ["claude-sonnet-5-5", "sonnet", "claude-fable-5-1", "Fable 5.1", "claude-fable-5", "fable-6"])
+      expect(disallowed.test(name)).toBe(true);
+  });
+
+  test("no default, agent or skill template selects Sonnet or another Fable", () => {
     const glob = new Bun.Glob("claude/{factory,agents,skills,bin,hooks}/**/*.{js,md,json,toml}");
     const offenders = [...glob.scanSync({ cwd: REPO })].filter((path) =>
-      !exempt.test(path) && /\b(?:claude-)?(?:sonnet|fable)\b/i.test(read(path)));
+      !exempt.test(path) && disallowed.test(read(path)));
     expect(offenders).toEqual([]);
   });
 

@@ -85,7 +85,8 @@ review on sai** for the feasibility notes the user asked about.
   The exception is bench runs, which save the transcript to read its effort and delete it
   when the run ends.
 - Default LLM judge: `claude-opus-5-5` at `medium` effort, configurable per run (Sonnet
-  until 2026-11-08, when the user allowed only Opus or Haiku). Judging
+  until 2026-11-08, when the user allowed only Opus or Haiku; Fable 5.2 is also allowed
+  since 2026-11-12). Judging
   sends unredacted transcript digests to the model, same as codex-skills capture.
 - Proposals never edit settings, permissions or hooks. Allowed paths: `claude/CLAUDE.md`,
   `codex/AGENTS.md` (its Work board section mirrors the global one), `claude/agents/*.md`. The proposer has no Bash; the tool runs the tests
