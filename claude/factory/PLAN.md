@@ -49,7 +49,7 @@ review on sai** for the feasibility notes the user asked about.
   (5 minutes) and 2x (1 hour). Only a fallback: prefer `cost-state`. Models missing from
   the table (Codex's GPT models) take LiteLLM's public price list.
 - codex-skills (`~/.local/share/codex-skills/repository`, private `syz51/codex-skills`):
-  hourly capture and source checks on both Macs, daily maintainer on this Mac via launchd.
+  hourly capture and source checks on the Air (the Pro runs no Claude since 2026-11-12), daily maintainer on this Mac via launchd.
   Its security posture is covered by the local `audit` (details stay in the state folder:
   `notes/codex-skills-private.md`).
 - Global settings: `permissions.defaultMode: bypassPermissions`, `sandbox.enabled: false`,

@@ -549,10 +549,29 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(sync.main(["install", "--dry-run"], run=Runner()), 0)
         self.assertEqual(plistlib.loads(out.getvalue().encode())["Label"], "com.syz51.config-sync")
 
-    def test_the_default_links_cover_claude_and_codex(self):
-        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}):
+    def links(self, *, lexists, which):
+        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), \
+                mock.patch.object(sync.os.path, "lexists", return_value=lexists) as exists, \
+                mock.patch.object(sync.shutil, "which", return_value=which):
             pairs = sync.links(Path("/r"))
+        exists.assert_called_once_with(Path.home() / ".claude")
+        return pairs
+
+    def test_the_default_links_cover_claude_and_codex(self):
+        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), \
+                mock.patch.object(sync.os.path, "lexists", return_value=False), \
+                mock.patch.object(sync.shutil, "which", return_value="/bin/claude") as which:
+            pairs = sync.links(Path("/r"))
+        which.assert_called_once_with("claude", path=sync.SEARCH_PATH)
         self.assertEqual(pairs, [(Path.home() / ".claude", Path("/r/claude")), (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
+
+    def test_a_mac_without_claude_code_needs_no_claude_link(self):
+        # The Pro runs no Claude model, so a missing ~/.claude there is not a problem to report.
+        self.assertEqual(self.links(lexists=False, which=None), [(Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
+
+    def test_an_existing_claude_home_is_checked_without_the_command(self):
+        # A moved or updating install must not hide a ~/.claude that became a copy.
+        self.assertEqual(self.links(lexists=True, which=None)[0], (Path.home() / ".claude", Path("/r/claude")))
 
 
 if __name__ == "__main__":

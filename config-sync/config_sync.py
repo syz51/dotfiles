@@ -12,8 +12,8 @@ only tracked change, unstaged, on main, and parses to the same JSON as HEAD, it 
 committed text back, so the reformat does not block the pull.
 
 After every check it also verifies the links that install the instructions from this
-checkout (`~/.claude` and Codex's AGENTS.md); a copy instead of a link stops pulls from
-reaching the agents.
+checkout (`~/.claude`, on a Mac with Claude Code, and Codex's AGENTS.md); a copy instead of
+a link stops pulls from reaching the agents.
 
 A live suite run (`RUN_CLAUDE_LIVE=1 bun test claude/tests`) fails when ~/.claude changes
 under it, so each suite holds a lock: a file in `~/.local/state/config-sync/locks/` holding
@@ -82,11 +82,15 @@ def run_command(args: list) -> subprocess.CompletedProcess:
 
 
 def links(repo: Path) -> list:
-    """(link, what it must resolve to): the paths that install instructions from the checkout."""
-    return [
-        (HOME / ".claude", repo / "claude"),
-        (Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md"),
-    ]
+    """(link, what it must resolve to): the paths that install instructions from the checkout.
+
+    A Mac with neither ~/.claude nor the `claude` command, such as the Pro, where no Claude
+    model runs, needs no ~/.claude link. An existing ~/.claude is checked even when the command
+    is missing, so a moved or updating install does not hide a copy."""
+    claude_home = HOME / ".claude"
+    has_claude = os.path.lexists(claude_home) or shutil.which("claude", path=SEARCH_PATH)
+    claude = [(claude_home, repo / "claude")] if has_claude else []
+    return claude + [(Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md")]
 
 
 @dataclass
