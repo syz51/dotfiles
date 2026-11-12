@@ -463,13 +463,14 @@ place. The factory reads the instructions too: the judge in
 `claude/factory/scoring/score.js` gets the reference files appended, the proposer in
 `claude/factory/scoring/propose.js` may edit them, and
 `claude/factory/board/proposal.js` requires the Work board section to be identical in
-both files, so no Work board rule moves. The four agents in `claude/agents/` deny the tools no subagent uses
+both files, so no Work board rule moves. The three agents in `claude/agents/` deny the tools no subagent uses
 (`ReportFindings`, `ListAgents`, the claude.ai connectors, and computer use for the two
 read-only agents), which shortens each subagent request.
 
-Four skills live here: `headless-browser`; `cheat-sheets`; `diff-review`, the recipe of
-the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts; and
-`work-stages`, which the
+Six skills live here: `headless-browser`; `cheat-sheets`; `ui-climb`; `diff-review`, the
+recipe of the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts;
+`full-stop`, which finishes a change but holds its pull request as a draft for the owner's
+merge when the user says "full stop"; and `work-stages`, which the
 Workflow sections of `claude/CLAUDE.md` and `codex/AGENTS.md` point non-trivial work at,
 for Claude Code and Codex alike. Claude Code finds them through `~/.claude/skills` when
 `~/.claude` links to `~/.config/claude`; otherwise link each skill into `~/.claude/skills`.
