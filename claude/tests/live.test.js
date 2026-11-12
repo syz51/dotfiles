@@ -20,10 +20,10 @@ const suite = liveSuite("agents");
 const ABOVE_WORKER = "xhigh";
 
 // model alias and effort from an agent's frontmatter; a model alias such as "haiku"
-// resolves to a claude-haiku-* model.
+// resolves to a claude-haiku-* model, and "inherit" to the session's model.
 function agentConfig(name) {
   const meta = Bun.YAML.parse(/^---\n([\s\S]*?)\n---/.exec(readFileSync(join(CLAUDE, "agents", `${name}.md`), "utf8"))[1]);
-  return { modelPrefix: `claude-${meta.model}-`, effort: meta.effort };
+  return { model: meta.model, effort: meta.effort };
 }
 
 function git(cwd, ...args) {
@@ -77,7 +77,8 @@ function assertAgentRan(session, name, { count = 1 } = {}) {
   expect(spawns.length, `the session did not spawn ${name}`).toBeGreaterThanOrEqual(count);
   const messages = subagentMessages(session.events, spawns);
   expect(messages.length, `no messages from ${name}`).toBeGreaterThan(0);
-  for (const message of messages) expect(message.message.model).toStartWith(config.modelPrefix);
+  const modelPrefix = config.model === "inherit" ? session.init.model : `claude-${config.model}-`;
+  for (const message of messages) expect(message.message.model).toStartWith(modelPrefix);
   const calls = session.preToolUse.filter((record) => record.agent_type === name);
   expect(calls.length, `${name} made no tool calls`).toBeGreaterThan(0);
   for (const call of calls) expect(call.effort).toEqual({ level: config.effort });
@@ -444,7 +445,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       // One `reviewer` agent ran the review, in the background and in this checkout, with
       // the commit pinned in its prompt. Agents run in the background by default, so the
       // run's task events, not the Agent input, show that it did. No /code-review ran: the
-      // reviewer does the review itself, on Opus whatever the session model.
+      // reviewer does the review itself, on the session's model.
       const spawns = agentSpawns(run.events).filter((spawn) => spawn.parent === null);
       expect(spawns.length, "the review was not one background reviewer agent").toBe(1);
       const [spawn] = spawns;
@@ -457,7 +458,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review"), "the review ran /code-review").toEqual([]);
       const messages = subagentMessages(run.events, [spawn]).filter((message) => message.message.model !== "<synthetic>");
       expect(messages.length, "no messages from the reviewer agent").toBeGreaterThan(0);
-      for (const message of messages) expect(message.message.model, "the reviewer did not run on Opus").toMatch(/^claude-opus-/);
+      for (const message of messages) expect(message.message.model, "the reviewer did not run on the session's model").toBe(run.init.model);
 
       // The session ended its first turn while the review ran, so the follow-up reached a
       // free session, and it answered without waiting on the review: no tool call between

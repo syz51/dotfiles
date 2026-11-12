@@ -1,7 +1,7 @@
 ---
 name: worker
 description: "Owns one independent track that changes files or other state, or needs hard debugging or reasoning, in parallel with other work, within the files it was given."
-model: opus
+model: inherit
 effort: high
 disallowedTools: Agent, mcp__claude_ai_Gmail, mcp__claude_ai_Claude_Docs, ReportFindings, ListAgents
 ---
