@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs the Vite+ CLI that the current project installed, so its version is the lockfile's.
+dir=$PWD
+while :; do
+  if [ -x "$dir/node_modules/.bin/vp" ]; then
+    exec "$dir/node_modules/.bin/vp" "$@"
+  fi
+  [ "$dir" = / ] && break
+  dir=$(dirname "$dir")
+done
+echo "vp: no node_modules/.bin/vp in $PWD or a parent directory; run bun install in the project first" >&2
+exit 127
