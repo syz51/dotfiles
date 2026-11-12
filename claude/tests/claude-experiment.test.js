@@ -1,5 +1,6 @@
 // The experiment route (claude/bin/claude-experiment and experiment.js): its arguments, the
-// proxy that removes Claude Code's context blocks, and the preflight's token cap, against a
+// proxy that removes Claude Code's context blocks, and the preflight's leak check and token
+// cap, against a
 // fake claude and a stub upstream. With RUN_CLAUDE_LIVE=1 a probe also asks the real model,
 // through the route, for the working directory and account details it was given.
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -7,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { CANARY, CONTEXT_OPENING, DEFAULT_CAP, ENV, experimentArgs, leftovers, OVER_CAP, preflight, run, strip, usageOf } from "../bin/experiment.js";
+import { CANARY, CONTEXT_OPENING, contextMarks, DEFAULT_CAP, ENV, experimentArgs, LEAKED, leftovers, OVER_CAP, preflight, run, strip, usageOf } from "../bin/experiment.js";
 
 const BIN = join(import.meta.dir, "..", "bin");
 const roots = [];
@@ -104,6 +105,28 @@ describe("leftovers", () => {
   });
 });
 
+describe("contextMarks", () => {
+  test("finds both blocks' marks at any depth and none once they are removed", () => {
+    expect(contextMarks(captured())).toEqual([
+      ["the account email block", "messages[0].content[0].text"],
+      ["the # Environment block", "messages[1].content"],
+    ]);
+    expect(contextMarks(strip(captured()))).toEqual([]);
+    expect(contextMarks({ system: SYSTEM, messages: [{ role: "user", content: "Set up the environment." }] })).toEqual([]);
+  });
+  test("finds the blocks in a form the strip and the leftovers check miss", () => {
+    const body = {
+      system: [...SYSTEM, { type: "text", text: `Notes.\n# userEmail\nThe user's email address is ${EMAIL}.` }],
+      messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: [{ type: "text", text: environment }] }] }],
+    };
+    expect(leftovers(strip(body))).toEqual([]);
+    expect(contextMarks(strip(body))).toEqual([
+      ["the account email block", "system[3].text"],
+      ["the # Environment block", "messages[0].content[0].content[0].text"],
+    ]);
+  });
+});
+
 describe("usageOf", () => {
   test("reads the usage from a stream's message_start and from a plain reply", () => {
     const start = { type: "message_start", message: { usage: { input_tokens: 5, cache_creation_input_tokens: 600, cache_read_input_tokens: 7 } } };
@@ -139,6 +162,7 @@ describe("run", () => {
 printf '%s\\n' "$@" > "${root}/args"
 env > "${root}/env"
 cat > "${root}/stdin"
+[ -n "\${FAKE_SKIP:-}" ] && exit 0
 curl -sf -X POST "$ANTHROPIC_BASE_URL/v1/messages" -H 'content-type: application/json' -H 'authorization: Bearer test-token' --data-binary @"${root}/body.json" > "${root}/reply" || exit 9
 exit "\${FAKE_EXIT:-0}"
 `);
@@ -193,12 +217,36 @@ exit "\${FAKE_EXIT:-0}"
     const report = (line) => lines.push(line);
     expect(await preflight(["--system-prompt", "S"], { env: env(), report })).toBe(0);
     expect(readFileSync(join(root, "stdin"), "utf8")).toBe(CANARY);
-    expect(lines.at(-1)).toContain(`largest prompt 40 tokens (input 40, cache creation 0, cache read 0); cap ${DEFAULT_CAP}`);
+    expect(lines.at(-1)).toBe(`claude-experiment preflight: 1 request(s); removed the account email block and the # Environment block, none left; largest prompt 40 tokens (input 40, cache creation 0, cache read 0); cap ${DEFAULT_CAP}`);
     expect(await preflight(["--cap", "39", "--system-prompt", "S"], { env: env(), report })).toBe(OVER_CAP);
     promptTokens = 34409;
     expect(await preflight(["--system-prompt", "S"], { env: env(), report })).toBe(OVER_CAP);
     expect(await preflight(["--cap=40000", "--system-prompt", "S"], { env: env(), report })).toBe(0);
     await expect(preflight(["--cap", "lots", "--system-prompt", "S"], { env: env(), report })).rejects.toThrow("--cap takes a positive whole number");
+  });
+
+  test("preflight fails when a request would still carry a block, whatever its size", async () => {
+    // The email block moved into the system field and the environment into a plain user
+    // part: the strip keeps both and the leftovers check passes them.
+    const body = captured();
+    body.system = [...SYSTEM, { type: "text", text: `# userEmail\nThe user's email address is ${EMAIL}.` }];
+    body.messages = [{ role: "user", content: [{ type: "text", text: environment }, { type: "text", text: "FIXED TEST TEXT" }] }];
+    writeFileSync(join(root, "body.json"), JSON.stringify(body));
+    expect((await run(["--system-prompt", "S"], { env: env(), input: "" })).code).toBe(0);
+    expect(received).toHaveLength(1);
+    const lines = [];
+    expect(await preflight(["--cap", "40000", "--system-prompt", "S"], { env: env(), report: (line) => lines.push(line) })).toBe(LEAKED);
+    expect(received).toHaveLength(1);
+    expect(lines).toEqual([
+      "claude-experiment preflight: LEAK: the canary request still carries Claude Code's context after the proxy (request 1: the account email block at system[3].text; request 1: the # Environment block at messages[0].content[0].text); the proxy refused it. Do not run the batch: Claude Code changed the blocks' form, or the system prompt holds those lines",
+    ]);
+    expect(lines.join("\n")).not.toContain(EMAIL);
+  });
+
+  test("preflight fails when no request reaches the proxy", async () => {
+    const lines = [];
+    expect(await preflight(["--system-prompt", "S"], { env: env({ FAKE_SKIP: "1" }), report: (line) => lines.push(line) })).toBe(LEAKED);
+    expect(lines).toEqual(["claude-experiment preflight: no Messages request reached the proxy, so it removed nothing"]);
   });
 
   test("preflight fails when the canary run fails", async () => {
@@ -263,7 +311,20 @@ describe.skipIf(process.env.RUN_CLAUDE_LIVE !== "1")("live probe through the rou
       join(BIN, "claude-experiment"), "preflight", "--model", "claude-haiku-5-5", "--effort", "low", "--no-session-persistence",
       "--system-prompt", "You answer questions exactly and briefly.",
     ], { cwd: scratch(), encoding: "utf8", timeout: 120_000 });
-    expect(result.stderr).toContain("claude-experiment preflight: 1 request(s)");
+    expect(result.stderr).toContain("claude-experiment preflight: 1 request(s); removed the account email block and the # Environment block, none left");
+    expect(result.status).toBe(0);
+  }, 150_000);
+
+  // A prompt this long hid a leak from the default cap; the leak check does not depend on it.
+  test("the preflight checks the blocks with a system prompt over 1500 tokens", () => {
+    const rules = Array.from({ length: 160 }, (_, index) => `Rule ${index + 1}: answer the question exactly, in plain words, and never add a greeting.`);
+    const result = spawnSync(join(BIN, "no-session-env"), [
+      join(BIN, "claude-experiment"), "preflight", "--cap", "8000", "--model", "claude-haiku-5-5", "--effort", "low", "--no-session-persistence",
+      "--system-prompt", rules.join("\n"),
+    ], { cwd: scratch(), encoding: "utf8", timeout: 120_000 });
+    console.log(result.stderr.trim());
+    expect(result.stderr).toContain("removed the account email block and the # Environment block, none left");
+    expect(Number(result.stderr.match(/largest prompt (\d+) tokens/)?.[1])).toBeGreaterThan(1500);
     expect(result.status).toBe(0);
   }, 150_000);
 });
