@@ -2,10 +2,9 @@
 # One work-board hook for Claude Code or Codex: board-hook.sh <event> <claude|codex>.
 # Runs the installed `board` (github.com/syz51/agent-board). Without it, or with
 # AGENT_BOARD_HOOKS=off (test, benchmark and nested `claude -p` sessions), it behaves as if
-# the hook were absent. opencode's claude-hooks plugin runs these hooks with
-# BOARD_HOOK_RUNTIME=opencode, which replaces the runtime argument.
+# the hook were absent.
 board="$HOME/.cargo/bin/board"
-runtime="${BOARD_HOOK_RUNTIME:-$2}"
+runtime="$2"
 if [ "${AGENT_BOARD_HOOKS:-}" = off ] || [ ! -x "$board" ]; then
   # Codex rejects empty output from a Stop hook.
   if [ "$1" = stop ] && [ "$runtime" = codex ]; then printf '{}\n'; fi
