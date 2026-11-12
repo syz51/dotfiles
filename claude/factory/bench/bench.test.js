@@ -512,6 +512,12 @@ describe("report", () => {
     expect(aggregate(records, { caseIds: ["c2"] }).roles.map((role) => role.role)).toEqual(["explorer"]);
   });
 
+  test("results of the folded solver role count as worker results", () => {
+    const report = aggregate([record("opus", "high", true, 1), record("opus", "xhigh", true, 2, { role: "solver" })], { role: "worker" });
+    expect(report.roles.map((role) => role.role)).toEqual(["worker"]);
+    expect(report.roles[0].cases[0].configs.map((config) => config.effort).sort()).toEqual(["high", "xhigh"]);
+  });
+
   test("the Pareto front keeps configurations nothing beats on both cost and pass rate", () => {
     const configs = [
       { model: "cheap", passRate: 0.5, medianCostUSD: 0.1 },

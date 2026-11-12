@@ -100,13 +100,13 @@ describe("agents", () => {
     expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
   });
 
-  test("implementing agents own their whole track and stay within their assigned files", () => {
-    for (const name of ["worker"]) {
-      const { body } = frontmatter(`claude/agents/${name}.md`);
-      expect(body).toMatch(/You own this (track|problem) end to end/);
-      expect(body).toMatch(/change only the files in your assignment/i);
-    }
-    expect(frontmatter("claude/agents/worker.md").body).toMatch(/investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them/);
+  test("the worker owns its whole track, stays within its assigned files and verifies hard problems", () => {
+    const { body } = frontmatter("claude/agents/worker.md");
+    expect(body).toMatch(/You own this track end to end/);
+    expect(body).toMatch(/change only the files in your assignment/i);
+    // Hard debugging and reasoning moved here from the solver agent (dotfiles-457).
+    expect(body).toContain("For hard debugging or reasoning, verify the result with a reproducible check, and give the approach and any remaining doubts with it.");
+    expect(body).toMatch(/investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them/);
   });
 });
 
@@ -872,7 +872,7 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
     expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
     expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
-    expect(delegation).toMatch(/file edits, other state-changing work and hard debugging with its fix to `worker`/);
+    expect(delegation).toMatch(/file edits, other state-changing work and hard debugging or reasoning, with any fix, to `worker`/);
     expect(delegation).not.toMatch(/solver/);
     expect(delegation).not.toMatch(/decided design/);
     expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);

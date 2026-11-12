@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { assertUnchanged, snapshot } from "./lib/filesystem.js";
 import { AT_INSTALLED, EFFORT, HAIKU, HOME_CLAUDE, LIVE, liveSuite, MODEL, TEARDOWN_TIMEOUT } from "./lib/live.js";
 import {
@@ -290,11 +291,12 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   }), 600_000);
 
   // Hard debugging with its fix goes to the worker; the solver agent was folded into it
-  // (dotfiles-457). The worker explains the race and fixes only reserve.js.
+  // (dotfiles-457). The worker explains the race and fixes only reserve.js; two concurrent
+  // calls against a slow fake stock then show the invariant holds.
   test("a worker debugs and fixes a race", () => suite.scenario("worker race fix", async ({ fixture, session }) => {
     const work = fixture({
       "reserve.js": "export async function reserve(stock, n) { const count = await stock.read(); if (count < n) return false; await stock.write(count - n); return true; }\n",
-      "invariant.md": "Initial stock is 1. Two concurrent calls each reserve 1 unit. Successful reservations must never exceed initial stock. A read and a write are individually atomic, but the whole function is not.\n",
+      "invariant.md": "Initial stock is 1. Two concurrent calls each reserve 1 unit. Successful reservations must never exceed initial stock. A read and a write are individually atomic, but the whole function is not. The stock offers only read() and write(); keep reserve's signature.\n",
     });
     const before = snapshot(work);
     const run = await session({
@@ -306,7 +308,13 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     });
     assertAgentRan(run, "worker");
     assertUnchanged(before, snapshot(work), ["reserve.js"]);
-    expect(readFileSync(join(work, "reserve.js"), "utf8"), "reserve.js was not fixed").not.toContain("const count = await stock.read(); if (count < n) return false; await stock.write(count - n);");
+    const { reserve } = await import(pathToFileURL(join(work, "reserve.js")).href);
+    let count = 1;
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const stock = { read: async () => { await tick(); return count; }, write: async (value) => { await tick(); count = value; } };
+    const results = await Promise.all([reserve(stock, 1), reserve(stock, 1)]);
+    expect(results.filter(Boolean), "the fixed reserve.js still oversells").toHaveLength(1);
+    expect(count).toBe(0);
     assertMatches(finalText(run.events), [/both|two/i, /\b0\b/, /atomic|compare.and.swap|transaction|lock|mutex|queue|serial/i]);
   }), 600_000);
 
