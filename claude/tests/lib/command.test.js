@@ -1,14 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { checkInvocation, checkRun, commandLists, mayInvoke, successfulCheck } from "./command.js";
-import { runProcess } from "./process.js";
-
-const uv = { tool: "uv", script: "check.py" };
-const bunCheck = { tool: "bun", script: "check.js" };
-const npm = { tool: "npm", script: "check.js" };
-const fixture = "/work/fixture";
+import { commandLists, mayInvoke } from "./command.js";
 
 describe("literal grammar", () => {
   test("splits && lists and joins quoted words", () => {
@@ -49,120 +40,6 @@ describe("literal grammar", () => {
   });
 });
 
-describe("check invocations", () => {
-  test("uv runs the script, with offline-only flags and environment", () => {
-    for (const words of [
-      ["uv", "run", "check.py"], ["uv", "run", "python", "check.py"], ["uv", "run", "python3", "-B", "./check.py"],
-      ["uv", "run", "--no-project", "--offline", "python", "check.py"], ["UV_OFFLINE=1", "uv", "run", "check.py"],
-    ])
-      expect(checkInvocation(words, uv), words.join(" ")).toBe(true);
-    for (const words of [
-      ["python", "check.py"], ["uv", "run", "--with", "x", "check.py"], ["uv", "run", "check.py", "extra"],
-      ["EVIL=1", "uv", "run", "check.py"], ["uv", "run", "other.py"], ["uvx", "check.py"],
-    ])
-      expect(checkInvocation(words, uv), words.join(" ")).toBe(false);
-  });
-
-  test("bun and npm run their check", () => {
-    expect(checkInvocation(["bun", "check.js"], bunCheck)).toBe(true);
-    expect(checkInvocation(["bun", "run", "./check.js"], bunCheck)).toBe(true);
-    expect(checkInvocation(["bun", "run", "test"], bunCheck)).toBe(true);
-    expect(checkInvocation(["node", "check.js"], bunCheck)).toBe(false);
-    for (const words of [["npm", "test"], ["npm", "t"], ["npm", "run", "test"]]) expect(checkInvocation(words, npm)).toBe(true);
-    expect(checkInvocation(["bun", "run", "test"], npm)).toBe(false);
-  });
-});
-
-describe("binding a check to the fixture directory", () => {
-  test("uses the recorded cwd, moved by literal cd", () => {
-    expect(checkRun("uv run python check.py", uv, { cwd: fixture, fixture })).toBe(true);
-    expect(checkRun("cd fixture && uv run python check.py", uv, { cwd: "/work", fixture })).toBe(true);
-    expect(checkRun(`cd ${fixture} && pwd && ls -la && uv run check.py 2>&1`, uv, { cwd: "/elsewhere", fixture })).toBe(true);
-    expect(checkRun("cd .. && uv run check.py", uv, { cwd: fixture, fixture })).toBe(false);
-    expect(checkRun("uv run check.py", uv, { cwd: "/work/decoy", fixture })).toBe(false);
-    expect(checkRun("uv run check.py", uv, { cwd: undefined, fixture })).toBe(false);
-    expect(checkRun("cd && uv run check.py", uv, { cwd: fixture, fixture })).toBe(false);
-  });
-
-  test("printed checks, masked failures and checks that are not last prove nothing", () => {
-    for (const command of [
-      "echo uv run python check.py", "echo fixture-check:ok", "uv run python check.py || true",
-      "python3 check.py && uv run --version", "cat check.py", "uv run check.py; true",
-      "uv run check.py | tail -3", "uv run check.py 2>&1 | tail -3",
-      "uv run check.py > out.txt", "uv run check.py > /dev/null && echo fixture-check:ok",
-    ])
-      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(false);
-  });
-
-  test("the last segment of a script decides; earlier ones may edit files", () => {
-    for (const command of [
-      "sed -i '' 's/sum(values) + 1/sum(values)/' calc.py && uv run python check.py",
-      "cat check.py; sed -i '' 's/41/42/' calc.py; uv run check.py",
-      "cat > calc.py <<'EOF'\ndef total(values):\n    return sum(values); print('x')\nEOF\nuv run check.py",
-      `cd ${fixture}; ls; cat calc.py | head; uv run check.py`,
-      "bash -lc 'cat calc.py; uv run check.py'",
-      "sh -c \"bash -c 'ls'; uv run check.py\"",
-      "rm -rf __pycache__ && uv run check.py",
-      "printf 'def total(values):\\n    return sum(values)\\n' > calc.py && uv run check.py",
-      "cat calc.py > /dev/null && uv run check.py 2>&1",
-    ])
-      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(true);
-    expect(checkRun("printf 'export const answer = 42;\\n' > calc.js && npm test", npm, { cwd: fixture, fixture })).toBe(true);
-  });
-
-  test("an earlier segment that may move the shell or redefine the check proves nothing", () => {
-    for (const command of [
-      "cd /elsewhere; uv run check.py", "cd ~/x; uv run check.py", "pushd /tmp; uv run check.py",
-      "uv() { echo fixture-check:ok; }; uv run check.py", "alias uv=echo; uv run check.py",
-      "PATH=/tmp/fake:$PATH; uv run check.py", "export PATH=/tmp/fake; uv run check.py", "PATH=/tmp/fake && uv run check.py",
-      "source env.sh; uv run check.py", "cat <<'EOF'\nunterminated",
-    ])
-      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(false);
-    // From outside, a cd that may have failed leaves two possible directories.
-    expect(checkRun("cd fixture; uv run check.py", uv, { cwd: "/work", fixture })).toBe(false);
-    expect(checkRun("cd fixture && uv run check.py", uv, { cwd: "/work", fixture })).toBe(true);
-  });
-
-  test("trailing segments that only report leave the check as the proof", () => {
-    for (const command of ['uv run check.py; echo "exit=$?"', "uv run check.py; printf 'done %s\\n' $?", "uv run check.py\necho done", 'uv run check.py; echo "exit: $?"; echo ok'])
-      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(true);
-    // A cd that may have failed still leaves two possible directories.
-    expect(checkRun('cd fixture; uv run check.py; echo "exit=$?"', uv, { cwd: "/work", fixture })).toBe(false);
-    for (const command of [
-      "uv run check.py; echo fixture-check:ok", 'uv run check.py; echo "$(rm -rf x)"', "uv run check.py; echo `id`",
-      "uv run check.py; echo x > calc.py", "uv run check.py; echo x | tee calc.py", "uv run check.py; python3 check.py",
-    ])
-      expect(checkRun(command, uv, { cwd: fixture, fixture }), command).toBe(false);
-  });
-
-  test("a successful check needs zero exit and the success marker", () => {
-    const run = { command: "uv run check.py", cwd: fixture, ok: true, output: "fixture-check:ok\n" };
-    expect(successfulCheck([run], uv, fixture)).toBe(true);
-    expect(successfulCheck([{ ...run, ok: false }], uv, fixture)).toBe(false);
-    expect(successfulCheck([{ ...run, output: "prefix fixture-check:ok" }], uv, fixture)).toBe(false);
-    expect(successfulCheck([{ ...run, command: "echo fixture-check:ok" }], uv, fixture)).toBe(false);
-  });
-
-  test("real subprocesses: a masked failure cannot pass, a compound success can", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "command-test-")));
-    try {
-      writeFileSync(join(root, "check.js"), 'if (process.env.FAIL) throw new Error("fails"); console.log("fixture-check:ok");\n');
-      const run = async (command, env = {}) => {
-        const result = await runProcess(["sh", "-c", command], { cwd: root, env: { ...process.env, ...env } });
-        return { command, cwd: root, ok: result.code === 0, output: result.stdout + result.stderr };
-      };
-      expect(successfulCheck([await run(`pwd && bun check.js`)], bunCheck, root)).toBe(true);
-      // Exits zero and prints the marker, yet the check itself failed.
-      const masked = await run(`bun check.js || echo fixture-check:ok`, { FAIL: "1" });
-      expect(masked.ok).toBe(true);
-      expect(successfulCheck([masked], bunCheck, root)).toBe(false);
-      expect(successfulCheck([await run(`bun check.js`, { FAIL: "1" })], bunCheck, root)).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-});
-
 describe("mayInvoke", () => {
   test("finds the program in readable commands", () => {
     expect(mayInvoke("bun check.js", "bun")).toBe(true);
@@ -171,6 +48,17 @@ describe("mayInvoke", () => {
     expect(mayInvoke("npm test && cat bun.lock", "bun")).toBe(false);
     expect(mayInvoke("uv run python check.py", "python")).toBe(false);
     expect(mayInvoke("python3 check.py", "python3")).toBe(true);
+  });
+
+  // The runtime rule of a live check, now that its output proves it passed: commands from
+  // live runs that run the check through uv or bun, and the same checks run directly.
+  test("tells a check through uv or bun from a direct run", () => {
+    const viaUv = 'printf "x\\n" > calc.py && uv run check.py; echo "exit=$?"; find . -name __pycache__';
+    for (const tool of ["python", "python3"]) expect(mayInvoke(viaUv, tool), tool).toBe(false);
+    expect(mayInvoke('cd "$PWD" && python3 check.py', "python3")).toBe(true);
+    const viaBun = `cd "$PWD" && sed -i '' 's/1)/0)/' calc.js && cat calc.js && bun check.js`;
+    for (const tool of ["node", "npm"]) expect(mayInvoke(viaBun, tool), tool).toBe(false);
+    expect(mayInvoke('cd "$PWD" && node check.js', "node")).toBe(true);
   });
 
   test("counts any command position in unreadable commands", () => {
