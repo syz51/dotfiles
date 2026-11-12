@@ -979,14 +979,22 @@ describe("rules the live suites test", () => {
   // them (board-feedback-109: 50+ reports from 8 agents), so worktree-rule.js gives the
   // measured forms when isolation starts, and this line points at it (dotfiles-111). An
   // explorer started before EnterWorktree had every Bash call refused (board-feedback-247).
+  // T3 opens a relative path in the thread's folder: a worktree-only file (dotfiles-359) or a
+  // file in another project (dotfiles-141, `agents/reviewer.md` cited from ~/.config/nvim)
+  // fails to open there. One rule covers both cases.
+  test("Workflow has agents cite files outside the session's folder by absolute path", () => {
+    const workflow = section("Workflow");
+    const rule = "- In replies, cite a file outside the folder the session started in, or any file after EnterWorktree, by absolute or `~/` path: an app such as T3 Code resolves a relative path against that folder. Otherwise a repo-relative path is fine.";
+    expect(workflow).toContain(`${rule}\n`);
+    expect(workflow.match(/by absolute (?:or `~\/` )?path/g)).toHaveLength(1);
+  });
+
   test("Workflow points a worktree-isolated session at the hook's list of refused forms", () => {
     const workflow = section("Workflow");
     expect(workflow).toMatch(/In a worktree-isolated session \(after EnterWorktree, or in a subagent with worktree isolation\), Claude Code refuses each Bash command that it cannot verify stays in the worktree, and nothing turns this off\./);
     expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
     expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
     expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
-    // T3 opens a relative path in the thread's folder, where a worktree-only file is missing (dotfiles-359).
-    expect(workflow).toMatch(/After EnterWorktree, cite files in replies by absolute path: an app such as T3 Code resolves a relative path against the folder the session started in\./);
     expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
     // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
