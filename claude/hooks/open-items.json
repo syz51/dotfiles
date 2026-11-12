@@ -10,9 +10,9 @@
     "^work (found|left|still)\\b"
   ],
   "exempt": [
-    "\\bno action\\b",
+    "\\bno action\\s*(?:[:()—–-]|$|(?:is )?needed\\b)",
     "\\b(needs?|needing) no (work|action|task)\\b",
     "\\bno (work|task) (is )?needed\\b",
-    "^(none|nothing)\\b"
+    "^(none|nothing)( (else|more|left|open|remaining|to (file|do)))?$"
   ]
 }
