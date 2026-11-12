@@ -21,9 +21,15 @@
 // environment itself.
 //
 // Variables:
-//   ANTHROPIC_BASE_URL   the proxy's upstream; default https://api.anthropic.com
+//   ANTHROPIC_BASE_URL   the proxy's upstream; default https://api.anthropic.com. claude-api
+//                        also sees it and, as for any caller's own endpoint, passes the run
+//                        through on claude's own auth instead of billing the API first.
 //   API_FIRST_*          passed through to claude-api (API_FIRST_SUBSCRIPTION=1 runs on the
 //                        subscription without spending API credit)
+//   EXPERIMENT_ALLOW_REMINDERS=1
+//                        lets messages hold <system-reminder> text (an experiment whose input
+//                        quotes one); system-role messages and a system field with the
+//                        removed blocks are still refused
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { join } from "node:path";
@@ -44,8 +50,11 @@ ENABLE_CLAUDEAI_MCP_SERVERS=false, CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1.
 A local proxy removes Claude Code's user-context reminder (account email) and its
 "# Environment" message (working directory, platform, model, date) from each request,
 and refuses a request that still holds a <system-reminder> or system-role message.
-Billing goes through claude-api: the API first, the subscription as fallback;
-API_FIRST_SUBSCRIPTION=1 uses the subscription.
+EXPERIMENT_ALLOW_REMINDERS=1 accepts <system-reminder> text in messages, for input
+that quotes one. Billing goes through claude-api: the API first, the subscription as
+fallback; API_FIRST_SUBSCRIPTION=1 uses the subscription. A caller's own
+ANTHROPIC_BASE_URL becomes the proxy's upstream, and claude-api then passes the run
+through on claude's own auth.
 
 preflight sends the canary text on stdin with the same flags (give no prompt) and
 exits ${OVER_CAP} when a request's prompt tokens (input, cache creation and cache read)
@@ -60,6 +69,7 @@ const DEFAULTS = [["--tools", ""], ["--setting-sources", ""], ["--strict-mcp-con
 // The opening of Claude Code's user-context reminder (2.1.322).
 export const CONTEXT_OPENING = "<system-reminder>\nAs you answer the user's questions, you can use the following context:";
 export const ENVIRONMENT_OPENING = "# Environment";
+const REMINDER_CLOSE = "</system-reminder>";
 
 // The caller's arguments with the route's defaults before any `--` marker. Throws when the
 // run has no system prompt of its own.
@@ -76,7 +86,15 @@ export function experimentArgs(argv) {
   return [...added, ...argv];
 }
 
-const textOf = (content) => typeof content === "string" ? content : (content ?? []).map((part) => part.text ?? "").join("");
+// All text in a message's content, also inside nested parts such as tool results.
+const textOf = (content) => typeof content === "string" ? content
+  : Array.isArray(content) ? content.map((part) => `${part.text ?? ""}\n${textOf(part.content)}`).join("\n") : "";
+// Text without a leading user-context reminder: what follows its closing tag stays.
+const withoutContext = (text) => {
+  if (!text.startsWith(CONTEXT_OPENING)) return text;
+  const end = text.indexOf(REMINDER_CLOSE);
+  return end === -1 ? "" : text.slice(end + REMINDER_CLOSE.length).replace(/^\s+/, "");
+};
 
 // A Messages request body without the user-context reminder and the environment message.
 export function strip(body) {
@@ -85,23 +103,35 @@ export function strip(body) {
   for (const message of body.messages) {
     if (message.role === "system" && textOf(message.content).startsWith(ENVIRONMENT_OPENING)) continue;
     if (message.role === "user" && Array.isArray(message.content)) {
-      const content = message.content.filter((part) => !(part.type === "text" && part.text?.startsWith(CONTEXT_OPENING)));
-      if (content.length > 0) messages.push(content.length === message.content.length ? message : { ...message, content });
+      const content = message.content
+        .map((part) => part.type === "text" && part.text?.startsWith(CONTEXT_OPENING) ? { ...part, text: withoutContext(part.text) } : part)
+        .filter((part) => !(part.type === "text" && part.text === ""));
+      const changed = content.length !== message.content.length || content.some((part, index) => part !== message.content[index]);
+      if (content.length > 0) messages.push(changed ? { ...message, content } : message);
       continue;
     }
-    if (message.role === "user" && typeof message.content === "string" && message.content.startsWith(CONTEXT_OPENING)) continue;
+    if (message.role === "user" && typeof message.content === "string" && message.content.startsWith(CONTEXT_OPENING)) {
+      const content = withoutContext(message.content);
+      if (content !== "") messages.push({ ...message, content });
+      continue;
+    }
     messages.push(message);
   }
   return { ...body, messages };
 }
 
-// What harness context a request still holds: system-role messages and <system-reminder>
-// text in any message, as short descriptions.
-export function leftovers(body) {
+// What harness context a request still holds, as short descriptions: the removed blocks in
+// the top-level system field, system-role messages, and (unless allowReminders) any
+// <system-reminder> text in a message, also inside nested parts.
+export function leftovers(body, { allowReminders = false } = {}) {
   const found = [];
+  const system = textOf(body?.system);
+  if (system.includes(CONTEXT_OPENING) || system.includes(`\n${ENVIRONMENT_OPENING}\n`) || system.startsWith(`${ENVIRONMENT_OPENING}\n`)) {
+    found.push("the system field holds the user context or the environment");
+  }
   for (const [index, message] of (body?.messages ?? []).entries()) {
     if (message.role === "system") found.push(`messages[${index}] is a system message`);
-    else if (textOf(message.content).includes("<system-reminder>")) found.push(`messages[${index}] holds a <system-reminder>`);
+    else if (!allowReminders && textOf(message.content).includes("<system-reminder>")) found.push(`messages[${index}] holds a <system-reminder>`);
   }
   return found;
 }
@@ -124,7 +154,7 @@ const refusal = (message) => new Response(JSON.stringify({ type: "error", error:
 });
 
 // The local proxy. usages collects each Messages response's prompt-token usage.
-export function startProxy({ upstream = UPSTREAM, usages = [], log = (line) => console.error(line) } = {}) {
+export function startProxy({ upstream = UPSTREAM, usages = [], allowReminders = false, log = (line) => console.error(line) } = {}) {
   const base = upstream.replace(/\/+$/, "");
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -137,9 +167,9 @@ export function startProxy({ upstream = UPSTREAM, usages = [], log = (line) => c
       const messages = url.pathname === "/v1/messages" && request.method === "POST";
       if (messages) {
         const stripped = strip(JSON.parse(body));
-        const left = leftovers(stripped);
+        const left = leftovers(stripped, { allowReminders });
         if (left.length > 0) {
-          const message = `claude-experiment: harness context left in the request (${left.join("; ")}); Claude Code changed the blocks' form`;
+          const message = `claude-experiment: harness context left in the request (${left.join("; ")}): Claude Code changed the blocks' form or added context, or the experiment's input quotes a <system-reminder> (then set EXPERIMENT_ALLOW_REMINDERS=1)`;
           log(message);
           return refusal(message);
         }
@@ -182,7 +212,7 @@ const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 // A signal to this process goes on to claude.
 export async function run(argv, { env = process.env, input, wrapper = join(import.meta.dir, "claude-api") } = {}) {
   const args = experimentArgs(argv);
-  const proxy = startProxy({ upstream: env.ANTHROPIC_BASE_URL || UPSTREAM });
+  const proxy = startProxy({ upstream: env.ANTHROPIC_BASE_URL || UPSTREAM, allowReminders: env.EXPERIMENT_ALLOW_REMINDERS === "1" });
   const stdio = input === undefined ? "inherit" : ["pipe", "ignore", "inherit"];
   const child = spawn(wrapper, args, { env: { ...env, ...ENV, API_FIRST_PROXY_URL: proxy.url }, stdio });
   if (input !== undefined) child.stdin.end(input);

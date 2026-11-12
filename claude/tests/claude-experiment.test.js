@@ -75,12 +75,32 @@ describe("strip", () => {
   test("drops a user message that held only the reminder", () => {
     expect(strip({ messages: [{ role: "user", content: context }, { role: "user", content: [{ type: "text", text: context }] }] }).messages).toEqual([]);
   });
+  test("keeps the text after the reminder when they share a part or a string", () => {
+    expect(strip({ messages: [
+      { role: "user", content: `${context}\nFIXED TEST TEXT` },
+      { role: "user", content: [{ type: "text", text: `${context}NEXT` }, { type: "text", text: "LAST" }] },
+    ] }).messages).toEqual([
+      { role: "user", content: "FIXED TEST TEXT" },
+      { role: "user", content: [{ type: "text", text: "NEXT" }, { type: "text", text: "LAST" }] },
+    ]);
+  });
 });
 
 describe("leftovers", () => {
   test("names system messages and reminders in another form", () => {
     expect(leftovers({ messages: [{ role: "system", content: "# Setup" }, { role: "user", content: [{ type: "text", text: "<system-reminder>\nx\n</system-reminder>" }] }] }))
       .toEqual(["messages[0] is a system message", "messages[1] holds a <system-reminder>"]);
+  });
+  test("finds the blocks in the top-level system field and reminders inside tool results", () => {
+    expect(leftovers({ system: [...SYSTEM, { type: "text", text: environment }], messages: [] })).toEqual(["the system field holds the user context or the environment"]);
+    expect(leftovers({ system: `Prompt.\n${context}`, messages: [] })).toHaveLength(1);
+    expect(leftovers({ system: SYSTEM, messages: [] })).toEqual([]);
+    const nested = { messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "t", content: [{ type: "text", text: "<system-reminder>\ncwd\n</system-reminder>" }] }] }] };
+    expect(leftovers(nested)).toEqual(["messages[0] holds a <system-reminder>"]);
+  });
+  test("allowReminders accepts reminder text in messages but not system messages", () => {
+    const body = { messages: [{ role: "user", content: "Quote: <system-reminder>x</system-reminder>" }, { role: "system", content: "y" }] };
+    expect(leftovers(body, { allowReminders: true })).toEqual(["messages[1] is a system message"]);
   });
 });
 
@@ -153,6 +173,15 @@ exit "\${FAKE_EXIT:-0}"
     const { code } = await run(["--system-prompt", "S"], { env: env(), input: "" });
     expect(code).toBe(9);
     expect(received).toHaveLength(0);
+  });
+
+  test("EXPERIMENT_ALLOW_REMINDERS=1 forwards input that quotes a reminder", async () => {
+    const body = captured();
+    body.messages[0].content[1].text = "Classify: <system-reminder>quoted</system-reminder>";
+    writeFileSync(join(root, "body.json"), JSON.stringify(body));
+    expect((await run(["--system-prompt", "S"], { env: env(), input: "" })).code).toBe(9);
+    expect((await run(["--system-prompt", "S"], { env: env({ EXPERIMENT_ALLOW_REMINDERS: "1" }), input: "" })).code).toBe(0);
+    expect(received.map((request) => request.body.messages)).toEqual([[{ role: "user", content: [{ type: "text", text: "Classify: <system-reminder>quoted</system-reminder>" }] }]]);
   });
 
   test("passes claude's exit status through", async () => {

@@ -750,15 +750,19 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
   `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` leaves both.
 - So the route starts a local proxy, points claude at it through `API_FIRST_PROXY_URL`,
   and the proxy removes both blocks from each Messages request. A request that still holds
-  a `<system-reminder>` or a system-role message is refused with a 400, so a Claude Code
-  release that changes the blocks fails the run instead of leaking.
+  a `<system-reminder>` or a system-role message, or the blocks in its top-level `system`
+  field, is refused with a 400, so a Claude Code release that changes the blocks fails
+  the run instead of leaking. For input that quotes a `<system-reminder>`, set
+  `EXPERIMENT_ALLOW_REMINDERS=1`.
 - It adds `-p`, `--tools ""`, `--setting-sources ""`, `--strict-mcp-config` and
   `--disable-slash-commands` unless the caller passes them, and sets
   `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (no
   claude.ai connectors, no session-title side call). It refuses a run without
   `--system-prompt` or `--system-prompt-file`: the default system prompt holds the
   environment.
-- Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription.
+- Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription. A
+  caller's own `ANTHROPIC_BASE_URL` becomes the proxy's upstream, and `claude-api` then
+  passes the run through on claude's own auth, as for any caller's own endpoint.
 - `claude-experiment preflight [--cap N] <claude args>` sends a fixed canary with the same
   flags and exits 3 when a request's prompt tokens (input, cache creation and cache read)
   exceed the cap, default 2000. Run it before a batch.
