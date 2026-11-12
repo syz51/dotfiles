@@ -253,9 +253,8 @@ Link the whole `claude/hooks` directory, not single scripts: the Bash guards imp
 `claude/hooks/shell.js`, and a guard that cannot load it fails open.
 `codex/hooks.json` runs the same guards on Codex shell calls, which Codex names `Bash` in
 hook input. It runs them from the checkout, `~/.config/claude/hooks`, so Codex needs no
-`~/.claude` link, as on the Pro. After a change to `codex/hooks.json` reaches `main`, run
-`bun ~/.config/codex/trust-hooks.js --trust` on each Mac that runs Codex. The guards see
-only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
+`~/.claude` link, as on the Pro. Approve changed hooks as [Work board](#work-board) says.
+The guards see only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
 `` !`command` `` line in a user, project or plugin skill or custom slash command is
 replaced with a placeholder instead of running unchecked before the model reads it.
 guard-git-push blocks a push whose subcommand, refspec, remote or option name comes from
