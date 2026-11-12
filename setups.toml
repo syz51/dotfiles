@@ -49,15 +49,6 @@ change = "A PR on dotfiles with tests for the hook; the live suites when a guard
 verify = ["bun test claude/hooks claude/tests/codex-trust-hooks.test.js"]
 
 [[setup]]
-id = "opencode"
-title = "opencode port of the Claude Code setup"
-covers = ["opencode"]
-owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
-channel = "board"
-change = "A PR on dotfiles keeping opencode/agents in step with claude/agents; a live opencode run when the plugin changes"
-verify = ["bun test claude/tests/opencode.test.js"]
-
-[[setup]]
 id = "settings"
 title = "Claude Code and Codex settings"
 covers = ["claude/settings.json", "codex/config.example.toml", "codex/keybindings.json"]

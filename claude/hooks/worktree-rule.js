@@ -7,9 +7,7 @@
 // EnterWorktree, at the start of a subagent whose cwd is a Claude Code worktree (worktree
 // isolation, or a parent that entered one), and at session start or after compaction there.
 // Claude Code puts these worktrees under <repo>/.claude/worktrees/<name>; T3 worktree
-// threads live elsewhere and run without the guard, so they get nothing. opencode's
-// claude-hooks plugin runs these hooks too, but opencode has no such guard, so the hook stays
-// quiet there. It never blocks.
+// threads live elsewhere and run without the guard, so they get nothing. It never blocks.
 import { readFileSync } from "node:fs";
 
 const MARKER = "/.claude/worktrees/";
@@ -54,7 +52,7 @@ export function output(input) {
   return worktree && { hookSpecificOutput: { hookEventName: event, additionalContext: rule(worktree) } };
 }
 
-if (import.meta.main && !process.env.OPENCODE_SESSION_ID) {
+if (import.meta.main) {
   const result = output(JSON.parse(readFileSync(0, "utf8")));
   if (result) process.stdout.write(JSON.stringify(result));
 }
