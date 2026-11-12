@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, sessionActions, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
+import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, sessionActions, shellChanges, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
 import { boardCheckouts, gitIgnored, HIGH_IMPACT_FILE, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
 
 const cleanup = [];
@@ -484,6 +484,20 @@ test("a fork's inherited compact summaries, system prompts and injected text nev
   expect(runDetectors(session)["ultra-effort"].verdict).toBe("fail");
 });
 
+test("shellChanges finds the files a command deletes, moves, copies or patches", () => {
+  expect(shellChanges("git rm -r --cached a.js b/c.js")).toEqual(["a.js", "b/c.js"]);
+  expect(shellChanges("rm -rf -- -x.sh y.sh")).toEqual(["-x.sh", "y.sh"]);
+  expect(shellChanges("mv a.sh dir")).toEqual(["a.sh", "dir", "dir/a.sh"]);
+  expect(shellChanges("cp a.sh b.sh c/")).toEqual(["c/", "c/a.sh", "c/b.sh"]);
+  expect(shellChanges("git -C sub mv a b")).toEqual(["sub/a", "sub/b", "sub/b/a"]);
+  expect(shellChanges("git checkout -- a.js && git checkout main")).toEqual(["a.js"]);
+  expect(shellChanges("cat <<'EOF' | git apply\n--- a/x.js\n+++ b/x.js\nEOF")).toEqual(["x.js"]);
+  expect(shellChanges("git apply --check <<<'+++ b/x.js'")).toEqual([]);
+  expect(shellChanges("git apply --stat --apply <<<'+++ b/x.js'")).toEqual(["x.js"]);
+  // Scratch paths, paths built at run time and patch files on disk are not counted.
+  expect(shellChanges('rm -rf /tmp/x "$DIR/y" && git apply fix.patch && git checkout main')).toEqual([]);
+});
+
 describe("review-skipped", () => {
   const checkouts = [
     { repo: "github.com/o/app", root: "/w/app" },
@@ -563,6 +577,23 @@ describe("review-skipped", () => {
     // The nested checkout's own list applies: its hooks folder, not the parent's auth file.
     expect(detect([edit("/w/app/docs/src/auth.rs"), bash("git push")]).verdict).toBe("na");
     expect(detect([edit("/w/app/docs/hooks/x.sh"), bash("git push")]).hits[0].files).toEqual(["o/app-docs:hooks/x.sh"]);
+  });
+
+  test("counts deletes, moves, copies and patches of high-impact files as edits", () => {
+    const patch = "git apply <<'EOF'\ndiff --git a/hooks/pre.sh b/hooks/pre.sh\n--- a/hooks/pre.sh\n+++ b/hooks/pre.sh\n@@ -1 +1 @@\n-a\n+b\nEOF";
+    const commands = ["git rm hooks/pre.sh", "rm -f /w/app/hooks/pre.sh", "mv hooks/pre.sh hooks/post.sh", "cp /tmp/x.sh /w/app/hooks/", "git checkout HEAD -- hooks/pre.sh", patch];
+    for (const command of commands) {
+      const result = detect([bash(command, { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]);
+      expect(result.verdict, command).toBe("fail");
+      expect(result.hits[0].files.every((file) => file.startsWith("o/app:hooks/")), command).toBe(true);
+      // A review after the change and before the push passes: the `reviewer` agent, or /code-review.
+      const reviewer = () => call("Agent", { subagent_type: "reviewer", prompt: "origin/main...abc1234", run_in_background: true });
+      expect(detect([bash(command, { cwd: "/w/app" }), reviewer(), bash("git push", { cwd: "/w/app" })]).verdict, command).toBe("pass");
+      expect(detect([bash(command, { cwd: "/w/app" }), review(), bash("git push", { cwd: "/w/app" })]).verdict, command).toBe("pass");
+    }
+    // Moving a high-impact file away still changes it; a move of other files does not.
+    expect(detect([bash("git mv hooks/pre.sh docs-old.sh", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("fail");
+    expect(detect([bash("rm -rf README.md build", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("na");
   });
 
   test("is na without a pushed high-impact edit", () => {

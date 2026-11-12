@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
+| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -229,8 +229,7 @@ requiring Git and network access. Inspect `nvim/lazyvim.json` and
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 
 Agents run on Claude models only: `claude/CLAUDE.md` forbids the `codex` CLI, `gpt-*`
-models and the Codex delegate provider. opencode is the exception: by the user's choice, it
-runs GPT models (see "opencode" below). As a backstop, guard-runtimes blocks a Bash command
+models and the Codex delegate provider. As a backstop, guard-runtimes blocks a Bash command
 named `codex`, also through `bunx @openai/codex`; it does not see other launchers or the T3
 delegate tools. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
 files below stay until their removal is decided.
@@ -390,6 +389,14 @@ agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-m
 must name one as `Reason: <name>`, and an `action` ask, which hands the user a step, must
 name `only-me`. Otherwise the hook refuses the ask and lists what the agent should do
 instead. Edit the JSON file to change the reasons. The `board ask` CLI is not checked.
+open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
+work board, it blocks the stop once when an item under an open-item heading, such as
+"Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no
+work. This is the Work board rule of `claude/CLAUDE.md` that each open item of a reply names
+the task or ask that holds it. The board's own Stop reminder fires only after `task_done` or
+a release. The hook is a reminder: the next stop passes. Edit
+`claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
+to `false` to turn it off.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
@@ -416,8 +423,7 @@ forms the guard refuses, as measured on Claude Code 2.1.319, so agents write aro
 It speaks after a successful EnterWorktree, for the worktree that was entered. It also
 speaks when a subagent starts, and at session start or after compaction, when the working
 folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
-the guard. opencode has no such guard, so the hook stays quiet when opencode's
-`claude-hooks` plugin runs it. Re-measure the forms when a Claude Code update changes the
+the guard. Re-measure the forms when a Claude Code update changes the
 guard's messages.
 `claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
 compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
@@ -498,40 +504,6 @@ the ignore file explicitly anyway:
 ```sh
 git config --global core.excludesFile "$HOME/.config/git/ignore"
 ```
-
-## opencode
-
-opencode 2 reads its global configuration from `~/.config/opencode`, so the tracked files
-in `opencode/` apply without a link. They give opencode the Claude Code setup:
-
-- `opencode.json` loads `~/.claude/CLAUDE.md` as instructions, uses GPT-6.1 Sol at
-  `xhigh` by default, allows
-  every tool as Claude Code's `bypassPermissions` does, and runs two MCP servers: the board
-  and computer use (`desktop`). opencode 2 does not read `CLAUDE.md` files by itself.
-- `AGENTS.md` maps Claude Code's tool names and Claude-only steps to opencode's, and
-  tells the model that the Claude-only rule means the configured GPT models here.
-- `agents/` holds `explorer`, `worker`, `solver` and `reviewer`. They keep the Claude
-  agents' descriptions and prompts. Each Opus agent runs GPT-6.1 Sol at `xhigh`, the Haiku
-  explorer runs GPT-6 Luna at `max`, and the reviewer runs GPT-6.1 Sol at `medium`.
-  `claude/tests/opencode.test.js` keeps them in step.
-- `plugins/claude-hooks` runs the hooks in `~/.claude/settings.json`: the Bash guards,
-  `guard-asks`, `freshen-base`, `stale-base`, atuin and the board hooks. A `PreToolUse`
-  refusal refuses the opencode tool call. Hook commands, board MCP calls and shell commands
-  act as `opencode:<root opencode session id>` (`OPENCODE_SESSION_ID`), so subagents share
-  their parent's board identity. The board hooks run with `BOARD_HOOK_RUNTIME=opencode`, so
-  the board registers runtime `opencode`, which its weekly usage hold skips: that hold
-  measures the Claude account and applies only to Claude Code. The plugin also adds the project's Claude Code memory index to the context at
-  session start.
-
-opencode keeps `service.json` (the background service's password) and `cli.json` in the
-same directory; both stay ignored. Models come from the OpenCode Console (Zen), which
-bills per token. Skills load from `~/.claude/skills` without configuration.
-
-To try a change before it reaches `~/.config/opencode`, copy `opencode/` to a scratch
-directory and run `OPENCODE_CONFIG_DIR=<dir> opencode run --standalone ...`. Without
-`--standalone`, commands talk to the running background service and its configuration
-(`opencode service --help`); run `opencode reload` after a change reaches
-`~/.config/opencode`.
 
 ## Factory
 
@@ -1163,6 +1135,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   the worker edits only its authorized files, a worker isolated in a worktree starts
   from the local `HEAD` and receives the main checkout's uncommitted input while the
   checkout stays untouched, and two explorers run in parallel in the shared checkout.
+  A session started in one project cites a file in another by its absolute path.
   Two parallel tracks go to one worker each, in its own worktree: each worker finds its
   module's bug, fixes it, updates and runs the module's check, and gets the code only
   the conversation held. The main session neither investigates nor edits a module

@@ -6,8 +6,7 @@ import { claudeWorktree, output, rule } from "./worktree-rule.js";
 const HOOK = join(import.meta.dir, "worktree-rule.js");
 const WT = "/repo/.claude/worktrees/agent-a47b";
 
-// The hook stays quiet under opencode, so the tests drop the marker an opencode parent sets.
-const { OPENCODE_SESSION_ID: _, ...ENV } = process.env;
+const ENV = process.env;
 
 function run(input, env = ENV) {
   const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(input), encoding: "utf8", env });
@@ -74,10 +73,9 @@ describe("when the hook speaks", () => {
     expect(run({ hook_event_name: "SubagentStart", cwd: "/repo" })).toBe("");
   });
 
-  // opencode's claude-hooks plugin runs every hook in settings.json and sets this marker;
-  // opencode has no worktree guard, so the note would be wrong there.
-  test("under opencode it prints nothing", () => {
-    expect(run({ hook_event_name: "SubagentStart", cwd: WT }, { ...ENV, OPENCODE_SESSION_ID: "ses_1" })).toBe("");
+  // The opencode port is gone, so its session marker no longer silences the hook.
+  test("an OPENCODE_SESSION_ID in the environment does not silence it", () => {
+    expect(run({ hook_event_name: "SubagentStart", cwd: WT }, { ...ENV, OPENCODE_SESSION_ID: "ses_1" })).toBe(JSON.stringify(output({ hook_event_name: "SubagentStart", cwd: WT })));
   });
 
   test("invalid input fails without blocking", () => {
