@@ -109,7 +109,8 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
 
     test("offers the configured agents and installed skills", () => {
       expect(session.init.model).toBe(HAIKU);
-      expect(session.init.agents).toEqual(expect.arrayContaining(["explorer", "worker", "solver", "reviewer"]));
+      expect(session.init.agents).toEqual(expect.arrayContaining(["explorer", "worker", "reviewer"]));
+      expect(session.init.agents).not.toContain("solver");
       const installed = readdirSync(join(CLAUDE, "skills"), { withFileTypes: true })
         .filter((entry) => existsSync(join(CLAUDE, "skills", entry.name, "SKILL.md")))
         .map((entry) => entry.name);
@@ -288,7 +289,9 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     assertMatches(finalText(run.events), [/topics\/evidence\.md/, /research-log\.md/, /references\.md/]);
   }), 600_000);
 
-  test("a solver analyzes a race read-only", () => suite.scenario("solver race analysis", async ({ fixture, session }) => {
+  // Hard debugging with its fix goes to the worker; the solver agent was folded into it
+  // (dotfiles-457). The worker explains the race and fixes only reserve.js.
+  test("a worker debugs and fixes a race", () => suite.scenario("worker race fix", async ({ fixture, session }) => {
     const work = fixture({
       "reserve.js": "export async function reserve(stock, n) { const count = await stock.read(); if (count < n) return false; await stock.write(count - n); return true; }\n",
       "invariant.md": "Initial stock is 1. Two concurrent calls each reserve 1 unit. Successful reservations must never exceed initial stock. A read and a write are individually atomic, but the whole function is not.\n",
@@ -296,13 +299,15 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     const before = snapshot(work);
     const run = await session({
       cwd: work,
-      prompt: "Use the solver agent (subagent_type solver) to analyze reserve.js against invariant.md. Give a minimal two-call "
-        + "interleaving, each return value and final stored count, and a correction that enforces the invariant. This is "
-        + "analysis only; keep files unchanged.",
+      effort: ABOVE_WORKER,
+      prompt: "Use the worker agent (subagent_type worker) to debug reserve.js against invariant.md and fix it so the invariant "
+        + "holds. Its assignment is reserve.js only. Give a minimal two-call interleaving that breaks the invariant before "
+        + "the fix, each return value and the final stored count.",
     });
-    assertAgentRan(run, "solver");
-    assertUnchanged(before, snapshot(work));
-    assertMatches(finalText(run.events), [/both|two/i, /\b0\b/, /atomic|compare.and.swap|transaction|lock|mutex/i]);
+    assertAgentRan(run, "worker");
+    assertUnchanged(before, snapshot(work), ["reserve.js"]);
+    expect(readFileSync(join(work, "reserve.js"), "utf8"), "reserve.js was not fixed").not.toContain("const count = await stock.read(); if (count < n) return false; await stock.write(count - n);");
+    assertMatches(finalText(run.events), [/both|two/i, /\b0\b/, /atomic|compare.and.swap|transaction|lock|mutex|queue|serial/i]);
   }), 600_000);
 
   // The Delegation rule on worktrees: a new worktree misses the main checkout's

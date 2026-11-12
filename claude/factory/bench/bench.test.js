@@ -147,8 +147,7 @@ describe("cases", () => {
     const cases = loadCases();
     const count = (role) => cases.filter((benchCase) => benchCase.role === role).length;
     expect(count("explorer")).toBeGreaterThanOrEqual(2);
-    expect(count("worker")).toBeGreaterThanOrEqual(2);
-    expect(count("solver")).toBeGreaterThanOrEqual(1);
+    expect(count("worker")).toBeGreaterThanOrEqual(4);
     expect(count("main")).toBeGreaterThanOrEqual(1);
   });
 
@@ -200,7 +199,7 @@ describe("cases", () => {
     expect(result).toBe("---\nname: worker\ndescription: \"Works.\"\ndisallowedTools: Agent\nmodel: claude-haiku-5-5\neffort: low\n---\n\nBody line.\n");
     expect(agentOverride("---\nname: x\n---\nBody\n", { model: "m", effort: "e" })).toBe("---\nname: x\nmodel: m\neffort: e\n---\nBody\n");
     expect(() => agentOverride("no frontmatter", { model: "m", effort: "e" })).toThrow("frontmatter");
-    for (const role of ["explorer", "worker", "solver"]) {
+    for (const role of ["explorer", "worker"]) {
       const path = writeAgentOverride(join(scratch, role), role, { model: "claude-opus-5-5", effort: "medium" }, AGENTS_DIR);
       const written = readFileSync(path, "utf8");
       expect(path).toBe(join(scratch, role, ".claude", "agents", `${role}.md`));

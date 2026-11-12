@@ -1,7 +1,7 @@
 {
   "id": "solver-shell-getopt-wrappers",
   "title": "Make the Bash guards' shell parsing follow wrapper options, ssh, fish, groups and find -execdir",
-  "role": "solver",
+  "role": "worker",
   "prompt": "The shell parser the Bash guard hooks share misreads some wrapped and remote commands, so the guards miss what they must catch. Make the failing tests pass: claude/hooks/shell.test.js, claude/hooks/guard-runtimes.test.js and claude/hooks/guard-git-push.test.js. Change the code, not the tests.",
   "fixture": {
     "type": "git",

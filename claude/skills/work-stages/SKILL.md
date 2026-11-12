@@ -13,8 +13,8 @@ one, otherwise in the reply.
 | Stage | Goal | Done when | Board | When it splits |
 | --- | --- | --- | --- | --- |
 | Explore | What exists: code, data, prior work, constraints | Facts listed with `file:line` or source; unconfirmed ones named | `finding` notes | `explorer` per independent area |
-| Research | Open questions answered from sources or experiments | Each answered with sources or a reproducible check, or marked open | `finding` notes; open questions as tasks or asks | `explorer` per question; `solver` for hard analysis |
-| Design | An approach within the constraints | Choice, rejected alternatives with reasons, and shared interfaces written; user-owned decisions asked | `decision` notes; asks | `solver` for a hard trade-off |
+| Research | Open questions answered from sources or experiments | Each answered with sources or a reproducible check, or marked open | `finding` notes; open questions as tasks or asks | `explorer` per question |
+| Design | An approach within the constraints | Choice, rejected alternatives with reasons, and shared interfaces written; user-owned decisions asked | `decision` notes; asks | none |
 | Plan | Tasks others can run | Each has an imperative title, a standalone body and observable acceptance checks; dependencies as blockers; parallel tracks named | `task_add` with acceptance, blockers, parent | none |
 | Build | The change | Acceptance checks pass; tests cover new behavior | claim, lease, handoff | `worker` per independent track |
 | Verify | It works where it is used | Closest user-facing check run; review findings handled | `task_done` evidence | `reviewer` in the background, per the Review section |

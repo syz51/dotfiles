@@ -1142,7 +1142,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
 ```
 
 - `live.test.js`: a session in `nvim/` loads the global and repository instructions
-  and lists the agents and skills. Explorer, worker and solver run on their configured
+  and lists the agents and skills. Explorer and worker run on their configured
   model and effort (worker checks run the main session at `xhigh`, above the worker),
   the worker edits only its authorized files, a worker isolated in a worktree starts
   from the local `HEAD` and receives the main checkout's uncommitted input while the
