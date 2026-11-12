@@ -147,8 +147,7 @@ describe("cases", () => {
     const cases = loadCases();
     const count = (role) => cases.filter((benchCase) => benchCase.role === role).length;
     expect(count("explorer")).toBeGreaterThanOrEqual(2);
-    expect(count("worker")).toBeGreaterThanOrEqual(2);
-    expect(count("solver")).toBeGreaterThanOrEqual(1);
+    expect(count("worker")).toBeGreaterThanOrEqual(4);
     expect(count("main")).toBeGreaterThanOrEqual(1);
   });
 
@@ -200,7 +199,7 @@ describe("cases", () => {
     expect(result).toBe("---\nname: worker\ndescription: \"Works.\"\ndisallowedTools: Agent\nmodel: claude-haiku-5-5\neffort: low\n---\n\nBody line.\n");
     expect(agentOverride("---\nname: x\n---\nBody\n", { model: "m", effort: "e" })).toBe("---\nname: x\nmodel: m\neffort: e\n---\nBody\n");
     expect(() => agentOverride("no frontmatter", { model: "m", effort: "e" })).toThrow("frontmatter");
-    for (const role of ["explorer", "worker", "solver"]) {
+    for (const role of ["explorer", "worker"]) {
       const path = writeAgentOverride(join(scratch, role), role, { model: "claude-opus-5-5", effort: "medium" }, AGENTS_DIR);
       const written = readFileSync(path, "utf8");
       expect(path).toBe(join(scratch, role, ".claude", "agents", `${role}.md`));
@@ -511,6 +510,12 @@ describe("report", () => {
     expect(configs[0].passRate).toBeCloseTo(1 / 3);
     expect(configs[1]).toMatchObject({ model: "opus", runs: 2, passRate: 1, medianCostUSD: 1.5, medianDurationMs: 3000 });
     expect(aggregate(records, { caseIds: ["c2"] }).roles.map((role) => role.role)).toEqual(["explorer"]);
+  });
+
+  test("results of the folded solver role count as worker results", () => {
+    const report = aggregate([record("opus", "high", true, 1), record("opus", "xhigh", true, 2, { role: "solver" })], { role: "worker" });
+    expect(report.roles.map((role) => role.role)).toEqual(["worker"]);
+    expect(report.roles[0].cases[0].configs.map((config) => config.effort).sort()).toEqual(["high", "xhigh"]);
   });
 
   test("the Pareto front keeps configurations nothing beats on both cost and pass rate", () => {

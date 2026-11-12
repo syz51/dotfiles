@@ -1,7 +1,7 @@
 {
   "id": "solver-guard-quoting-wrappers",
   "title": "Harden the runtime guard against quoting, case and more wrappers",
-  "role": "solver",
+  "role": "worker",
   "prompt": "The Bash guard hooks let some commands through that their tests say they must catch. Make the failing tests pass: claude/hooks/guard-runtimes.test.js and claude/hooks/guard-git-push.test.js. Change the code, not the tests.",
   "fixture": {
     "type": "git",

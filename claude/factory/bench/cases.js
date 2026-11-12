@@ -1,6 +1,6 @@
 // Benchmark cases: loading and validation of bench/cases/<id>/case.json, and the
 // fixture each run works in. A case has:
-//   id, title, role (main, explorer, worker or solver), prompt
+//   id, title, role (main, explorer or worker), prompt
 //   fixture  { type: "files", dir } — a folder in the case — or
 //            { type: "git", repo, commit } — repo "." is the repository holding the case,
 //            other relative paths are relative to the case folder; either may add
@@ -12,7 +12,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
-export const ROLES = ["main", "explorer", "worker", "solver"];
+export const ROLES = ["main", "explorer", "worker"];
 export const CASES_DIR = join(import.meta.dir, "cases");
 const KEYS = ["id", "title", "role", "prompt", "fixture", "oracle", "budgetUsd", "timeoutMs"];
 const ID = /^[a-z0-9][a-z0-9-]*$/;

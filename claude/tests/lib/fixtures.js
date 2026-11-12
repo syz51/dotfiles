@@ -5,7 +5,7 @@ const nextId = (prefix) => `${prefix}_${String(++counter).padStart(4, "0")}`;
 
 export const init = (overrides = {}) => ({
   type: "system", subtype: "init", cwd: "/work", session_id: "session-1", model: "claude-opus-5-5",
-  tools: ["Bash", "Read", "Skill", "Agent"], agents: ["explorer", "worker", "solver", "reviewer"], skills: ["typescript"], ...overrides,
+  tools: ["Bash", "Read", "Skill", "Agent"], agents: ["explorer", "worker", "reviewer"], skills: ["typescript"], ...overrides,
 });
 
 // One assistant event carrying one content block, as the CLI streams them.
