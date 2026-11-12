@@ -641,13 +641,16 @@ describe("review-skipped", () => {
     // A path that names a file as a folder looks from the file's folder.
     writeFileSync(join(papers, "notes.txt"), "");
     expect(gitCheckout(join(papers, "notes.txt", "x"))).toEqual({ repo: "github.com/syz51/papers", root: papers, path: "notes.txt/x" });
+    expect(gitCheckout(join(papers, "notes.txt", "a", "b"))).toEqual({ repo: "github.com/syz51/papers", root: papers, path: "notes.txt/a/b" });
+    // A removed Claude Code worktree maps to its parent checkout, without the worktree prefix.
+    expect(gitCheckout(join(papers, ".claude", "worktrees", "gone", "src", "lib.rs"))).toEqual({ repo: "github.com/syz51/papers", root: papers, path: "src/lib.rs" });
     const local = join(dir, "local");
     expect(Bun.spawnSync(["git", "init", "-q", local]).exitCode).toBe(0);
     expect(gitCheckout(join(local, "new", "x.rs"))).toEqual({ repo: local, root: local, path: "new/x.rs" });
   });
 
   test("repoName names a remote as the board does", () => {
-    for (const url of ["git@github.com:syz51/papers.git", "https://github.com/syz51/papers.git", "https://x:token@github.com/Syz51/Papers", "ssh://git@github.com/syz51/papers/"]) expect(repoName(url), url).toBe("github.com/syz51/papers");
+    for (const url of ["git@github.com:syz51/papers.git", "https://github.com/syz51/papers.git", "https://x:token@github.com/Syz51/Papers", "ssh://git@github.com/syz51/papers/", "github.com:syz51/papers.git"]) expect(repoName(url), url).toBe("github.com/syz51/papers");
     expect(repoName("/srv/git/app")).toBe("/srv/git/app");
   });
 

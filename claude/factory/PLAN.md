@@ -246,7 +246,8 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   does not list through git and their `origin` remote. Over 30 days to 2026-11-12 it
   fails 277 of 1813 sessions (636 unreviewed pushes; 153 pass, 1383 na); vps, dotfiles
   and agent-board have the most flagged files, then research-factory, email-agent, t3code
-  and papers.
+  and papers. A removed T3 worktree of a repository the board does not list is not seen,
+  so the count is a lower bound for those repositories (dotfiles-495).
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout

@@ -58,7 +58,7 @@ export function locate(file, checkouts) {
 // lowercased, such as github.com/syz51/papers. A remote without a host, such as a local
 // path, is its own name.
 export function repoName(url) {
-  const scp = /^[\w.-]+@([^:/]+):(.+)$/.exec(url);
+  const scp = /^(?:[\w.-]+@)?([^:/]+):(?!\/\/)(.+)$/.exec(url);
   const parsed = scp ? { host: scp[1], path: scp[2] } : URL.canParse(url) ? { host: new URL(url).hostname, path: new URL(url).pathname } : null;
   if (!parsed?.host) return url;
   return `${parsed.host}/${parsed.path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "")}`.toLowerCase();
@@ -66,17 +66,27 @@ export function repoName(url) {
 
 // The repository, checkout root and repository-relative path of a file in a git checkout
 // that the board does not list, from git itself: the repository is the `origin` remote,
-// or the checkout root when it has none. null outside a checkout on this device. The
-// Review rule covers every repository, not only those with a board.
+// or the checkout root when it has none. null outside a checkout git can read on this
+// device: a repository git refuses, such as one with dubious ownership, cannot be named.
+// A removed Claude Code worktree maps to its parent checkout. The Review rule covers
+// every repository, not only those with a board.
+const NOT_FOLDER = new Set(["ENOENT", "ENOTDIR", "EACCES", "EPERM"]);
+function isFolder(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch (error) {
+    if (NOT_FOLDER.has(error.code)) return false;
+    throw error;
+  }
+}
 const gitRoots = new Map();
 export function gitCheckout(file) {
   let folder = dirname(file);
-  // The nearest folder that exists: a command's path may name a file as a folder.
-  while (!statSync(folder, { throwIfNoEntry: false })?.isDirectory()) folder = dirname(folder);
+  // The nearest readable folder: a command's path may name a file as a folder, or
+  // pass through a folder this user cannot read.
+  while (!isFolder(folder)) folder = dirname(folder);
   if (!gitRoots.has(folder)) {
     const top = Bun.spawnSync(["git", "-C", folder, "rev-parse", "--show-toplevel"], { stderr: "pipe" });
-    const error = top.stderr.toString().trim();
-    if (top.exitCode !== 0 && !/not a git repository/.test(error)) throw new Error(`git rev-parse in ${folder}: ${error}`);
     let found = null;
     if (top.exitCode === 0) {
       const root = realpathSync(top.stdout.toString().trim());
@@ -86,7 +96,7 @@ export function gitCheckout(file) {
     gitRoots.set(folder, found);
   }
   const found = gitRoots.get(folder);
-  return found && file.startsWith(`${found.root}/`) ? { ...found, path: file.slice(found.root.length + 1) } : null;
+  return found && file.startsWith(`${found.root}/`) ? { ...found, path: inRepo(file.slice(found.root.length + 1)) } : null;
 }
 
 // Whether git ignores a repository's file in its checkout: such files are never pushed.
