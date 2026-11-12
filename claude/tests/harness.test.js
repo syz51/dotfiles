@@ -347,6 +347,35 @@ describe("background review", () => {
     }, 30_000);
 });
 
+// The parallel-tracks scenario's routing and Review checks, against sessions that keep or
+// break each rule.
+describe("parallel tracks", () => {
+  const name = "parallel tracks are owned end to end";
+
+  for (const mode of ["tracks-pass", "tracks-review"])
+    test(`${mode} passes`, async () => {
+      const run = await runLive("live.test.js", name, mode);
+      expect(run.code, output(run)).toBe(0);
+      expect(output(run)).toMatch(/1 pass/);
+      assertCleanedUp();
+    }, 30_000);
+
+  for (const [mode, message] of [
+    ["tracks-explorer", "a track went to another agent"],
+    ["tracks-third", "a track went to another agent"],
+    ["tracks-two-reviews", "the final diff was reviewed more than once"],
+    ["tracks-review-foreground", "the review ran in the foreground"],
+    ["tracks-review-worktree", "the review got a worktree of its own"],
+    ["tracks-review-early", "the review started before both tracks returned"],
+  ])
+    test(mode, async () => {
+      const run = await runLive("live.test.js", name, mode);
+      expect(run.code).not.toBe(0);
+      expect(output(run)).toContain(message);
+      assertCleanedUp();
+    }, 30_000);
+});
+
 test("a claimed artifact that was never saved fails the full skill run", async () => {
   const run = await runLive("live-dispatch.test.js", "drafting an article", "article-claim");
   expect(run.code).not.toBe(0);

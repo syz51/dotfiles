@@ -550,10 +550,11 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           + `"${codes.pricing}", and as agreed with the carrier, shipping/code.js must export CODE set to "${codes.shipping}". `
           + "Each module's check.js must also assert its CODE. When done, the fixes belong in this checkout.",
       });
-      const spawns = assertAgentRan(run, "worker", { count: 2 });
       // The Review rule's reviewer run on the final diff owns no track; it is checked below.
+      // Checked first, so a track sent to another agent fails with this message.
       expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null && spawn.input.subagent_type !== "reviewer").map((spawn) => spawn.input.subagent_type),
         "a track went to another agent, or one area passed between agents").toEqual(["worker", "worker"]);
+      const spawns = assertAgentRan(run, "worker", { count: 2 });
       expect(concurrentSpawns(run.events, spawns), "the tracks ran one after another").toBe(true);
       for (const spawn of spawns) expect(spawn.input.isolation, "an editing track shared the checkout").toBe("worktree");
 

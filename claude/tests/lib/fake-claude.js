@@ -55,11 +55,15 @@ function runHooks(event, input) {
 
 // The Agent calls each subagent was spawned by, by tool_use id, for its hook records.
 const agentTypes = new Map();
+// The model and effort of subagents that run with their own, by Agent tool_use id; the
+// others run with the session's.
+const agentRuntime = new Map();
 
 function tool(name, input, execute, parent = null) {
   const id = `toolu_fake_${++counter}`;
-  emit({ type: "assistant", parent_tool_use_id: parent, message: { id: `msg_${counter}`, model: option("--model"), content: [{ type: "tool_use", id, name, input }] } });
-  const blocked = runHooks("PreToolUse", { tool_name: name, tool_input: input, tool_use_id: id, effort: { level: option("--effort") }, ...(parent ? { agent_type: agentTypes.get(parent) } : {}) });
+  const { model, effort } = agentRuntime.get(parent) ?? { model: option("--model"), effort: option("--effort") };
+  emit({ type: "assistant", parent_tool_use_id: parent, message: { id: `msg_${counter}`, model, content: [{ type: "tool_use", id, name, input }] } });
+  const blocked = runHooks("PreToolUse", { tool_name: name, tool_input: input, tool_use_id: id, effort: { level: effort }, ...(parent ? { agent_type: agentTypes.get(parent) } : {}) });
   const { text, isError = false, meta } = blocked ? { text: blocked, isError: true } : execute();
   if (name === "Agent") agentTypes.set(id, input.subagent_type ?? "general-purpose");
   emit({ type: "user", parent_tool_use_id: parent, tool_use_result: meta, message: { content: [{ type: "tool_result", tool_use_id: id, content: text, ...(isError ? { is_error: true } : {}) }] } });
@@ -72,11 +76,16 @@ const readFile = (path, parent) => tool("Read", { file_path: path }, () => {
   return { text: content, meta: { type: "text", file: { filePath: path, content, startLine: 1, numLines: lines, totalLines: lines } } };
 }, parent);
 
-const bash = (command) => tool("Bash", { command }, () => {
+const bash = (command, parent) => tool("Bash", { command }, () => {
   const run = spawnSync("sh", ["-c", command], { cwd, encoding: "utf8" });
   const output = run.stdout + run.stderr;
   return run.status === 0 ? { text: output } : { text: `Exit code ${run.status}\n${output}`, isError: true };
-});
+}, parent);
+
+const write = (path, content, parent) => tool("Write", { file_path: path, content }, () => {
+  writeFileSync(path, content);
+  return { text: `File created successfully at: ${path}` };
+}, parent);
 
 const skill = (name) => tool("Skill", { skill: name }, () => ({ text: `Launching skill: ${name}` }));
 
@@ -173,6 +182,62 @@ if (mode.startsWith("chinese-")) {
   if (mode === "chinese-feedback-remove") rmSync(join(feedback, "rust", "verifications", "old.json"));
   if (mode === "chinese-feedback-other") write("rust/README.md", "# Rust\n");
   answer = "我会参加明天的会议。";
+}
+if (mode.startsWith("tracks-")) {
+  // The parallel-tracks scenario: two worker tracks in worktrees of their own, issued
+  // together and run in the background, each fixing its module, adding its CODE from the
+  // prompt and running its check; then the session merges both back, removes the worktrees
+  // and branches, and runs both checks here. tracks-pass stops there and tracks-review adds
+  // one background reviewer on the final diff. The other modes break one rule:
+  // tracks-explorer sends the shipping track to an explorer, tracks-third adds a
+  // general-purpose agent, tracks-two-reviews runs the reviewer twice,
+  // tracks-review-foreground runs it in the foreground, tracks-review-worktree gives it a
+  // worktree, and tracks-review-early starts it before the tracks return.
+  const prompt = args[args.indexOf("-p") + 1];
+  const codes = Object.fromEntries([...prompt.matchAll(/(\w+)\/code\.js must export CODE set to "([^"]+)"/g)].map((match) => [match[1], match[2]]));
+  const fixes = { pricing: ["price.js", "sum + item.price, 1)", "sum + item.price, 0)"], shipping: ["weight.js", "grams / 100;", "grams / 1000;"] };
+  const git = (...gitArgs) => spawnSync("git", ["-c", "commit.gpgsign=false", ...gitArgs], { cwd, encoding: "utf8" });
+  const review = ({ background = true, isolation } = {}) => {
+    const range = `origin/main...${git("rev-parse", "HEAD").stdout.trim()}`;
+    const spawn = tool("Agent", { subagent_type: "reviewer", ...(isolation ? { isolation } : {}), prompt: range },
+      () => ({ text: background ? "Async agent launched successfully." : "No findings." }));
+    if (background) emit({ type: "system", subtype: "task_started", task_id: `task_${spawn}`, tool_use_id: spawn, is_backgrounded: true });
+    emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: `msg_${spawn}`, model: "claude-opus-5-5", content: [{ type: "text", text: "[]" }] } });
+    if (background) emit({ type: "system", subtype: "task_notification", task_id: `task_${spawn}`, tool_use_id: spawn, status: "completed" });
+  };
+  if (mode === "tracks-third") tool("Agent", { subagent_type: "general-purpose", prompt: "Survey pricing/ and shipping/." }, () => ({ text: "Surveyed." }));
+  const tracks = Object.keys(fixes).map((module) => {
+    const dir = join(cwd, ".claude", "worktrees", module);
+    const type = mode === "tracks-explorer" && module === "shipping" ? "explorer" : "worker";
+    const spawn = tool("Agent", {
+      subagent_type: type, isolation: "worktree", description: `Fix ${module}`,
+      prompt: `Fix ${module}/ so its check.js passes. ${module}/code.js must export CODE set to "${codes[module]}"; make check.js assert it.`,
+    }, () => {
+      git("worktree", "add", "--quiet", "-b", `worktree-${module}`, dir);
+      return { text: "Async agent launched successfully." };
+    });
+    emit({ type: "system", subtype: "task_started", task_id: `task_${module}`, tool_use_id: spawn, is_backgrounded: true });
+    agentRuntime.set(spawn, { model: "claude-opus-5-5", effort: "high" });
+    return { module, dir, spawn };
+  });
+  if (mode === "tracks-review-early") review();
+  for (const { module, dir, spawn } of tracks) {
+    const [file, from, to] = fixes[module];
+    const read = (name) => readFileSync(join(dir, module, name), "utf8");
+    write(join(dir, module, file), read(file).replace(from, to), spawn);
+    write(join(dir, module, "code.js"), `export const CODE = "${codes[module]}";\n`, spawn);
+    write(join(dir, module, "check.js"), `import { CODE } from "./code.js";\n${read("check.js")}if (CODE !== "${codes[module]}") throw new Error("wrong CODE");\n`, spawn);
+    bash(`cd "${dir}" && bun ${module}/check.js && git add . && git -c commit.gpgsign=false commit --quiet -m "Fix ${module}"`, spawn);
+  }
+  for (const { module, spawn } of tracks) emit({ type: "system", subtype: "task_notification", task_id: `task_${module}`, tool_use_id: spawn, status: "completed" });
+  for (const { module, dir } of tracks)
+    bash(`git -c commit.gpgsign=false merge --quiet --no-edit worktree-${module} && git worktree remove "${dir}" && git branch --quiet -d worktree-${module}`);
+  bash(tracks.map(({ module }) => `bun ${module}/check.js`).join(" && "));
+  if (mode === "tracks-review" || mode === "tracks-two-reviews") review();
+  if (mode === "tracks-two-reviews") review();
+  if (mode === "tracks-review-foreground") review({ background: false });
+  if (mode === "tracks-review-worktree") review({ isolation: "worktree" });
+  answer = "Both modules are fixed and merged here; both checks pass.";
 }
 if (mode.startsWith("review-")) {
   // A conversation over stream-json input: each turn's events go out when the turn ends,
