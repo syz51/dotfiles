@@ -170,7 +170,7 @@ describe("global instructions", () => {
       /external writes/,
       /read-only/,
       /The `reviewer` agent is the only review process/,
-      /it runs on Opus at `high` effort/,
+      /it reviews on Opus at `high` effort/,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -925,11 +925,11 @@ describe("rules the live suites test", () => {
   test("Review runs once in the background reviewer agent, on Opus at high, pinned to the commit", () => {
     const review = section("Review");
     expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
-    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it runs on Opus at `high` effort and reviews as its `diff-review` skill says/);
+    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews on Opus at `high` effort as its `diff-review` skill says/);
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
     expect(review).toMatch(/Run that review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/It works in this checkout on the model and effort its definition sets, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It works in this checkout with its own model and effort, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
     expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);
