@@ -1,5 +1,6 @@
 // Which changed files need a review (review-scope.toml) and the repository each edited
 // file belongs to, for the review-skipped detector.
+import { Database } from "bun:sqlite";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -97,6 +98,38 @@ export function gitCheckout(file) {
   }
   const found = gitRoots.get(folder);
   return found && file.startsWith(`${found.root}/`) ? { ...found, path: inRepo(file.slice(found.root.length + 1)) } : null;
+}
+
+// This device's T3 Code worktree folder and project roots, from T3's project list in its
+// state database, deleted projects too: { worktrees, roots }. No roots when T3 Code is
+// not set up.
+export function t3Projects(env = process.env) {
+  const home = env.T3CODE_HOME ?? join(homedir(), ".t3");
+  const worktrees = realFile(join(home, "worktrees", "_")).slice(0, -2);
+  const file = join(home, "userdata", "statev2.sqlite");
+  if (!existsSync(file)) return { worktrees, roots: [] };
+  const db = new Database(file, { readonly: true });
+  try {
+    return { worktrees, roots: db.query("SELECT workspace_root AS root FROM projection_projects").all().map(({ root }) => root) };
+  } catch (error) {
+    throw new Error(`T3 Code project list in ${file}: ${error.message}`, { cause: error });
+  } finally {
+    db.close();
+  }
+}
+
+// The repository, checkout root and repository-relative path of a file in a T3 Code
+// worktree (<worktrees>/<checkout folder name>/<name>/) whose folder may be gone: the T3
+// projects on disk whose root has that folder name, read through git. null when no
+// project matches, or the matches are checkouts of different repositories.
+const T3_PARTS = /^([^/]+)\/[^/]+\/(.+)$/;
+export function t3Checkout(file, { worktrees, roots }, git = gitCheckout) {
+  const t3 = file.startsWith(`${worktrees}/`) && T3_PARTS.exec(file.slice(worktrees.length + 1));
+  if (!t3) return null;
+  // A root no longer on disk would map to whatever checkout holds its parent folder.
+  const found = roots.filter((root) => basename(root) === t3[1] && isFolder(root)).map((root) => git(join(root, "_"))).filter(Boolean);
+  if (!found.length || found.some(({ repo }) => repo !== found[0].repo)) return null;
+  return { repo: found[0].repo, root: found[0].root, path: inRepo(t3[2]) };
 }
 
 // Whether git ignores a repository's file in its checkout: such files are never pushed.

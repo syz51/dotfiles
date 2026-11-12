@@ -243,11 +243,13 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `scoring/review-scope.toml` lists only trivial file kinds (lockfiles, test snapshots,
   raster images) a change may skip review for, by file kind, never by repository.
   `review-skipped` counts every edit off that list, and maps files in checkouts the board
-  does not list through git and their `origin` remote. Over 30 days to 2026-11-12 it
-  fails 277 of 1813 sessions (636 unreviewed pushes; 153 pass, 1383 na); vps, dotfiles
-  and agent-board have the most flagged files, then research-factory, email-agent, t3code
-  and papers. A removed T3 worktree of a repository the board does not list is not seen,
-  so the count is a lower bound for those repositories (dotfiles-495).
+  does not list through git and their `origin` remote. A removed T3 Code worktree maps
+  through T3's project list: the worktree's checkout folder name names the project root
+  (dotfiles-495). Over 30 days to 2026-11-12 it fails 284 of 1829 sessions (650
+  unreviewed pushes; 156 pass, 1389 na); vps, dotfiles and agent-board have the most
+  flagged files, then research-factory, email-agent, t3code and papers. The T3 mapping
+  adds 5 of those fails, from removed worktrees of the `nvim` project (a dotfiles
+  subfolder) and dispatch-live-test.
 - [x] Instructions revision (board task dotfiles-8): sessions are judged against today's
   rules, so each judged record keeps `instructions`: `global` with the sha256 of
   `claude/CLAUDE.md` as judged, the last commit that changed it and whether the checkout
