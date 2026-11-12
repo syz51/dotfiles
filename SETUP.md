@@ -190,6 +190,16 @@ its scripts with `node` directly or with `BUN_OPTIONS= bun run <script>`.
 `~/.zshenv` on each Mac also puts `$HOME/.bun/bin` on `PATH`, so non-interactive shells,
 such as `ssh` commands, find `bun` and `bunx`.
 
+Projects such as the T3 Code fork run their tasks with Vite+ (`vp`), but no global Vite+ is
+installed: its installer needs pnpm or downloads its own Node.js and pnpm. Instead,
+`shell/bin/vp` runs the nearest `node_modules/.bin/vp` above the working directory, so
+each project runs its own lockfile version. Outside such a project it exits with status
+127 and says to run `bun install`. Link it on each Mac:
+
+```sh
+ln -s ~/.config/shell/bin/vp ~/.local/bin/vp
+```
+
 Review and apply the targeted startup changes to `~/.zshrc` and `~/.bashrc` with:
 
 ```sh
@@ -1057,6 +1067,7 @@ bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js c
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
+uv run --no-project python -B shell/test-vp-launcher.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s cargo/tests -v
