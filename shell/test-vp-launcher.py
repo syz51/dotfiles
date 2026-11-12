@@ -7,12 +7,18 @@ import unittest
 LAUNCHER = Path(__file__).resolve().parent / 'bin' / 'vp'
 
 
-def fake_vp(project: Path, name: str) -> None:
+def fake_vp(project: Path, name: str) -> Path:
     bin_dir = project / 'node_modules' / '.bin'
     bin_dir.mkdir(parents=True)
     script = bin_dir / 'vp'
-    script.write_text(f'#!/bin/sh\necho "{name} $*"\nexit 3\n')
+    # With "nested DIR", it starts the launcher in DIR as a child, as a test fixture would.
+    script.write_text(
+        '#!/bin/sh\n'
+        f'if [ "$1" = nested ]; then cd "$2" && "{LAUNCHER}" inner; exit $?; fi\n'
+        f'echo "{name} $*"\nexit 3\n'
+    )
     script.chmod(0o755)
+    return script
 
 
 def run(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -40,6 +46,15 @@ class VpLauncherTest(unittest.TestCase):
         fake_vp(inner, 'inner')
         (inner / 'node_modules' / '.bin' / 'vp').chmod(0o644)
         self.assertEqual(run(inner).stdout, 'outer \n')
+
+    def test_outside_a_project_runs_the_vp_of_a_calling_project_vp(self) -> None:
+        caller = fake_vp(self.root / 'project', 'caller')
+        fixture = self.root / 'fixture'
+        fixture.mkdir()
+        result = subprocess.run(
+            [str(caller), 'nested', str(fixture)], capture_output=True, text=True
+        )
+        self.assertEqual((result.returncode, result.stdout), (3, 'caller inner\n'))
 
     def test_fails_with_an_install_hint_outside_a_project(self) -> None:
         result = run(self.root, '--version')
