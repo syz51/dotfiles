@@ -12,7 +12,9 @@
 // proxy removes both blocks from each Messages request before it forwards the request.
 // A request that still holds a <system-reminder> or a system-role message after that is
 // refused, so a new Claude Code that changes the blocks' form fails the run instead of
-// leaking. The billing header, the SDK identity line and the request metadata stay: the
+// leaking. preflight also scans each forwarded canary request for the blocks' marks
+// anywhere in it (contextMarks), so a form that slips past both checks fails the preflight
+// whatever the size of the caller's prompt. The billing header, the SDK identity line and the request metadata stay: the
 // model does not read the metadata, and the subscription needs the other two.
 //
 // The route also sets flags and variables that keep tools, settings, MCP servers (also
@@ -37,6 +39,7 @@ import { join } from "node:path";
 export const CANARY = "Reply with the single word OK.";
 export const DEFAULT_CAP = 2000;
 export const OVER_CAP = 3;
+export const LEAKED = 4;
 
 export const USAGE = `usage: claude-experiment <claude args>
        claude-experiment preflight [--cap N] <claude args>
@@ -56,9 +59,15 @@ fallback; API_FIRST_SUBSCRIPTION=1 uses the subscription. A caller's own
 ANTHROPIC_BASE_URL becomes the proxy's upstream, and claude-api then passes the run
 through on claude's own auth.
 
-preflight sends the canary text on stdin with the same flags (give no prompt) and
-exits ${OVER_CAP} when a request's prompt tokens (input, cache creation and cache read)
-exceed the cap (default ${DEFAULT_CAP}). Run it before a batch.
+preflight sends the canary text on stdin with the same flags (give no prompt). Run it
+before a batch. It exits ${LEAKED} when no request reached the proxy, or when a request the
+proxy forwards would still carry the account email block ("# userEmail", "The user's
+email address is") or the environment block (a "# Environment" line, "Primary working
+directory:") anywhere, whatever the prompt's size; the proxy then refuses that request.
+A system prompt that itself holds those lines fails it too. It exits ${OVER_CAP} when a
+request's prompt tokens (input, cache creation and cache read) exceed the cap (default
+${DEFAULT_CAP}), and with claude's code when the canary run fails. It prints what the
+proxy removed.
 
 See SETUP.md, "Experiment calls".`;
 
@@ -136,6 +145,29 @@ export function leftovers(body, { allowReminders = false } = {}) {
   return found;
 }
 
+// Text that marks Claude Code's two blocks, with the block it marks.
+const MARKS = [
+  [/# userEmail/, "the account email block"],
+  [/The user's email address is/, "the account email block"],
+  [/^# Environment[ \t]*$/m, "the # Environment block"],
+  [/Primary working directory:/, "the # Environment block"],
+];
+function* stringsOf(value, path) {
+  if (typeof value === "string") yield [path, value];
+  else if (Array.isArray(value)) for (const [index, item] of value.entries()) yield* stringsOf(item, `${path}[${index}]`);
+  else if (value && typeof value === "object") for (const [key, item] of Object.entries(value)) yield* stringsOf(item, path ? `${path}.${key}` : key);
+}
+
+// Where a request body holds a mark of the email or environment block, in any field and at
+// any depth, as [block, path] pairs without the text itself.
+export function contextMarks(body) {
+  const found = new Map();
+  for (const [path, text] of stringsOf(body, "")) {
+    for (const [pattern, block] of MARKS) if (pattern.test(text)) found.set(`${block}@${path}`, [block, path]);
+  }
+  return [...found.values()];
+}
+
 // The prompt-token usage from the start of a Messages response, streamed or not.
 export function usageOf(text) {
   const start = text.match(/^data: (\{"type":"message_start".*)$/m);
@@ -153,8 +185,11 @@ const refusal = (message) => new Response(JSON.stringify({ type: "error", error:
   status: 400, headers: { "content-type": "application/json" },
 });
 
-// The local proxy. usages collects each Messages response's prompt-token usage.
-export function startProxy({ upstream = UPSTREAM, usages = [], allowReminders = false, log = (line) => console.error(line) } = {}) {
+// The local proxy. usages collects each Messages response's prompt-token usage. With
+// refuseMarks (the preflight), requests collects each Messages request's block marks: before
+// the proxy removed the blocks (seen) and in what it would forward (left), and the proxy
+// refuses a request that has any left.
+export function startProxy({ upstream = UPSTREAM, usages = [], requests = [], allowReminders = false, refuseMarks = false, log = (line) => console.error(line) } = {}) {
   const base = upstream.replace(/\/+$/, "");
   const server = Bun.serve({
     hostname: "127.0.0.1",
@@ -166,10 +201,18 @@ export function startProxy({ upstream = UPSTREAM, usages = [], allowReminders = 
       let body = ["GET", "HEAD"].includes(request.method) ? undefined : await request.text();
       const messages = url.pathname === "/v1/messages" && request.method === "POST";
       if (messages) {
-        const stripped = strip(JSON.parse(body));
+        const original = JSON.parse(body);
+        const stripped = strip(original);
+        const marks = refuseMarks ? { seen: contextMarks(original), left: contextMarks(stripped) } : undefined;
+        if (marks) requests.push(marks);
         const left = leftovers(stripped, { allowReminders });
         if (left.length > 0) {
           const message = `claude-experiment: harness context left in the request (${left.join("; ")}): Claude Code changed the blocks' form or added context, or the experiment's input quotes a <system-reminder> (then set EXPERIMENT_ALLOW_REMINDERS=1)`;
+          log(message);
+          return refusal(message);
+        }
+        if (marks && marks.left.length > 0) {
+          const message = `claude-experiment: Claude Code's context left in the request (${marks.left.map(([block, path]) => `${block} at ${path}`).join("; ")})`;
           log(message);
           return refusal(message);
         }
@@ -202,17 +245,17 @@ export function startProxy({ upstream = UPSTREAM, usages = [], allowReminders = 
       return new Response(response.body.pipeThrough(tap), { status: response.status, headers: out });
     },
   });
-  return { server, url: `http://127.0.0.1:${server.port}`, usages };
+  return { server, url: `http://127.0.0.1:${server.port}`, usages, requests };
 }
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
-// Runs claude-api with the route's arguments behind the proxy and resolves to its exit code
-// and the requests' usage. With input, claude reads it on stdin and its output is dropped.
-// A signal to this process goes on to claude.
-export async function run(argv, { env = process.env, input, wrapper = join(import.meta.dir, "claude-api") } = {}) {
+// Runs claude-api with the route's arguments behind the proxy and resolves to its exit code,
+// the requests' usage and, with refuseMarks, their block marks. With input, claude reads it on stdin and its
+// output is dropped. refuseMarks goes to the proxy. A signal to this process goes on to claude.
+export async function run(argv, { env = process.env, input, refuseMarks = false, wrapper = join(import.meta.dir, "claude-api") } = {}) {
   const args = experimentArgs(argv);
-  const proxy = startProxy({ upstream: env.ANTHROPIC_BASE_URL || UPSTREAM, allowReminders: env.EXPERIMENT_ALLOW_REMINDERS === "1" });
+  const proxy = startProxy({ upstream: env.ANTHROPIC_BASE_URL || UPSTREAM, allowReminders: env.EXPERIMENT_ALLOW_REMINDERS === "1", refuseMarks });
   const stdio = input === undefined ? "inherit" : ["pipe", "ignore", "inherit"];
   const child = spawn(wrapper, args, { env: { ...env, ...ENV, API_FIRST_PROXY_URL: proxy.url }, stdio });
   if (input !== undefined) child.stdin.end(input);
@@ -225,11 +268,13 @@ export async function run(argv, { env = process.env, input, wrapper = join(impor
     for (const signal of SIGNALS) process.off(signal, forward);
     proxy.server.stop(true);
   });
-  return { code, usages: proxy.usages };
+  return { code, usages: proxy.usages, requests: proxy.requests };
 }
 
-// Sends the canary with the experiment's flags and checks each request's prompt tokens
-// against the cap. Resolves to an exit code: claude's when it failed, OVER_CAP above the cap.
+// Sends the canary with the experiment's flags, checks that no request would still carry
+// Claude Code's blocks, then each request's prompt tokens against the cap. Resolves to an exit
+// code: LEAKED for a block left in a request or no request seen, claude's when the run
+// failed, OVER_CAP above the cap.
 export async function preflight(argv, { env = process.env, wrapper, report = (line) => console.error(line) } = {}) {
   let cap = DEFAULT_CAP;
   const rest = [];
@@ -241,17 +286,27 @@ export async function preflight(argv, { env = process.env, wrapper, report = (li
       if (!Number.isInteger(cap) || cap <= 0) throw new Error(`--cap takes a positive whole number, not ${value}`);
     } else rest.push(arg);
   }
-  const { code, usages } = await run(rest, { env, input: CANARY, wrapper });
+  const { code, usages, requests } = await run(rest, { env, input: CANARY, wrapper, refuseMarks: true });
+  const leaks = requests.flatMap(({ left }, index) => left.map(([block, path]) => `request ${index + 1}: ${block} at ${path}`));
+  if (leaks.length > 0) {
+    report(`claude-experiment preflight: LEAK: the canary request still carries Claude Code's context after the proxy (${leaks.join("; ")}); the proxy refused it. Do not run the batch: Claude Code changed the blocks' form, or the system prompt holds those lines`);
+    return LEAKED;
+  }
   if (code !== 0) {
     report(`claude-experiment preflight: the canary run failed with exit ${code}`);
     return code;
+  }
+  if (requests.length === 0) {
+    report("claude-experiment preflight: no Messages request reached the proxy, so it removed nothing");
+    return LEAKED;
   }
   if (usages.length === 0) {
     report("claude-experiment preflight: no Messages usage seen");
     return OVER_CAP;
   }
   const worst = usages.reduce((a, b) => (b.prompt > a.prompt ? b : a));
-  report(`claude-experiment preflight: ${usages.length} request(s); largest prompt ${worst.prompt} tokens (input ${worst.input}, cache creation ${worst.creation}, cache read ${worst.read}); cap ${cap}`);
+  const removed = [...new Set(requests.flatMap(({ seen }) => seen.map(([block]) => block)))];
+  report(`claude-experiment preflight: ${usages.length} request(s); removed ${removed.length > 0 ? removed.join(" and ") : "no block"}, none left; largest prompt ${worst.prompt} tokens (input ${worst.input}, cache creation ${worst.creation}, cache read ${worst.read}); cap ${cap}`);
   return worst.prompt > cap ? OVER_CAP : 0;
 }
 

@@ -764,8 +764,21 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
   caller's own `ANTHROPIC_BASE_URL` becomes the proxy's upstream, and `claude-api` then
   passes the run through on claude's own auth, as for any caller's own endpoint.
 - `claude-experiment preflight [--cap N] <claude args>` sends a fixed canary with the same
-  flags and exits 3 when a request's prompt tokens (input, cache creation and cache read)
-  exceed the cap, default 2000. Run it before a batch.
+  flags. Run it before a batch; it fails nonzero as follows:
+  - Exit 4 when a request the proxy forwards would still carry the email block
+    (`# userEmail`, "The user's email address is") or the environment block (a
+    `# Environment` line, "Primary working directory:"), in any field at any depth. The
+    proxy refuses that request, and the message names each block and its JSON path, not
+    its text. This check does not depend on the prompt's size. A system prompt that itself
+    holds those lines fails it too.
+  - Exit 4 when no Messages request reached the proxy.
+  - Claude's own code when the canary run fails.
+  - Exit 3 when a request's prompt tokens (input, cache creation and cache read) exceed
+    the cap, default 2000. The leaked blocks add about 580 tokens, so the cap alone misses
+    them above about 1420 prompt tokens; it stays as a second check.
+
+  On success it prints the blocks the proxy removed, such as `removed the account email
+  block and the # Environment block, none left`.
 - On Haiku with the canary text, plain `claude -p` with the same flags used 2 input and
   635 cache-creation tokens; the route used 59 input and none. The route keeps the caller's
   working directory, so relative paths still work.
@@ -1179,10 +1192,13 @@ in CI:
 - `claude-experiment.test.js`: the experiment route against a fake claude and a stub
   upstream. It checks the default flags and variables, the proxy's removal of both blocks
   from a request shaped like 2.1.322's, the refusal of leftover context, exit status
-  passthrough and the preflight cap. With `RUN_CLAUDE_LIVE=1` (use
-  `API_FIRST_SUBSCRIPTION=1` to spend no API credit), a Haiku probe asks the model for its
-  environment and account, and fails when the reply names the working directory, home,
-  login name or an `oauthAccount` field from `~/.claude.json`.
+  passthrough, the preflight cap, and the preflight's leak check: exit 4 when the blocks
+  reach the proxy's output in a form the strip misses, under the cap, and when no request
+  reaches the proxy. With `RUN_CLAUDE_LIVE=1` (use `API_FIRST_SUBSCRIPTION=1` to spend no
+  API credit), a Haiku probe asks the model for its environment and account, and fails
+  when the reply names the working directory, home, login name or an `oauthAccount` field
+  from `~/.claude.json`. Two live preflights check that the proxy removed both blocks, one
+  with a system prompt over 1500 tokens.
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.
