@@ -361,6 +361,19 @@ print -r -- "fpath:${(j.:.)fpath}"
                           ROOT / 'interactive.zsh', CLAUDECODE='1')
         self.assertEqual(result.stdout.splitlines()[-1], '--include=*.no-such-ext')
 
+    def test_equals_and_aliases_stay_out_of_claude_code_only(self):
+        script = '''alias g=git gg='git gui citool'
+source "$1"
+print -r -- "equals:$options[equals] g:${+aliases[g]} gg:${+aliases[gg]} left:${#aliases}"
+(echo ====; echo after) || print aborted
+eval 'g() { print -r -- helper; }; g' || print alias-blocked
+'''
+        terminal = self.zsh(script, ROOT / 'interactive.zsh').stdout
+        self.assertIn('equals:on g:1 gg:1 left:', terminal)
+        self.assertIn('\naborted\nalias-blocked\n', terminal)
+        agent = self.zsh(script, ROOT / 'interactive.zsh', CLAUDECODE='1').stdout
+        self.assertIn('equals:off g:0 gg:0 left:0\n====\nafter\nhelper\n', agent)
+
     def test_duplicate_path_entries_keep_first_occurrence(self):
         path = f'{self.bin}:/usr/bin:{self.bin}:/bin:/usr/bin'
         output = self.load(PATH=path, FPATH='/b:/a:/b')

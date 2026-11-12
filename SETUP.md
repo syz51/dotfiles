@@ -207,7 +207,10 @@ recognizes its own earlier result, so the installer works on both Macs' layouts:
   lookup) and loads Atuin's init script from a cache. In Claude Code's Bash tool
   (`CLAUDECODE` set) it also turns off `nomatch`, so an unmatched glob such as
   `--include=*.md` reaches the command as written, as in bash, instead of failing
-  the whole command line.
+  the whole command line. There it also turns off `equals`, so a word such as
+  `====` or `=ls` stays as written, and removes the aliases defined before it, such
+  as Oh My Zsh's `g` and `gg`, so agents can name helper functions freely. Claude
+  Code records all three in its shell snapshot of `~/.zshrc`; terminals keep them.
 - The uv and uvx completions load through `shell/completions.zsh`, right after Oh My
   Zsh runs `compinit`, for whichever of the two is on `PATH` there. Zsh initializes
   completions once, after adding `~/.zsh/functions` where that directory was set up;
