@@ -1132,6 +1132,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   the worker edits only its authorized files, a worker isolated in a worktree starts
   from the local `HEAD` and receives the main checkout's uncommitted input while the
   checkout stays untouched, and two explorers run in parallel in the shared checkout.
+  A session started in one project cites a file in another by its absolute path.
   Two parallel tracks go to one worker each, in its own worktree: each worker finds its
   module's bug, fixes it, updates and runs the module's check, and gets the code only
   the conversation held. The main session neither investigates nor edits a module
