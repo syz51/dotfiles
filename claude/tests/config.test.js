@@ -64,8 +64,8 @@ const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED] },
   worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
   solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
-  // The Review rule's reviewer: this session's model at medium, with its recipe preloaded.
-  reviewer: { model: "inherit", effort: "medium", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
+  // The Review rule's reviewer: Opus at high, with its recipe preloaded (dotfiles-446).
+  reviewer: { model: "opus", effort: "high", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -170,7 +170,7 @@ describe("global instructions", () => {
       /external writes/,
       /read-only/,
       /The `reviewer` agent is the only review process/,
-      /it reviews at `medium` effort/,
+      /it runs on Opus at `high` effort/,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -922,14 +922,14 @@ describe("rules the live suites test", () => {
   // A wrapper agent only called /code-review, which forks the real reviewer itself at the
   // level's effort, and its relay dropped the findings' category fields (dotfiles-386). A
   // skill's own background fork waits in an SDK session, so the session starts the agent.
-  test("Review runs once in the background reviewer agent, at medium, pinned to the commit", () => {
+  test("Review runs once in the background reviewer agent, on Opus at high, pinned to the commit", () => {
     const review = section("Review");
     expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
-    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews at `medium` effort as its `diff-review` skill says/);
+    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it runs on Opus at `high` effort and reviews as its `diff-review` skill says/);
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
     expect(review).toMatch(/Run that review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/It works in this checkout on this session's model, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It works in this checkout on the model and effort its definition sets, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
     expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);

@@ -431,7 +431,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       // One `reviewer` agent ran the review, in the background and in this checkout, with
       // the commit pinned in its prompt. Agents run in the background by default, so the
       // run's task events, not the Agent input, show that it did. No /code-review ran: the
-      // reviewer does the review itself, on the session's model.
+      // reviewer does the review itself, on Opus at high.
       const spawns = agentSpawns(run.events).filter((spawn) => spawn.parent === null);
       expect(spawns.length, "the review was not one background reviewer agent").toBe(1);
       const [spawn] = spawns;
