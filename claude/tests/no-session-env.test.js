@@ -1,13 +1,18 @@
 // claude/bin/no-session-env: runs a command without the parent Claude Code session's
 // variables and keeps the rest of the environment.
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SESSION_VARIABLE, sessionVariables } from "../bin/session-env.js";
 import { childEnv } from "./lib/process.js";
 
 const COMMAND = join(import.meta.dir, "..", "bin", "no-session-env");
 const PATH = `${dirname(process.execPath)}:/usr/bin:/bin`;
+
+const root = mkdtempSync(join(tmpdir(), "no-session-env-test-"));
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 // The variables a T3 Code session put in its Bash tool's environment (Claude Code 2.1.322),
 // with made-up values, and names the pattern must leave alone.
@@ -29,8 +34,8 @@ const ADDED = ["PWD", "SHLVL", "__CF_USER_TEXT_ENCODING"];
 
 // The environment a command sees through no-session-env, read with `env -0` so values
 // may hold newlines.
-function seenEnv(env) {
-  const run = spawnSync(COMMAND, ["env", "-0"], { env, encoding: "utf8" });
+function seenEnv(env, { command = COMMAND, cwd, args = [] } = {}) {
+  const run = spawnSync(command, [...args, "env", "-0"], { env, cwd, encoding: "utf8" });
   expect(run.status).toBe(0);
   const seen = Object.fromEntries(run.stdout.split("\0").filter(Boolean).map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
   for (const name of ADDED) delete seen[name];
@@ -43,6 +48,27 @@ test("removes every session variable and keeps the rest unchanged", () => {
 
 test("passes the environment through unchanged outside a session", () => {
   expect(seenEnv(KEPT)).toEqual(KEPT);
+});
+
+test("works through a link in another folder, as installed in ~/.local/bin", () => {
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  symlinkSync(COMMAND, join(bin, "no-session-env"));
+  expect(seenEnv({ ...KEPT, ...SESSION }, { command: join(bin, "no-session-env") })).toEqual(KEPT);
+});
+
+test("a caller's bunfig.toml preload and .env do not change the list", () => {
+  const project = join(root, "project");
+  mkdirSync(project);
+  writeFileSync(join(project, "preload.js"), 'console.log("HOME PATH");\n');
+  writeFileSync(join(project, "bunfig.toml"), 'preload = ["./preload.js"]\n');
+  writeFileSync(join(project, ".env"), "CLAUDE_FROM_DOTENV=1\n");
+  expect(seenEnv({ ...KEPT, ...SESSION }, { cwd: project })).toEqual(KEPT);
+});
+
+test("variables given as NAME=value before the command are put back", () => {
+  const seen = seenEnv({ ...KEPT, ...SESSION }, { args: ["CLAUDE_CONFIG_DIR=/cfg"] });
+  expect(seen).toEqual({ ...KEPT, CLAUDE_CONFIG_DIR: "/cfg" });
 });
 
 test("without arguments prints the cleaned environment", () => {

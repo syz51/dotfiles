@@ -2,10 +2,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import { SESSION_VARIABLE } from "../../bin/session-env.js";
 
-// A test's child `claude` must start as a fresh session, not inherit the parent session's
-// variables (SESSION_VARIABLE).
-
-// Test and benchmark sessions stay off the shared work board: claude/hooks/board-hook.sh
+// A test's child `claude` must start as a fresh session, so it drops the parent session's
+// variables (SESSION_VARIABLE). Test and benchmark sessions stay off the shared work board: claude/hooks/board-hook.sh
 // skips the board with AGENT_BOARD_HOOKS=off. An override can turn it back on.
 export function childEnv(base, overrides = {}) {
   const env = Object.fromEntries(Object.entries(base).filter(([name]) => !SESSION_VARIABLE.test(name)));

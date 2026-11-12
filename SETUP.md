@@ -208,7 +208,9 @@ messaging token), `AI_AGENT` and the hosting app's `T3CODE_*`. A `claude` that s
 process starts, such as one a dev server spawns, then acts as a child of that session. It
 logs the session's entrypoint and takes its flags. `claude/bin/no-session-env` runs its
 arguments without those variables and keeps the rest of the environment. Without
-arguments, it prints the cleaned environment. `claude/bin/session-env.js` holds the
+arguments, it prints the cleaned environment. The pattern also matches variables set on
+purpose, such as `CLAUDE_CONFIG_DIR`; put them back as with `env`:
+`no-session-env CLAUDE_CONFIG_DIR=/cfg command`. `claude/bin/session-env.js` holds the
 pattern, which the live test harness also uses for its child sessions. Link it on each
 Mac:
 
@@ -1127,7 +1129,8 @@ in CI:
   session.
 - `no-session-env.test.js`: `claude/bin/no-session-env` removes every session variable,
   keeps the rest unchanged, passes arguments and the exit status through, and fails without
-  `bun` rather than run the command with the session's variables. The harness's
+  `bun` rather than run the command with the session's variables. It also works through a
+  link, ignores the caller's `bunfig.toml` and `.env`, and puts back `NAME=value` arguments. The harness's
   child sessions remove the same variables.
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
