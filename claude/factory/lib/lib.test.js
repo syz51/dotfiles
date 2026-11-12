@@ -54,6 +54,13 @@ describe("pricing", () => {
   test("Opus 5.5 cache reads cost 0.05x input, per Anthropic's pricing page", () => {
     expect(requestCost("claude-opus-5-5", { input: 0, output: 0, cacheRead: 1e6, cacheWrite5m: 0, cacheWrite1h: 0 })).toBeCloseTo(0.2);
   });
+
+  // Pricing page, checked 2026-11-12: $8 input, $10 and $16 cache writes, $0.20 cache hits, $40 output.
+  test("Fable 5.2 is priced from the table, with cache reads at 0.025x input", () => {
+    const tokens = { input: 1e6, output: 1e6, cacheRead: 1e6, cacheWrite5m: 1e6, cacheWrite1h: 1e6 };
+    expect(priceSource("claude-fable-5-2")).toBe("table");
+    expect(requestCost("claude-fable-5-2", tokens)).toBeCloseTo(8 + 40 + 0.2 + 10 + 16);
+  });
 });
 
 describe("LiteLLM fallback prices", () => {

@@ -83,7 +83,7 @@ relative to its folder. Start from:
   a pass on the bar. `"pass": { "allReferences": false }` lets such a round pass; set it
   only on the owner's word.
 - The council is a Haiku judge first and one Opus judge second, as in the template. Use
-  only Opus and Haiku models. Haiku is the regression pre-check and Opus is the bar
+  only Opus, Haiku or Fable 5.2 models. Haiku is the regression pre-check and Opus is the bar
   judge. Haiku runs first, cheaply, and only checks that the candidate does not score
   under main by more than `pass.regression` (default 2) times Haiku's noise; a round it
   fails stops before Opus. Opus alone applies `pass.min`, `pass.gain` and

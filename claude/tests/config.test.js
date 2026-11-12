@@ -1275,14 +1275,14 @@ describe("CI release downloads", () => {
 // Playwright, are not ours to change, so the scan skips node_modules.
 describe("models", () => {
   const exempt = /(?:^|\/)node_modules\/|\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/;
-  // Sonnet, or a Fable with a version other than 5.2. The bare `fable` alias names the
-  // current Fable, which is 5.2.
-  const disallowed = /\b(?:claude-)?sonnet\b|\bfable[- ]?\d+(?![-.]2\b)(?:[-.]\d+)?\b/i;
+  // Sonnet, or any Fable not pinned to 5.2. The bare `fable` alias moves to each newer
+  // Fable, so it counts as another Fable.
+  const disallowed = /\b(?:claude-)?sonnet\b|\bfable\b(?![- ]?5[-.]2\b)/i;
 
   test("the rule allows Opus, Haiku and Fable 5.2 but not Sonnet or another Fable", () => {
-    for (const name of ["claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2", "Fable 5.2", "fable"])
+    for (const name of ["claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2", "Fable 5.2"])
       expect(disallowed.test(name)).toBe(false);
-    for (const name of ["claude-sonnet-5-5", "sonnet", "claude-fable-5-1", "Fable 5.1", "claude-fable-5", "fable-6"])
+    for (const name of ["claude-sonnet-5-5", "sonnet", "claude-fable-5-1", "Fable 5.1", "claude-fable-5", "fable-6", "fable", "fable-15-2", "fable-5-20"])
       expect(disallowed.test(name)).toBe(true);
   });
 
