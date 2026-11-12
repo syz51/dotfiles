@@ -484,7 +484,7 @@ describe("node in a checkout of a repository node-repos.json lists", () => {
   });
 
   test("the reason names the exception and its list", () => {
-    expect(verdictIn("dotfiles", "node x.js")).toContain("~/.claude/hooks/node-repos.json lists, such as T3 Code");
+    expect(verdictIn("dotfiles", "node x.js")).toContain("~/.config/claude/hooks/node-repos.json lists, such as T3 Code");
   });
 });
 

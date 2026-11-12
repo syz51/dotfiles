@@ -10,11 +10,11 @@
           },
           {
             "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-git-push.js\""
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/hooks/guard-git-push.js\""
           },
           {
             "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-runtimes.js\""
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/hooks/guard-runtimes.js\""
           }
         ]
       },
@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" pre-tool-use codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" pre-tool-use codex",
             "timeout": 5
           }
         ]
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" post-tool-use codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" post-tool-use codex",
             "timeout": 5
           }
         ]
@@ -55,7 +55,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-start codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" session-start codex",
             "timeout": 5
           }
         ]
@@ -66,7 +66,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" user-prompt-submit codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" user-prompt-submit codex",
             "timeout": 5
           }
         ]
@@ -77,7 +77,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" stop codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" stop codex",
             "timeout": 5
           }
         ]
@@ -88,7 +88,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" session-end codex",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" session-end codex",
             "timeout": 3
           }
         ]

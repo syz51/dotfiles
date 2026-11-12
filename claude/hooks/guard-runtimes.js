@@ -226,7 +226,7 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
   }
   if (NODE.test(tool)) {
     return `${runs} Run JavaScript with \`bun <file>\` or \`bunx <tool>\` instead. node runs only in a checkout of a repository `
-      + "that ~/.claude/hooks/node-repos.json lists, such as T3 Code, and never to start npm, npx, pnpm, yarn or corepack.";
+      + "that ~/.config/claude/hooks/node-repos.json lists, such as T3 Code, and never to start npm, npx, pnpm, yarn or corepack.";
   }
   return `${runs} Use \`bun\` or \`bunx\` instead (\`bun install\`, \`bun run <script>\`, \`bunx <tool>\`), even where a `
     + "project's lockfile selects another package manager.";

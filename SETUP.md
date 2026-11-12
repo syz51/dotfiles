@@ -252,8 +252,9 @@ its files at the location expected by your installation (normally `~/.claude`).
 Link the whole `claude/hooks` directory, not single scripts: the Bash guards import
 `claude/hooks/shell.js`, and a guard that cannot load it fails open.
 `codex/hooks.json` runs the same guards on Codex shell calls, which Codex names `Bash` in
-hook input; they need `~/.claude/hooks` on the Mac that runs Codex. The guards see
-only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
+hook input. It runs them from the checkout, `~/.config/claude/hooks`, so Codex needs no
+`~/.claude` link, as on the Pro. Approve changed hooks as [Work board](#work-board) says.
+The guards see only Bash tool calls, so `claude/settings.json` sets `disableSkillShellExecution`: a
 `` !`command` `` line in a user, project or plugin skill or custom slash command is
 replaced with a placeholder instead of running unchecked before the model reads it.
 guard-git-push blocks a push whose subcommand, refspec, remote or option name comes from
@@ -707,8 +708,9 @@ and falls back to the claude.ai subscription otherwise. The planner,
 a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
 runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
-`claude/hooks/board-hook.sh` from `~/.claude/hooks`, which the linked `claude/hooks` directory
-provides. It runs `~/.cargo/bin/board` and does nothing until that is installed. The board
+`claude/hooks/board-hook.sh`: Claude Code through the `~/.claude` link and Codex from the checkout,
+both of which reach the tracked `claude/hooks` directory.
+It runs `~/.cargo/bin/board` and does nothing until that is installed. The board
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
 `board` rejects that call's `pre-tool-use` event, which the script reports as a failed hook
