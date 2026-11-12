@@ -228,7 +228,7 @@ if (mode.startsWith("review-")) {
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
     // The reviewer's own messages carry the Agent call as their parent.
     if (mode === "review-skill") tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }), spawn);
-    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: option("--model"), content: [{ type: "text", text: findings }] } });
+    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: mode === "review-inherit" ? "claude-fable-5-2" : "claude-opus-5-5", content: [{ type: "text", text: findings }] } });
     const finish = (status = "completed") => {
       emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });

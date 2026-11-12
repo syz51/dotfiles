@@ -431,7 +431,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       // One `reviewer` agent ran the review, in the background and in this checkout, with
       // the commit pinned in its prompt. Agents run in the background by default, so the
       // run's task events, not the Agent input, show that it did. No /code-review ran: the
-      // reviewer does the review itself, on Opus at high.
+      // reviewer does the review itself, on Opus whatever the session model.
       const spawns = agentSpawns(run.events).filter((spawn) => spawn.parent === null);
       expect(spawns.length, "the review was not one background reviewer agent").toBe(1);
       const [spawn] = spawns;
@@ -444,7 +444,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       expect(toolUses(run.events, "Skill").filter((use) => use.input.skill === "code-review"), "the review ran /code-review").toEqual([]);
       const messages = subagentMessages(run.events, [spawn]).filter((message) => message.message.model !== "<synthetic>");
       expect(messages.length, "no messages from the reviewer agent").toBeGreaterThan(0);
-      for (const message of messages) expect(message.message.model).toBe(MODEL);
+      for (const message of messages) expect(message.message.model, "the reviewer did not run on Opus").toMatch(/^claude-opus-/);
 
       // The session ended its first turn while the review ran, so the follow-up reached a
       // free session, and it answered without waiting on the review: no tool call between
