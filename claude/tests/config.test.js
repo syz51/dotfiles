@@ -761,6 +761,17 @@ describe("in-repo skills' feedback channels", () => {
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {
+  // T3 opens a relative path in the thread's folder: a worktree-only file (dotfiles-359) or a
+  // file in another project (dotfiles-141, `agents/reviewer.md` cited from ~/.config/nvim)
+  // fails to open there. One rule covers both cases;
+  // the live scenario "cite outside file" tests it.
+  test("Workflow has agents cite files outside the session's folder by absolute path", () => {
+    const workflow = section("Workflow");
+    const rule = "- In replies, cite a file outside the folder the session started in, or any file after EnterWorktree, by absolute or `~/` path: an app such as T3 Code resolves a relative path against that folder. Otherwise a path relative to that folder is fine.";
+    expect(workflow).toContain(`${rule}\n`);
+    expect(workflow.match(/by absolute (?:or `~\/` )?path/g)).toHaveLength(1);
+  });
+
   test("Skills routes each language and UI skill", () => {
     const skills = section("Skills");
     for (const name of ["frontend-ui", "typescript", "rust", "tauri"]) expect(skills).toContain(`\`${name}\``);
@@ -979,16 +990,6 @@ describe("rules the live suites test", () => {
   // them (board-feedback-109: 50+ reports from 8 agents), so worktree-rule.js gives the
   // measured forms when isolation starts, and this line points at it (dotfiles-111). An
   // explorer started before EnterWorktree had every Bash call refused (board-feedback-247).
-  // T3 opens a relative path in the thread's folder: a worktree-only file (dotfiles-359) or a
-  // file in another project (dotfiles-141, `agents/reviewer.md` cited from ~/.config/nvim)
-  // fails to open there. One rule covers both cases.
-  test("Workflow has agents cite files outside the session's folder by absolute path", () => {
-    const workflow = section("Workflow");
-    const rule = "- In replies, cite a file outside the folder the session started in, or any file after EnterWorktree, by absolute or `~/` path: an app such as T3 Code resolves a relative path against that folder. Otherwise a repo-relative path is fine.";
-    expect(workflow).toContain(`${rule}\n`);
-    expect(workflow.match(/by absolute (?:or `~\/` )?path/g)).toHaveLength(1);
-  });
-
   test("Workflow points a worktree-isolated session at the hook's list of refused forms", () => {
     const workflow = section("Workflow");
     expect(workflow).toMatch(/In a worktree-isolated session \(after EnterWorktree, or in a subagent with worktree isolation\), Claude Code refuses each Bash command that it cannot verify stays in the worktree, and nothing turns this off\./);
