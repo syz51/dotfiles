@@ -387,6 +387,14 @@ agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-m
 must name one as `Reason: <name>`, and an `action` ask, which hands the user a step, must
 name `only-me`. Otherwise the hook refuses the ask and lists what the agent should do
 instead. Edit the JSON file to change the reasons. The `board ask` CLI is not checked.
+open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
+work board, it blocks the stop once when an item under an open-item heading, such as
+"Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no
+work. This is the Work board rule of `claude/CLAUDE.md` that each open item of a reply names
+the task or ask that holds it. The board's own Stop reminder fires only after `task_done` or
+a release. The hook is a reminder: the next stop passes. Edit
+`claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
+to `false` to turn it off.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and

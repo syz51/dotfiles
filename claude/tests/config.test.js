@@ -368,6 +368,18 @@ describe("settings", () => {
     expect(Object.keys(policy.reasons).length).toBeGreaterThan(0);
     for (const name of policy.action_reasons) expect(Object.keys(policy.reasons)).toContain(name);
   });
+
+  // The open-items check covers a reply that lists unfinished work without a task_done, which the
+  // board's own Stop reminder never sees. It reads its patterns at run time.
+  test("claude/settings.json runs the open-items check at Stop, and its patterns are tracked and valid", () => {
+    const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
+    expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/open-items.js"')).toHaveLength(1);
+    expect(tracked("claude/hooks/open-items.json")).toBe(true);
+    const config = JSON.parse(read("claude/hooks/open-items.json"));
+    expect(config.enabled).toBe(true);
+    for (const source of [...config.headings, ...config.exempt]) expect(() => new RegExp(source, "i")).not.toThrow();
+    expect(config.headings.some((source) => new RegExp(source, "i").test("Limits"))).toBe(true);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in

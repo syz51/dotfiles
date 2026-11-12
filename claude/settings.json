@@ -197,6 +197,11 @@
             "type": "command",
             "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" stop claude",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/open-items.js\"",
+            "timeout": 10
           }
         ]
       }
