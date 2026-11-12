@@ -18,7 +18,7 @@ title = "Work board (agent-board)"
 covers = ["the board server, CLI, MCP tools, hooks and coordinator prompts", "claude/hooks/board-hook.sh"]
 owner = { repo = "github.com/syz51/agent-board", board = "agent-board" }
 channel = "board"
-change = "A PR on agent-board; deploy the server and reinstall `board` on both Macs"
+change = "A PR on agent-board; deploy the server and reinstall `board` on the Air (the Pro runs no Claude and no board daemon)"
 verify = ["cargo test --workspace --locked", "board status"]
 
 [[setup]]

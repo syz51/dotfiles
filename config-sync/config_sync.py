@@ -82,11 +82,11 @@ def run_command(args: list) -> subprocess.CompletedProcess:
 
 
 def links(repo: Path) -> list:
-    """(link, what it must resolve to): the paths that install instructions from the checkout."""
-    return [
-        (HOME / ".claude", repo / "claude"),
-        (Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md"),
-    ]
+    """(link, what it must resolve to): the paths that install instructions from the checkout.
+
+    A Mac without Claude Code, such as the Pro, where no Claude model runs, needs no ~/.claude link."""
+    claude = [(HOME / ".claude", repo / "claude")] if shutil.which("claude", path=SEARCH_PATH) else []
+    return claude + [(Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md")]
 
 
 @dataclass

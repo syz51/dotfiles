@@ -550,9 +550,16 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(plistlib.loads(out.getvalue().encode())["Label"], "com.syz51.config-sync")
 
     def test_the_default_links_cover_claude_and_codex(self):
-        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}):
+        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), mock.patch.object(sync.shutil, "which", return_value="/bin/claude") as which:
             pairs = sync.links(Path("/r"))
+        which.assert_called_once_with("claude", path=sync.SEARCH_PATH)
         self.assertEqual(pairs, [(Path.home() / ".claude", Path("/r/claude")), (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
+
+    def test_a_mac_without_claude_code_needs_no_claude_link(self):
+        # The Pro runs no Claude model, so a missing ~/.claude there is not a problem to report.
+        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), mock.patch.object(sync.shutil, "which", return_value=None):
+            pairs = sync.links(Path("/r"))
+        self.assertEqual(pairs, [(Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
 
 
 if __name__ == "__main__":

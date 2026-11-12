@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code, and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
+| Agent tools | Claude Code on the Air only (see [No Claude on the Pro](#no-claude-on-the-pro)), and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -50,7 +50,8 @@ other change stays. Otherwise it leaves the checkout as it is and files one Feed
 report about `config-sync` per distinct set of problems: off `main`, tracked changes,
 diverged, a fast-forward that failed (an untracked file in the way, say), a failed
 restore, a fetch failing for over 24 hours, or an instruction link (`~/.claude`, Codex's
-`AGENTS.md`) that is a copy or missing. It uses plain `board feedback` where the
+`AGENTS.md`) that is a copy or missing. A Mac without the `claude` command, such as the
+Pro, needs no `~/.claude` link. It uses plain `board feedback` where the
 installed CLI lacks `--about`, and a macOS notification when the board is unreachable.
 A live suite run fails when `~/.claude` changes under it. So each live suite holds a lock
 from setup to teardown, renewed before each session:
@@ -76,6 +77,15 @@ Keep credentials and machine-specific settings in ignored local files, including
 `ghostty/config.local` and `codex/config.toml`; Git does not synchronize them.
 Installed applications and the separately built TUIOS fork also need to be
 installed or updated on each Mac using the instructions below.
+
+### No Claude on the Pro
+
+Since 2026-11-12 no Claude model runs on the Pro: no Claude Code, Agent SDK or Claude API
+call, in a LaunchAgent, a `storagectl run --on pro` job or a local T3 thread. Claude runs on
+the Air and every other machine. The Pro keeps this checkout, config-sync, the storage
+pool and runner, and T3 Code. Every step below that installs Claude Code, its plugins, the
+friction or weekly jobs, the board daemon or the disk alert runs on the Air only. Its
+Claude data from before then is in `cloud:archive/pro-claude/`.
 
 ## Terminal and dock
 
@@ -600,8 +610,8 @@ limit, came later. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
-`feedback --source` (agent-board-23). Install it on each Mac: a run reads only that Mac's
-transcripts and keeps its own cursor, so no turn is judged twice.
+`feedback --source` (agent-board-23). Install it on the Air only, since the Pro runs no
+Claude (a run reads only that Mac's transcripts and keeps its own cursor).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
@@ -699,8 +709,8 @@ provides. It runs `~/.cargo/bin/board` and does nothing until that is installed.
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
 `board` rejects that call's `pre-tool-use` event, which the script reports as a failed hook
-rather than the exit code that would block the call. On each Mac, with a device token created
-on the server host:
+rather than the exit code that would block the call. On the Air, with a device token created
+on the server host (the Pro runs no board daemon, since its coordinators would run Claude):
 
 ```sh
 cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
@@ -760,7 +770,7 @@ thread.
 ## Computer use
 
 Claude Code's built-in computer use runs only in interactive sessions, so it is off here.
-T3 Code drives Claude Code through the Agent SDK. The `computer-use` plugin in
+On the Air, T3 Code drives Claude Code through the Agent SDK. The `computer-use` plugin in
 `claude/marketplace` gives those sessions screenshots, mouse and keyboard instead. Its MCP
 server is named `desktop`, because Claude Code reserves the name `computer-use`.
 
@@ -843,7 +853,7 @@ archived, with no active run on themselves, their parent or their root, no unfin
 spawning run, no pending request and no explicit unsettle. It opens the T3 state
 database read-only; settling goes through T3's own `t3_thread_organize` tool.
 
-A T3 scheduled task in the `.config` project runs every 6 hours with this prompt:
+A T3 scheduled task in the `.config` project on the Air runs every 6 hours with this prompt:
 
 ```text
 Run the routine in ~/.config/t3code/settle-children.prompt.md exactly as written.
@@ -1010,8 +1020,8 @@ limit cut it short. `sweep --dry-run` lists what would go now, whatever the free
 it and logs it (exiting 1 when either part of the sweep failed), and `--no-sweep` turns the sweep off for a run. A simulated reading
 (`check --free-gb`) never sweeps.
 
-Install it on each Mac from the main checkout, which the plist points to, and send a
-test alert through both channels:
+Install it on the Air from the main checkout, which the plist points to, and send a
+test alert through both channels. Its alert starts a Claude thread, so it stays off the Pro:
 
 ```sh
 uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install

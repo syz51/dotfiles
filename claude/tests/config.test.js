@@ -669,7 +669,15 @@ describe("storage rule", () => {
     expect(rule).toContain("`storagectl status|logs|cancel <id>`");
     expect(rule).toMatch(/never run workloads as root on sai or svps; svps runs no jobs/i);
     expect(rule).not.toContain("`vps-46`");
-    expect(rule).toMatch(/note on `vps-45` while it is open/);
+    expect(rule).not.toContain("`vps-45`");
+    expect(rule).toMatch(/read the Pro's threads or files from the Air also goes as a note on `vps-247` while it is open/);
+  });
+
+  test("keeps every Claude model off the Pro", () => {
+    // The user decided on 2026-11-12 that no Claude model runs on the Pro; it stays for large data and CPU jobs.
+    const rule = referenceRules("storage");
+    expect(rule).toMatch(/the Pro for large data and long CPU jobs/);
+    expect(rule).toContain("No Claude model runs on the Pro: never start Claude Code, the Agent SDK or a Claude API call there, in a job or a thread; run those steps on the Air.");
   });
 
   test("Codex gets the same rule", () => {
