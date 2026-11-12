@@ -140,8 +140,9 @@ describe("global instructions", () => {
   });
 
   // A regression budget, not a target: raise it when a rule that every turn needs is added.
+  // 22,400: the no-session-env rule (dotfiles-496), since any turn may start a server.
   test("the global instructions stay under their size budget", () => {
-    expect(globalInstructions.length).toBeLessThan(22_200);
+    expect(globalInstructions.length).toBeLessThan(22_400);
   });
 
   // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:

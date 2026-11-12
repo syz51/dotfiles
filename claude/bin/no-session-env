@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs its arguments without the parent Claude Code session's variables (the list is in
+# session-env.js) and keeps the rest of the environment. Start long-lived servers, and any
+# process that runs `claude`, through it, so the `claude` they start is a fresh session.
+# The list includes variables a caller may set on purpose, such as CLAUDE_CONFIG_DIR; put
+# them back as env does: `no-session-env CLAUDE_CONFIG_DIR=/cfg command`. Without a
+# command it prints the cleaned environment. It replaces itself with the command (exec),
+# so signals reach the command directly. See SETUP.md, "Shell startup".
+set -eu
+
+# The real folder, also when $0 is a link such as ~/.local/bin/no-session-env.
+here=$(dirname -- "$(realpath -- "$0")")
+bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
+# Bun runs from this folder, so a caller's bunfig.toml preload or .env cannot change the list.
+names=$(cd -- "$here" && "$bun" session-env.js)
+
+# Each name matches \w+, so splitting the list on whitespace is safe.
+unset_args=
+for name in $names; do unset_args="$unset_args -u $name"; done
+# shellcheck disable=SC2086
+exec env $unset_args -- "$@"
