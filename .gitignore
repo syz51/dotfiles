@@ -52,6 +52,7 @@ uv
 !/claude/skills/ui-climb/
 !/claude/skills/cheat-sheets/
 !/claude/skills/diff-review/
+!/claude/skills/full-stop/
 /memory-system/oauth/openai-codex.json
 /nvim.bak
 /tanstack

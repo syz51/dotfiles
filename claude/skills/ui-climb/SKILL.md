@@ -136,14 +136,15 @@ derived bar in a note. After that, keep the bar: a later derived bar differs onl
 Calibration also prints a **bar reach** warning when the bar judge almost never gives the bar:
 the bar is above the best reference by more than twice its noise, or under 5% of its scores of
 main and the references reach it. Then put the warning and the derived bar in a note and ask the
-owner (`ask_user`, `Reason: design`) before round 1, with these options in this order:
+owner (`ask_user`, `Reason: design`) before round 1. Explain the options in the question, and
+give them in this order, with these labels, since `ask_user` takes at most 60 characters each:
 
-1. Lead the references: use the derived bar (recommended; judges give it, and it is
-   the real goal of beating products of the same kind). Start it with `--new-run`.
-2. Go on as is.
-3. Add a reference they rate at the bar.
-4. Use a bar judge that uses the top of the scale.
-5. Lower the bar.
+1. `Use the derived bar (recommended)`: judges give it, and it is the real goal of
+   beating products of the same kind. Start it with `--new-run`.
+2. `Go on as is`
+3. `Add a reference I rate at the bar`
+4. `Use a bar judge that uses the top of the scale`
+5. `Lower the bar`
 
 ## 3. Climb
 
@@ -219,12 +220,14 @@ Hand over the champion, never a later round that scored lower.
 3. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
    Artifact: load that tool with ToolSearch `select:Artifact`. Attach the file's path only
    when ToolSearch cannot load it.
-4. Push the branch and open a PR with the climb's commits. Its body names the champion
+4. Push the branch and open a PR with the climb's commits, held as a draft as the
+   `full-stop` skill says, so nothing merges it before the owner answers. Its body names the champion
    round and has the last `score:` line, the rounds table from `$UI status`, what changed and why, the conflicts left
    open, and the report link.
 5. `ask_user` on the task (`Reason: design`): the result in one line with each judge's lowest score, the PR
    and the report, with the options Merge, Keep climbing (with notes), Discard. Set the
-   task `blocked` until the answer. A design change merges only on the owner's word.
+   task `blocked` until the answer. A design change merges only on the owner's word; on
+   Merge, release the PR as the `full-stop` skill says.
 
 ## Costs and failures
 

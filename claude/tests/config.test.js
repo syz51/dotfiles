@@ -757,6 +757,8 @@ describe("work stages", () => {
     const rows = body.split("\n").filter((line) => /^\| [A-Z]\w+ \|/.test(line) && !line.startsWith("| Stage")).map((line) => line.split("|")[1].trim());
     expect(rows).toEqual(STAGES);
     expect(body).toMatch(/A small fix may go straight to build/);
+    // Proof for a bug fix, from tstack's full-send (dotfiles-479).
+    expect(body).toContain("a bug's reproduction failed before the fix and passes after it");
     expect(body).toMatch(/recording why in a `decision` note/);
     // The board's activities have no verify; Verify reports as review.
     expect(body).toMatch(/`review` for Verify/);
@@ -773,7 +775,7 @@ describe("work stages", () => {
 // Without its own id, an agent may report a skill's guidance problem as `skills`, which
 // routes to codex-skills, the wrong owner.
 describe("in-repo skills' feedback channels", () => {
-  const SKILLS = ["cheat-sheets", "headless-browser", "ui-climb"];
+  const SKILLS = ["cheat-sheets", "full-stop", "headless-browser", "ui-climb"];
 
   test.each(SKILLS)("%s ends with a feedback section naming its registered setup id", (id) => {
     expect(Bun.TOML.parse(read("setups.toml")).setup.map((setup) => setup.id)).toContain(id);
@@ -783,6 +785,49 @@ describe("in-repo skills' feedback channels", () => {
     expect(feedback).toMatch(new RegExp(`^## Feedback on this skill\\n\\nReport it with \`feedback\` and \`about\` \`${id}\`\\.`));
     expect(feedback).toContain(`\`${id}\` and the dotfiles tasks they were routed to`);
     expect(tracked(`claude/skills/${id}/SKILL.md`)).toBe(true);
+  });
+});
+
+// Adapted from t3dotgg/tstack's full-stop (dotfiles-479). The Autonomy section lets agents
+// merge, and auto-merge.js arms auto-merge after every gh pr create, so "leave the merge to
+// me" needs a hold that the hooks enforce: a draft, which auto-merge.js skips and
+// guard-pr-merge refuses (their tests pin both). ui-climb's owner decision uses the same hold
+// (dotfiles-434).
+describe("full stop", () => {
+  const skill = () => frontmatter("claude/skills/full-stop/SKILL.md");
+
+  test("the description is the trigger phrase, also as a closing sentence", () => {
+    expect(skill().meta.description).toMatch(/^Use when the user says "full stop", also as a closing "Full stop\.", or asks you to finish the work but leave the merge to them\./);
+  });
+
+  test("a draft holds the pull request, and only the user releases it", () => {
+    const body = skill().body.replace(/\s+/g, " ");
+    expect(body).toContain("This overrides \"merge them once their required checks pass\" for this task only");
+    expect(body).toContain("Open the pull request with `gh pr create --draft`.");
+    expect(body).toContain("turn auto-merge off with `gh pr merge <n> --disable-auto`, then make it a draft with `gh pr ready <n> --undo`");
+    expect(body).toContain("Never run `gh pr ready`, merge, turn on auto-merge, push to the default branch, or ask another agent to do one of these, until the user releases it.");
+    expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.claude/reference/merge.md` says.");
+    expect(read("claude/hooks/auto-merge.js")).toContain("if (view.isDraft) return");
+    expect(read("claude/hooks/guard-pr-merge.js")).toContain("if (view.isDraft) return");
+  });
+
+  test("it proves the change, keeps the one review, and hands over through an only-me action ask", () => {
+    const body = skill().body.replace(/\s+/g, " ");
+    expect(body).toContain("For a bug, reproduce the failure first, then show the same check passing after the fix.");
+    expect(body).toContain("A full stop is not a reason for a second review.");
+    expect(body).toContain("`ask_user` on the task, `kind: \"action\"`, `Reason: only-me`");
+    expect(body).toContain("the thread does not settle, since the merge waits on the user");
+    expect(JSON.parse(read("claude/hooks/ask-policy.json")).action_reasons).toContain("only-me");
+  });
+
+  test("ui-climb holds its design PR the same way and keeps its ask options within 60 characters", () => {
+    const climb = read("claude/skills/ui-climb/SKILL.md");
+    expect(climb.replace(/\s+/g, " ")).toContain("held as a draft as the `full-stop` skill says, so nothing merges it before the owner answers");
+    expect(climb.replace(/\s+/g, " ")).toContain("on Merge, release the PR as the `full-stop` skill says");
+    const options = climb.slice(climb.indexOf("**bar reach** warning"), climb.indexOf("## 3. Climb"));
+    const labels = [...options.matchAll(/^\d\. `([^`]+)`/gm)].map((match) => match[1]);
+    expect(labels).toEqual(["Use the derived bar (recommended)", "Go on as is", "Add a reference I rate at the bar", "Use a bar judge that uses the top of the scale", "Lower the bar"]);
+    for (const label of labels) expect(label.length).toBeLessThanOrEqual(60);
   });
 });
 

@@ -112,6 +112,15 @@ change = "A PR on dotfiles with tests; record the change in claude/factory/PLAN.
 verify = ["bun test claude/factory/ui"]
 
 [[setup]]
+id = "full-stop"
+title = "Full stop skill: finish a change, hold its PR for the owner's merge"
+covers = ["claude/skills/full-stop", "the full-stop skill: a draft PR as the merge hold, the ready check, the hand-over ask and the release"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles; keep the auto-merge and guard-pr-merge hooks' draft rules in step"
+verify = ["bun test claude/tests/config.test.js"]
+
+[[setup]]
 id = "work-stages"
 title = "Shared work stages"
 covers = ["claude/skills/work-stages", "the work-stages skill: explore, research, design, plan, build, verify"]
