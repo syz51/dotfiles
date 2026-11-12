@@ -1216,7 +1216,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   `bun`, also in a project whose lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
   rename across several files, spawn no subagent. Each fixture check proves from its
-  own output, its marker and its directory, that it passed in the fixture. A request to consult Codex runs no `codex`
+  own output, its marker and its directory, that it passed in the fixture, in a call
+  that runs it through `uv` or `bun`. A request to consult Codex runs no `codex`
   command, not even the fixture's stand-in, and the reply says so. No scenario leaves a process running in its
   fixture, and a server the check needs, which detaches itself, is stopped by the time
   the session answers. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only

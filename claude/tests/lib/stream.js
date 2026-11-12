@@ -124,16 +124,19 @@ export function bashRuns(events) {
   });
 }
 
-// What the main session read of a background task's output: the result of a TaskOutput or
-// BashOutput call for the task, or of a Read of its output file. Read numbers the lines
-// and TaskOutput wraps the output in tags; both are taken off. A Bash call that prints the
-// file is a run of its own.
-export function collectedOutputs(events, taskId) {
+// What the agent that started a background task read of its output, parent being null for
+// the main session: the result of a TaskOutput or BashOutput call for the task, or of a
+// Read of its output file. The line numbers of a Read and the output tags of a TaskOutput
+// are taken off. A Bash call that prints the file is a run of its own.
+export function collectedOutputs(events, taskId, { parent = null } = {}) {
   const results = toolResults(events);
-  return toolUses(events).filter((use) => use.parent === null && (use.name === "TaskOutput" && use.input.task_id === taskId
-      || use.name === "BashOutput" && use.input.bash_id === taskId
-      || use.name === "Read" && String(use.input.file_path).endsWith(`/${taskId}.output`)))
-    .map((use) => (results.get(use.id)?.text ?? "").replace(/^\s*\d+(?:\t|→)/gm, "").replace(/<\/?output>/g, "\n"));
+  return toolUses(events).filter((use) => use.parent === parent).flatMap((use) => {
+    const text = results.get(use.id)?.text ?? "";
+    if (use.name === "TaskOutput" && use.input.task_id === taskId) return [text.replace(/<\/?output>/g, "\n")];
+    if (use.name === "BashOutput" && use.input.bash_id === taskId) return [text];
+    if (use.name === "Read" && String(use.input.file_path).endsWith(`/${taskId}.output`)) return [text.replace(/^\s*\d+(?:\t|→)/gm, "")];
+    return [];
+  });
 }
 
 // Read calls with their outcome. complete means the whole file came back.
@@ -222,15 +225,20 @@ export function freeWhileRunning(events, ended, answered) {
 // Whether a command names the marker other than as the pattern of a grep or rg, which
 // filters the check's output without making it. Such a command, such as an echo, could
 // print the marker itself.
+// A flag may take a number, such as -A 2.
 export const namesMarker = (command, marker) => String(command)
-  .replace(/\b(?:grep|rg)(?:\s+-[\w-]+)*\s+(?:"[^"]*"|'[^']*'|[^\s|;&]+)/g, "").includes(marker);
+  .replace(/\b(?:grep|rg)(?:\s+-[\w-]+(?:\s+\d+\b)?)*\s+(?:"[^"]*"|'[^']*'|[^\s|;&]+)/g, "").includes(marker);
 
 // Whether a main-session Bash call issued after event index after printed marker from dir
 // (see printedFrom), in its own output or, run in the background, in the output the
 // session collected later (see collectedOutputs). The check's own output proves which
 // copy of it passed, however the command moved the shell; the command text and the
 // directory the call started in cannot. A command that names the marker proves nothing.
-export function mainBashPrinted(events, { marker, dir, after = -1 }) {
-  return bashRuns(events).some((run) => run.parent === null && run.index > after && !namesMarker(run.command, marker)
-    && [run.output, ...(run.background ? collectedOutputs(events, run.background) : [])].some((output) => printedFrom(output, marker, dir)));
+// command, when given, must accept the call's command, such as one that runs the check
+// through the required runtime. With subagents, a subagent's call counts too.
+export function mainBashPrinted(events, { marker, dir, after = -1, command = () => true, subagents = false }) {
+  return bashRuns(events).some((run) => (subagents || run.parent === null) && run.index > after
+    && !namesMarker(run.command, marker) && command(run.command)
+    && [run.output, ...(run.background ? collectedOutputs(events, run.background, { parent: run.parent }) : [])]
+      .some((output) => printedFrom(output, marker, dir)));
 }

@@ -59,6 +59,11 @@ describe("mayInvoke", () => {
     const viaBun = `cd "$PWD" && sed -i '' 's/1)/0)/' calc.js && cat calc.js && bun check.js`;
     for (const tool of ["node", "npm"]) expect(mayInvoke(viaBun, tool), tool).toBe(false);
     expect(mayInvoke('cd "$PWD" && node check.js', "node")).toBe(true);
+    // A command after a heredoc starts a line of its own (2026-11-12 live run).
+    const heredoc = "cat > calc.py <<'EOF'\ndef total(values):\n    return sum(values)\nEOF\nuv run check.py; echo \"exit=$?\"";
+    expect(mayInvoke(heredoc, "uv")).toBe(true);
+    expect(mayInvoke(heredoc, "python")).toBe(false);
+    expect(mayInvoke("cat > a.txt <<'EOF'\nx\nEOF\npython3 check.py", "python3")).toBe(true);
   });
 
   test("counts any command position in unreadable commands", () => {

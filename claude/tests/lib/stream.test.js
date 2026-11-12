@@ -289,7 +289,8 @@ describe("main-session check output", () => {
     // Exits zero and prints the line, yet the check itself failed.
     const masked = [init(), ...bash(`bun pricing/check.js || echo ${line}`, `error: wrong total\n${line}\n`)];
     expect(mainBashPrinted(masked, proof)).toBe(false);
-    for (const command of ["bun pricing/check.js | grep pricing-check:ok", "bun pricing/check.js 2>&1 | grep -E 'pricing-check:ok|error'", "bun pricing/check.js | rg -n \"pricing-check:ok\""])
+    for (const command of ["bun pricing/check.js | grep pricing-check:ok", "bun pricing/check.js 2>&1 | grep -E 'pricing-check:ok|error'",
+      "bun pricing/check.js | rg -n \"pricing-check:ok\"", "bun pricing/check.js 2>&1 | grep -A 2 pricing-check:ok"])
       expect(mainBashPrinted([init(), ...bash(command, `${line}\n`)], proof), command).toBe(true);
     expect(namesMarker("grep -q pricing-check:ok log && echo pricing-check:ok", proof.marker)).toBe(true);
     expect(namesMarker("bun pricing/check.js", proof.marker)).toBe(false);
@@ -303,6 +304,15 @@ describe("main-session check output", () => {
       `bun run test; echo "exit=$?"`,
     ])
       expect(mainBashPrinted([init(), ...bash(command, `${line}\nexit=0\n`)], proof), command).toBe(true);
+  });
+
+  test("a command filter picks the calls that count, and subagents count when asked", () => {
+    const viaBun = (command) => /\bbun\b/.test(command);
+    expect(mainBashPrinted([init(), ...bash("bun pricing/check.js", `${line}\n`)], { ...proof, command: viaBun })).toBe(true);
+    expect(mainBashPrinted([init(), ...bash("pnpm test", `${line}\n`)], { ...proof, command: viaBun })).toBe(false);
+    const delegated = [init(), ...bash("bun pricing/check.js", `${line}\n`, { parent: "toolu_agent" })];
+    expect(mainBashPrinted(delegated, proof)).toBe(false);
+    expect(mainBashPrinted(delegated, { ...proof, subagents: true })).toBe(true);
   });
 
   // A Bash call with run_in_background returns at once; the session collects the output later.
@@ -327,6 +337,14 @@ describe("main-session check output", () => {
     expect(collectedOutputs(viaRead, "b1")).toEqual([`${line}\nexit=0\n`]);
     expect(mainBashPrinted(viaRead, proof)).toBe(true);
     expect(mainBashPrinted([...started, ...bash(`cat ${outputFile}`, `${line}\n`)], proof)).toBe(true);
+    // Only a Read numbers its lines.
+    expect(collectedOutputs([...started, ...collect("BashOutput", { bash_id: "b1" }, "  12\tfoo\n")], "b1")).toEqual(["  12\tfoo\n"]);
+    // A subagent's background run counts from its own collection when subagents count.
+    const agentRun = toolUse("Bash", { command: "bun pricing/check.js", run_in_background: true }, { parent: "toolu_agent" });
+    const delegated = [init(), agentRun.event, toolResult(agentRun.id, "started", { parent: "toolu_agent", meta: { backgroundTaskId: "b3" } }),
+      ...collect("TaskOutput", { task_id: "b3" }, `${line}\n`, { parent: "toolu_agent" })];
+    expect(mainBashPrinted(delegated, { ...proof, subagents: true })).toBe(true);
+    expect(mainBashPrinted(delegated, proof)).toBe(false);
     // Another task's output, or a subagent's read of this one, proves nothing.
     expect(mainBashPrinted([...started, ...collect("TaskOutput", { task_id: "b2" }, `${line}\n`)], proof)).toBe(false);
     expect(mainBashPrinted([...started, ...collect("Read", { file_path: outputFile }, `${line}\n`, { parent: "toolu_agent" })], proof)).toBe(false);

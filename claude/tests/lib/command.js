@@ -82,11 +82,11 @@ export function commandLists(command) {
 
 // Whether a command may have run the tool (or its x-runner, such as bunx). For a command
 // the grammar cannot read, any word in command position counts: at the start, after a
-// shell operator or opening an `sh -c` string, after environment assignments.
+// shell operator or a newline or opening an `sh -c` string, after environment assignments.
 export function mayInvoke(command, tool) {
   const lists = commandLists(command);
   const name = tool.replace(/[.+]/g, "\\$&");
-  if (!lists) return new RegExp(`(?:^|[;&|(\`]|-c\\s+['"])\\s*(?:\\w+=\\S*\\s+)*(?:\\S*/)?${name}x?(?=$|[\\s'";&|)])`).test(command);
+  if (!lists) return new RegExp(`(?:^|[;&|(\`\n]|-c\\s+['"])\\s*(?:\\w+=\\S*\\s+)*(?:\\S*/)?${name}x?(?=$|[\\s'";&|)])`).test(command);
   return lists.some((words) => {
     const program = words.find((word) => !/^\w+=/.test(word));
     return [tool, `${tool}x`].includes(program?.replace(/^.*\//, ""));
