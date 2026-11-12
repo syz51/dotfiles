@@ -198,14 +198,14 @@ if (mode.startsWith("tracks-")) {
   const fixes = { pricing: ["price.js", "sum + item.price, 1)", "sum + item.price, 0)"], shipping: ["weight.js", "grams / 100;", "grams / 1000;"] };
   // Workers run with the model and effort their definition sets, as the scenario reads them.
   const worker = Bun.YAML.parse(/^---\n([\s\S]*?)\n---/.exec(readFileSync(join(import.meta.dir, "..", "..", "agents", "worker.md"), "utf8"))[1]);
-  const workerRuntime = { model: `claude-${worker.model}-5-5`, effort: worker.effort };
+  const workerRuntime = { model: worker.model === "inherit" ? option("--model") : `claude-${worker.model}-5-5`, effort: worker.effort };
   const git = (...gitArgs) => spawnSync("git", ["-c", "commit.gpgsign=false", ...gitArgs], { cwd, encoding: "utf8" });
   const review = ({ background = true, isolation } = {}) => {
     const range = `origin/main...${git("rev-parse", "HEAD").stdout.trim()}`;
     const spawn = tool("Agent", { subagent_type: "reviewer", ...(isolation ? { isolation } : {}), prompt: range },
       () => ({ text: background ? "Async agent launched successfully." : "No findings." }));
     if (background) emit({ type: "system", subtype: "task_started", task_id: `task_${spawn}`, tool_use_id: spawn, is_backgrounded: true });
-    emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: `msg_${spawn}`, model: "claude-opus-5-5", content: [{ type: "text", text: "[]" }] } });
+    emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: `msg_${spawn}`, model: option("--model"), content: [{ type: "text", text: "[]" }] } });
     if (background) emit({ type: "system", subtype: "task_notification", task_id: `task_${spawn}`, tool_use_id: spawn, status: "completed" });
   };
   if (mode === "tracks-third") tool("Agent", { subagent_type: "general-purpose", prompt: "Survey pricing/ and shipping/." }, () => ({ text: "Surveyed." }));
@@ -296,7 +296,7 @@ if (mode.startsWith("review-")) {
     emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "task_review" }] });
     // The reviewer's own messages carry the Agent call as their parent.
     if (mode === "review-skill") tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }), spawn);
-    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: mode === "review-inherit" ? "claude-fable-5-2" : "claude-opus-5-5", content: [{ type: "text", text: findings }] } });
+    else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: mode === "review-other-model" ? (option("--model") === "claude-opus-5-5" ? "claude-fable-5-2" : "claude-opus-5-5") : option("--model"), content: [{ type: "text", text: findings }] } });
     const finish = (status = "completed") => {
       emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });

@@ -337,7 +337,7 @@ describe("background review", () => {
     ["review-early", "the outcomes were recorded before the review ended"],
     ["review-dismissed", "the real owner-check finding was not recorded as skipped"],
     ["review-uncategorized", "a finding has no category"],
-    ["review-inherit", "the reviewer did not run on Opus"],
+    ["review-other-model", "the reviewer did not run on the session's model"],
   ])
     test(mode, async () => {
       const run = await runLive("live.test.js", name, mode);
