@@ -18,8 +18,9 @@ merge one, so no agent can merge it by mistake.
 - Open the pull request with `gh pr create --draft`.
 - When it already exists, turn auto-merge off with `gh pr merge <n> --disable-auto`,
   then make it a draft with `gh pr ready <n> --undo`.
-- When GitHub refuses a draft, keep it open without auto-merge, and say in the hand-over
-  that only its first line holds it.
+- When GitHub refuses a draft, open it without `--draft`, then at once run
+  `gh pr merge <n> --disable-auto`, since the auto-merge hook turns auto-merge on after
+  `gh pr create`. Say in the hand-over that only its first line holds it.
 - Start its body with this line: `Held for the owner's merge (full stop). Agents: do not
   mark it ready or merge it.`
 - Never run `gh pr ready`, merge, turn on auto-merge, push to the default branch, or ask
@@ -58,6 +59,9 @@ All of these hold on the latest head commit:
    `Change it (say what)` and `Close it`. Then set the task `blocked`.
 3. Without a board, start the reply with the pull request link and "ready for your
    merge". In both cases the thread does not settle, since the merge waits on the user.
+
+When another skill sent you here to hold its pull request, use only this skill's hold
+and Release, and hand over with that skill's own ask instead of this one.
 
 When it is blocked instead of ready, ask the same way with what blocks it, what you
 tried and the options. When someone else merged or closed it, report that.

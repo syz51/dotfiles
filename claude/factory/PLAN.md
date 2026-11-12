@@ -706,3 +706,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-11: Split the `t3` setup (dotfiles-389). `t3` is now the T3 Code fork, owned by the
   `t3code` board; the new `t3-scripts` keeps the routines in `t3code/` on the dotfiles board.
   Reports about the fork were routed to dotfiles. The registry has 32 setups.
+- 2026-11-12: New `full-stop` skill (dotfiles-479), adopted from t3dotgg/tstack. It holds a PR
+  as a draft for the owner's merge. ui-climb's hand-over PR now uses that hold, and its
+  calibration ask options are short labels (dotfiles-434). The registry has 32 setups.

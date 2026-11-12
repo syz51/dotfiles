@@ -805,6 +805,7 @@ describe("full stop", () => {
     expect(body).toContain("This overrides \"merge them once their required checks pass\" for this task only");
     expect(body).toContain("Open the pull request with `gh pr create --draft`.");
     expect(body).toContain("turn auto-merge off with `gh pr merge <n> --disable-auto`, then make it a draft with `gh pr ready <n> --undo`");
+    expect(body).toContain("When GitHub refuses a draft, open it without `--draft`, then at once run `gh pr merge <n> --disable-auto`");
     expect(body).toContain("Never run `gh pr ready`, merge, turn on auto-merge, push to the default branch, or ask another agent to do one of these, until the user releases it.");
     expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.claude/reference/merge.md` says.");
     expect(read("claude/hooks/auto-merge.js")).toContain("if (view.isDraft) return");
@@ -824,6 +825,8 @@ describe("full stop", () => {
     const climb = read("claude/skills/ui-climb/SKILL.md");
     expect(climb.replace(/\s+/g, " ")).toContain("held as a draft as the `full-stop` skill says, so nothing merges it before the owner answers");
     expect(climb.replace(/\s+/g, " ")).toContain("on Merge, release the PR as the `full-stop` skill says");
+    expect(climb.replace(/\s+/g, " ")).toContain("This ask replaces the `full-stop` hand-over.");
+    expect(skill().body.replace(/\s+/g, " ")).toContain("When another skill sent you here to hold its pull request, use only this skill's hold and Release, and hand over with that skill's own ask instead of this one.");
     const options = climb.slice(climb.indexOf("**bar reach** warning"), climb.indexOf("## 3. Climb"));
     const labels = [...options.matchAll(/^\d\. `([^`]+)`/gm)].map((match) => match[1]);
     expect(labels).toEqual(["Use the derived bar (recommended)", "Go on as is", "Add a reference I rate at the bar", "Use a bar judge that uses the top of the scale", "Lower the bar"]);

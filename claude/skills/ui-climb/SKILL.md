@@ -226,8 +226,9 @@ Hand over the champion, never a later round that scored lower.
    open, and the report link.
 5. `ask_user` on the task (`Reason: design`): the result in one line with each judge's lowest score, the PR
    and the report, with the options Merge, Keep climbing (with notes), Discard. Set the
-   task `blocked` until the answer. A design change merges only on the owner's word; on
-   Merge, release the PR as the `full-stop` skill says.
+   task `blocked` until the answer. This ask replaces the `full-stop` hand-over. A design
+   change merges only on the owner's word; on Merge, release the PR as the `full-stop`
+   skill says.
 
 ## Costs and failures
 
