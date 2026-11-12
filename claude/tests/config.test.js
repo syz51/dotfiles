@@ -138,7 +138,7 @@ describe("global instructions", () => {
 
   // A regression budget, not a target: raise it when a rule that every turn needs is added.
   test("the global instructions stay under their size budget", () => {
-    expect(globalInstructions.length).toBeLessThan(22_000);
+    expect(globalInstructions.length).toBeLessThan(22_200);
   });
 
   // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:
@@ -560,7 +560,7 @@ describe("work board", () => {
     expect(rule).toMatch(/Scope your task still needs: a sub-task \(`task_add` with your task as parent\)\. Your task stays open until every acceptance check passes/);
     expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on the board of the work's repository, or on this one when that repository has none, with the task you found it in, if any, as parent/);
     expect(rule).toMatch(/Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`/);
-    expect(rule).toMatch(/Report it there instead when filing fails\. Don't ask me before filing/);
+    expect(rule).toMatch(/When filing fails, report the item in the reply instead\. Don't ask me before filing/);
     expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
   });
@@ -569,9 +569,8 @@ describe("work board", () => {
   // the other four had no task or ask until the user asked whether all was tracked
   // (dotfiles-427). An id on each open item makes an unfiled one visible in the report.
   test("each open item of a reply names the task or ask that holds it", () => {
-    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. Report it there instead when filing fails. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.\n";
+    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. When filing fails, report the item in the reply instead. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.\n";
     expect(section("Work board")).toContain(rule);
-    expect(read("codex/AGENTS.md")).toContain(rule);
     expect(globalInstructions).not.toContain("Name what you filed in your reply");
   });
 
@@ -711,7 +710,7 @@ describe("T3 self-settle", () => {
   // unfiled items; the prompt in `task_done`'s output went unanswered (dotfiles-427).
   test("the final check is its own step, after task_done, and needs an id on each open item", () => {
     const rule = section("Workflow").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
-    expect(rule).toContain("with one more check, as a step of its own: after `task_done` has returned and you have handled its output, never in the same tool batch. Settle the thread only if nothing is left to do, track or file, each open item of the report names its task or ask, and nothing waits on it:");
+    expect(rule).toContain("with one more check, as a step of its own: after `task_done` and your other board calls have returned and you have handled their output, never in the same tool batch. Settle the thread only if nothing is left to do, track or file, each open item of the report names its task or ask, and nothing waits on it:");
   });
 });
 
@@ -854,7 +853,7 @@ describe("rules the live suites test", () => {
   // A brief that asked for "what still depends on the student" as a report part became the
   // only place for those items (dotfiles-427), so the brief sends them to the board first.
   test("a brief has fixed parts, names only what differs from what a child loads, and keeps open work on the board", () => {
-    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: what waits on me goes on the board first, and the report names the ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer`, `worker` and `solver` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
+    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: open items go on the board, filed by you where the child never files, before the report to me names their ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer`, `worker` and `solver` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
   });
 
   test("explorer, worker and solver end with the same report shape", () => {

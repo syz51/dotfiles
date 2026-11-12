@@ -24,7 +24,7 @@
   - Scope your task still needs: a sub-task (`task_add` with your task as parent). Your task stays open until every acceptance check passes.
   - Work you find outside your task: a proposal (`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L), on the board of the work's repository, or on this one when that repository has none, with the task you found it in, if any, as parent, or named in the body when that task is on another board.
   - Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`. Make the ask first, and set `blocked` only once it is accepted.
-- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. Report it there instead when filing fails. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.
+- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. When filing fails, report the item in the reply instead. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.
 - Read-only work, such as a review or an investigation, files too, unless I say not to touch the board. Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix. Agents in their own threads, such as a coordinator's children, file for themselves.
 
 ## Storage
