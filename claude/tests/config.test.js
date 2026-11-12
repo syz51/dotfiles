@@ -330,19 +330,25 @@ describe("settings", () => {
   });
 
   // Codex names its shell tool Bash in hook input and matchers, so the same guards cover it.
+  // Codex runs them from the checkout: a Mac without Claude, such as the Pro, has no ~/.claude.
   test.each([
-    ["claude/settings.json", "guard-git-push.js"],
-    ["claude/settings.json", "guard-runtimes.js"],
-    ["claude/settings.json", "guard-main-checkout.js"],
-    ["claude/settings.json", "guard-pr-merge.js"],
-    ["codex/hooks.json", "guard-git-push.js"],
-    ["codex/hooks.json", "guard-runtimes.js"],
-  ])("%s registers the %s guard for Bash PreToolUse", (path, script) => {
+    ["claude/settings.json", "$HOME/.claude/hooks", "guard-git-push.js"],
+    ["claude/settings.json", "$HOME/.claude/hooks", "guard-runtimes.js"],
+    ["claude/settings.json", "$HOME/.claude/hooks", "guard-main-checkout.js"],
+    ["claude/settings.json", "$HOME/.claude/hooks", "guard-pr-merge.js"],
+    ["codex/hooks.json", "$HOME/.config/claude/hooks", "guard-git-push.js"],
+    ["codex/hooks.json", "$HOME/.config/claude/hooks", "guard-runtimes.js"],
+  ])("%s registers the guard in %s/%s for Bash PreToolUse", (path, dir, script) => {
     const guard = JSON.parse(read(path)).hooks.PreToolUse.filter((group) =>
       new RegExp(group.matcher).test("Bash")
       && group.hooks.some((hook) => hook.type === "command"
-        && hook.command === `"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/${script}"`));
+        && hook.command === `"$HOME/.bun/bin/bun" "${dir}/${script}"`));
     expect(guard).toHaveLength(1);
+  });
+
+  test("Codex config reaches no file through the ~/.claude link", () => {
+    expect(read("codex/hooks.json")).not.toMatch(/\$HOME\/\.claude\//);
+    expect(read("codex/AGENTS.md")).not.toMatch(/~\/\.claude\//);
   });
 
   // A hook that times out is a non-blocking error, so the merge would run unchecked. Each gh
@@ -431,7 +437,7 @@ describe("rejected frontend defaults list", () => {
 // sets for test and benchmark sessions so they stay off the real board.
 describe("work board", () => {
   const SCRIPT = join(CLAUDE, "hooks/board-hook.sh");
-  const HOOK = /^\/bin\/sh "\$HOME\/\.claude\/hooks\/board-hook\.sh" ([a-z-]+) (claude|codex)$/;
+  const HOOK = /^\/bin\/sh "\$HOME\/(?:\.claude|\.config\/claude)\/hooks\/board-hook\.sh" ([a-z-]+) (claude|codex)$/;
   const boardHooks = (hooks) =>
     Object.entries(hooks).flatMap(([event, groups]) =>
       groups.flatMap((group) =>
@@ -448,14 +454,15 @@ describe("work board", () => {
   };
 
   test.each([
-    ["claude/settings.json", "claude", CLAUDE_EVENTS],
-    ["codex/hooks.json", "codex", CODEX_EVENTS],
-  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, events) => {
+    ["claude/settings.json", "claude", "$HOME/.claude/hooks", CLAUDE_EVENTS],
+    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", CODEX_EVENTS],
+  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, dir, events) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
     const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
     expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
     for (const { hook, match } of found) {
       expect(match?.[2]).toBe(runtime);
+      expect(hook.command).toStartWith(`/bin/sh "${dir}/board-hook.sh" `);
       expect(hook.timeout).toBeLessThanOrEqual(5);
     }
     expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
@@ -822,7 +829,10 @@ describe("rules the live suites test", () => {
     // Vite+ may run checks and tools; installs and package queries stay on bun, as guard-runtimes enforces.
     expect(preferences).toContain("checks and tooling with `bun`, `bunx` or Vite+ (`vp`), and installs and package queries with `bun` only");
     expect(preferences).toMatch(/require another package manager, stop and ask me/);
-    expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${preferences.split("\n").find((line) => line.startsWith("- Run all Python"))}\n`);
+    // Codex names the checkout path, since a Mac that runs Codex may have no ~/.claude.
+    const runtimes = preferences.split("\n").find((line) => line.startsWith("- Run all Python"))
+      .replace("`~/.claude/hooks/node-repos.json`", "`~/.config/claude/hooks/node-repos.json`");
+    expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${runtimes}\n`);
   });
 
   // The user has only a Claude plan; guard-runtimes also blocks the codex CLI.
