@@ -551,7 +551,8 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
           + "Each module's check.js must also assert its CODE. When done, the fixes belong in this checkout.",
       });
       const spawns = assertAgentRan(run, "worker", { count: 2 });
-      expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null).map((spawn) => spawn.input.subagent_type),
+      // The Review rule's reviewer run on the final diff owns no track.
+      expect(agentSpawns(run.events).filter((spawn) => spawn.parent === null && spawn.input.subagent_type !== "reviewer").map((spawn) => spawn.input.subagent_type),
         "a track went to another agent, or one area passed between agents").toEqual(["worker", "worker"]);
       expect(concurrentSpawns(run.events, spawns), "the tracks ran one after another").toBe(true);
       for (const spawn of spawns) expect(spawn.input.isolation, "an editing track shared the checkout").toBe("worktree");
