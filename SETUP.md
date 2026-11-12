@@ -1128,9 +1128,9 @@ in CI:
   also fail. In the parallel-tracks scenario, two background worker tracks pass, with or
   without one background reviewer after both return. A track sent to an explorer, a third
   agent, two reviewers, a foreground reviewer, a reviewer in a worktree and a reviewer
-  started before the tracks return all fail. When `~/.claude` links to another checkout, the three location checks
-  are skipped with one notice and the other tests still run; from the linked checkout
-  they run without it. Each suite holds its own config-sync lock during its session,
+  started before the tracks return all fail. When `~/.claude` links to another checkout,
+  the three location checks are skipped with one notice and the other tests still run;
+  from the linked checkout they run without it. Each suite holds its own config-sync lock during its session,
   renews it when held again, and removes only its own at teardown, also after a failed
   session.
 - `no-session-env.test.js`: `claude/bin/no-session-env` removes every session variable,
