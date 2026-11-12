@@ -402,7 +402,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
   // checkout, with the commit's range as its prompt. The follow-up arrives as soon as the
   // first turn ends, as a person typing mid-review: the session must answer it while the
   // review still runs, and the review must still finish and reach the final reply.
-  test("a high-impact review runs in the background reviewer while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
+  test("a pushed change's review runs in the background reviewer while the session answers", () => suite.scenario("background review", async ({ fixture, session }) => {
     // The callers and the tests give the reviewer work to do: its skill reads each caller
     // of a changed function and the tests that cover it. Without them the review of a
     // one-line change can end before the session's first turn does, and the follow-up

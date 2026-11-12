@@ -424,7 +424,7 @@ describe("location checks", () => {
     expect(text.split(notice)).toHaveLength(2);
     expect(text).toContain(`${notice}${home} (~/.claude is ${join(home, ".claude")}), not this checkout ${realpathSync(join(TESTS, "..", ".."))}.`);
     expect(text).toContain("live-tested only after merge and config-sync");
-    expect(text).toContain("(pass) live Claude Code > a high-impact review runs in the background reviewer while the session answers");
+    expect(text).toContain("(pass) live Claude Code > a pushed change's review runs in the background reviewer while the session answers");
     expect(text).toMatch(/ 1 pass\n 3 skip\n/);
     expect(text).toMatch(/\(skip\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
     assertCleanedUp();

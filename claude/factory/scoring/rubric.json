@@ -1,5 +1,5 @@
 {
-  "version": 13,
+  "version": 14,
   "verdicts": ["pass", "fail", "na"],
   "correctionCauses": ["instruction-defect", "ignored-rule", "model-error", "changed-requirements", "unclear"],
   "dimensions": [
@@ -37,7 +37,7 @@
       "id": "review-skipped",
       "kind": "detector",
       "section": "Review",
-      "description": "A `git push` or `gh pr merge` carried edits to a path on the repository's high-impact list (claude/factory/scoring/high-impact.toml) with no review (a `reviewer` agent run, or a /code-review) started since the first such edit. Fixes after the review need no second one; na when the session pushed no high-impact edit."
+      "description": "A `git push` or `gh pr merge` carried edits, in any repository, to a file off the trivial list (claude/factory/scoring/review-scope.toml) with no review (a `reviewer` agent run, or a /code-review) started since the first such edit. Fixes after the review need no second one; na when the session pushed no such edit."
     },
     {
       "id": "followed-instructions",

@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
 import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, sessionActions, shellChanges, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
-import { boardCheckouts, gitIgnored, HIGH_IMPACT_FILE, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
+import { boardCheckouts, gitCheckout, gitIgnored, loadReviewScope, locate, realFile, REVIEW_SCOPE_FILE, repoName, reviewMatcher } from "./review-scope.js";
 
 const cleanup = [];
 afterEach(() => {
@@ -505,16 +505,17 @@ describe("review-skipped", () => {
     { repo: "github.com/o/lib", root: "/w/lib" },
     { repo: "github.com/o/home", root: join(homedir(), "no-such-checkout-x1") },
   ].sort((a, b) => b.root.length - a.root.length);
-  const matcher = highImpactMatcher({ default: [".github/workflows/**", "**/hooks/**"], repos: { "github.com/o/app": ["src/auth.rs"] } });
+  const matcher = reviewMatcher({ trivial: ["**/Cargo.lock", "**/*.png"] });
   const detect = (calls, options, ignored = () => false) => reviewSkipped(actions(calls, options), { matcher, checkouts, ignored });
   const edit = (file, extra) => call("Edit", { file_path: file, old_string: "a", new_string: "b" }, extra);
   const review = (extra) => call("Skill", { skill: "code-review", args: "xhigh origin/main...abc1234" }, extra);
   const typed = (name) => ({ name, args: "xhigh", at: call("Noop", {}).at });
 
-  test("fails a push of a high-impact edit with no review", () => {
-    const result = detect([edit("/w/app/hooks/pre.sh"), edit("/w/app/src/auth.rs"), edit("/w/app/README.md"), bash("git push origin feature")]);
+  test("fails a push of any non-trivial edit with no review, docs and tests too", () => {
+    const calls = [edit("/w/app/hooks/pre.sh"), edit("/w/app/src/main.rs"), edit("/w/app/README.md"), edit("/w/app/tests/main.test.js"), edit("/w/app/Cargo.lock"), bash("git push origin feature")];
+    const result = detect(calls);
     expect(result.verdict).toBe("fail");
-    expect(result.hits[0].files).toEqual(["o/app:hooks/pre.sh", "o/app:src/auth.rs"]);
+    expect(result.hits[0].files).toEqual(["o/app:hooks/pre.sh", "o/app:src/main.rs", "o/app:README.md", "o/app:tests/main.test.js"]);
     expect(result.hits[0].evidence).toContain("git push origin feature");
   });
 
@@ -574,30 +575,30 @@ describe("review-skipped", () => {
     expect(detect([bash("sed -i '' 's/a/b/' ~/no-such-checkout-x1/hooks/x.sh"), bash("git push")]).verdict).toBe("fail");
     expect(detect([bash("sed -i '' 's/a/b/' hooks/x.sh", { cwd: "/w/app" }), bash("git push")]).verdict).toBe("fail");
     expect(detect([bash("cd /tmp && sed -i '' 's/a/b/' hooks/x.sh", { cwd: "/w/app" }), bash("git push")]).verdict).toBe("na");
-    // The nested checkout's own list applies: its hooks folder, not the parent's auth file.
-    expect(detect([edit("/w/app/docs/src/auth.rs"), bash("git push")]).verdict).toBe("na");
-    expect(detect([edit("/w/app/docs/hooks/x.sh"), bash("git push")]).hits[0].files).toEqual(["o/app-docs:hooks/x.sh"]);
+    // A file in a nested checkout belongs to that checkout's repository.
+    expect(detect([edit("/w/app/docs/src/auth.rs"), bash("git push")]).hits[0].files).toEqual(["o/app-docs:src/auth.rs"]);
   });
 
-  test("counts deletes, moves, copies and patches of high-impact files as edits", () => {
+  test("counts deletes, moves, copies and patches of files that need a review as edits", () => {
     const patch = "git apply <<'EOF'\ndiff --git a/hooks/pre.sh b/hooks/pre.sh\n--- a/hooks/pre.sh\n+++ b/hooks/pre.sh\n@@ -1 +1 @@\n-a\n+b\nEOF";
     const commands = ["git rm hooks/pre.sh", "rm -f /w/app/hooks/pre.sh", "mv hooks/pre.sh hooks/post.sh", "cp /tmp/x.sh /w/app/hooks/", "git checkout HEAD -- hooks/pre.sh", patch];
     for (const command of commands) {
       const result = detect([bash(command, { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]);
       expect(result.verdict, command).toBe("fail");
-      expect(result.hits[0].files.every((file) => file.startsWith("o/app:hooks/")), command).toBe(true);
+      // A copy into a folder names the folder too.
+      expect(result.hits[0].files.every((file) => /^o\/app:hooks(\/|$)/.test(file)), command).toBe(true);
       // A review after the change and before the push passes: the `reviewer` agent, or /code-review.
       const reviewer = () => call("Agent", { subagent_type: "reviewer", prompt: "origin/main...abc1234", run_in_background: true });
       expect(detect([bash(command, { cwd: "/w/app" }), reviewer(), bash("git push", { cwd: "/w/app" })]).verdict, command).toBe("pass");
       expect(detect([bash(command, { cwd: "/w/app" }), review(), bash("git push", { cwd: "/w/app" })]).verdict, command).toBe("pass");
     }
-    // Moving a high-impact file away still changes it; a move of other files does not.
-    expect(detect([bash("git mv hooks/pre.sh docs-old.sh", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("fail");
-    expect(detect([bash("rm -rf README.md build", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("na");
+    // Moving a file to a trivial name still changes it; deleting only trivial files does not.
+    expect(detect([bash("git mv hooks/pre.sh old.png", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("fail");
+    expect(detect([bash("rm -f Cargo.lock logo.png", { cwd: "/w/app" }), bash("git push", { cwd: "/w/app" })]).verdict).toBe("na");
   });
 
-  test("is na without a pushed high-impact edit", () => {
-    expect(detect([edit("/w/app/README.md"), bash("git push")]).verdict).toBe("na");
+  test("is na without a pushed edit that needs a review", () => {
+    expect(detect([edit("/w/app/Cargo.lock"), edit("/w/app/assets/logo.png"), bash("git push")]).verdict).toBe("na");
     expect(detect([edit("/w/app/hooks/pre.sh")]).verdict).toBe("na");
     expect(detect([edit("/elsewhere/hooks/pre.sh"), bash("git push")]).verdict).toBe("na");
     expect(detect([edit("/w/app/hooks/pre.sh"), bash("git push --dry-run origin feature")]).verdict).toBe("na");
@@ -606,13 +607,48 @@ describe("review-skipped", () => {
     expect(detect([edit("/w/app/hooks/local.sh"), bash("git push")], {}, ({ path }) => path === "hooks/local.sh").verdict).toBe("na");
   });
 
-  test("docs and tests in a default folder are ignored, unless the repository lists them", () => {
-    const lists = { default: ["**/hooks/**"], ignore: ["**/*.md", "**/*.test.*"], repos: { "github.com/o/app": ["hooks/README.md"] } };
-    const check = highImpactMatcher(lists);
-    expect(check({ repo: "github.com/o/app", path: "hooks/guard.js" })).toBe(true);
-    expect(check({ repo: "github.com/o/app", path: "hooks/guard.test.js" })).toBe(false);
-    expect(check({ repo: "github.com/o/web", path: "hooks/README.md" })).toBe(false);
-    expect(check({ repo: "github.com/o/app", path: "hooks/README.md" })).toBe(true);
+  test("every file needs a review except the trivial kinds, in every repository", () => {
+    const check = reviewMatcher(loadReviewScope());
+    for (const repo of ["github.com/syz51/papers", "github.com/syz51/claimcheck", "github.com/syz51/prov", "github.com/syz51/ireval", "github.com/syz51/agent-board", "github.com/syz51/research-factory", "github.com/o/unknown"]) {
+      for (const path of ["src/lib.rs", "Cargo.toml", "README.md", "docs/guide.md", "tests/cli.rs", "package.json", ".github/workflows/ci.yml", "assets/icon.svg"]) expect(check({ repo, path }), `${repo} ${path}`).toBe(true);
+      for (const path of ["Cargo.lock", "web/bun.lock", "uv.lock", "tests/snapshots/cli__help.snap", "src/__snapshots__/a.test.js.snap", "docs/shot.png"]) expect(check({ repo, path }), `${repo} ${path}`).toBe(false);
+    }
+  });
+
+  // The rule covers every repository the user works in, not only those the board lists:
+  // a checkout the board does not know maps through git and its origin remote.
+  test("flags an unreviewed push in syz51/papers, a repository review-scope.toml does not name", () => {
+    expect(readFileSync(REVIEW_SCOPE_FILE, "utf8")).not.toContain("papers");
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "review-papers-")));
+    cleanup.push(dir);
+    const papers = join(dir, "papers");
+    for (const args of [["init", "-q", papers], ["-C", papers, "remote", "add", "origin", "git@github.com:syz51/papers.git"]]) expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
+    mkdirSync(join(papers, "src"));
+    const real = { matcher: reviewMatcher(loadReviewScope()), checkouts: [], git: gitCheckout, ignored: gitIgnored };
+    const run = (calls) => reviewSkipped(actions(calls), real);
+    const result = run([edit(join(papers, "src", "lib.rs")), edit(join(papers, "Cargo.lock")), bash("git push -u origin feature", { cwd: papers })]);
+    expect(result.verdict).toBe("fail");
+    expect(result.hits[0].files).toEqual(["syz51/papers:src/lib.rs"]);
+    expect(run([edit(join(papers, "src", "lib.rs")), call("Agent", { subagent_type: "reviewer", prompt: "origin/main...abc1234", run_in_background: true }), bash("git push", { cwd: papers })]).verdict).toBe("pass");
+    // A lockfile-only change may skip review.
+    expect(run([edit(join(papers, "Cargo.lock")), bash("git push", { cwd: papers })]).verdict).toBe("na");
+    // The board's own checkout of papers maps the same way.
+    const board = { ...real, checkouts: [{ repo: "github.com/syz51/papers", root: papers }], git: () => null };
+    expect(reviewSkipped(actions([edit(join(papers, "src", "lib.rs")), bash("git push", { cwd: papers })]), board).hits[0].files).toEqual(["syz51/papers:src/lib.rs"]);
+
+    // Outside any checkout git finds nothing; a checkout without a remote is named by its root.
+    expect(gitCheckout(join(dir, "loose", "x.rs"))).toBeNull();
+    // A path that names a file as a folder looks from the file's folder.
+    writeFileSync(join(papers, "notes.txt"), "");
+    expect(gitCheckout(join(papers, "notes.txt", "x"))).toEqual({ repo: "github.com/syz51/papers", root: papers, path: "notes.txt/x" });
+    const local = join(dir, "local");
+    expect(Bun.spawnSync(["git", "init", "-q", local]).exitCode).toBe(0);
+    expect(gitCheckout(join(local, "new", "x.rs"))).toEqual({ repo: local, root: local, path: "new/x.rs" });
+  });
+
+  test("repoName names a remote as the board does", () => {
+    for (const url of ["git@github.com:syz51/papers.git", "https://github.com/syz51/papers.git", "https://x:token@github.com/Syz51/Papers", "ssh://git@github.com/syz51/papers/"]) expect(repoName(url), url).toBe("github.com/syz51/papers");
+    expect(repoName("/srv/git/app")).toBe("/srv/git/app");
   });
 
   test("locate maps checkouts and both kinds of worktree, and nothing else", () => {
@@ -657,10 +693,11 @@ describe("review-skipped", () => {
     ]);
     expect(boardCheckouts({ BOARD_HOME: join(home, "missing") })).toEqual([]);
 
-    const lists = loadHighImpact(HIGH_IMPACT_FILE);
-    expect(lists.default).toContain(".github/workflows/**");
-    expect(lists.repos["github.com/syz51/dotfiles"]).toContain("claude/CLAUDE.md");
-    writeFileSync(join(home, "bad.toml"), 'default = ["a"]\n[repos."x"]\npaths = "b"\n');
-    expect(() => loadHighImpact(join(home, "bad.toml"))).toThrow('repos."x".paths must be a list of globs');
+    expect(loadReviewScope().trivial).toContain("**/Cargo.lock");
+    // The list is by file kind: a repository entry, or the old path lists, are refused.
+    writeFileSync(join(home, "repo.toml"), 'trivial = ["a"]\n[repos."x"]\ntrivial = ["b"]\n');
+    expect(() => loadReviewScope(join(home, "repo.toml"))).toThrow("unknown keys repos; the list is by file kind, never by repository");
+    writeFileSync(join(home, "bad.toml"), 'trivial = "a"\n');
+    expect(() => loadReviewScope(join(home, "bad.toml"))).toThrow("trivial must be a list of globs");
   });
 });

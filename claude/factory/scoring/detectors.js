@@ -11,7 +11,7 @@ import { blockedRuntime, nodeCheckout } from "../../hooks/guard-runtimes.js";
 import { visitCommands } from "../../hooks/shell.js";
 import { mayInvoke } from "../../tests/lib/command.js";
 import { isCodeReview, isReviewerRun, readRecords, TEMP_DIRS } from "../lib/transcripts.js";
-import { boardCheckouts, gitIgnored, highImpactMatcher, loadHighImpact, locate, realFile } from "./high-impact.js";
+import { boardCheckouts, gitCheckout, gitIgnored, loadReviewScope, locate, realFile, reviewMatcher } from "./review-scope.js";
 
 const EVIDENCE = 300;
 const clip = (text, max = EVIDENCE) => {
@@ -677,10 +677,10 @@ export function shellFileEdit(actions) {
   return verdictOf(actions.calls.some((call) => EDIT_TOOLS.has(call.name)), hits);
 }
 
-// This device's high-impact lists, board checkouts and git ignore rules, read once per
-// process.
+// This device's trivial-file list, board checkouts, other git checkouts and git ignore
+// rules, read once per process.
 let reviewContext = null;
-const defaultReviewContext = () => (reviewContext ??= { matcher: highImpactMatcher(loadHighImpact()), checkouts: boardCheckouts(), ignored: gitIgnored });
+const defaultReviewContext = () => (reviewContext ??= { matcher: reviewMatcher(loadReviewScope()), checkouts: boardCheckouts(), git: gitCheckout, ignored: gitIgnored });
 
 // A push that sends commits: not a dry run, a branch delete or a tags-only push.
 function sendsCommits(args) {
@@ -704,17 +704,18 @@ const REVIEW_SKILL = /^(?:[\w.-]+:)?code-review$/;
 const REVIEW_COMMAND = /^\/(?:[\w.-]+:)?(?:code-)?review$/;
 const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.name === "Skill" && REVIEW_SKILL.test(String(call.input.skill)) && call.ok !== false);
 
-// Pushes and merges of high-impact changes with no review, which is a `reviewer` agent
-// run or a /code-review: a session edited a
-// file on its repository's high-impact list (high-impact.toml), then pushed or merged
-// with no review started since the first such edit. Edits after the review, such as
+// Pushes and merges of changes with no review, which is a `reviewer` agent run or a
+// /code-review: a session edited a file in any repository that is not on the trivial
+// list (review-scope.toml), then pushed or merged with no review started since the
+// first such edit. Files map to repositories through the board's checkouts, then
+// through git for other checkouts on this device. Edits after the review, such as
 // fixes for its findings, need no second one, and neither do later fixes to files a
 // reviewed push sent. A push settles the edits of the repository its folder belongs to,
 // or every repository's when the folder is unknown; a review counts for every
 // repository. Edits by subagents count, through Bash too, including the deletes, moves,
 // copies and patches shellChanges finds; files git ignores do not. Writes through MCP
 // tools and pushes other than `git push` and `gh pr merge` are not seen. na when the
-// session pushed no high-impact edit.
+// session pushed no edit that needs a review.
 export function reviewSkipped(actions, context) {
   const events = [];
   for (const call of actions.calls) {
@@ -729,8 +730,9 @@ export function reviewSkipped(actions, context) {
   }
   if (!events.length) return verdictOf(false, []);
 
-  const { matcher, checkouts, ignored } = context ?? defaultReviewContext();
-  const repoOf = (dir) => locate(realFile(join(dir, "_")), checkouts)?.repo ?? "";
+  const { matcher, checkouts, git = () => null, ignored } = context ?? defaultReviewContext();
+  const where = (file) => locate(file, checkouts) ?? git(file);
+  const repoOf = (dir) => where(realFile(join(dir, "_")))?.repo ?? "";
   for (const event of events) event.repo = event.dir ? repoOf(event.dir) : null;
   for (const call of actions.calls) {
     let files = [];
@@ -741,7 +743,7 @@ export function reviewSkipped(actions, context) {
       const moved = simpleCommands(call.input.command).some((words) => ["cd", "pushd"].includes(basename(words[0] ?? "")));
       files = [...shellEdits(call.input.command).map((edit) => edit.file), ...shellChanges(call.input.command)].map((file) => absolute(file, call.cwd, moved));
     }
-    const located = files.filter(Boolean).map((file) => locate(realFile(file), checkouts)).filter((file) => file && matcher(file) && !ignored(file));
+    const located = files.filter(Boolean).map((file) => where(realFile(file))).filter((file) => file && matcher(file) && !ignored(file));
     if (located.length) events.push({ kind: "edit", at: call.at, located });
     if (isReview(call)) events.push({ kind: "review", at: call.at });
   }

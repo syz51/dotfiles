@@ -6,6 +6,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CATEGORIES, OUTCOMES } from "../factory/metrics/reviews.js";
+import { loadReviewScope, reviewMatcher } from "../factory/scoring/review-scope.js";
 import { isPath, REQUIRED } from "../factory/setups/cli.js";
 import { configuredEffort } from "./lib/live.js";
 import { BUDGET_MS, CALL_TIMEOUT_MS } from "../hooks/guard-pr-merge.js";
@@ -133,7 +134,9 @@ describe("global instructions", () => {
       // A moved rule is not also kept in the instructions.
       for (const rule of referenceRules(name).trimEnd().split("\n")) expect(globalInstructions, name).not.toContain(rule);
     }
-    expect(read("claude/factory/scoring/high-impact.toml")).toContain('"claude/reference/**"');
+    // A change to a reference file is never trivial: it needs a review.
+    const needsReview = reviewMatcher(loadReviewScope());
+    for (const name of Object.keys(POINTERS)) expect(needsReview({ repo: "github.com/syz51/dotfiles", path: `claude/reference/${name}.md` }), name).toBe(true);
   });
 
   // A regression budget, not a target: raise it when a rule that every turn needs is added.
@@ -959,11 +962,16 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/then rerun the affected checks\./);
   });
 
-  // The change's paths set the tier, and the review-skipped detector reads the same file
-  // (dotfiles-102).
-  test("Review names the high-impact path lists the detector reads", () => {
+  // Every pushed or merged change in every repository is reviewed; only a change of trivial
+  // files alone may skip, from the list the review-skipped detector reads (dotfiles-487).
+  test("Review covers every change in every repository, minus the trivial list the detector reads", () => {
     const review = section("Review");
-    expect(review).toMatch(/A change to a path that `~\/\.claude\/factory\/scoring\/high-impact\.toml` lists for its repository is always high-impact/);
+    expect(review).toMatch(/For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done/);
+    expect(review).toMatch(/A change may skip review only when every file it changes is on the trivial list in `~\/\.claude\/factory\/scoring\/review-scope\.toml`, such as lockfiles; no repository is exempt\./);
+    // No text limits the review to a tier of changes any more.
+    for (const file of ["claude/CLAUDE.md", "claude/agents/reviewer.md", "claude/agents/worker.md", "claude/skills/diff-review/SKILL.md", "claude/skills/work-stages/SKILL.md", ...readdirSync(join(CLAUDE, "reference")).map((name) => `claude/reference/${name}`)])
+      expect(read(file), file).not.toMatch(/high-impact/i);
+    expect(read("claude/factory/scoring/review-scope.toml")).not.toMatch(/^\[repos/m);
   });
 
   // factory metrics reads these records to measure review noise (dotfiles-100). The pointer
