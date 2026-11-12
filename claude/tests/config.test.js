@@ -809,6 +809,7 @@ describe("rules the live suites test", () => {
   test("Working preferences allow Claude models only, in both instruction files", () => {
     const rule = section("Working preferences").split("\n").find((line) => line.startsWith("- Use Claude models only"));
     expect(rule).toBeDefined();
+    expect(rule).toContain("Opus, Haiku or Fable 5.2, never Sonnet or another Fable");
     expect(rule).toContain("Never start the `codex` CLI or a `gpt-*` model");
     expect(rule).toContain("never delegate to the Codex provider");
     expect(rule).toContain("Reading past Codex session files is fine");
