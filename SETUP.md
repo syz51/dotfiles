@@ -584,8 +584,9 @@ change to a file off the list with no review, a `reviewer` agent run or a
 `/code-review`, started since the first edit. It finds each edited file's repository
 through the board client's `[projects]` checkouts and their worktrees, then through git
 and the `origin` remote for any other checkout on the device. A removed T3 Code worktree
-maps through T3's project list (`projection_projects` in `~/.t3/userdata/statev2.sqlite`):
-its checkout folder name names the project root, which git then names. It resolves symbolic links
+maps through T3's project list (`projection_projects` in `userdata/statev2.sqlite` under
+T3's home, `T3CODE_HOME` or `~/.t3`): its checkout folder name names a project root that
+is still on disk, which git then names. It resolves symbolic links
 such as `~/.claude` first, and skips files git ignores. A push settles only the edits of the
 repository its folder belongs to. List changes apply to sessions scored afterwards; bump
 the rubric version to rescore past ones.

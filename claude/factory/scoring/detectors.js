@@ -680,7 +680,7 @@ export function shellFileEdit(actions) {
 // This device's trivial-file list, board checkouts, other git checkouts, T3 Code project
 // roots and git ignore rules, read once per process.
 let reviewContext = null;
-const defaultReviewContext = () => (reviewContext ??= { matcher: reviewMatcher(loadReviewScope()), checkouts: boardCheckouts(), git: gitCheckout, projects: t3Projects(), ignored: gitIgnored });
+const defaultReviewContext = () => (reviewContext ??= { matcher: reviewMatcher(loadReviewScope()), checkouts: boardCheckouts(), git: gitCheckout, t3: t3Projects(), ignored: gitIgnored });
 
 // A push that sends commits: not a dry run, a branch delete or a tags-only push.
 function sendsCommits(args) {
@@ -731,8 +731,8 @@ export function reviewSkipped(actions, context) {
   }
   if (!events.length) return verdictOf(false, []);
 
-  const { matcher, checkouts, git = () => null, projects = [], ignored } = context ?? defaultReviewContext();
-  const where = (file) => locate(file, checkouts) ?? git(file) ?? t3Checkout(file, projects, git);
+  const { matcher, checkouts, git = () => null, t3 = null, ignored } = context ?? defaultReviewContext();
+  const where = (file) => locate(file, checkouts) ?? git(file) ?? (t3 && t3Checkout(file, t3, git));
   const repoOf = (dir) => where(realFile(join(dir, "_")))?.repo ?? "";
   for (const event of events) event.repo = event.dir ? repoOf(event.dir) : null;
   for (const call of actions.calls) {

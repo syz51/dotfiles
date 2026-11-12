@@ -651,44 +651,53 @@ describe("review-skipped", () => {
   });
 
   // A removed T3 Code worktree of a repository the board does not list maps through T3's
-  // project list: the worktree's checkout folder name names the project root.
+  // project list: the worktree's checkout folder name names the project root. T3's home
+  // here is not named .t3, as T3CODE_HOME allows.
   test("flags an unreviewed push from a removed T3 worktree of a repository the board does not list", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "review-t3-")));
     cleanup.push(dir);
     const tool = join(dir, "dev", "tool");
     for (const args of [["init", "-q", tool], ["-C", tool, "remote", "add", "origin", "git@github.com:someone/tool.git"]]) expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
-    const home = join(dir, ".t3");
+    const home = join(dir, "t3home");
     mkdirSync(join(home, "userdata"), { recursive: true });
     const db = new Database(join(home, "userdata", "statev2.sqlite"));
     db.run("CREATE TABLE projection_projects (project_id TEXT PRIMARY KEY, workspace_root TEXT NOT NULL, deleted_at TEXT)");
-    db.run("INSERT INTO projection_projects VALUES ('p1', ?, NULL), ('p2', ?, NULL)", [tool, join(dir, "dev", "other")]);
+    db.run("INSERT INTO projection_projects VALUES ('p1', ?, NULL), ('p2', ?, '2026-11-01')", [tool, join(dir, "dev", "other")]);
     db.close();
-    const projects = t3Projects({ T3CODE_HOME: home });
-    expect(projects.toSorted()).toEqual([join(dir, "dev", "other"), tool]);
-    expect(t3Projects({ T3CODE_HOME: join(dir, "missing") })).toEqual([]);
+    const t3 = t3Projects({ T3CODE_HOME: home });
+    expect({ ...t3, roots: t3.roots.toSorted() }).toEqual({ worktrees: join(home, "worktrees"), roots: [join(dir, "dev", "other"), tool] });
+    expect(t3Projects({ T3CODE_HOME: join(dir, "missing") })).toEqual({ worktrees: join(dir, "missing", "worktrees"), roots: [] });
 
     // The worktree folder is gone: neither the board nor git can name it.
     const worktree = join(home, "worktrees", "tool", "t3-1a2b");
     expect(gitCheckout(join(worktree, "src", "lib.rs"))).toBeNull();
-    const real = { matcher: reviewMatcher(loadReviewScope()), checkouts: [], git: gitCheckout, projects, ignored: gitIgnored };
+    const real = { matcher: reviewMatcher(loadReviewScope()), checkouts: [], git: gitCheckout, t3, ignored: gitIgnored };
     const run = (calls) => reviewSkipped(actions(calls), real);
     const result = run([edit(join(worktree, "src", "lib.rs")), bash("git push -u origin t3/1a2b", { cwd: worktree })]);
     expect(result.verdict).toBe("fail");
     expect(result.hits[0].files).toEqual(["someone/tool:src/lib.rs"]);
     expect(run([edit(join(worktree, "src", "lib.rs")), call("Agent", { subagent_type: "reviewer", prompt: "origin/main...abc1234", run_in_background: true }), bash("git push", { cwd: worktree })]).verdict).toBe("pass");
     // Without T3's project list the edit maps to nothing.
-    expect(reviewSkipped(actions([edit(join(worktree, "src", "lib.rs")), bash("git push", { cwd: worktree })]), { ...real, projects: [] }).verdict).toBe("na");
+    expect(reviewSkipped(actions([edit(join(worktree, "src", "lib.rs")), bash("git push", { cwd: worktree })]), { ...real, t3: null }).verdict).toBe("na");
 
-    expect(t3Checkout(join(worktree, ".claude", "worktrees", "a", "x.rs"), projects)).toEqual({ repo: "github.com/someone/tool", root: tool, path: "x.rs" });
-    expect(t3Checkout(join(home, "worktrees", "unknown", "t3-1", "x.rs"), projects)).toBeNull();
-    expect(t3Checkout(join(tool, "x.rs"), projects)).toBeNull();
+    expect(t3Checkout(join(worktree, ".claude", "worktrees", "a", "x.rs"), t3)).toEqual({ repo: "github.com/someone/tool", root: tool, path: "x.rs" });
+    expect(t3Checkout(join(home, "worktrees", "unknown", "t3-1", "x.rs"), t3)).toBeNull();
+    expect(t3Checkout(join(tool, "x.rs"), t3)).toBeNull();
+    // A project root no longer on disk is skipped, not mapped to the checkout around it.
+    expect(t3Checkout(join(home, "worktrees", "gone", "t3-1", "x.rs"), { ...t3, roots: [join(tool, "gone")] })).toBeNull();
     // Two projects of one folder name are taken only when they are the same repository.
     const fork = join(dir, "forks", "tool");
     expect(Bun.spawnSync(["git", "init", "-q", fork]).exitCode).toBe(0);
-    expect(t3Checkout(join(worktree, "x.rs"), [tool, fork])).toBeNull();
+    expect(t3Checkout(join(worktree, "x.rs"), { ...t3, roots: [tool, fork] })).toBeNull();
     const mirror = join(dir, "mirror", "tool");
     for (const args of [["init", "-q", mirror], ["-C", mirror, "remote", "add", "origin", "https://github.com/someone/tool"]]) expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
-    expect(t3Checkout(join(worktree, "x.rs"), [tool, mirror])?.repo).toBe("github.com/someone/tool");
+    expect(t3Checkout(join(worktree, "x.rs"), { ...t3, roots: [tool, mirror] })?.repo).toBe("github.com/someone/tool");
+
+    // A state database without the project list fails loudly, naming the file.
+    const broken = join(dir, "broken");
+    mkdirSync(join(broken, "userdata"), { recursive: true });
+    new Database(join(broken, "userdata", "statev2.sqlite")).close();
+    expect(() => t3Projects({ T3CODE_HOME: broken })).toThrow(`T3 Code project list in ${join(broken, "userdata", "statev2.sqlite")}: no such table: projection_projects`);
   });
 
   test("repoName names a remote as the board does", () => {

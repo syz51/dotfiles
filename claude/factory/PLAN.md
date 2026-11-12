@@ -245,7 +245,7 @@ Status: `[ ]` todo, `[~]` in progress, `[x]` done, `[!]` blocked (say why), `[-]
   `review-skipped` counts every edit off that list, and maps files in checkouts the board
   does not list through git and their `origin` remote. A removed T3 Code worktree maps
   through T3's project list: the worktree's checkout folder name names the project root
-  (dotfiles-495). Over 30 days to 2026-11-12 it fails 283 of 1828 sessions (648
+  (dotfiles-495). Over 30 days to 2026-11-12 it fails 284 of 1829 sessions (650
   unreviewed pushes; 156 pass, 1389 na); vps, dotfiles and agent-board have the most
   flagged files, then research-factory, email-agent, t3code and papers. The T3 mapping
   adds 5 of those fails, from removed worktrees of the `nvim` project (a dotfiles
