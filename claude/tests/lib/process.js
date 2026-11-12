@@ -1,9 +1,9 @@
 // Child processes with a deadline, a shared output bound and an isolated environment.
 import { spawn, spawnSync } from "node:child_process";
+import { SESSION_VARIABLE } from "../../bin/session-env.js";
 
-// Variables a running Claude Code session, or the app hosting it, puts in its tools'
-// environment. A test's child `claude` must start as a fresh session, not inherit them.
-const SESSION_VARIABLE = /^(?:CLAUDECODE|CLAUDE_\w*|AI_AGENT|T3CODE_\w*)$/;
+// A test's child `claude` must start as a fresh session, not inherit the parent session's
+// variables (SESSION_VARIABLE).
 
 // Test and benchmark sessions stay off the shared work board: claude/hooks/board-hook.sh
 // skips the board with AGENT_BOARD_HOOKS=off. An override can turn it back on.

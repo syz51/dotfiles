@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs its arguments without the parent Claude Code session's variables (the list is in
+# session-env.js) and keeps the rest of the environment. Start long-lived servers, and any
+# process that runs `claude`, through it, so the `claude` they start is a fresh session.
+# Without arguments it prints the cleaned environment, as `env` does. It replaces itself
+# with the command (exec), so signals reach the command directly. See SETUP.md, "Shell startup".
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
+names=$("$bun" "$here/session-env.js")
+
+# Each name matches \w+, so splitting the list on whitespace is safe.
+unset_args=
+for name in $names; do unset_args="$unset_args -u $name"; done
+# shellcheck disable=SC2086
+exec env $unset_args -- "$@"

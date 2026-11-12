@@ -202,6 +202,20 @@ project it exits with status 127 and says to run `bun install`. Link it on each 
 ln -s ~/.config/shell/bin/vp ~/.local/bin/vp
 ```
 
+A process that an agent starts from its Bash tool inherits the Claude Code session's
+variables: `CLAUDECODE`, `CLAUDE_*` (such as the entrypoint, effort, session id and
+messaging token), `AI_AGENT` and the hosting app's `T3CODE_*`. A `claude` that such a
+process starts, such as one a dev server spawns, then acts as a child of that session. It
+logs the session's entrypoint and takes its flags. `claude/bin/no-session-env` runs its
+arguments without those variables and keeps the rest of the environment. Without
+arguments, it prints the cleaned environment. `claude/bin/session-env.js` holds the
+pattern, which the live test harness also uses for its child sessions. Link it on each
+Mac:
+
+```sh
+ln -s ~/.config/claude/bin/no-session-env ~/.local/bin/no-session-env
+```
+
 Review and apply the targeted startup changes to `~/.zshrc` and `~/.bashrc` with:
 
 ```sh
@@ -1111,6 +1125,10 @@ in CI:
   they run without it. Each suite holds its own config-sync lock during its session,
   renews it when held again, and removes only its own at teardown, also after a failed
   session.
+- `no-session-env.test.js`: `claude/bin/no-session-env` removes every session variable,
+  keeps the rest unchanged, passes arguments and the exit status through, and fails without
+  `bun` rather than run the command with the session's variables. The harness's
+  child sessions remove the same variables.
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.
