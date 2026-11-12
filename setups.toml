@@ -145,7 +145,7 @@ covers = ["claude/bin"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests"
-verify = ["bun test claude/tests/claude-api.test.js"]
+verify = ["bun test claude/tests/claude-api.test.js claude/tests/claude-experiment.test.js"]
 
 [[setup]]
 id = "live-tests"

@@ -733,6 +733,38 @@ and falls back to the claude.ai subscription otherwise. The planner,
   the real claude, so killing the process a caller started kills claude.
 - For scripts that call `claude` by name, put `~/.claude/bin/api-first` first on `PATH` for
   that run only, never in a login profile. A nesting limit stops a loop.
+- `API_FIRST_PROXY_URL` sets claude's `ANTHROPIC_BASE_URL` after the plan, so a run behind
+  a local proxy is still billed as planned. `claude-experiment` uses it.
+
+### Experiment calls
+
+A headless experiment call (a model given only the experiment's system prompt and input)
+goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-experiment
+--help` prints the usage, and `claude/bin/experiment.js` documents the evidence.
+
+- Claude Code 2.1.322 adds two blocks to every request: a `<system-reminder>` with the
+  account's email, and a `# Environment` message with the working directory, platform,
+  shell, OS, model and date. No flag or variable removes them on the subscription:
+  `--bare` refuses OAuth and with an API key still sent both,
+  `--exclude-dynamic-system-prompt-sections` is ignored with `--system-prompt`, and
+  `CLAUDE_CODE_DISABLE_ATTACHMENTS=1` leaves both.
+- So the route starts a local proxy, points claude at it through `API_FIRST_PROXY_URL`,
+  and the proxy removes both blocks from each Messages request. A request that still holds
+  a `<system-reminder>` or a system-role message is refused with a 400, so a Claude Code
+  release that changes the blocks fails the run instead of leaking.
+- It adds `-p`, `--tools ""`, `--setting-sources ""`, `--strict-mcp-config` and
+  `--disable-slash-commands` unless the caller passes them, and sets
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (no
+  claude.ai connectors, no session-title side call). It refuses a run without
+  `--system-prompt` or `--system-prompt-file`: the default system prompt holds the
+  environment.
+- Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription.
+- `claude-experiment preflight [--cap N] <claude args>` sends a fixed canary with the same
+  flags and exits 3 when a request's prompt tokens (input, cache creation and cache read)
+  exceed the cap, default 2000. Run it before a batch.
+- On Haiku with the canary text, plain `claude -p` with the same flags used 2 input and
+  635 cache-creation tokens; the route used 59 input and none. The route keeps the caller's
+  working directory, so relative paths still work.
 
 ## Work board
 
@@ -1140,6 +1172,13 @@ in CI:
   `bun` rather than run the command with the session's variables. It also works through a
   link, ignores the caller's `bunfig.toml` and `.env`, and puts back `NAME=value` arguments. The harness's
   child sessions remove the same variables.
+- `claude-experiment.test.js`: the experiment route against a fake claude and a stub
+  upstream. It checks the default flags and variables, the proxy's removal of both blocks
+  from a request shaped like 2.1.322's, the refusal of leftover context, exit status
+  passthrough and the preflight cap. With `RUN_CLAUDE_LIVE=1` (use
+  `API_FIRST_SUBSCRIPTION=1` to spend no API credit), a Haiku probe asks the model for its
+  environment and account, and fails when the reply names the working directory, home,
+  login name or an `oauthAccount` field from `~/.claude.json`.
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.

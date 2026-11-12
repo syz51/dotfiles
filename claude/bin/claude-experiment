@@ -1,0 +1,9 @@
+#!/bin/sh
+# The experiment route: `claude -p` that sends the model only the experiment's system prompt
+# and input, billed through claude-api. experiment.js documents it; `claude-experiment --help`
+# prints the usage. See SETUP.md, "Experiment calls".
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
+exec "$bun" "$here/experiment.js" "$@"

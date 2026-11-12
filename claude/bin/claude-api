@@ -34,4 +34,10 @@ if [ "$mode" = api ]; then
   [ "$inserted" = 1 ] || set -- "$@" --settings "$settings"
 fi
 
+# claude-experiment's proxy: set after the plan, so the run is still billed as planned.
+if [ -n "${API_FIRST_PROXY_URL:-}" ]; then
+  ANTHROPIC_BASE_URL=$API_FIRST_PROXY_URL
+  export ANTHROPIC_BASE_URL
+fi
+
 exec "$real" "$@"
