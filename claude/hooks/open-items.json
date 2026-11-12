@@ -1,0 +1,18 @@
+{
+  "enabled": true,
+  "headings": [
+    "^(known )?(limits?|limitations|gaps|caveats)\\b",
+    "^open (items?|questions?|work|points?)\\b",
+    "\\bnot (yet )?(done|read|run|verified|tested|checked|covered|finished)\\b",
+    "^(follow-?ups?|next steps?|remaining|still to do|to-?do)\\b",
+    "\\b(could|did) not\\b",
+    "^unverified\\b",
+    "^work (found|left|still)\\b"
+  ],
+  "exempt": [
+    "\\bno action\\s*(?:[:()—–-]|$|(?:is )?needed\\b)",
+    "\\b(needs?|needing) no (work|action|task)\\b",
+    "\\bno (work|task) (is )?needed\\b",
+    "^(none|nothing)( (else|more|left|open|remaining|to (file|do)))?$"
+  ]
+}
