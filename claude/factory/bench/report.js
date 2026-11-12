@@ -53,9 +53,12 @@ const groupBy = (items, key) => items.reduce((groups, item) => {
   return groups;
 }, {});
 
+// Roles that were folded into another; their old results count under the new role.
+const LEGACY_ROLES = { solver: "worker" }; // dotfiles-457
+
 // Aggregates results records. Infrastructure failures are counted but not scored.
 export function aggregate(records, { margin = 0.1, caseIds, role } = {}) {
-  const selected = records.filter((record) => (!caseIds?.length || caseIds.includes(record.caseId)) && (!role || record.role === role));
+  const selected = records.map((record) => (LEGACY_ROLES[record.role] ? { ...record, role: LEGACY_ROLES[record.role] } : record)).filter((record) => (!caseIds?.length || caseIds.includes(record.caseId)) && (!role || record.role === role));
   const scored = selected.filter((record) => !record.infra);
   const roles = Object.entries(groupBy(scored, (record) => record.role)).sort(([a], [b]) => a.localeCompare(b)).map(([name, roleRecords]) => {
     const cases = Object.entries(groupBy(roleRecords, (record) => record.caseId)).sort(([a], [b]) => a.localeCompare(b)).map(([caseId, caseRecords]) => {

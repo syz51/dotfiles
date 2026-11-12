@@ -63,8 +63,8 @@ const COMPUTER_USE = "mcp__plugin_computer-use_desktop";
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED] },
   worker: { model: "opus", effort: "high", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
-  solver: { model: "opus", effort: "xhigh", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
   // The Review rule's reviewer: Opus at high, with its recipe preloaded (dotfiles-446).
+  // solver (Opus at xhigh) was folded into worker: 7 calls in a week (dotfiles-457).
   reviewer: { model: "opus", effort: "high", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
@@ -100,13 +100,13 @@ describe("agents", () => {
     expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
   });
 
-  test("implementing agents own their whole track and stay within their assigned files", () => {
-    for (const name of ["worker", "solver"]) {
-      const { body } = frontmatter(`claude/agents/${name}.md`);
-      expect(body).toMatch(/You own this (track|problem) end to end/);
-      expect(body).toMatch(/change only the files in your assignment/i);
-    }
-    expect(frontmatter("claude/agents/worker.md").body).toMatch(/investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them/);
+  test("the worker owns its whole track, stays within its assigned files and verifies hard problems", () => {
+    const { body } = frontmatter("claude/agents/worker.md");
+    expect(body).toMatch(/You own this track end to end/);
+    expect(body).toMatch(/change only the files in your assignment/i);
+    // Hard debugging and reasoning moved here from the solver agent (dotfiles-457).
+    expect(body).toContain("For hard debugging or reasoning, verify the result with a reproducible check, and give the approach and any remaining doubts with it.");
+    expect(body).toMatch(/investigate what it needs, design within the interfaces you were given, and implement it, keeping its tests in step when your assignment includes them/);
   });
 });
 
@@ -616,8 +616,8 @@ describe("work board", () => {
     expect(rule).toMatch(/Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix\. Agents in their own threads, such as a coordinator's children, file for themselves/);
     expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
-    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/work found that still needs doing, for the parent to file/);
-    for (const agent of ["explorer", "worker", "solver"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/anything in a setup \(such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup\) that cost you a step, with the error and your workaround, for the parent to report as feedback/);
+    for (const agent of ["explorer", "worker"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/work found that still needs doing, for the parent to file/);
+    for (const agent of ["explorer", "worker"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/anything in a setup \(such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup\) that cost you a step, with the error and your workaround, for the parent to report as feedback/);
   });
 
   // Asks sent the user to look up what memory, the board or a repository already held,
@@ -880,8 +880,8 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
     expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
     expect(delegation).toMatch(/Choose each track's agent by what the whole track does/);
-    expect(delegation).toMatch(/file edits and other state-changing work to `worker`/);
-    expect(delegation).toMatch(/hard debugging or reasoning, including its fix, to `solver`/);
+    expect(delegation).toMatch(/file edits, other state-changing work and hard debugging or reasoning, with any fix, to `worker`/);
+    expect(delegation).not.toMatch(/solver/);
     expect(delegation).not.toMatch(/decided design/);
     expect(delegation).toMatch(/Keep planning across tracks, judgment, communication, and completion verification yourself/);
   });
@@ -893,15 +893,14 @@ describe("rules the live suites test", () => {
   // A brief that asked for "what still depends on the student" as a report part became the
   // only place for those items (dotfiles-427), so the brief sends them to the board first.
   test("a brief has fixed parts, names only what differs from what a child loads, and keeps open work on the board", () => {
-    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: open items go on the board, filed by you where the child never files, before the report to me names their ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer`, `worker` and `solver` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
+    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: open items go on the board, filed by you where the child never files, before the report to me names their ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer` and `worker` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
   });
 
-  test("explorer, worker and solver end with the same report shape", () => {
+  test("explorer and worker end with the same report shape", () => {
     const shape = "Report in this order: the result in one or two sentences; evidence (file:line, or commands with their exit codes); changes made, if any (files, commits, PR); work found that still needs doing, for the parent to file; anything in a setup (such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup) that cost you a step, with the error and your workaround, for the parent to report as feedback; open questions, with anything blocked. Pass structured results, such as review findings, through unchanged.";
-    for (const agent of ["explorer", "worker", "solver"]) expect(frontmatter(`claude/agents/${agent}.md`).body.trimEnd().split("\n").at(-1), agent).toBe(shape);
+    for (const agent of ["explorer", "worker"]) expect(frontmatter(`claude/agents/${agent}.md`).body.trimEnd().split("\n").at(-1), agent).toBe(shape);
     expect(frontmatter("claude/agents/explorer.md").body).toContain("Say what you checked when something could not be confirmed.");
     expect(frontmatter("claude/agents/worker.md").body).toContain("Run the checks relevant to your track.");
-    expect(frontmatter("claude/agents/solver.md").body).toContain("Verify the result with a reproducible check, and give the approach and any remaining doubts with the result.");
   });
 
   test("Review fixes every real defect it finds and files the rest", () => {
