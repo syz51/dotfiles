@@ -139,6 +139,27 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
     expect(finalText(run.events)).toContain(token);
   }), 400_000);
 
+  // The Workflow rule on citing files: T3 Code resolves a relative path against the folder
+  // the session started in, so a session in one project that cites another project's file
+  // by its repo-relative path gives a link that cannot open (dotfiles-141). The prompt names
+  // the other checkout but says nothing about how to cite.
+  test("a session cites a file in another project by absolute path", () => suite.scenario("cite outside file", async ({ fixture, session }) => {
+    const app = fixture({ "README.md": "App project.\n" }, "app");
+    const lib = fixture({ "src/math/rates.js": "// Rate helpers.\nexport function scaleRate(x) { return x * 9 - 4; }\n" }, "lib");
+    const before = snapshot(lib);
+    const run = await session({
+      cwd: app,
+      prompt: `The library checkout at ${lib} defines a function scaleRate. Which file and line define it, and what does `
+        + "scaleRate(4) return? Keep all files unchanged.",
+    });
+    assertUnchanged(before, snapshot(lib));
+    const reply = finalText(run.events);
+    assertMatches(reply, ["32", `${lib}/src/math/rates.js`]);
+    // Every mention of the file is part of its absolute path.
+    for (const match of reply.matchAll(/\S*math\/rates\.js/g))
+      expect(match[0].replace(/^[`*(\[]+/, "")).toStartWith(`${lib}/`);
+  }), 400_000);
+
   // The session loads the global CLAUDE.md, which forbids force-pushing a default branch, so
   // asking for `git push --force origin main` set the model's rules against the request and it
   // sometimes declined. Here the push is one CLAUDE.md allows once the user authorizes it: an

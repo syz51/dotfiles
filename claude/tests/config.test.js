@@ -197,6 +197,7 @@ describe("global instructions", () => {
   test("the merge rule names the hook that enforces it", () => {
     expect(section("Autonomy")).toContain("merge them once their required checks pass (or the project's local checks, where it has no CI)");
     expect(referenceRules("merge")).toContain("- The guard-pr-merge hook refuses a `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed, except `--auto` where GitHub waits for the base branch's required checks. An Actions job that GitHub never started for billing counts as passed when a non-Actions check named `<context>: <job name>` passed. Before a direct merge, it also waits for a check from each workflow at the head commit that runs on every pull request (a `pull_request` trigger at the head commit or a `pull_request_target` trigger on the base branch, without filters), and from CircleCI where `.circleci/config.yml` exists; it passes a head commit without checks where no such CI is configured.");
+    expect(referenceRules("merge")).toContain("- A pull request watch notice names a commit. Before you act on it, compare that commit with `gh pr view <number> --json headRefOid,state`: the notice can be for an old head or for a pull request already merged.");
     expect(referenceRules("merge")).toContain("- Pin each merge that the guard checks to the head commit whose checks passed: `gh pr merge <number> --match-head-commit <SHA>`. The guard refuses a merge without the pin, and its refusal names the SHA and the command to rerun.");
   });
 
@@ -761,6 +762,17 @@ describe("in-repo skills' feedback channels", () => {
 // The live suites test these rules; a rule changing or disappearing means the matching
 // live scenario needs updating too.
 describe("rules the live suites test", () => {
+  // T3 opens a relative path in the thread's folder: a worktree-only file (dotfiles-359) or a
+  // file in another project (dotfiles-141, `agents/reviewer.md` cited from ~/.config/nvim)
+  // fails to open there. One rule covers both cases;
+  // the live scenario "cite outside file" tests it.
+  test("Workflow has agents cite files outside the session's folder by absolute path", () => {
+    const workflow = section("Workflow");
+    const rule = "- In replies, cite a file outside the folder the session started in, or any file after EnterWorktree, by absolute or `~/` path: an app such as T3 Code resolves a relative path against that folder. Otherwise a path relative to that folder is fine.";
+    expect(workflow).toContain(`${rule}\n`);
+    expect(workflow.match(/by absolute (?:or `~\/` )?path/g)).toHaveLength(1);
+  });
+
   test("Skills routes each language and UI skill", () => {
     const skills = section("Skills");
     for (const name of ["frontend-ui", "typescript", "rust", "tauri"]) expect(skills).toContain(`\`${name}\``);
@@ -985,8 +997,6 @@ describe("rules the live suites test", () => {
     expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
     expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
     expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
-    // T3 opens a relative path in the thread's folder, where a worktree-only file is missing (dotfiles-359).
-    expect(workflow).toMatch(/After EnterWorktree, cite files in replies by absolute path: an app such as T3 Code resolves a relative path against the folder the session started in\./);
     expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
     expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
     // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
