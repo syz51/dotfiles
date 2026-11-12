@@ -756,8 +756,12 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
   `EXPERIMENT_ALLOW_REMINDERS=1`.
 - It adds `-p`, `--tools ""`, `--setting-sources ""`, `--strict-mcp-config` and
   `--disable-slash-commands` unless the caller passes them, and sets
-  `ENABLE_CLAUDEAI_MCP_SERVERS=false` and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (no
-  claude.ai connectors, no session-title side call). It refuses a run without
+  `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and
+  `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` over the caller's values (no claude.ai connectors,
+  no session-title side call, no auto-memory). Inside a project with an auto-memory
+  folder, Claude Code 2.1.322 puts the memory index in the first message as a
+  `<system-reminder>`, which the proxy refuses, so without the variable every call there
+  failed. It refuses a run without
   `--system-prompt` or `--system-prompt-file`: the default system prompt holds the
   environment.
 - Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription. A

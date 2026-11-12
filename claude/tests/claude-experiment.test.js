@@ -209,6 +209,14 @@ exit "\${FAKE_EXIT:-0}"
     expect(received.map((request) => request.body.messages)).toEqual([[{ role: "user", content: [{ type: "text", text: "Classify: <system-reminder>quoted</system-reminder>" }] }]]);
   });
 
+  test("turns off auto-memory over the caller's own setting", async () => {
+    expect(ENV.CLAUDE_CODE_DISABLE_AUTO_MEMORY).toBe("1");
+    expect((await run(["--system-prompt", "S"], { env: env({ CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0" }), input: "" })).code).toBe(0);
+    const childEnv = readFileSync(join(root, "env"), "utf8");
+    expect(childEnv).toContain("\nCLAUDE_CODE_DISABLE_AUTO_MEMORY=1\n");
+    expect(childEnv).not.toContain("CLAUDE_CODE_DISABLE_AUTO_MEMORY=0");
+  });
+
   test("passes claude's exit status through", async () => {
     expect((await run(["--system-prompt", "S"], { env: env({ FAKE_EXIT: "4" }), input: "" })).code).toBe(4);
   });

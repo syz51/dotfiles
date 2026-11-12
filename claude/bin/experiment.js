@@ -18,9 +18,11 @@
 // model does not read the metadata, and the subscription needs the other two.
 //
 // The route also sets flags and variables that keep tools, settings, MCP servers (also
-// claude.ai connectors), skills and the session-title side call out of the run, and refuses
-// a run without --system-prompt[-file], since Claude Code's default system prompt holds the
-// environment itself.
+// claude.ai connectors), skills, the session-title side call and the project's auto-memory
+// out of the run, and refuses a run without --system-prompt[-file], since Claude Code's
+// default system prompt holds the environment itself. Auto-memory: inside a project with an
+// auto-memory folder, Claude Code 2.1.322 puts the memory index in the first message as a
+// <system-reminder>, which the proxy refuses, so every call there failed.
 //
 // Variables:
 //   ANTHROPIC_BASE_URL   the proxy's upstream; default https://api.anthropic.com. claude-api
@@ -49,7 +51,9 @@ Pass --system-prompt or --system-prompt-file; the run refuses without one.
 
 Defaults, each added unless the caller passes that flag: -p, --tools "",
 --setting-sources "", --strict-mcp-config, --disable-slash-commands. Variables:
-ENABLE_CLAUDEAI_MCP_SERVERS=false, CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1.
+ENABLE_CLAUDEAI_MCP_SERVERS=false, CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 and
+CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 (the project's auto-memory index would reach the
+model as a <system-reminder>, which the proxy refuses), each over the caller's value.
 A local proxy removes Claude Code's user-context reminder (account email) and its
 "# Environment" message (working directory, platform, model, date) from each request,
 and refuses a request that still holds a <system-reminder> or system-role message.
@@ -72,7 +76,7 @@ proxy removed.
 See SETUP.md, "Experiment calls".`;
 
 export const UPSTREAM = "https://api.anthropic.com";
-export const ENV = { ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1" };
+export const ENV = { ENABLE_CLAUDEAI_MCP_SERVERS: "false", CLAUDE_CODE_DISABLE_TERMINAL_TITLE: "1", CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" };
 // [flag, value or null]: added when the caller's options before `--` do not name the flag.
 const DEFAULTS = [["--tools", ""], ["--setting-sources", ""], ["--strict-mcp-config", null], ["--disable-slash-commands", null]];
 // The opening of Claude Code's user-context reminder (2.1.322).
