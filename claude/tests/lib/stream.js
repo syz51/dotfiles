@@ -78,15 +78,16 @@ export function finalText(events) {
 }
 
 // Every tool call in order: parent is the Agent tool_use id for a subagent's calls,
-// null for the main session's, and message is the API message that issued it.
+// null for the main session's, message is the API message that issued it and index
+// that message's event index.
 export function toolUses(events, name) {
   const uses = [];
-  for (const event of events) {
-    if (event.type !== "assistant" || !Array.isArray(event.message?.content)) continue;
+  events.forEach((event, index) => {
+    if (event.type !== "assistant" || !Array.isArray(event.message?.content)) return;
     for (const block of event.message.content)
       if (block.type === "tool_use" && (!name || block.name === name))
-        uses.push({ id: block.id, name: block.name, input: block.input ?? {}, parent: event.parent_tool_use_id ?? null, message: event.message.id, model: event.message.model });
-  }
+        uses.push({ id: block.id, name: block.name, input: block.input ?? {}, parent: event.parent_tool_use_id ?? null, message: event.message.id, model: event.message.model, index });
+  });
   return uses;
 }
 
@@ -112,11 +113,29 @@ export const skillLoads = (events, { parent = null } = {}) => toolUses(events, "
   .map((use) => use.input.skill);
 
 // Bash calls with their outcome: ok is false for a nonzero exit, a hook block or no result.
+// index is the event that issued the call. background is the task id of a call run with
+// run_in_background, whose own output only confirms the launch.
 export function bashRuns(events) {
   const results = toolResults(events);
   return toolUses(events, "Bash").map((use) => {
     const result = results.get(use.id);
-    return { id: use.id, parent: use.parent, command: use.input.command, ok: !!result && !result.isError, output: result?.text ?? "" };
+    return { id: use.id, parent: use.parent, index: use.index, command: use.input.command, ok: !!result && !result.isError,
+      output: result?.text ?? "", background: result?.meta?.backgroundTaskId ?? null };
+  });
+}
+
+// What the agent that started a background task read of its output, parent being null for
+// the main session: the result of a TaskOutput or BashOutput call for the task, or of a
+// Read of its output file. The line numbers of a Read and the output tags of a TaskOutput
+// are taken off. A Bash call that prints the file is a run of its own.
+export function collectedOutputs(events, taskId, { parent = null } = {}) {
+  const results = toolResults(events);
+  return toolUses(events).filter((use) => use.parent === parent).flatMap((use) => {
+    const text = results.get(use.id)?.text ?? "";
+    if (use.name === "TaskOutput" && use.input.task_id === taskId) return [text.replace(/<\/?output>/g, "\n")];
+    if (use.name === "BashOutput" && use.input.bash_id === taskId) return [text];
+    if (use.name === "Read" && String(use.input.file_path).endsWith(`/${taskId}.output`)) return [text.replace(/^\s*\d+(?:\t|→)/gm, "")];
+    return [];
   });
 }
 
@@ -203,12 +222,23 @@ export function freeWhileRunning(events, ended, answered) {
   return { turnEnded, waits };
 }
 
+// Whether a command names the marker other than as the pattern of a grep or rg, which
+// filters the check's output without making it. Such a command, such as an echo, could
+// print the marker itself.
+// A flag may take a number, such as -A 2.
+export const namesMarker = (command, marker) => String(command)
+  .replace(/\b(?:grep|rg)(?:\s+-[\w-]+(?:\s+\d+\b)?)*\s+(?:"[^"]*"|'[^']*'|[^\s|;&]+)/g, "").includes(marker);
+
 // Whether a main-session Bash call issued after event index after printed marker from dir
-// (see printedFrom). The check's own output proves which copy of it passed, however the
-// command moved the shell; the command text and the directory the call started in cannot.
-export function mainBashPrinted(events, { marker, dir, after = -1 }) {
-  const results = toolResults(events);
-  return events.some((event, index) => index > after && event.type === "assistant" && event.parent_tool_use_id == null
-    && Array.isArray(event.message?.content) && event.message.content.some((block) => block.type === "tool_use" && block.name === "Bash"
-      && printedFrom(results.get(block.id)?.text ?? "", marker, dir)));
+// (see printedFrom), in its own output or, run in the background, in the output the
+// session collected later (see collectedOutputs). The check's own output proves which
+// copy of it passed, however the command moved the shell; the command text and the
+// directory the call started in cannot. A command that names the marker proves nothing.
+// command, when given, must accept the call's command, such as one that runs the check
+// through the required runtime. With subagents, a subagent's call counts too.
+export function mainBashPrinted(events, { marker, dir, after = -1, command = () => true, subagents = false }) {
+  return bashRuns(events).some((run) => (subagents || run.parent === null) && run.index > after
+    && !namesMarker(run.command, marker) && command(run.command)
+    && [run.output, ...(run.background ? collectedOutputs(events, run.background, { parent: run.parent }) : [])]
+      .some((output) => printedFrom(output, marker, dir)));
 }

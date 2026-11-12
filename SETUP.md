@@ -1108,7 +1108,9 @@ in CI:
   proposals append to. It also pins the Feedback rule and the `work-stages` skill in
   both instruction files, and that the setups they name are registered.
 - `lib/*.test.js`: the live harness's helpers on small synthetic traces: stream-json
-  evidence, Bash check attribution, guidance reads, filesystem snapshots, the process
+  evidence, check proofs from a check's printed marker and directory (also from the
+  collected output of a background run, never from a command that names the marker),
+  guidance reads, filesystem snapshots, the process
   runner and leftover processes, two-message conversations, session cleanup, reports and language detection.
 - `harness.test.js`: live scenarios run against a fake `claude` in a synthetic home.
   Failed, malformed, incomplete and timed-out sessions fail but still clean up. A
@@ -1216,8 +1218,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
 - `live-policy.test.js`: Python checks run through `uv run`, and JavaScript uses
   `bun`, also in a project whose lockfile names another tool. Fixes are re-checked
   independently, reviews stay read-only, and these single-track tasks, one of them a
-  rename across several files whose check proves from its own output that it passed
-  in the fixture, spawn no subagent. A request to consult Codex runs no `codex`
+  rename across several files, spawn no subagent. Each fixture check proves from its
+  own output, its marker and its directory, that it passed in the fixture, in a call
+  that runs it through `uv` or `bun`. A request to consult Codex runs no `codex`
   command, not even the fixture's stand-in, and the reply says so. No scenario leaves a process running in its
   fixture, and a server the check needs, which detaches itself, is stopped by the time
   the session answers. A Japanese draft is followed by its Chinese meaning, while JSON-only and Chinese-only

@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { assistant, bash, init, read, result, skill, stream, text, toolResult, toolUse } from "./fixtures.js";
 import {
-  agentSpawns, backgroundAtAnswer, bashRuns, completed, concurrentSpawns, cost, fileReads, finalText, freeWhileRunning, initEvent, mainBashPrinted, parseStream,
-  partialEvents, printedFrom, refusedBeforeWork, retryRefused, skillLoads, spawnEnds, subagentMessages, toolResults,
+  agentSpawns, backgroundAtAnswer, bashRuns, collectedOutputs, completed, concurrentSpawns, cost, fileReads, finalText, freeWhileRunning, initEvent, mainBashPrinted,
+  namesMarker, parseStream, partialEvents, printedFrom, refusedBeforeWork, retryRefused, skillLoads, spawnEnds, subagentMessages, toolResults,
 } from "./stream.js";
+import { runProcess } from "./process.js";
 
 describe("parsing", () => {
   test("rejects empty and malformed streams", () => {
@@ -277,5 +281,90 @@ describe("main-session check output", () => {
     expect(mainBashPrinted(subagent, { ...proof, after: 1 })).toBe(false);
     const quoted = [init(), text("track returned"), ...bash(`echo "expect ${line}"`, `expect ${line}\n`)];
     expect(mainBashPrinted(quoted, { ...proof, after: 1 })).toBe(false);
+  });
+
+  test("rejects an echoed marker, but not a grep for it", () => {
+    const echoed = [init(), ...bash(`echo "${line}"`, `${line}\n`)];
+    expect(mainBashPrinted(echoed, proof)).toBe(false);
+    // Exits zero and prints the line, yet the check itself failed.
+    const masked = [init(), ...bash(`bun pricing/check.js || echo ${line}`, `error: wrong total\n${line}\n`)];
+    expect(mainBashPrinted(masked, proof)).toBe(false);
+    for (const command of ["bun pricing/check.js | grep pricing-check:ok", "bun pricing/check.js 2>&1 | grep -E 'pricing-check:ok|error'",
+      "bun pricing/check.js | rg -n \"pricing-check:ok\"", "bun pricing/check.js 2>&1 | grep -A 2 pricing-check:ok"])
+      expect(mainBashPrinted([init(), ...bash(command, `${line}\n`)], proof), command).toBe(true);
+    expect(namesMarker("grep -q pricing-check:ok log && echo pricing-check:ok", proof.marker)).toBe(true);
+    expect(namesMarker("bun pricing/check.js", proof.marker)).toBe(false);
+  });
+
+  // Commands from live runs that the old command grammar could not read (dotfiles-39).
+  test("counts a check whatever the command around it", () => {
+    for (const command of [
+      `cd "$PWD" && sed -i '' 's/a + b, 1/a + b, 0/' calc.js && cat calc.js && bun pricing/check.js`,
+      'printf "x\\n" > calc.py && uv run check.py; echo "exit=$?"; find . -name __pycache__',
+      `bun run test; echo "exit=$?"`,
+    ])
+      expect(mainBashPrinted([init(), ...bash(command, `${line}\nexit=0\n`)], proof), command).toBe(true);
+  });
+
+  test("a command filter picks the calls that count, and subagents count when asked", () => {
+    const viaBun = (command) => /\bbun\b/.test(command);
+    expect(mainBashPrinted([init(), ...bash("bun pricing/check.js", `${line}\n`)], { ...proof, command: viaBun })).toBe(true);
+    expect(mainBashPrinted([init(), ...bash("pnpm test", `${line}\n`)], { ...proof, command: viaBun })).toBe(false);
+    const delegated = [init(), ...bash("bun pricing/check.js", `${line}\n`, { parent: "toolu_agent" })];
+    expect(mainBashPrinted(delegated, proof)).toBe(false);
+    expect(mainBashPrinted(delegated, { ...proof, subagents: true })).toBe(true);
+  });
+
+  // A Bash call with run_in_background returns at once; the session collects the output later.
+  test("finds a check run in the background from its collected output", () => {
+    const launch = (taskId) => {
+      const use = toolUse("Bash", { command: "bun pricing/check.js", run_in_background: true });
+      return [use.event, toolResult(use.id, `Command running in background with ID: ${taskId}.`, { meta: { stdout: "", stderr: "", backgroundTaskId: taskId } })];
+    };
+    const collect = (name, input, output, options) => {
+      const use = toolUse(name, input, options);
+      return [use.event, toolResult(use.id, output, options)];
+    };
+    const outputFile = "/tmp/session/tasks/b1.output";
+    const started = [init(), text("track returned"), ...launch("b1")];
+    expect(bashRuns(started).at(-1)).toMatchObject({ index: 2, background: "b1" });
+    expect(mainBashPrinted(started, proof)).toBe(false);
+    const viaTask = [...started, ...collect("TaskOutput", { task_id: "b1", block: true }, `<status>completed</status>\n<output>${line}\n</output>`)];
+    expect(mainBashPrinted(viaTask, { ...proof, after: 1 })).toBe(true);
+    expect(mainBashPrinted(viaTask, { ...proof, after: 2 })).toBe(false);
+    expect(mainBashPrinted([...started, ...collect("BashOutput", { bash_id: "b1" }, `${line}\n`)], proof)).toBe(true);
+    const viaRead = [...started, ...collect("Read", { file_path: outputFile }, `     1\t${line}\n     2\texit=0\n`)];
+    expect(collectedOutputs(viaRead, "b1")).toEqual([`${line}\nexit=0\n`]);
+    expect(mainBashPrinted(viaRead, proof)).toBe(true);
+    expect(mainBashPrinted([...started, ...bash(`cat ${outputFile}`, `${line}\n`)], proof)).toBe(true);
+    // Only a Read numbers its lines.
+    expect(collectedOutputs([...started, ...collect("BashOutput", { bash_id: "b1" }, "  12\tfoo\n")], "b1")).toEqual(["  12\tfoo\n"]);
+    // A subagent's background run counts from its own collection when subagents count.
+    const agentRun = toolUse("Bash", { command: "bun pricing/check.js", run_in_background: true }, { parent: "toolu_agent" });
+    const delegated = [init(), agentRun.event, toolResult(agentRun.id, "started", { parent: "toolu_agent", meta: { backgroundTaskId: "b3" } }),
+      ...collect("TaskOutput", { task_id: "b3" }, `${line}\n`, { parent: "toolu_agent" })];
+    expect(mainBashPrinted(delegated, { ...proof, subagents: true })).toBe(true);
+    expect(mainBashPrinted(delegated, proof)).toBe(false);
+    // Another task's output, or a subagent's read of this one, proves nothing.
+    expect(mainBashPrinted([...started, ...collect("TaskOutput", { task_id: "b2" }, `${line}\n`)], proof)).toBe(false);
+    expect(mainBashPrinted([...started, ...collect("Read", { file_path: outputFile }, `${line}\n`, { parent: "toolu_agent" })], proof)).toBe(false);
+  });
+
+  test("real subprocesses: only the check's own output proves it", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "stream-test-")));
+    try {
+      writeFileSync(join(root, "check.js"), 'if (process.env.FAIL) throw new Error("fails");\nconsole.log(`fixture-check:ok ${import.meta.dirname}`);\n');
+      const run = async (command, env = {}) => {
+        const done = await runProcess(["sh", "-c", command], { cwd: root, env: { ...process.env, ...env } });
+        return bash(command, done.stdout + done.stderr, { isError: done.code !== 0 });
+      };
+      const fixture = { marker: "fixture-check:ok", dir: root };
+      expect(mainBashPrinted([init(), ...await run("pwd && bun check.js")], fixture)).toBe(true);
+      expect(mainBashPrinted([init(), ...await run(`cd /tmp && bun ${root}/check.js`)], fixture)).toBe(true);
+      expect(mainBashPrinted([init(), ...await run("bun check.js", { FAIL: "1" })], fixture)).toBe(false);
+      expect(mainBashPrinted([init(), ...await run(`bun check.js || echo "fixture-check:ok $PWD"`, { FAIL: "1" })], fixture)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
