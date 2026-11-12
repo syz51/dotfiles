@@ -185,9 +185,10 @@ const refusal = (message) => new Response(JSON.stringify({ type: "error", error:
   status: 400, headers: { "content-type": "application/json" },
 });
 
-// The local proxy. usages collects each Messages response's prompt-token usage, and requests
-// each Messages request's block marks: before the proxy removed the blocks (seen) and in what
-// it would forward (left). With refuseMarks it refuses a request that has any left.
+// The local proxy. usages collects each Messages response's prompt-token usage. With
+// refuseMarks (the preflight), requests collects each Messages request's block marks: before
+// the proxy removed the blocks (seen) and in what it would forward (left), and the proxy
+// refuses a request that has any left.
 export function startProxy({ upstream = UPSTREAM, usages = [], requests = [], allowReminders = false, refuseMarks = false, log = (line) => console.error(line) } = {}) {
   const base = upstream.replace(/\/+$/, "");
   const server = Bun.serve({
@@ -202,15 +203,15 @@ export function startProxy({ upstream = UPSTREAM, usages = [], requests = [], al
       if (messages) {
         const original = JSON.parse(body);
         const stripped = strip(original);
-        const marks = { seen: contextMarks(original), left: contextMarks(stripped) };
-        requests.push(marks);
+        const marks = refuseMarks ? { seen: contextMarks(original), left: contextMarks(stripped) } : undefined;
+        if (marks) requests.push(marks);
         const left = leftovers(stripped, { allowReminders });
         if (left.length > 0) {
           const message = `claude-experiment: harness context left in the request (${left.join("; ")}): Claude Code changed the blocks' form or added context, or the experiment's input quotes a <system-reminder> (then set EXPERIMENT_ALLOW_REMINDERS=1)`;
           log(message);
           return refusal(message);
         }
-        if (refuseMarks && marks.left.length > 0) {
+        if (marks && marks.left.length > 0) {
           const message = `claude-experiment: Claude Code's context left in the request (${marks.left.map(([block, path]) => `${block} at ${path}`).join("; ")})`;
           log(message);
           return refusal(message);
@@ -250,7 +251,7 @@ export function startProxy({ upstream = UPSTREAM, usages = [], requests = [], al
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
 // Runs claude-api with the route's arguments behind the proxy and resolves to its exit code,
-// the requests' usage and their block marks. With input, claude reads it on stdin and its
+// the requests' usage and, with refuseMarks, their block marks. With input, claude reads it on stdin and its
 // output is dropped. refuseMarks goes to the proxy. A signal to this process goes on to claude.
 export async function run(argv, { env = process.env, input, refuseMarks = false, wrapper = join(import.meta.dir, "claude-api") } = {}) {
   const args = experimentArgs(argv);

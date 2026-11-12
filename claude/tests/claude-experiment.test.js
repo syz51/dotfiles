@@ -175,8 +175,9 @@ exit "\${FAKE_EXIT:-0}"
   });
 
   test("forwards the request without the blocks, with the route's flags and variables", async () => {
-    const { code, usages } = await run(["--system-prompt", "S", "hi"], { env: env(), input: "" });
+    const { code, usages, requests } = await run(["--system-prompt", "S", "hi"], { env: env(), input: "" });
     expect(code).toBe(0);
+    expect(requests).toEqual([]);
     expect(received).toHaveLength(1);
     expect(received[0].auth).toBe("Bearer test-token");
     expect(received[0].body.messages).toEqual([{ role: "user", content: [{ type: "text", text: "FIXED TEST TEXT" }] }]);
