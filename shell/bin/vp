@@ -8,5 +8,18 @@ while :; do
   [ "$dir" = / ] && break
   dir=$(dirname "$dir")
 done
+# A project's vp can start vp outside the project, such as a test in a temporary
+# fixture. Then run the caller's vp, found by its absolute path in an ancestor's arguments.
+set -f
+pid=$PPID
+while [ "${pid:-1}" -gt 1 ]; do
+  for word in $(ps -o args= -p "$pid"); do
+    case $word in
+      /*/node_modules/.bin/vp | /*/node_modules/vite-plus/bin/vp)
+        [ -x "$word" ] && exec "$word" "$@" ;;
+    esac
+  done
+  pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+done
 echo "vp: no node_modules/.bin/vp in $PWD or a parent directory; run bun install in the project first" >&2
 exit 127

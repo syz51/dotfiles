@@ -193,8 +193,10 @@ such as `ssh` commands, find `bun` and `bunx`.
 Projects such as the T3 Code fork run their tasks with Vite+ (`vp`), but no global Vite+ is
 installed: its installer needs pnpm or downloads its own Node.js and pnpm. Instead,
 `shell/bin/vp` runs the nearest `node_modules/.bin/vp` above the working directory, so
-each project runs its own lockfile version. Outside such a project it exits with status
-127 and says to run `bun install`. Link it on each Mac:
+each project runs its own lockfile version. A project's `vp` can start `vp` outside the
+project, as T3 Code's desktop build tests do in temporary fixtures. Then the launcher runs
+the `vp` whose absolute path is in an ancestor process's arguments. Otherwise, outside a
+project it exits with status 127 and says to run `bun install`. Link it on each Mac:
 
 ```sh
 ln -s ~/.config/shell/bin/vp ~/.local/bin/vp
