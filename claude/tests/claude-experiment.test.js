@@ -5,7 +5,7 @@
 // through the route, for the working directory and account details it was given.
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { CANARY, CONTEXT_OPENING, contextMarks, DEFAULT_CAP, ENV, experimentArgs, LEAKED, leftovers, OVER_CAP, preflight, run, strip, usageOf } from "../bin/experiment.js";
@@ -322,6 +322,28 @@ describe.skipIf(process.env.RUN_CLAUDE_LIVE !== "1")("live probe through the rou
     ], { cwd: scratch(), encoding: "utf8", timeout: 120_000 });
     expect(result.stderr).toContain("claude-experiment preflight: 1 request(s); removed the account email block and the # Environment block, none left");
     expect(result.status).toBe(0);
+  }, 150_000);
+
+  // Claude Code keeps a project's auto-memory in ~/.claude/projects/<slug>/memory; with an
+  // index there it adds a <system-reminder> that the proxy refuses (checked on 2.1.322: the
+  // route failed with exit 1 before it set CLAUDE_CODE_DISABLE_AUTO_MEMORY=1).
+  test("the preflight passes inside a project with an auto-memory folder", () => {
+    const cwd = scratch();
+    const project = join(homedir(), ".claude", "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    mkdirSync(join(project, "memory"), { recursive: true });
+    try {
+      writeFileSync(join(project, "memory", "MEMORY.md"), "- [Fixed test note](note.md) — a fixed test memory\n");
+      writeFileSync(join(project, "memory", "note.md"), "---\nname: note\ndescription: fixed test memory\n---\nFixed test memory.\n");
+      const { CLAUDE_CODE_DISABLE_AUTO_MEMORY: _, ...env } = process.env;
+      const result = spawnSync(join(BIN, "no-session-env"), [
+        join(BIN, "claude-experiment"), "preflight", "--model", "claude-haiku-5-5", "--effort", "low", "--no-session-persistence",
+        "--system-prompt", "You answer questions exactly and briefly.",
+      ], { cwd, env, encoding: "utf8", timeout: 120_000 });
+      expect(result.stderr).toContain("removed the account email block and the # Environment block, none left");
+      expect(result.status).toBe(0);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
   }, 150_000);
 
   // A prompt this long hid a leak from the default cap; the leak check does not depend on it.

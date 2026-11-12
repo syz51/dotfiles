@@ -1201,8 +1201,9 @@ in CI:
   reaches the proxy. With `RUN_CLAUDE_LIVE=1` (use `API_FIRST_SUBSCRIPTION=1` to spend no
   API credit), a Haiku probe asks the model for its environment and account, and fails
   when the reply names the working directory, home, login name or an `oauthAccount` field
-  from `~/.claude.json`. Two live preflights check that the proxy removed both blocks, one
-  with a system prompt over 1500 tokens.
+  from `~/.claude.json`. Three live preflights check that the proxy removed both blocks:
+  one plain, one with a system prompt over 1500 tokens, and one in a project with an
+  auto-memory folder (it creates and removes `~/.claude/projects/<slug>/memory`).
 - `cheatsheets.test.js`: the `cheat-sheets` skill's script against a synthetic page
   and a local server. It checks sections, aliases, item ids, formats, years, ranking,
   the 7-day index cache, the saved-then-online download order and the PDF text copy.
