@@ -480,13 +480,19 @@ Do not replace an existing tool home without backing up its local data.
 
 Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
 what most turns need. Procedures that few turns need are in `claude/reference/`, each
-behind one pointer line in the section it belongs to: `storage.md`, `review-findings.md`,
-`merge.md` and `t3-delegation.md`. A session reads one through
-`~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
-rules word for word and states that they have the instructions' force. To move another
-rule, move its lines unchanged, leave a pointer that names when to read the file, and
-change the pins in `claude/tests/config.test.js`, which also holds the size budget of
-`claude/CLAUDE.md`. `codex/AGENTS.md` reads no reference files and keeps its rules in
+behind one pointer line in the section it belongs to: `storage.md`, `review.md`,
+`merge.md`, `delegation.md`, `t3-delegation.md` and `t3-settle.md`. A session reads one
+through `~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
+rules word for word and states that they have the instructions' force. The comment above
+`POINTERS` in `claude/tests/config.test.js` gives the sorting rule: a rule stays when an
+agent cannot see its trigger coming, a procedure whose trigger is a visible tool call or
+event moves behind a pointer that names it, and a hook-enforced rule keeps only the line
+that avoids the hook. To move another rule, move its lines unchanged, leave a pointer that
+names when to read the file, and change the pins in that test file, which also holds the
+size budget of `claude/CLAUDE.md`. The budget sits just above the current size: a new rule
+displaces text instead of raising it. Claude Code's own on-demand mechanisms do not fit
+these triggers: `@` imports load at launch, and rules in `~/.claude/rules/` load at launch
+unless `paths:` ties them to file reads. `codex/AGENTS.md` reads no reference files and keeps its rules in
 place. The factory reads the instructions too: the judge in
 `claude/factory/scoring/score.js` gets the reference files appended, the proposer in
 `claude/factory/scoring/propose.js` may edit them, and
@@ -934,8 +940,8 @@ display points, so Retina scaling and displays left of or above the main one wor
 
 ## T3 Code thread cleanup
 
-A thread that finishes its work settles itself after a final check, as the Workflow
-section of `claude/CLAUDE.md` says. Board coordinator threads and Agent-tool subagents are
+A thread that finishes its work settles itself after a final check, as
+`claude/reference/t3-settle.md` says; the Workflow section of `claude/CLAUDE.md` points to it. Board coordinator threads and Agent-tool subagents are
 exempt, and T3 unsettles a thread when new activity arrives. A self-settle starts the
 child cascade below and the 7-day settled-worktree cleanup.
 

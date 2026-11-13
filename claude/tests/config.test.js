@@ -45,11 +45,28 @@ const referenceRules = (name) => `${read(`claude/reference/${name}.md`).split("\
 // procedures that few turns need moved to reference files read on need: 23,808 characters
 // before, with storagectl in 7% of a week's main sessions, a T3 delegate or
 // launch in 8% and a reviewer run in 1% (dotfiles-385). Each rule keeps its words there.
+//
+// The sorting rule (dotfiles-513). A rule stays in the instructions when an agent cannot see
+// its trigger coming: safety and machine limits, the autonomy and ask policy, and any rule that
+// must shape a choice before an event, such as entering a worktree before starting subagents.
+// A procedure whose trigger is a tool call or event the agent sees (a `gh pr merge`, starting
+// a subagent or delegate, starting the reviewer, the last turn of a T3 thread, `storagectl`)
+// moves here, behind a pointer that names that trigger. A rule a hook enforces keeps only the
+// line that keeps agents from hitting the hook; the hook's refusal gives the route, and the
+// evidence for the rule stays in its test's comment. Text the board server's own
+// instructions already give is not repeated.
 const POINTERS = {
   merge: ["Autonomy", "Before a `gh pr merge`, read `~/.claude/reference/merge.md`: what the guard-pr-merge hook refuses, and how to land a pull request that is BEHIND its base branch."],
+  // The brief, worktree and verification rules apply only once a session spawns: 2,164
+  // characters that every request carried (dotfiles-513).
+  delegation: ["Delegation", "- Before you start a subagent or a delegate, read `~/.claude/reference/delegation.md`: how to split tracks and choose their agents, what a brief holds, worktrees for tracks, and checking results."],
   "t3-delegation": ["Delegation", "- Before a `delegate_task` or `t3_thread_launch` call, read `~/.claude/reference/t3-delegation.md`: the fields T3 drops or refuses, and the route for a board task whose code is in another repository."],
-  storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`: the destinations, the commands and jobs on another machine. Report what got in the way as Feedback with `about` `storage`."],
-  "review-findings": ["Review", "- Once you have decided on every finding, record the outcomes with `ReportFindings` as `~/.claude/reference/review-findings.md` says, also for a review without findings, and report the result in your reply as well."],
+  // The settle check runs once, at the end of a T3 thread's work: 949 characters (dotfiles-513).
+  "t3-settle": ["Workflow", "- In a T3 thread, before you end the turn that finishes your work, read `~/.claude/reference/t3-settle.md`: the final check, and when to settle the thread."],
+  storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`. Report what got in the way as Feedback with `about` `storage`."],
+  // Running the reviewer, deciding on findings and recording them all follow starting it;
+  // review-findings.md joined this file (dotfiles-513).
+  review: ["Review", "- Before you start the `reviewer` agent, read `~/.claude/reference/review.md`: how to run it in the background, decide on its findings and record their outcomes."],
 };
 
 // These agents never get the claude.ai Gmail and Docs connectors: their instructions and
@@ -114,10 +131,10 @@ describe("agents", () => {
 
 describe("global instructions", () => {
   test("every agent the Delegation section names exists, and every agent is named", () => {
-    const named = [...section("Delegation").matchAll(/ to `([\w-]+)`/g)].map((match) => match[1]);
-    // The Review section names the reviewer; Delegation names the agents for tracks.
+    const named = [...referenceRules("delegation").matchAll(/ to `([\w-]+)`/g)].map((match) => match[1]);
+    // The Review rules name the reviewer; Delegation names the agents for tracks.
     expect(named.sort()).toEqual(Object.keys(POLICY).filter((name) => name !== "reviewer").sort());
-    expect(section("Review")).toMatch(/start the `reviewer` agent/);
+    expect(referenceRules("review")).toMatch(/start the `reviewer` agent/);
   });
 
   test("every ~/.claude file they reference is tracked in this repository", () => {
@@ -140,10 +157,13 @@ describe("global instructions", () => {
     for (const name of Object.keys(POINTERS)) expect(needsReview({ repo: "github.com/syz51/dotfiles", path: `claude/reference/${name}.md` }), name).toBe(true);
   });
 
-  // A regression budget, not a target: raise it when a rule that every turn needs is added.
-  // 22,400: the no-session-env rule (dotfiles-496), since any turn may start a server.
+  // Every request of every session and subagent carries this file. It grew from 5.3k on
+  // 2026-11-04 to 23.8k on 11-09, and each new rule raised this cap (21,500 to 22,400 on
+  // 11-12), so the cap never stopped growth. dotfiles-513 sorted the rules by the rule above
+  // POINTERS: 22,585 to 16,804. The cap sits just above the size. A new rule displaces text
+  // of the same length, by the sorting rule; never raise the cap to fit one.
   test("the global instructions stay under their size budget", () => {
-    expect(globalInstructions.length).toBeLessThan(22_400);
+    expect(globalInstructions.length).toBeLessThan(17_000);
   });
 
   // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:
@@ -194,7 +214,7 @@ describe("global instructions", () => {
   // No live scenario covers continuing an agent: it needs a defect to surface after a
   // track returns, which a fixture cannot trigger reliably.
   test("Delegation sends a parallel correction back to the agent that has the context", () => {
-    expect(section("Delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
+    expect(referenceRules("delegation")).toMatch(/continue the agent that did the track when it and its checkout still exist, otherwise start a new task with the original brief and findings/);
   });
 
   // Most of the user's repositories have no branch protection, so the hook enforces the merge
@@ -297,7 +317,8 @@ describe("settings", () => {
     expect(tracked("claude/hooks/auto-merge.js")).toBe(true);
     const guard = Object.entries(settings.hooks).flatMap(([event, list]) => list.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/guard-pr-merge.js"))).map((group) => [event, group.matcher]));
     expect(guard).toEqual([["PreToolUse", "^Bash$"]]);
-    expect(section("Autonomy")).toContain("After a successful `gh pr create`, the auto-merge hook turns on auto-merge where the base branch requires checks or reviews, and its output says what it did.");
+    // The hook's own output says what it did, so the instructions no longer repeat it (dotfiles-513).
+    expect(section("Autonomy")).not.toContain("auto-merge hook");
     expect(referenceRules("merge")).toContain("- After a Bash call runs `gh pr create`, the auto-merge hook turns on auto-merge for each pull request it printed, with a merge commit, else squash, else rebase, as the repository allows.");
     expect(referenceRules("merge")).toContain("You still run `gh pr update-branch` when the pull request falls BEHIND.");
   });
@@ -380,6 +401,9 @@ describe("settings", () => {
     const policy = JSON.parse(read("claude/hooks/ask-policy.json"));
     expect(Object.keys(policy.reasons).length).toBeGreaterThan(0);
     for (const name of policy.action_reasons) expect(Object.keys(policy.reasons)).toContain(name);
+    // The gate checks only the MCP tool, so the always-loaded text states the action limit for the CLI and chat.
+    expect(policy.action_reasons).toEqual(["only-me"]);
+    expect(section("Autonomy")).toContain("Only an `only-me` ask may hand me an action. A hook checks board `ask_user` calls against these rules; follow them in the `board ask` CLI and in chat too.");
   });
 
   // The open-items check covers a reply that lists unfinished work without a task_done, which the
@@ -578,13 +602,15 @@ describe("work board", () => {
   // instructions and coordinator prompt: remaining scope is a sub-task (no review needed),
   // new scope a proposal another agent reviews, and the user's part a non-auto blocked
   // task with an ask, so no coordinator starts it. Sections that name their own place
-  // (storage problems) keep it.
+  // (storage problems) keep it. The board server's instructions name the three forms and
+  // their task_add fields in every board session, so this rule names them and keeps only
+  // their task_add fields only in MCP sessions; a session on the board CLI never sees them, so
+  // this rule keeps each form's fields itself (dotfiles-513 review).
   test("everything still to do goes on the board, in the form its kind needs", () => {
     const rule = section("Work board");
-    expect(rule).toMatch(/Before `task_done`, and before ending a turn, put each remaining step, follow-up and suggestion on the board, checking first for a task that covers it \(add a note there instead\)\. Where another section names the place for something, such as storage problems, it goes there/);
-    expect(rule).toMatch(/Scope your task still needs: a sub-task \(`task_add` with your task as parent\)\. Your task stays open until every acceptance check passes/);
-    expect(rule).toMatch(/Work you find outside your task: a proposal \(`task_add` with `auto=false` and a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L\), on the board of the work's repository, or on this one when that repository has none, with the task you found it in, if any, as parent/);
-    expect(rule).toMatch(/Work that waits on my decision or action: a task with `auto=false`, set `blocked` with an `ask_user`/);
+    expect(rule).toContain("- Before `task_done`, and before ending a turn, file each remaining step, follow-up and suggestion, checking first for a task that covers it (add a note there instead): your task's remaining scope as a sub-task (parent: your task);");
+    expect(rule).toContain("work you find outside it as a proposal (`auto=false`, a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L) on the board of the work's repository, or on this one when that repository has none, with the task you found it in as parent or named in the body;");
+    expect(rule).toContain("my decision or action as a task with `auto=false`, set `blocked` only once its `ask_user` is accepted. Your task stays open until every acceptance check passes. Where another section names the place for something, such as storage problems, it goes there.");
     expect(rule).toMatch(/When filing fails, report the item in the reply instead\. Don't ask me before filing/);
     expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
@@ -620,7 +646,7 @@ describe("work board", () => {
     const rule = section("Work board");
     expect(rule).toMatch(/Read-only work, such as a review or an investigation, files too, unless I say not to touch the board/);
     expect(rule).toMatch(/Subagents share your board identity, so they never file: they report what they find, and you file each real item you do not fix\. Agents in their own threads, such as a coordinator's children, file for themselves/);
-    expect(section("Review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
+    expect(referenceRules("review")).toMatch(/Report the findings you reject as not real, with the reason; file the real ones outside what the change is meant to do as found work under the Work board section, or report them where there is no board, instead of fixing them/);
     expect(section("Basic safeguards")).toMatch(/Keep reviews and advice read-only unless changes are requested; filing on the work board is not such a change/);
     for (const agent of ["explorer", "worker"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/work found that still needs doing, for the parent to file/);
     for (const agent of ["explorer", "worker"]) expect(read(`claude/agents/${agent}.md`), agent).toMatch(/anything in a setup \(such as a hook, tool, skill, agent definition, the board, storage, T3, instructions or the project's own setup\) that cost you a step, with the error and your workaround, for the parent to report as feedback/);
@@ -686,11 +712,18 @@ describe("storage rule", () => {
     expect(rule).toMatch(/read the Pro's threads or files from the Air also goes as a note on `vps-247` while it is open/);
   });
 
-  test("keeps every Claude model off the Pro", () => {
-    // The user decided on 2026-11-12 that no Claude model runs on the Pro; it stays for large data and CPU jobs.
-    const rule = referenceRules("storage");
-    expect(rule).toMatch(/the Pro for large data and long CPU jobs/);
-    expect(rule).toContain("No Claude model runs on the Pro: never start Claude Code, the Agent SDK or a Claude API call there, in a job or a thread; run those steps on the Air.");
+  test("keeps every Claude model off the Pro, in an always-loaded rule", () => {
+    // The user decided on 2026-11-12 that no Claude model runs on the Pro. In the storage reference alone,
+    // agents that reached the Pro by ssh or T3 never read it, so it lives in Working preferences.
+    expect(referenceRules("storage")).toMatch(/the Pro for large data and long CPU jobs/);
+    expect(referenceRules("storage")).not.toMatch(/No Claude model runs/);
+    const rule = section("Working preferences").split("\n").find((line) => line.startsWith("- Never run a Claude model on the MacBook Pro"));
+    expect(rule).toBeDefined();
+    // The repository is public: the rule names the machine, never its ssh host or host name.
+    expect(rule).toContain("(any host for it in `~/.ssh/config.d/`)");
+    expect(rule).not.toMatch(/`ssh [\w.-]+`/);
+    for (const name of ["Agent SDK", "T3 thread or delegate", "`storagectl` job", "Use the Air"]) expect(rule).toContain(name);
+    expect(read("codex/AGENTS.md")).toContain(`\n${rule}\n`);
   });
 
   test("Codex gets the same rule", () => {
@@ -723,7 +756,7 @@ describe("feedback rule", () => {
 
 describe("T3 self-settle", () => {
   test("finished threads settle themselves after a final check; coordinators and subagents never do", () => {
-    const rule = section("Workflow").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
+    const rule = referenceRules("t3-settle").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
     expect(rule).toBeDefined();
     for (const guard of [
       "nothing is left to do, track or file",
@@ -742,7 +775,7 @@ describe("T3 self-settle", () => {
   // An agent called `task_done` and settle in one tool batch, then wrote a report with four
   // unfiled items; the prompt in `task_done`'s output went unanswered (dotfiles-427).
   test("the final check is its own step, after task_done, and needs an id on each open item", () => {
-    const rule = section("Workflow").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
+    const rule = referenceRules("t3-settle").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
     expect(rule).toContain("with one more check, as a step of its own: after `task_done` and your other board calls have returned and you have handled their output, never in the same tool batch. Settle the thread only if nothing is left to do, track or file, each open item of the report names its task or ask, and nothing waits on it:");
   });
 });
@@ -873,18 +906,22 @@ describe("rules the live suites test", () => {
     const preferences = section("Working preferences");
     expect(preferences).toMatch(/`uv run`/);
     expect(preferences).toMatch(/`bun`/);
-    expect(preferences).toContain("Never run `node`, including for fallbacks or through `vp node`");
-    expect(preferences).toMatch(/never npm, npx, pnpm, yarn or corepack, even where a project's lockfiles/);
+    expect(preferences).toContain("Never run `node`, npm, npx, pnpm, yarn or corepack, even where a project's lockfiles select them");
     // guard-runtimes allows node only in checkouts of the repositories node-repos.json lists,
-    // and the package managers nowhere; BUN_OPTIONS=--bun would run node scripts on bun.
-    expect(preferences).toContain("One exception: `node` may run in a checkout of a repository that `~/.config/claude/hooks/node-repos.json` lists, such as T3 Code, whose server needs Node; run its scripts there with `node` or `BUN_OPTIONS= bun run`, and the npm, npx, pnpm, yarn and corepack ban still holds.");
+    // and the package managers nowhere; BUN_OPTIONS=--bun would run node scripts on bun. Its
+    // refusals name bun's commands and the node-repos.json exception, so the rule leaves out
+    // fallbacks, `vp node` and why T3 Code needs node (1,063 to 637 characters, dotfiles-513).
+    expect(preferences).toContain("`node` alone may run in a checkout of a repository that `~/.config/claude/hooks/node-repos.json` lists, as `node` or `BUN_OPTIONS= bun run`.");
+    const hook = read("claude/hooks/guard-runtimes.js");
+    expect(hook).toContain("node runs only in a checkout of a repository ");
+    expect(hook).toContain("even where a `");
     expect(tracked("claude/hooks/node-repos.json")).toBe(true);
     expect(JSON.parse(read("claude/hooks/node-repos.json")).repos).toEqual(["github.com/syz51/t3code", "github.com/pingdotgg/t3code"]);
     // Vite+ may run checks and tools; installs and package queries stay on bun, as guard-runtimes enforces.
     expect(preferences).toContain("checks and tooling with `bun`, `bunx` or Vite+ (`vp`), and installs and package queries with `bun` only");
     expect(preferences).toMatch(/require another package manager, stop and ask me/);
     // Both name the checkout path, since a Mac that runs Codex may have no ~/.claude.
-    expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${preferences.split("\n").find((line) => line.startsWith("- Run all Python"))}\n`);
+    expect(read("codex/AGENTS.md")).toContain(`## Working preferences\n\n${preferences.split("\n").find((line) => line.startsWith("- Run Python through"))}\n`);
   });
 
   // The user has only a Claude plan; guard-runtimes also blocks the codex CLI.
@@ -923,13 +960,13 @@ describe("rules the live suites test", () => {
     expect(delegation).toMatch(/takes only a handful of tool calls/);
     expect(delegation).toMatch(/Don't use subagents to verify your own work/);
     expect(delegation).toMatch(/Agents that stand in for a tool you lack, such as `web-fetch`, are tool use, not delegation/);
-    expect(section("Review")).toMatch(/delegating only fixes that split into parallel tracks/);
+    expect(referenceRules("review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
   // Anthropic's multi-agent guidance: split by context, not by type of work, because
   // each handoff between phases of the same work loses context.
   test("Delegation splits by context, and each agent owns its whole track", () => {
-    const delegation = section("Delegation");
+    const delegation = referenceRules("delegation");
     expect(delegation).toMatch(/Split work by context, not by type of work/);
     expect(delegation).toMatch(/each agent owns its whole track, from investigation through implementation and tests/);
     expect(delegation).toMatch(/one area's work never passes from one agent to another, such as an explorer's findings to a worker/);
@@ -947,7 +984,7 @@ describe("rules the live suites test", () => {
   // A brief that asked for "what still depends on the student" as a report part became the
   // only place for those items (dotfiles-427), so the brief sends them to the board first.
   test("a brief has fixed parts, names only what differs from what a child loads, and keeps open work on the board", () => {
-    expect(section("Delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: open items go on the board, filed by you where the child never files, before the report to me names their ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer` and `worker` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
+    expect(referenceRules("delegation")).toContain("- Settle only the interfaces tracks share, then give each agent a standalone brief with these parts in order: the goal; what it needs from this conversation; those interfaces; scope and limits; acceptance checks. A brief never asks for open work only as a report part: open items go on the board, filed by you where the child never files, before the report to me names their ids. A child, in a subagent or its own thread, loads these instructions, the project's instructions and the board rules itself, so the brief names only what differs from them. The `explorer` and `worker` definitions give their report's shape, and the `reviewer` its own; for any other child, the brief ends with the report it expects.\n");
   });
 
   test("explorer and worker end with the same report shape", () => {
@@ -958,7 +995,7 @@ describe("rules the live suites test", () => {
   });
 
   test("Review fixes every real defect it finds and files the rest", () => {
-    const review = section("Review");
+    const review = `${section("Review")}${referenceRules("review")}`;
     expect(review).toMatch(/on the final diff before pushing or reporting done/);
     expect(review).toMatch(/Check each finding against the code before deciding/);
     expect(review).toMatch(/Fix every one that is a real defect in what the change is meant to do and verify the fix/);
@@ -980,8 +1017,8 @@ describe("rules the live suites test", () => {
   // factory metrics reads these records to measure review noise (dotfiles-100). The pointer
   // keeps what a session must not miss: one record, also for a clean review, and the report.
   test("Review records each finding's outcome through ReportFindings", () => {
-    expect(section("Review")).toContain(POINTERS["review-findings"][1]);
-    const review = referenceRules("review-findings");
+    expect(section("Review")).toContain(POINTERS.review[1]);
+    const review = referenceRules("review");
     expect(review).toMatch(/Once you have decided on every finding, record the outcomes: call `ReportFindings` once with every finding, its category and its outcome/);
     expect(review).toMatch(/`fixed` for one you fixed, `no_change_needed` for one that is wrong or intentional, and `skipped` for a real one you filed or did not apply/);
     expect(review).toMatch(/Report the result in your reply as well/);
@@ -997,11 +1034,11 @@ describe("rules the live suites test", () => {
   // level's effort, and its relay dropped the findings' category fields (dotfiles-386). A
   // skill's own background fork waits in an SDK session, so the session starts the agent.
   test("Review runs once in the background reviewer agent, on the session's model at high, pinned to the commit", () => {
-    const review = section("Review");
+    const review = `${section("Review")}${referenceRules("review")}`;
     expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
     expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews on the session's model at `high` effort as its `diff-review` skill says/);
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
-    expect(review).toMatch(/Run that review in the background, so this thread stays free to answer me/);
+    expect(review).toMatch(/Run the review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
     expect(review).toMatch(/It works in this checkout on the session's model at its own effort, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
@@ -1032,7 +1069,7 @@ describe("rules the live suites test", () => {
   });
 
   test("Delegation isolates work in runtime worktrees and transfers their inputs", () => {
-    const delegation = section("Delegation");
+    const delegation = referenceRules("delegation");
     expect(delegation).toMatch(/Give each track that edits files its own worktree through the runtime's worktree facility when one is available, never one made in the shell/);
     expect(delegation).toMatch(/Other tracks share this checkout; never let two tracks, or a track and you, change the same files or state at the same time/);
     expect(delegation).toMatch(/A new worktree never has uncommitted changes/);
@@ -1068,9 +1105,15 @@ describe("rules the live suites test", () => {
   // git part. Fast-forwards and a clean switch back to the default branch lose nothing, and
   // the user wants agents to run them without a second step (dotfiles-235). A change the user
   // asked for in that checkout runs with the guard's per-command option; the user does not
-  // want such commands handed back to them (dotfiles-263).
+  // want such commands handed back to them (dotfiles-263). The hook's refusal names the
+  // per-command option and the worktree route, so the rule keeps only what avoids the refusal
+  // and the user's wishes the hook cannot see (817 to 501 characters, dotfiles-513).
   test("Workflow moves work out of a shared main checkout", () => {
-    expect(section("Workflow")).toMatch(/A repository's main checkout is shared by every thread that starts in it\. Read there freely, but unless I ask for a change in that checkout itself, move into your own worktree \(EnterWorktree, or a T3 worktree thread\) before you change files, commit, or switch, reset, merge, rebase, pull or stash there\. To bring it up to its upstream, or to a commit I approved, a `--ff-only` merge or pull may run there, as may a switch back to its default branch while no tracked file has changes\. A hook refuses the other git commands in a main checkout outside the temporary directories; when I asked for that change in that checkout, run the git command yourself as `git -c claude\.mainCheckout=allow <subcommand> \.\.\.`, never hand it back to me; the hook still refuses it where it would discard tracked changes or stashed work\./);
+    expect(section("Workflow")).toContain("- A repository's main checkout is shared by every thread that starts in it. Read there freely, but change files, commits or branches only in your own worktree (EnterWorktree, or a T3 worktree thread), unless I asked for that change in that checkout. A `--ff-only` merge or pull to its upstream or a commit I approved may run there, as may a clean switch back to its default branch. A hook enforces this; when it refuses a change I asked for there, run the route its message gives yourself, never hand it back to me.\n");
+    const hook = read("claude/hooks/guard-main-checkout.js");
+    expect(hook).toContain("run it yourself as `git -c claude.mainCheckout=allow <subcommand> ...`; ");
+    expect(hook).toContain("never ask the user to run it.");
+    expect(hook).toContain("Move into your own worktree first (EnterWorktree in Claude Code, a worktree thread in T3) and run it there.");
   });
 
   // Worktree isolation can't be turned off (the worktrees docs say so), and 173 of one week's
@@ -1078,14 +1121,14 @@ describe("rules the live suites test", () => {
   // them (board-feedback-109: 50+ reports from 8 agents), so worktree-rule.js gives the
   // measured forms when isolation starts, and this line points at it (dotfiles-111). An
   // explorer started before EnterWorktree had every Bash call refused (board-feedback-247).
+  // The hook's note says that no setting turns isolation off and where other checkouts' work
+  // runs, so the rule keeps what must come before isolation starts (dotfiles-513).
   test("Workflow points a worktree-isolated session at the hook's list of refused forms", () => {
     const workflow = section("Workflow");
-    expect(workflow).toMatch(/In a worktree-isolated session \(after EnterWorktree, or in a subagent with worktree isolation\), Claude Code refuses each Bash command that it cannot verify stays in the worktree, and nothing turns this off\./);
-    expect(workflow).toMatch(/When isolation starts, a hook lists the forms it refuses; write around them\./);
-    expect(workflow).toMatch(/A T3 worktree thread runs without this guard\./);
-    expect(workflow).toMatch(/Enter the worktree before you start subagents\./);
-    expect(workflow).toMatch(/Pass long text that may mention git, such as a PR body, through MCP tools \(such as `task_add`\) or a file/);
-    expect(workflow).toMatch(/do work on other checkouts from a session or delegate started there/);
+    expect(workflow).toContain("- Enter a worktree before you start subagents. In a worktree-isolated session (after EnterWorktree, or in a subagent with worktree isolation), Claude Code refuses each Bash command it cannot verify stays in the worktree, and a hook lists the refused forms when isolation starts; write around them. Pass long text that may mention git, such as a PR body, through MCP tools (such as `task_add`) or a file.\n");
+    const hook = read("claude/hooks/worktree-rule.js");
+    expect(hook).toContain("No setting turns this off.");
+    expect(hook).toContain("Do that work from a session or delegate started there.");
     // The old ban sent agents to scripts that hide commands from the guard (board-feedback-542).
     expect(workflow).not.toMatch(/without loops, variables/);
     // Codex has no such guard, so its instructions leave the rule out.

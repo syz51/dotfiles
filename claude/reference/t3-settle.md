@@ -1,0 +1,5 @@
+# Settling a T3 thread
+
+This rule is part of the global instructions (`~/.claude/CLAUDE.md`, Workflow section) and has the same force. Read it before you end the turn that finishes your work in a T3 thread.
+
+- In a T3 thread, end the turn that finishes your work with one more check, as a step of its own: after `task_done` and your other board calls have returned and you have handled their output, never in the same tool batch. Settle the thread only if nothing is left to do, track or file, each open item of the report names its task or ask, and nothing waits on it: no running job, open PR you must still merge or fix, task you own in `doing`, question or ask I have not answered, or report item I must act on. To settle, call `t3_thread_organize` with `action: "settle"` and no `threadId` as your last step, and say so in the report. If more work turns up in that turn, call it again with `action: "unsettle"`; new activity also unsettles the thread. A brief or routine with its own settle rule overrides this one. Board coordinator threads and Agent-tool subagents never settle themselves; threads started by `delegate_task` or `t3_thread_launch` do.
