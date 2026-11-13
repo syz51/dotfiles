@@ -31,7 +31,7 @@ describe("sandbox profiles", () => {
     expect(permissions.deny).toEqual(["WebFetch", "WebSearch"]);
   });
 
-  test("the maintainer draft allows the review's hosts and state folders, not the canonical checkout", () => {
+  test("the maintainer profile allows the review's hosts and state folders, not the canonical checkout", () => {
     const { sandbox } = readProfile(MAINTAINER);
     expect(sandbox.network.allowedDomains).toEqual(expect.arrayContaining(["github.com", "docs.rs", "crates.io", "static.crates.io", "index.crates.io", "pypi.org", "files.pythonhosted.org"]));
     expect(sandbox.filesystem.allowWrite).toEqual(expect.arrayContaining(["~/.local/share/agent-skills/investigations", "~/.cache/agent-skills", "~/.cache/uv"]));

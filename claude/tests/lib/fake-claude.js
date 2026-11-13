@@ -161,8 +161,8 @@ if (mode.startsWith("chinese-")) {
     symlinkSync(join(install, "releases", "release-b"), join(install, "current"));
   }
   if (mode === "chinese-release-old-edit") appendFileSync(join(install, "releases", "release-a", "skills", "rust", "SKILL.md"), "edited\n");
-  if (mode === "chinese-release-retarget") {
-    const link = join(home, ".claude", "skills", "find-skills");
+  if (mode === "chinese-chain-retarget") {
+    const link = join(home, "links", "find-skills");
     rmSync(link);
     symlinkSync(join(install, "releases", "release-b", "skills", "find-skills"), link);
   }

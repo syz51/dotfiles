@@ -14,9 +14,9 @@ const TEST_PATHS = ["claude/hooks", "claude/tests", "claude/factory"];
 // A verbatim run this long from the evidence in a pushed change counts as a leak.
 const LEAK_RUN = 40;
 // The proposer runs with the user's configuration; whatever it allows, these stay unread:
-// credentials, and the private sources the leak check never sees (raw transcripts, the
-// state folder with its scores and evidence files, the work board's local cache).
-const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**", "~/.local/share/agent-board/**"];
+// credentials, and the private sources the leak check never sees (raw transcripts, the skill
+// feedback notes taken from them, the state folder with its scores and evidence files, the work board's local cache).
+const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**", "~/.local/share/agent-skills/skill-feedback/**", "~/.local/share/agent-board/**"];
 
 // Read deny rules for DENY_READ and the given absolute folders. A rule takes an absolute
 // path as //path; a folder under home gets its ~/ form as well.

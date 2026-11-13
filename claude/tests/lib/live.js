@@ -89,7 +89,8 @@ const guardSnapshot = () => Object.fromEntries(guardedPaths().map((path) =>
 
 // Each agent-skills release (one per merged PR) lands in its own folder under releases/
 // and moves `current` to it. Each managed skill is a one-hop link from ~/.claude/skills
-// into `current`, so a release resolves it to the same skill in another release.
+// into `current`, so a release resolves it to the same skill in another release. A longer
+// link chain is followed too.
 // That passes when every link text is unchanged and the old release's copy is still as
 // it was; a retargeted link or an edit to the old copy still fails.
 const skillReleases = () => join(homedir(), ".local", "share", "agent-skills", "releases");

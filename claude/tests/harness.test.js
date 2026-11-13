@@ -47,8 +47,12 @@ beforeEach(() => {
       writeFileSync(join(install, "releases", release, "skills", skill, "SKILL.md"), content);
     }
   symlinkSync(join(install, "releases", "release-a"), join(install, "current"));
-  for (const skill of ["rust", "find-skills"])
-    symlinkSync(join(install, "current", "skills", skill), join(home, ".claude", "skills", skill));
+  symlinkSync(join(install, "current", "skills", "rust"), join(home, ".claude", "skills", "rust"));
+  // The guard follows a link chain of any length, so find-skills gets a second hop here,
+  // which the installed layout no longer has.
+  mkdirSync(join(home, "links"));
+  symlinkSync(join(install, "current", "skills", "find-skills"), join(home, "links", "find-skills"));
+  symlinkSync(join(home, "links", "find-skills"), join(home, ".claude", "skills", "find-skills"));
   mkdirSync(join(root, "bin"));
   writeFileSync(join(root, "bin", "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(TESTS, "lib", "fake-claude.js")}" "$@"\n`);
   chmodSync(join(root, "bin", "claude"), 0o755);
@@ -279,7 +283,7 @@ describe("configuration must not change during a run", () => {
     assertCleanedUp();
   }, 30_000);
 
-  test("an agent-skills release that moves current passes", async () => {
+  test("an agent-skills release that moves current passes, through a two-hop link too", async () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-release-switch");
     expect(run.code, output(run)).toBe(0);
     expect(realpathSync(join(home, ".claude", "skills", "find-skills"))).toContain("/release-b/");
@@ -290,7 +294,7 @@ describe("configuration must not change during a run", () => {
   for (const [mode, message] of [
     ["chinese-drift", "CLAUDE.md"],
     ["chinese-retarget", "skills/typescript"],
-    ["chinese-release-retarget", "skills/find-skills: Type, mode or link changed: ."],
+    ["chinese-chain-retarget", "skills/find-skills: Type, mode or link changed: ."],
     ["chinese-release-old-edit", "skills/rust: Unauthorized content change: SKILL.md"],
     ["chinese-skill-edit", "skills/typescript: Unauthorized content change: SKILL.md"],
     ["chinese-feedback-edit", "skill-feedback: Unauthorized content change: rust/notes/old.md"],

@@ -530,8 +530,9 @@ On the two managed Macs, the managed skills workflow is `agent-skills` (private
 `~/.local/share/agent-skills`, with the source checkout in `repository/`, the installed
 releases in `releases/`, the `current` link to the active release, `public-export/`,
 `config.json` and the feedback store `skill-feedback/`. Its cache is
-`~/.cache/agent-skills`, and its LaunchAgents are `com.syz51.agent-skills.sync`,
-`.weekly`, `.public-export` and `.monitor`.
+`~/.cache/agent-skills`, and its LaunchAgent labels are `com.syz51.agent-skills.sync`,
+`.weekly`, `.public-export` and `.monitor`; each Mac runs only the jobs the workflow
+assigns to it.
 
 `~/.claude/skills` is the single discovery root. Each of the six managed skills
 (`frontend-ui`, `typescript`, `rust`, `tauri`, `content-research-writer` and
@@ -1192,7 +1193,7 @@ in CI:
   too. Under `~/.local/share/agent-skills/skill-feedback`, records that other sessions
   append to a skill's `notes/` or `verifications/` pass, but an edited, removed or other
   added file fails. An agent-skills release that moves `current` passes when every skill
-  link text is unchanged. A retargeted link or an edit to the old
+  link text is unchanged, also through a two-hop link. A retargeted link or an edit to the old
   release fails. A claimed but unsaved artifact or an unwritable report fails too. So do a review
   the session runs itself, in another agent type, in a worktree, not pinned to the commit
   or through `/code-review`, a follow-up answered only after the review, and a review

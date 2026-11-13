@@ -148,7 +148,7 @@ describe("proposal rules", () => {
 
   test("the proposer may not read private sources: a folder gets its absolute rule, and its ~/ rule under home", () => {
     const denies = readDenies(["/home/me/.local/share/claude-factory", "/srv/state", "/home/me/.claude/projects"], "/home/me");
-    expect(denies).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.claude/projects/**)", "Read(~/.codex/**)",
+    expect(denies).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.claude/projects/**)", "Read(~/.codex/**)", "Read(~/.local/share/agent-skills/skill-feedback/**)",
       "Read(//home/me/.local/share/claude-factory/**)", "Read(~/.local/share/claude-factory/**)", "Read(//srv/state/**)", "Read(//home/me/.claude/projects/**)"]));
     expect(denies.filter((rule) => rule === "Read(~/.claude/projects/**)")).toHaveLength(1);
     expect(denies.some((rule) => rule.startsWith("Read(~/") && rule.includes("srv"))).toBe(false);
