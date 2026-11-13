@@ -1,5 +1,6 @@
 {
   "syncClaudeAiSkills": false,
+  "disableClaudeAiConnectors": true,
   "attribution": {
     "commit": "",
     "pr": "",

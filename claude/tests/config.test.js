@@ -53,8 +53,8 @@ const POINTERS = {
 };
 
 // These agents never get the claude.ai Gmail and Docs connectors: their instructions and
-// schemas add about 1.5k tokens to each such subagent's prompt (dotfiles-116). Built-in
-// agent types still get them.
+// schemas add about 1.5k tokens to each such subagent's prompt (dotfiles-116). Settings
+// now turn connectors off everywhere; this deny still holds if they are turned back on.
 const CONNECTORS = ["mcp__claude_ai_Gmail", "mcp__claude_ai_Claude_Docs"];
 // Tools no subagent called in a week of transcripts: the parent records review outcomes
 // (ReportFindings), and a subagent has no agents to list. Their schemas were about 1.4k
@@ -322,10 +322,11 @@ describe("settings", () => {
     expect(tracked("claude/hooks/worktree-rule.js")).toBe(true);
   });
 
-  // The claude.ai Gmail connector is the Claude counterpart of Codex's Gmail plugin; it
-  // signs in only on claude.ai, so it loads only through claude.ai connectors.
-  test("claude.ai connectors load, so the Gmail connector is available", () => {
-    expect(settings.disableClaudeAiConnectors).toBeUndefined();
+  // The owner rarely uses the claude.ai connectors (Gmail, Claude Docs), and their tool schemas
+  // cost tokens in every session. T3 Claude sessions load user settings, so this one key also
+  // covers T3 threads and their subagents (dotfiles-509). Delete it to bring them back.
+  test("claude.ai connectors are off", () => {
+    expect(settings.disableClaudeAiConnectors).toBe(true);
   });
 
   // A `!`cmd`` line in a skill or custom slash command runs without PreToolUse hooks, so the
