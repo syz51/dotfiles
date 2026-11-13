@@ -50,7 +50,7 @@ describe("setups", () => {
     expect(loadSetups().find((entry) => entry.id === "skills").channel).toBe("skill-notes");
     // CI friction goes to the board of the repository whose workflows or branch rules got in the way.
     expect(loadSetups().find((entry) => entry.id === "ci").owner).toEqual({ repo: "<project>", board: "<project>" });
-    // In-repo skills route to the dotfiles board, not to codex-skills' skill notes.
+    // In-repo skills route to the dotfiles board, not to agent-skills' skill notes.
     expect(loadSetups().find((entry) => entry.id === "cheat-sheets")).toMatchObject({
       covers: expect.arrayContaining(["claude/skills/cheat-sheets"]),
       owner: { repo: "github.com/syz51/dotfiles", board: "dotfiles" },
@@ -140,7 +140,7 @@ verify = ["y"]
   test("owners: <project> and skill-notes setups without a board are valid; ids are bounded", () => {
     const registry = valid();
     registry.setup.find((entry) => entry.id === "project").owner = { repo: "<project>", board: "<project>" };
-    Object.assign(registry.setup.find((entry) => entry.id === "skills"), { channel: "skill-notes", owner: { repo: "codex-skills" } });
+    Object.assign(registry.setup.find((entry) => entry.id === "skills"), { channel: "skill-notes", owner: { repo: "agent-skills" } });
     registry.setup.push(setup("a:b_c-1"), setup("x".repeat(41)));
     expect(problems(registry)).toEqual([`${"x".repeat(41)}: id must be 1-40 characters of [a-z0-9:_-]`]);
     registry.setup.pop();

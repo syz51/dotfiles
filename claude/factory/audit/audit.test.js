@@ -68,7 +68,7 @@ const env = (extra = {}) => childEnv(process.env, {
   HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_FACTORY_STATE: join(scratch, "state"), PATH: "/usr/bin:/bin", ...extra,
 });
 const cli = async (args, extra) => {
-  const result = await runProcess([process.execPath, CLI, "audit", "--codex-skills", join(scratch, "codex"), ...args], { cwd: scratch, env: env(extra) });
+  const result = await runProcess([process.execPath, CLI, "audit", "--agent-skills", join(scratch, "agent-skills"), ...args], { cwd: scratch, env: env(extra) });
   return { ...result, all: `${result.stdout}\n${result.stderr}` };
 };
 const json = async (args = [], extra) => {
@@ -90,7 +90,7 @@ describe("audit command", () => {
     expect(found["mcp.claude-ai-connectors-on"].severity).toBe("info");
     expect(found["plugin:formatter@team"].severity).toBe("low");
     expect(found["plugin:off@team"]).toBeUndefined();
-    expect(found["codex-skills.review-missing"].severity).toBe("info");
+    expect(found["agent-skills.review-missing"].severity).toBe("info");
     for (const item of report.findings) {
       expect(["high", "medium", "low", "info"]).toContain(item.severity);
       expect(item.fix.length).toBeGreaterThan(0);
@@ -151,12 +151,12 @@ describe("audit command", () => {
     expect(found["agent:runner:read-only-by-instruction"]).toBeUndefined();
   });
 
-  test("checks whether the codex-skills weekly review runs unsandboxed", async () => {
-    const file = join(scratch, "codex", "scripts", "claude_cli.py");
+  test("checks whether the agent-skills weekly review runs unsandboxed", async () => {
+    const file = join(scratch, "agent-skills", "scripts", "claude_cli.py");
     write(file, "def review_command(cli):\n    return [str(cli), '--print', '--permission-mode', 'bypassPermissions']\n");
-    expect(byId((await json()).report)["codex-skills.review-unsandboxed"].severity).toBe("high");
+    expect(byId((await json()).report)["agent-skills.review-unsandboxed"].severity).toBe("high");
     write(file, "def review_command(cli):\n    return [str(cli), '--permission-mode', 'bypassPermissions', '--settings', PROFILE]\n");
-    expect(byId((await json()).report)["codex-skills.review-settings"].severity).toBe("info");
+    expect(byId((await json()).report)["agent-skills.review-settings"].severity).toBe("info");
   });
 
   test("a baseline accepts findings by id; --fail-on sets the threshold for the rest", async () => {
@@ -239,7 +239,7 @@ describe("audit internals", () => {
   test("settings equal to the unattended profile pass the audit's sandbox checks", async () => {
     const profile = readProfile(UNATTENDED);
     write(join(config, "settings.json"), { ...profile, permissions: { ...profile.permissions, defaultMode: "bypassPermissions" }, disableClaudeAiConnectors: true });
-    const findings = await audit({ paths: { home, configDir: config, claudeJson: join(scratch, "none.json"), codexSkills: join(scratch, "codex") }, env: env() });
+    const findings = await audit({ paths: { home, configDir: config, claudeJson: join(scratch, "none.json"), agentSkills: join(scratch, "agent-skills") }, env: env() });
     const flagged = findings.filter((item) => item.severity !== "info" && /^(sandbox|permissions)\./.test(item.id)).map((item) => `${item.severity} ${item.id}`);
     expect(flagged).toEqual(["medium permissions.default-bypass"]);
   });

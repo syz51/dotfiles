@@ -525,10 +525,22 @@ Install the needed skills and their references from
 discovers personal skills under `~/.claude/skills`; see
 [Extend Claude with skills](https://code.claude.com/docs/en/skills).
 
-On the two managed Macs, preserve the existing source checkout at
-`~/.local/share/codex-skills/repository` and discovery links through
-`~/.local/share/codex-skills/current/skills/<skill>`. Update the managed source
-rather than editing installed releases. Dotfiles alone does not install skills,
+On the two managed Macs, the managed skills workflow is `agent-skills` (private
+`syz51/agent-skills`; named `codex-skills` until 2026-11-13). Its install root is
+`~/.local/share/agent-skills`, with the source checkout in `repository/`, the installed
+releases in `releases/`, the `current` link to the active release, `public-export/`,
+`config.json` and the feedback store `skill-feedback/`. Its cache is
+`~/.cache/agent-skills`, and its LaunchAgents are `com.syz51.agent-skills.sync`,
+`.weekly`, `.public-export` and `.monitor`.
+
+`~/.claude/skills` is the single discovery root. Each of the six managed skills
+(`frontend-ui`, `typescript`, `rust`, `tauri`, `content-research-writer` and
+`find-skills`) is a one-hop link there to
+`~/.local/share/agent-skills/current/skills/<skill>`. The workflow keeps no managed
+links in `~/.agents/skills` or `~/.codex/skills`. The six dotfiles-owned skills stay
+tracked in `claude/skills`, and `.gitignore` ignores every other entry there, so the
+managed links are never committed. Preserve the source checkout and these links, and
+update the managed source rather than editing installed releases. Dotfiles alone does not install skills,
 configure feedback capture, or create the daily maintenance and audit jobs;
 those are configured separately through the managed skills workflow. Keep
 machine-specific links, credentials and job state outside this repository.
@@ -619,7 +631,7 @@ the rubric version to rescore past ones.
 agents, hooks, settings, skills, storage and T3 Code to each tool configured here, a
 project's own setup and `other`. Each entry gives the `id` agents name with
 `board feedback --about <id>`, what it covers, its owner (repository, board and optional
-parent task), its channel (`skill-notes` for codex-skills skills, which record their own
+parent task), its channel (`skill-notes` for agent-skills skills, which record their own
 feedback), how a change is made and how to verify it. The feedback board's triage routes
 reports with it. `setups --check` validates the schema and ids and checks that the
 repository paths in `covers` exist; add an entry when you add a component. A setup whose
@@ -707,7 +719,7 @@ and falls back to the claude.ai subscription otherwise. The planner,
 `claude/bin/api-first.js`, documents the details; in short:
 
 - The key file is `API_FIRST_KEY_FILE`, default
-  `~/.local/share/codex-skills/anthropic-api-key` (mode 600, shared with the codex-skills
+  `~/.local/share/agent-skills/anthropic-api-key` (mode 600, shared with the agent-skills
   pipeline). Claude Code gets it through an `apiKeyHelper` merged into the run's last
   `--settings`, so it is not in the environment, where an `env` dump would expose it by
   accident. It is not hidden from the agent: a session running as you can read the file.
@@ -1177,10 +1189,10 @@ in CI:
   behind. One still running after the wait is killed and fails the suite. A
   check that tampers with the fixture when re-run fails, and so do a single-track task
   handed to a subagent and a forbidden guidance read in a subagent. Configuration drift fails
-  too. Under `~/.codex/skill-feedback`, records that other sessions append to a skill's
-  `notes/` or `verifications/` pass, but an edited, removed or other added file fails.
-  A codex-skills release that moves `current` passes when every skill link text is
-  unchanged, also through `~/.agents/skills`. A retargeted link or an edit to the old
+  too. Under `~/.local/share/agent-skills/skill-feedback`, records that other sessions
+  append to a skill's `notes/` or `verifications/` pass, but an edited, removed or other
+  added file fails. An agent-skills release that moves `current` passes when every skill
+  link text is unchanged. A retargeted link or an edit to the old
   release fails. A claimed but unsaved artifact or an unwritable report fails too. So do a review
   the session runs itself, in another agent type, in a worktree, not pinned to the commit
   or through `/code-review`, a follow-up answered only after the review, and a review

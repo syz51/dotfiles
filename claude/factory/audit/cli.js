@@ -8,7 +8,7 @@ import { SEVERITIES, audit, auditPaths, rank } from "./audit.js";
 const USAGE = `Usage: bun ~/.claude/factory/cli.js audit [options]
 
 Reads ~/.claude (or CLAUDE_CONFIG_DIR) settings, hooks, agents, MCP servers in .claude.json
-(names and types only) and the codex-skills weekly review, and reports findings by severity.
+(names and types only) and the agent-skills weekly review, and reports findings by severity.
 
 Options:
   --json                 Print findings as JSON
@@ -18,7 +18,7 @@ Options:
                          a finding that later grows more severe is no longer accepted
   --fail-on <severity>   Exit 1 on a finding at or above it that the baseline lacks:
                          ${[...SEVERITIES].reverse().join(", ")} or none (default: medium)
-  --codex-skills <path>  codex-skills checkout (default: ~/.local/share/codex-skills/repository)
+  --agent-skills <path>  agent-skills checkout (default: ~/.local/share/agent-skills/repository)
   -h, --help             Show this help`;
 
 const OPTIONS = {
@@ -27,7 +27,7 @@ const OPTIONS = {
   baseline: { type: "string" },
   "update-baseline": { type: "boolean" },
   "fail-on": { type: "string", default: "medium" },
-  "codex-skills": { type: "string" },
+  "agent-skills": { type: "string" },
   help: { type: "boolean", short: "h" },
 };
 
@@ -78,7 +78,7 @@ export async function run(argv) {
     return 0;
   }
   const baselinePath = options.baseline ?? join(stateDir(), "audit-baseline.json");
-  const paths = auditPaths(process.env, { codexSkills: options["codex-skills"] });
+  const paths = auditPaths(process.env, { agentSkills: options["agent-skills"] });
   const findings = await audit({ paths, withTests: options["with-tests"] });
 
   if (options["update-baseline"]) {

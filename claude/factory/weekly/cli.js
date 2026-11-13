@@ -192,7 +192,7 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
   }
 }
 
-// The LaunchAgent: Mondays at 13:30, after the codex-skills weekly review's Monday 09:00 slot.
+// The LaunchAgent: Mondays at 13:30, after the agent-skills weekly review's Monday 09:00 slot.
 // launchd runs a missed calendar job once when the Mac wakes.
 export function plist({ bun = process.execPath, cli = join(homedir(), ".claude", "factory", "cli.js"), path = process.env.PATH, home = homedir(), logs = stateDir() } = {}) {
   return plistText({ label: LABEL, args: [bun, cli, "weekly", "run", "--notify"], schedule: { weekday: 1, hour: 13, minute: 30 }, path, home, logs, logName: "weekly" });

@@ -11,7 +11,8 @@
 // web tools, so the profile also confines Write/Edit/NotebookEdit to the working folders
 // and denies WebFetch and WebSearch.
 //
-// maintainer-sandbox.json: draft for the codex-skills weekly review (not applied yet).
+// maintainer-sandbox.json: the agent-skills weekly review passes it as --settings
+// (scripts/claude_cli.py there), so its paths must match that workflow's install root.
 //
 // Key names and semantics: code.claude.com/docs/en/settings-reference (sandbox.*,
 // permissions.*) and code.claude.com/docs/en/sandboxing, checked against Claude Code

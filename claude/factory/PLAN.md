@@ -5,7 +5,7 @@ modeled on the "software factory" talk (Zach Lloyd, Warp, X video 21111650232381
 goal, evidence, decisions and log. Open tasks live on the `dotfiles` work board
 (**Next actions**); add newly found tasks there, and findings and decisions here.
 
-Started 2026-11-05 on `sunmacbook-air` (this Mac is also the codex-skills maintainer).
+Started 2026-11-05 on `sunmacbook-air` (this Mac is also the agent-skills maintainer).
 
 **This repository is public.** Keep server addresses, logins, private repository
 contents, transcript text and personal data out of every tracked file, this one included.
@@ -48,7 +48,8 @@ review on sai** for the feasibility notes the user asked about.
   5.5 $0.10/$0.50 (up to 100K-token prompts; $0.50/$2.50 above); cache writes 1.25x input
   (5 minutes) and 2x (1 hour). Only a fallback: prefer `cost-state`. Models missing from
   the table (Codex's GPT models) take LiteLLM's public price list.
-- codex-skills (`~/.local/share/codex-skills/repository`, private `syz51/codex-skills`):
+- agent-skills (`~/.local/share/agent-skills/repository`, private `syz51/agent-skills`;
+  named codex-skills until 2026-11-13, and the dated entries below keep that name):
   hourly capture and source checks on the Air (the Pro runs no Claude since 2026-11-12), daily maintainer on this Mac via launchd.
   Its security posture is covered by the local `audit` (details stay in the state folder:
   `notes/codex-skills-private.md`).

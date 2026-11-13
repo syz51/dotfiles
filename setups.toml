@@ -77,12 +77,15 @@ verify = ["bun test claude/marketplace claude/tests/config.test.js"]
 
 [[setup]]
 id = "skills"
-title = "Agent skills (codex-skills)"
-covers = ["the skills installed from codex-skills: frontend-ui, typescript, rust, tauri and others"]
-owner = { repo = "codex-skills" }
+title = "Agent skills (agent-skills)"
+covers = [
+  "the six skills installed from syz51/agent-skills: frontend-ui, typescript, rust, tauri, content-research-writer and find-skills",
+  "their layout: ~/.claude/skills is the single discovery root, and each managed skill is a one-hop link there to ~/.local/share/agent-skills/current/skills/<skill>",
+]
+owner = { repo = "agent-skills" }
 channel = "skill-notes"
-change = "Each skill records its own feedback in references/feedback.md; the codex-skills review and release workflow applies it"
-verify = ["the skill's own evaluation in codex-skills"]
+change = "Each skill records its own feedback in references/feedback.md; the agent-skills review and release workflow applies it"
+verify = ["the skill's own evaluation in agent-skills"]
 
 [[setup]]
 id = "headless-browser"
