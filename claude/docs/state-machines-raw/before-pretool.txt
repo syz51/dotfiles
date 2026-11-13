@@ -1,0 +1,22 @@
+ 6:23  up 41 days, 13:39, 1 user, load averages: 1.75 1.93 2.02
+guard-git-push | ls -la	median 8.1 ms	p95 9.6 ms	min 8.0	exit 0	n=20
+guard-git-push | git status	median 8.1 ms	p95 8.2 ms	min 7.9	exit 0	n=20
+guard-git-push | git push origin HEAD	median 9.0 ms	p95 10.3 ms	min 8.8	exit 0	n=20
+guard-git-push | bun test claude/hooks	median 8.0 ms	p95 8.3 ms	min 7.9	exit 0	n=20
+guard-git-push | git switch main	median 8.1 ms	p95 8.3 ms	min 8.0	exit 0	n=20
+guard-runtimes | ls -la	median 8.2 ms	p95 8.4 ms	min 8.2	exit 0	n=20
+guard-runtimes | git status	median 8.2 ms	p95 8.4 ms	min 8.1	exit 0	n=20
+guard-runtimes | git push origin HEAD	median 9.6 ms	p95 21.3 ms	min 8.1	exit 0	n=20
+guard-runtimes | bun test claude/hooks	median 8.2 ms	p95 9.4 ms	min 8.1	exit 0	n=20
+guard-runtimes | git switch main	median 8.2 ms	p95 8.3 ms	min 8.1	exit 0	n=20
+guard-main-checkout | ls -la	median 8.1 ms	p95 8.9 ms	min 8.0	exit 0	n=20
+guard-main-checkout | git status	median 8.9 ms	p95 9.1 ms	min 8.8	exit 0	n=20
+guard-main-checkout | git push origin HEAD	median 8.9 ms	p95 9.1 ms	min 8.8	exit 0	n=20
+guard-main-checkout | bun test claude/hooks	median 8.2 ms	p95 9.5 ms	min 8.0	exit 0	n=20
+guard-main-checkout | git switch main	median 13.5 ms	p95 14.0 ms	min 13.3	exit 0	n=20
+guard-pr-merge | ls -la	median 8.2 ms	p95 8.3 ms	min 8.1	exit 0	n=20
+guard-pr-merge | git status	median 8.2 ms	p95 8.6 ms	min 8.1	exit 0	n=20
+guard-pr-merge | git push origin HEAD	median 8.2 ms	p95 8.5 ms	min 8.1	exit 0	n=20
+guard-pr-merge | bun test claude/hooks	median 8.3 ms	p95 9.6 ms	min 8.2	exit 0	n=20
+guard-pr-merge | git switch main	median 8.2 ms	p95 8.4 ms	min 8.1	exit 0	n=20
+bun -e 0 (runtime floor)	median 4.9 ms	p95 5.0 ms	min 4.8	exit 0	n=20

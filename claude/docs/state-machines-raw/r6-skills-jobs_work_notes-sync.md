@@ -1,0 +1,12 @@
+# sync.py working notes (clone HEAD 7e772d6)
+- 1-280 read.
+- imports: prompt_runtime (excluded), evidence (excluded), capture.SKILLS/codex_home (in area). Indented imports: sync.py:352 investigations (excluded).
+- git() 38-43: subprocess.run with NO timeout (S2). Error only 'Git operation failed: <subcmd>' (info loss by design, comment 41).
+- clean 48-52: any non-empty status --porcelain -> SyncError (S1 leftovers block forever). Also branch must be main.
+- fetch 54-60: SyncError -> print, return False.
+- worktree 62-70: add before try; finally worktree remove --force; masked exception if remove fails (minor); kill in body leaves registration + skill-sync-* tmp (S8). Verify.
+- remote_ref 72-78: inbox/<host> missing -> silently origin/main (S11).
+- upload 90-176: stateless (fresh worktree each run), idempotent; fetch fail -> False (91-92); note_records(ref) full parse (94); push failure -> False (170-174) with 'Upload deferred'. Each note: cat-file blob + sidecar cat-file (219,220->198).
+- note_records 209-239: per note 2 cat-file spawns (note blob, sidecar via provenance); aliases 1 spawn; ONE malformed note (no sidecar, bad sha) raises SyncError for whole call (217-218, 221-222): poison-state candidate (inbox branch content, fail closed). Check callers.
+- verification_records 241-261: calls note_records(repo, ref) full parse at 242 (S4) + cat-file per receipt (253).
+- collect 263-: clean() then fetch then merge --ff-only at 267 (SyncError on non-ff).

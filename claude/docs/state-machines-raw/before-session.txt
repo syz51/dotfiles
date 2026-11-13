@@ -1,0 +1,9 @@
+ 6:24  up 41 days, 13:40, 1 user, load averages: 2.12 1.98 2.03
+stale-base session-start (local origin, up to date)	median 88.0 ms	p95 90.7 ms	min 86.6	exit 0	n=20
+stale-base (main checkout: early exit)	median 12.0 ms	p95 12.4 ms	min 11.8	exit 0	n=20
+stale-base (real origin over network, this worktree)	median 881.6 ms	p95 904.0 ms	min 871.1	exit 0	n=5
+freshen-base (EnterWorktree, local origin main checkout)	median 26.6 ms	p95 35.6 ms	min 25.9	exit 0	n=20
+freshen-base (Agent without isolation)	median 7.4 ms	p95 8.5 ms	min 7.3	exit 0	n=20
+zsh -i -c exit	median 54.1 ms	p95 58.8 ms	min 52.0	exit 0	n=10
+zsh -l -i -c exit	median 62.6 ms	p95 66.8 ms	min 61.7	exit 0	n=10
+zsh -c exit (non-interactive, as Bash tool)	median 1.9 ms	p95 2.0 ms	min 1.7	exit 0	n=10

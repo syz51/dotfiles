@@ -1,0 +1,35 @@
+# jobs.py working notes (HEAD 7e772d6; clone line numbers)
+- 1-260 read.
+- update_checkout 53-123: states deferred 82-83; failed 84-88 (open lock / rev-parse common dir), busy 91-93 (LOCK_NB), failed 100-101, fetch_failed 104-106, rev-list at 109-110 inside try 107-122 -> merge_failed 116-122 (J2 confirmed in r1).
+- git() helper 62-80: per-call timeout, killpg on timeout; TimeoutExpired re-raised.
+- save 139-142: writes path.with_suffix('.tmp'), no fsync, fixed tmp name.
+- save_status 145-149: blocking flock LOCK_EX (J4/G5 wait with no limit).
+- skip_sync 160-188: blocking flock 172; running phase -> no annotation (176-177) by docstring design.
+- new_status 191-204: corrupt previous status -> {} silently (193-195): loses last_success/failure timestamps (status-file candidate).
+- run 211-236: timeout kills group; RuntimeError 'Command failed: name' drops returncode (235-236) (info loss, minor).
+- 260-540 read.
+- review 283-314: env.pop('CLAUDE_CODE_PROMPT_CACHE_TTL') at 287 (J9, check claude_cli.child_env). Report is written into state_root (=attempt folder) at 314.
+- review_learning_cycle 334-494 (attempt states: preparing, failed, running, validated, superseded; cleanup_pending):
+  - 357 json.loads(active) with no guard -> corrupt active-attempt.json raises ValueError on every run (main catches ValueError at ~779): candidate W-active (no exit?) verify.
+  - 359-365 checkout_of raises ValueError 'Unsafe saved investigation attempt' if work/.git missing -> every run fails (no exit) if work folder removed by hand. Candidate W-work. Verify.
+  - 380-384 base/due/stale -> superseded; new attempt at 385.
+  - 398-405 prepare failure recorded as failed, re-raised.
+  - 414-415 resumed attempt with cycle None: investigations.prepare call is outside any try: failure does not write attempt.json status/failure -> old failure record persists (failure info loss). Candidate R1. Verify.
+  - 420 status running saved; 467 ff-only merge into main; 476-478 validated saved. J8 window = between 467 and 478. Verify with fake-git kill after merge.
+  - 481-490 cleanup in try; cleanup_pending recorded (no status change).
+  - 497-: retire_attempts keeps checkouts with commits not in main (docstring 502-503, by design?) -> kept forever.
+- 540-795 read (whole jobs.py read: 1-795).
+- execute 554-765:
+  - 579-580: weekly-state.json read with json.loads for BOTH sync and weekly (no guard): corrupt file -> ValueError -> main 'Job stopped', every hourly sync fails before upload/capture. Candidate S-state (corrupt weekly-state.json blocks sync). Probe.
+  - 587 cycle.lock; 592-601 try_lock loop; weekly busy -> return 0 silently (593-594) (J5). sync waits SYNC_LOCK_WAIT 900 then skip_sync.
+  - 606-609 weekly: save(state) then weekly_due check -> return 0 with no status write (hourly, by design?).
+  - 617-619 status_path; new_status; save_status phase running (before try at 674).
+  - 632-652 stage(): defer -> errors appended, no raise (J6/README 156 by design?). CommandTimedOut -> cause timeout (644-645).
+  - 654-666 source_stage: stale check (661-662). 
+  - 680-685 weekly: collect only if not errors (defer backlog blocks review/publish).
+  - 687-703 run_review: finally at 696-699 may raise (json.loads active) masking original error: candidate (minor, info loss).
+  - 733-737 completed_due saved only at 737 after publish (706) and prompt stage: kill between publish and 737 -> weekly replays next hour (crash window W-replay; cost/duplicate publish?). Probe with monkeypatch.
+  - 747-756 checkout update runs for sync even when failed (by design comment 748-749).
+  - 747-764 outside the try at 674-739 and before 619-673: non-listed exception classes (AttributeError etc.) escape -> status stays phase running (J10). Probe.
+- main 768-791: catches OSError, ValueError, KeyError only (779). Line 786 writes str(error) into status 'error' although 741-742 forbids copying exception text (privacy-rule inconsistency; note, not state gap).
+- weekly stale running: kill during weekly leaves weekly-status phase running; next hourly weekly retry rewrites it only if weekly still due (608-609 returns before status write when not due; completed_due moves only on success). Need probe.
