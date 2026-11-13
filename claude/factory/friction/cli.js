@@ -75,7 +75,7 @@ const line = (text, max) => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
-// Sessions the capture leaves alone: automation (temporary folders, codex-skills
+// Sessions the capture leaves alone: automation (temporary folders, agent-skills
 // maintenance, benchmark fixtures) and the factory's own runs, which work in its state
 // folder. Its judge calls save no session at all.
 export const skippedCwd = (cwd, state = stateDir()) => isAutomation(cwd) || (cwd !== null && (cwd === state || cwd.startsWith(`${state}/`)));

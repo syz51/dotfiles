@@ -812,7 +812,7 @@ describe("work stages", () => {
 });
 
 // Without its own id, an agent may report a skill's guidance problem as `skills`, which
-// routes to codex-skills, the wrong owner.
+// routes to agent-skills, the wrong owner.
 describe("in-repo skills' feedback channels", () => {
   const SKILLS = ["cheat-sheets", "full-stop", "headless-browser", "ui-climb"];
 

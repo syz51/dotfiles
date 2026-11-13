@@ -36,7 +36,7 @@
 // `bun api-first.js spend` sums the log by caller and day.
 //
 // Variables (named API_FIRST_* because callers strip CLAUDE_* from a child's environment):
-//   API_FIRST_KEY_FILE   key file, default ~/.local/share/codex-skills/anthropic-api-key
+//   API_FIRST_KEY_FILE   key file, default ~/.local/share/agent-skills/anthropic-api-key
 //   API_FIRST_STATE      state folder, default ${XDG_STATE_HOME:-~/.local/state}/claude-api
 //   API_FIRST_REAL_BIN   the real claude, default the first on PATH other than this wrapper
 //   API_FIRST_BASE_URL   API base URL for the credit check (tests)
@@ -71,7 +71,7 @@ const SHIM_DIR = resolve(import.meta.dir, "api-first");
 const OWN_AUTH = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"];
 
 const home = (env) => env.HOME || homedir();
-export const keyFile = (env = process.env) => env.API_FIRST_KEY_FILE || join(home(env), ".local", "share", "codex-skills", "anthropic-api-key");
+export const keyFile = (env = process.env) => env.API_FIRST_KEY_FILE || join(home(env), ".local", "share", "agent-skills", "anthropic-api-key");
 export const stateDir = (env = process.env) => env.API_FIRST_STATE || join(env.XDG_STATE_HOME || join(home(env), ".local", "state"), "claude-api");
 export const decisionLog = (env = process.env) => join(stateDir(env), "decisions.jsonl");
 

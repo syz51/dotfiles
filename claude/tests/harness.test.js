@@ -33,24 +33,26 @@ beforeEach(() => {
     writeFileSync(join(home, "releases", release, "SKILL.md"), "# TypeScript\n");
   }
   for (const [path, content] of [["rust/notes/old.md", "# Old note\n"], ["rust/verifications/old.json", "{}\n"]]) {
-    mkdirSync(join(home, ".codex", "skill-feedback", path, ".."), { recursive: true });
-    writeFileSync(join(home, ".codex", "skill-feedback", path), content);
+    mkdirSync(join(home, ".local", "share", "agent-skills", "skill-feedback", path, ".."), { recursive: true });
+    writeFileSync(join(home, ".local", "share", "agent-skills", "skill-feedback", path), content);
   }
   mkdirSync(join(home, ".claude", "skills"));
   symlinkSync(join(home, "releases", "typescript"), join(home, ".claude", "skills", "typescript"));
-  // codex-skills releases as installed: skill links reach `current`, find-skills by way of
-  // ~/.agents/skills. release-b, the next release, changes rust.
-  const codex = join(home, ".local", "share", "codex-skills");
+  // agent-skills releases as installed: each managed skill is a one-hop link from
+  // ~/.claude/skills into `current`. release-b, the next release, changes rust.
+  const install = join(home, ".local", "share", "agent-skills");
   for (const [release, rust] of [["release-a", "# Rust\n"], ["release-b", "# Rust, revised\n"]])
     for (const [skill, content] of [["rust", rust], ["find-skills", "# Find skills\n"]]) {
-      mkdirSync(join(codex, "releases", release, "skills", skill), { recursive: true });
-      writeFileSync(join(codex, "releases", release, "skills", skill, "SKILL.md"), content);
+      mkdirSync(join(install, "releases", release, "skills", skill), { recursive: true });
+      writeFileSync(join(install, "releases", release, "skills", skill, "SKILL.md"), content);
     }
-  symlinkSync(join(codex, "releases", "release-a"), join(codex, "current"));
-  mkdirSync(join(home, ".agents", "skills"), { recursive: true });
-  symlinkSync(join(codex, "current", "skills", "find-skills"), join(home, ".agents", "skills", "find-skills"));
-  symlinkSync(join(codex, "current", "skills", "rust"), join(home, ".claude", "skills", "rust"));
-  symlinkSync(join(home, ".agents", "skills", "find-skills"), join(home, ".claude", "skills", "find-skills"));
+  symlinkSync(join(install, "releases", "release-a"), join(install, "current"));
+  symlinkSync(join(install, "current", "skills", "rust"), join(home, ".claude", "skills", "rust"));
+  // The guard follows a link chain of any length, so find-skills gets a second hop here,
+  // which the installed layout no longer has.
+  mkdirSync(join(home, "links"));
+  symlinkSync(join(install, "current", "skills", "find-skills"), join(home, "links", "find-skills"));
+  symlinkSync(join(home, "links", "find-skills"), join(home, ".claude", "skills", "find-skills"));
   mkdirSync(join(root, "bin"));
   writeFileSync(join(root, "bin", "claude"), `#!/bin/sh\nexec "${process.execPath}" "${join(TESTS, "lib", "fake-claude.js")}" "$@"\n`);
   chmodSync(join(root, "bin", "claude"), 0o755);
@@ -277,11 +279,11 @@ describe("configuration must not change during a run", () => {
   test("skill feedback records appended by other sessions pass", async () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-feedback-append");
     expect(run.code, output(run)).toBe(0);
-    expect(existsSync(join(home, ".codex", "skill-feedback", "tauri", "verifications", "first.json"))).toBe(true);
+    expect(existsSync(join(home, ".local", "share", "agent-skills", "skill-feedback", "tauri", "verifications", "first.json"))).toBe(true);
     assertCleanedUp();
   }, 30_000);
 
-  test("a codex-skills release that moves current passes, through ~/.agents/skills too", async () => {
+  test("an agent-skills release that moves current passes, through a two-hop link too", async () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-release-switch");
     expect(run.code, output(run)).toBe(0);
     expect(realpathSync(join(home, ".claude", "skills", "find-skills"))).toContain("/release-b/");
@@ -292,7 +294,7 @@ describe("configuration must not change during a run", () => {
   for (const [mode, message] of [
     ["chinese-drift", "CLAUDE.md"],
     ["chinese-retarget", "skills/typescript"],
-    ["chinese-agents-retarget", "skills/find-skills: Type, mode or link changed: ."],
+    ["chinese-chain-retarget", "skills/find-skills: Type, mode or link changed: ."],
     ["chinese-release-old-edit", "skills/rust: Unauthorized content change: SKILL.md"],
     ["chinese-skill-edit", "skills/typescript: Unauthorized content change: SKILL.md"],
     ["chinese-feedback-edit", "skill-feedback: Unauthorized content change: rust/notes/old.md"],

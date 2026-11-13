@@ -230,11 +230,13 @@ function parseSubagents(dir) {
 // Temporary folders: the system's and macOS's.
 export const TEMP_DIRS = [tmpdir(), "/private/tmp", "/tmp", "/private/var/folders", "/var/folders"];
 
-// Sessions that automation runs rather than a person: codex-skills maintenance and
-// investigation copies, and fixtures in temporary folders.
+// Sessions that automation runs rather than a person: agent-skills maintenance and
+// investigation copies, and fixtures in temporary folders. The workflow was named
+// codex-skills until 2026-11-13, and transcripts from before the rename keep that folder
+// name, so both match.
 export function isAutomation(cwd, { temp = TEMP_DIRS } = {}) {
   if (!cwd) return false;
-  if (/\/codex-skills\/(?:investigations|review|maintenance)/.test(cwd)) return true;
+  if (/\/(?:agent|codex)-skills\/(?:investigations|review|maintenance)/.test(cwd)) return true;
   return temp.some((prefix) => cwd === prefix || cwd.startsWith(`${prefix}/`));
 }
 

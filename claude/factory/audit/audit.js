@@ -18,14 +18,14 @@ const finding = (id, severity, title, fix, detail) => ({ id, severity, title, fi
 
 // Paths the audit reads, from the environment it runs in. CLAUDE_CONFIG_DIR moves both
 // ~/.claude and ~/.claude.json (code.claude.com/docs/en/claude-directory).
-export function auditPaths(env = process.env, { codexSkills } = {}) {
+export function auditPaths(env = process.env, { agentSkills } = {}) {
   const home = env.HOME || homedir();
   const configDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude");
   return {
     home,
     configDir,
     claudeJson: env.CLAUDE_CONFIG_DIR ? join(configDir, ".claude.json") : join(home, ".claude.json"),
-    codexSkills: codexSkills || join(home, ".local", "share", "codex-skills", "repository"),
+    agentSkills: agentSkills || join(home, ".local", "share", "agent-skills", "repository"),
     hooksTests: join(import.meta.dir, "..", "..", "hooks"),
   };
 }
@@ -349,21 +349,21 @@ function agentFindings(configDir) {
   return findings;
 }
 
-// The codex-skills weekly review: unsandboxed when it runs bypassPermissions without a
+// The agent-skills weekly review: unsandboxed when it runs bypassPermissions without a
 // sandbox --settings.
-function codexSkillsFindings(repo) {
+function agentSkillsFindings(repo) {
   const file = join(repo, "scripts", "claude_cli.py");
-  if (!existsSync(file)) return [finding("codex-skills.review-missing", "info", "codex-skills claude_cli.py not found; review not checked", "None needed")];
+  if (!existsSync(file)) return [finding("agent-skills.review-missing", "info", "agent-skills claude_cli.py not found; review not checked", "None needed")];
   const text = readFileSync(file, "utf8");
   const bypass = /["']--permission-mode["']\s*,\s*["']bypassPermissions["']/.test(text) || /--permission-mode[ =]bypassPermissions/.test(text);
   const settings = /["']--settings["']/.test(text);
   if (bypass && !settings)
-    return [finding("codex-skills.review-unsandboxed", "high",
-      "codex-skills weekly review runs claude --permission-mode bypassPermissions with full tools and no sandbox --settings",
-      "Pass --settings with factory/audit/maintainer-sandbox.json in review_command (after the codex-skills thread merges)")];
+    return [finding("agent-skills.review-unsandboxed", "high",
+      "agent-skills weekly review runs claude --permission-mode bypassPermissions with full tools and no sandbox --settings",
+      "Pass --settings with factory/audit/maintainer-sandbox.json in review_command")];
   if (bypass)
-    return [finding("codex-skills.review-settings", "info", "codex-skills weekly review passes --settings; confirm it enables the sandbox", "None needed")];
-  return [finding("codex-skills.review", "info", "codex-skills weekly review does not use bypassPermissions", "None needed")];
+    return [finding("agent-skills.review-settings", "info", "agent-skills weekly review passes --settings; confirm it enables the sandbox", "None needed")];
+  return [finding("agent-skills.review", "info", "agent-skills weekly review does not use bypassPermissions", "None needed")];
 }
 
 // All findings for the setup the paths describe, ordered most severe first.
@@ -382,6 +382,6 @@ export async function audit({ paths, env = process.env, withTests = false }) {
   if (withTests) findings.push(await hookTestFinding(paths.hooksTests));
   findings.push(...mcpFindings(paths.claudeJson));
   findings.push(...agentFindings(paths.configDir));
-  findings.push(...codexSkillsFindings(paths.codexSkills));
+  findings.push(...agentSkillsFindings(paths.agentSkills));
   return findings.sort((a, b) => rank(b.severity) - rank(a.severity) || a.id.localeCompare(b.id));
 }

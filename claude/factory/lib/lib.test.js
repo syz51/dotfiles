@@ -373,7 +373,10 @@ describe("transcripts", () => {
   });
 
   test("automation sessions are recognized by their folder", () => {
+    expect(isAutomation("/Users/u/.local/share/agent-skills/investigations/attempts/x/work")).toBe(true);
+    // Transcripts from before the workflow's rename keep its old folder name.
     expect(isAutomation("/Users/u/.local/share/codex-skills/investigations/attempts/x/work")).toBe(true);
+    expect(isAutomation("/Users/u/work/other-skills/investigations")).toBe(false);
     expect(isAutomation("/private/tmp/fixture", { temp: ["/private/tmp"] })).toBe(true);
     expect(isAutomation("/Users/u/project", { temp: ["/private/tmp"] })).toBe(false);
     expect(isAutomation(null)).toBe(false);

@@ -87,14 +87,15 @@ function linkTexts(path) {
 const guardSnapshot = () => Object.fromEntries(guardedPaths().map((path) =>
   [path, { tree: snapshot(path, SNAPSHOT), links: linkTexts(path) }]));
 
-// Each codex-skills release (one per merged PR) lands in its own folder under releases/
-// and moves `current` to it. Skill links reach their skill through `current`, some by way
-// of ~/.agents/skills, so a release resolves them to the same skill in another release.
+// Each agent-skills release (one per merged PR) lands in its own folder under releases/
+// and moves `current` to it. Each managed skill is a one-hop link from ~/.claude/skills
+// into `current`, so a release resolves it to the same skill in another release. A longer
+// link chain is followed too.
 // That passes when every link text is unchanged and the old release's copy is still as
 // it was; a retargeted link or an edit to the old copy still fails.
-const codexReleases = () => join(homedir(), ".local", "share", "codex-skills", "releases");
+const skillReleases = () => join(homedir(), ".local", "share", "agent-skills", "releases");
 function releaseSwitched(before, after) {
-  const releases = codexReleases();
+  const releases = skillReleases();
   if (!existsSync(releases)) return false;
   const prefix = realpathSync(releases) + sep;
   const [from, to] = [before.tree["."].resolved, after.tree["."].resolved].map((path) =>
@@ -108,7 +109,7 @@ function releaseSwitched(before, after) {
 // Skill feedback jobs in other sessions append records under <skill>/notes and
 // <skill>/verifications while a run is going, so entries added there (and a new skill's
 // folder) do not fail it. Edits and removals of existing entries still do.
-const skillFeedback = () => join(homedir(), ".codex", "skill-feedback");
+const skillFeedback = () => join(homedir(), ".local", "share", "agent-skills", "skill-feedback");
 const appendedRecord = (key, entry) =>
   /^[^/]+\/(notes|verifications)(\/|$)/.test(key) || (entry.kind === "directory" && !key.includes("/"));
 function withoutAppendedRecords(before, after) {

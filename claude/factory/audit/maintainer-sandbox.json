@@ -24,8 +24,8 @@
     },
     "filesystem": {
       "allowWrite": [
-        "~/.local/share/codex-skills/investigations",
-        "~/.cache/codex-skills",
+        "~/.local/share/agent-skills/investigations",
+        "~/.cache/agent-skills",
         "~/.cache/uv",
         "~/.cargo/registry",
         "~/.cargo/git"
