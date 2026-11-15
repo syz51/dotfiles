@@ -222,10 +222,10 @@ describe("score command", () => {
     const kept = new Transcript().prompt("Fix it").text("Done");
     write([gone, kept]);
     judgeAnswer(answer());
-    const listSessions = transcripts.loadSessions;
+    const listSessions = transcripts.loadSessionsParallel;
     // Remove one transcript between listing and hashing, as a temporary session's cleanup does.
-    const spy = spyOn(transcripts, "loadSessions").mockImplementation((...args) => {
-      const sessions = listSessions(...args);
+    const spy = spyOn(transcripts, "loadSessionsParallel").mockImplementation(async (...args) => {
+      const sessions = await listSessions(...args);
       rmSync(sessions.find((session) => session.id === gone.sessionId).file);
       return sessions;
     });
@@ -241,11 +241,11 @@ describe("score command", () => {
   // Remove `gone`'s transcript when scoring first reads its records, after listing and
   // hashing are done.
   const removeOnRead = (gone) => {
-    const { loadSessions, readRecords } = transcripts;
+    const { loadSessionsParallel, readRecords } = transcripts;
     let listed = false;
     const spies = [
-      spyOn(transcripts, "loadSessions").mockImplementation((...args) => {
-        const sessions = loadSessions(...args);
+      spyOn(transcripts, "loadSessionsParallel").mockImplementation(async (...args) => {
+        const sessions = await loadSessionsParallel(...args);
         listed = true;
         return sessions;
       }),

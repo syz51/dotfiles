@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { judge } from "../lib/claude.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
 import { readFilesWithDeadline } from "../lib/probe.js";
-import { loadSessions } from "../lib/transcripts.js";
+import { loadSessionsParallel } from "../lib/transcripts.js";
 import { countCorrections } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
 import { buildDigest, DIGEST_CHARS } from "./digest.js";
@@ -231,9 +231,9 @@ function parseOptions(argv) {
 }
 
 // Sessions to consider: the explicit ones (by id or unique prefix), else the window's.
-function selectSessions(options, now) {
-  if (!options.sessions.length) return loadSessions({ since: now - options.days * 86_400_000 }).map((session) => ({ session, explicit: false }));
-  const all = loadSessions();
+async function selectSessions(options, now) {
+  if (!options.sessions.length) return (await loadSessionsParallel({ since: now - options.days * 86_400_000 })).map((session) => ({ session, explicit: false }));
+  const all = await loadSessionsParallel();
   return options.sessions.map((id) => {
     const matches = all.filter((session) => session.id === id || session.id.startsWith(id));
     if (matches.length !== 1) throw new Error(`--session ${id} matches ${matches.length} sessions`);
@@ -282,7 +282,7 @@ export async function run(argv, { now = Date.now() } = {}) {
   const reportLate = () => {
     if (Object.keys(late).length) console.log(`Skipped while scoring: ${summary(late)}.`);
   };
-  for (const { session, explicit } of selectSessions(options, now)) {
+  for (const { session, explicit } of await selectSessions(options, now)) {
     const sha = unlessGone(() => transcriptSha(session.file));
     const reason = sha === undefined ? GONE : ineligible(session, { sha, scored: keys.judged, errors: keys.errors, retryErrors: options.retryErrors, now, explicit });
     if (reason) {

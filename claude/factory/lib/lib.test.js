@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { spendSummary } from "../../bin/api-first.js";
 import { projectName } from "../../tests/lib/cleanup.js";
 import { main } from "../cli.js";
@@ -11,7 +12,7 @@ import { normalizeUsage, priceSource, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
 import * as transcripts from "./transcripts.js";
-import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, parseSession, readRecords, sessionFiles } from "./transcripts.js";
+import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, loadSessionsParallel, parseSession, readRecords, sessionFiles } from "./transcripts.js";
 
 const FAKE = join(import.meta.dir, "testing", "fake-claude.js");
 let scratch;
@@ -344,6 +345,55 @@ describe("transcripts", () => {
       writeFileSync(file, '{"a":1}\n[1]\n"s"\nnope\n');
       expect(readRecords(file)).toEqual({ records: [{ a: 1 }, [1]], malformed: 2 });
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("loadSessionsParallel gives loadSessions's sessions in its order, and fails on an unreadable transcript", async () => {
+    const day = Date.parse("2026-11-01T00:00:00Z");
+    const sessions = Array.from({ length: 12 }, (_, index) => ({
+      project: `-Users-test-project-${index % 3}`,
+      transcript: new Transcript({ start: day + index * 3_600_000 }).prompt(`task ${index}`).assistant([{ type: "text", text: `answer ${index}` }]),
+      subagents: index % 4 === 0 ? [{ id: "agent-a1", transcript: new Transcript({ start: day }).prompt("sub").assistant([{ type: "text", text: "done" }]), meta: { agentType: "explorer" } }] : [],
+      tail: index === 5 ? "not json\n" : "",
+    }));
+    const root = writeProjects(sessions);
+    try {
+      const expected = loadSessions({ root });
+      expect(expected.length).toBe(12);
+      // Three threads for twelve files: every thread parses, and the order must be restored.
+      expect(await loadSessionsParallel({ root, workers: 3, minFiles: 2 })).toEqual(expected);
+      const since = day + 6 * 3_600_000;
+      expect(await loadSessionsParallel({ root, since, workers: 3, minFiles: 2 })).toEqual(loadSessions({ root, since }));
+      // Below the file floor it parses on this thread.
+      expect(await loadSessionsParallel({ root, workers: 3, minFiles: 100 })).toEqual(expected);
+      const unreadable = join(root, "-Users-test-project-0", `${sessions[0].transcript.sessionId}.jsonl`);
+      chmodSync(unreadable, 0o000);
+      expect(() => loadSessions({ root })).toThrow();
+      await expect(loadSessionsParallel({ root, workers: 3, minFiles: 2 })).rejects.toMatchObject({ code: "EACCES" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("loadSessionsParallel skips a transcript removed after listing, and fails when a thread ends without an answer", async () => {
+    const day = Date.parse("2026-11-01T00:00:00Z");
+    const root = writeProjects(Array.from({ length: 6 }, (_, index) => ({ transcript: new Transcript({ start: day + index * 3_600_000 }).prompt(`task ${index}`) })));
+    const list = transcripts.sessionFiles;
+    try {
+      const silent = join(root, "silent-worker.js");
+      writeFileSync(silent, "self.onmessage = () => process.exit(0);\n");
+      await expect(loadSessionsParallel({ root, workers: 2, minFiles: 2, workerUrl: pathToFileURL(silent).href })).rejects.toThrow("ended without an answer");
+      const target = list(root).find(({ file }) => readFileSync(file, "utf8").includes("task 3")).file;
+      spyOn(transcripts, "sessionFiles").mockImplementation((...args) => {
+        const files = list(...args);
+        rmSync(target, { force: true });
+        return files;
+      });
+      const prompts = (await loadSessionsParallel({ root, workers: 2, minFiles: 2 })).map((s) => s.prompts[0].text);
+      expect(prompts.toSorted()).toEqual(["task 0", "task 1", "task 2", "task 4", "task 5"]);
+    } finally {
+      mock.restore();
       rmSync(root, { recursive: true, force: true });
     }
   });
