@@ -39,6 +39,7 @@ uv
 !/claude/hooks/
 !/claude/output-styles/
 !/claude/reference/
+!/claude/docs/
 !/claude/rules/
 !/claude/skills/
 !/claude/tests/

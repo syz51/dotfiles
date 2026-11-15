@@ -3,7 +3,7 @@
 // <projects>/<project>/<session>/subagents/agent-*.jsonl with agent-*.meta.json.
 // Transcripts are external data: unreadable lines are counted, never trusted.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { availableParallelism, homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { addUsage, emptyUsage, normalizeUsage, requestCost } from "./pricing.js";
 
@@ -315,17 +315,55 @@ export function parseSession(file, { project = basename(join(file, "..")) } = {}
 // transcript removed after listing, such as a temporary session's at cleanup, is left
 // out as if it had never been listed; every other read error stays fatal.
 export function loadSessions({ root = projectsRoot(), since = 0, until = Infinity } = {}) {
-  const from = +since;
-  const to = +until;
-  return sessionFiles(root)
-    .filter(({ mtimeMs }) => mtimeMs >= from)
-    .flatMap(({ file, project }) => {
-      try {
-        return [parseSession(file, { project })];
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-        return [];
-      }
-    })
-    .filter((session) => !session.endedAt || (Date.parse(session.endedAt) >= from && Date.parse(session.startedAt) <= to));
+  return inWindow(parseListed(windowFiles(root, since)), since, until);
+}
+
+const windowFiles = (root, since) => sessionFiles(root).filter(({ mtimeMs }) => mtimeMs >= +since);
+
+/** The session of one listed file, or undefined when the file is gone; any other error is thrown. */
+export function parseListedFile({ file, project }) {
+  try {
+    return parseSession(file, { project });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  }
+}
+
+/** The sessions of the listed files, in their order, without the files that are gone. */
+const parseListed = (files) => files.map(parseListedFile).filter(Boolean);
+
+const inWindow = (sessions, since, until) => sessions
+  .filter((session) => !session.endedAt || (Date.parse(session.endedAt) >= +since && Date.parse(session.startedAt) <= +until));
+
+// Parsing is the cost of a load (JSON of a few megabytes per session, one thread), so a
+// window with many transcripts parses on worker threads. Fewer than this many files, and a
+// single core, parse here: starting threads costs more than it saves.
+const PARALLEL_MIN_FILES = 32;
+const MAX_WORKERS = 8;
+
+/** loadSessions with the transcripts parsed on worker threads: the same sessions in the same order. */
+export async function loadSessionsParallel({ root = projectsRoot(), since = 0, until = Infinity, workers = Math.min(availableParallelism(), MAX_WORKERS), minFiles = PARALLEL_MIN_FILES, workerUrl = "./transcripts-worker.js" } = {}) {
+  const files = windowFiles(root, since);
+  if (workers < 2 || files.length < minFiles) return inWindow(parseListed(files), since, until);
+  // Deal the files out in turn: the list is newest first, and sizes vary, so each thread
+  // gets a like share. Each thread answers with its sessions in the order it was given.
+  const shares = Array.from({ length: workers }, () => []);
+  files.forEach((entry, index) => shares[index % workers].push({ ...entry, index }));
+  const threads = shares.map(() => new Worker(new URL(workerUrl, import.meta.url)));
+  let parsed;
+  try {
+    parsed = await Promise.all(threads.map((worker, at) => new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) => (data.error ? reject(Object.assign(new Error(data.error.message), data.error)) : resolve(data.sessions));
+      worker.onerror = (event) => reject(new Error(`transcript worker failed: ${event.message}`));
+      // A thread that ends without an answer fires only close; after an answer this is a no-op.
+      worker.addEventListener("close", () => reject(new Error("transcript worker ended without an answer")));
+      worker.postMessage(shares[at]);
+    })));
+  } finally {
+    // Also on a failure: the other threads stop at once and do not parse on.
+    for (const worker of threads) worker.terminate();
+  }
+  const ordered = parsed.flat().sort((a, b) => a.index - b.index).map(({ session }) => session);
+  return inWindow(ordered, since, until);
 }

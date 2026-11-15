@@ -7,7 +7,7 @@ import { loadCodexSessions } from "../lib/codex.js";
 import { litellmFetchedAt, refreshLitellm } from "../lib/litellm.js";
 import { priceSource } from "../lib/pricing.js";
 import { appendJsonl, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
-import { loadSessions, mostCommon } from "../lib/transcripts.js";
+import { loadSessionsParallel, mostCommon } from "../lib/transcripts.js";
 import { countCorrections } from "./corrections.js";
 import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
@@ -124,7 +124,7 @@ export async function buildReport(options) {
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
   const entries = { current: [], previous: [] };
-  for (const session of [...loadSessions({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until })]) {
+  for (const session of [...await loadSessionsParallel({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until })]) {
     const ended = Date.parse(session.endedAt);
     if (!Number.isFinite(ended) || ended <= previousSince || ended > until) continue;
     if (session.automation && !options.includeAutomation) {
