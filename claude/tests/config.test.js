@@ -695,6 +695,11 @@ describe("storage rule", () => {
     for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
     expect(rule).toContain("`storagectl dests`");
     expect(rule).toMatch(/root login shells/);
+    // The owner's rule of 16 November 2026 (dotfiles-526): archives go to cloud, air holds work in progress.
+    expect(rule).toContain("goes to `cloud:archive/<repository name>/`, not to `air`; large data still goes to `pro`");
+    expect(rule).toContain("`air` (small) only for work in progress, never for an archive");
+    expect(rule).not.toContain("`air` for small files");
+    expect(rule).toContain("A project rule that keeps named material on one machine or out of third-party storage still applies, and credentials stay out.");
     // Problems go through the Feedback section, whose triage routes storage to the vps board.
     expect(rule).toMatch(/Report what got in the way as Feedback with `about` `storage`, giving the machine, command, error and workaround, then continue with the workaround/);
     expect(rule).not.toContain("child task of `vps-44`");
