@@ -417,6 +417,12 @@ describe("settings", () => {
     for (const source of [...config.headings, ...config.exempt]) expect(() => new RegExp(source, "i")).not.toThrow();
     expect(config.headings.some((source) => new RegExp(source, "i").test("Limits"))).toBe(true);
   });
+
+  // The user asked to see each slide deck edit without asking (2026-11-19).
+  test("claude/settings.json runs the deck-view check at Stop", () => {
+    const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
+    expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/deck-view.js"')).toHaveLength(1);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
