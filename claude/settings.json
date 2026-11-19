@@ -203,6 +203,11 @@
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/open-items.js\"",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/deck-view.js\"",
+            "timeout": 10
           }
         ]
       }

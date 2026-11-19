@@ -436,6 +436,14 @@ the task or ask that holds it. The board's own Stop reminder fires only after `t
 a release. The hook is a reminder: the next stop passes. Edit
 `claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
 to `false` to turn it off.
+deck-view (Claude Code only) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
+renders a deck with LibreOffice (`soffice`) and `pdftoppm` into one HTML page that shows
+one slide at a time, with Prev and Next buttons and the arrow keys. It prints the page's
+path for the T3 `html_render` tool and records the deck's sha256 in
+`~/.cache/deck-view/shown.json`. When a recorded deck changed since its render and the
+session's transcript names it, the hook blocks the stop once and asks for a new render. A
+deck never rendered is not watched. Link the command on each Mac:
+`ln -s ~/.config/claude/bin/deck-view ~/.local/bin/deck-view`.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and

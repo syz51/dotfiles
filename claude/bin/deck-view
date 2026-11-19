@@ -1,0 +1,11 @@
+#!/bin/sh
+# Renders a slide deck into a one-slide-at-a-time HTML viewer for the T3 html_render tool and
+# prints its path. See deck-view.js; the Stop hook claude/hooks/deck-view.js asks for a new
+# render when a shown deck changes. Link it on each Mac:
+#   ln -s ~/.config/claude/bin/deck-view ~/.local/bin/deck-view
+set -eu
+
+# The real folder, also when $0 is a link such as ~/.local/bin/deck-view.
+here=$(dirname -- "$(realpath -- "$0")")
+bun=$(command -v bun 2>/dev/null || printf '%s' "$HOME/.bun/bin/bun")
+exec "$bun" "$here/deck-view.js" "$@"
