@@ -748,7 +748,10 @@ describe("feedback rule", () => {
     expect(rule).toContain("report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <activity> '<what happened>'` where the tool is missing, then continue with a workaround");
     // The board's activities, which have no verify.
     expect(rule).toContain("(`explore`, `research`, `design`, `plan`, `build`, `review`, `operate` or `other`)");
-    expect(rule).toContain("Report it in your reply instead when filing fails; delegated children report it to their parent, which files it.");
+    expect(rule).toContain("Report it in your reply instead when filing fails; subagents report it to their parent, which files it.");
+    // Agents counted a problem they worked around as solved and reported it only when asked
+    // (research-factory-610).
+    expect(rule).toContain("then continue with a workaround; a problem you got past still needs its report.");
     expect(rule).toMatch(/an id from `~\/\.config\/setups\.toml`, `other` when unsure/);
     expect(rule).toMatch(/triage routes it to the setup's owner, so don't follow it up/);
     expect(rule).toMatch(/not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture/);
@@ -766,6 +769,21 @@ describe("feedback rule", () => {
 });
 
 describe("T3 self-settle", () => {
+  // Five masters threads closed their tasks on 19 November 2026 and filed the research
+  // follow-ups but no tool problem, until the owner asked each one (research-factory-610).
+  test("before the final check, the session's tool and setup problems are filed", () => {
+    const rules = referenceRules("t3-settle").split("\n");
+    const index = rules.findIndex((line) => line.startsWith("- Before the final check, go back over the session and file what you met but did not report."));
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(rules.findIndex((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work")));
+    for (const part of [
+      "Report with the `feedback` tool each problem a tool, hook, instruction or setup gave you, also one you worked around.",
+      "File a proposal under the Work board section for each step you scripted or repeated by hand that a tool should do, and for each mistake of yours that a tool could have caught.",
+      "Search the board first, and add a note to a task that covers the problem instead.",
+      "Name each id in the report, and say so when you met none.",
+    ]) expect(rules[index]).toContain(part);
+  });
+
   test("finished threads settle themselves after a final check; coordinators and subagents never do", () => {
     const rule = referenceRules("t3-settle").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
     expect(rule).toBeDefined();
