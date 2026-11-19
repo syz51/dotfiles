@@ -777,10 +777,13 @@ describe("T3 self-settle", () => {
     expect(index).toBeGreaterThanOrEqual(0);
     expect(index).toBeLessThan(rules.findIndex((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work")));
     for (const part of [
-      "Report with the `feedback` tool each problem a tool, hook, instruction or setup gave you, also one you worked around.",
-      "File a proposal under the Work board section for each step you scripted or repeated by hand that a tool should do, and for each mistake of yours that a tool could have caught.",
-      "Search the board first, and add a note to a task that covers the problem instead.",
+      "Report with the `feedback` tool each problem that a tool, hook, instruction or setup gave you, also one you worked around;",
+      "File a proposal under the Work board section only for a tool or command that does not exist yet:",
+      "Before a proposal, search the board and add a note to a task that covers it instead.",
+      "One item goes to one of the two, never both.",
       "Name each id in the report, and say so when you met none.",
+      // Subagents share the parent's board identity (Work board section).
+      "An Agent-tool subagent files nothing: it reports these items to its parent.",
     ]) expect(rules[index]).toContain(part);
   });
 

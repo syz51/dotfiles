@@ -961,7 +961,7 @@ display points, so Retina scaling and displays left of or above the main one wor
 
 ## T3 Code thread cleanup
 
-A thread that finishes its work settles itself after a final check, as
+A thread that finishes its work first files the tool and setup problems it met, then settles itself after a final check, as
 `claude/reference/t3-settle.md` says; the Workflow section of `claude/CLAUDE.md` points to it. Board coordinator threads and Agent-tool subagents are
 exempt, and T3 unsettles a thread when new activity arrives. A self-settle starts the
 child cascade below and the 7-day settled-worktree cleanup.
