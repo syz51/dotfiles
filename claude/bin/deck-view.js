@@ -22,8 +22,12 @@ export function shown() {
 
 function recordShown(deck, hash) {
   const file = join(stateDir(), "shown.json");
-  writeFileSync(`${file}.tmp`, `${JSON.stringify({ ...shown(), [deck]: hash }, null, 2)}\n`);
-  renameSync(`${file}.tmp`, file);
+  // A temporary name per process, so two renders at once never rename each other's file. The
+  // later of two simultaneous writes can still drop the other's entry; that deck is then
+  // unwatched until its next render.
+  const temporary = `${file}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify({ ...shown(), [deck]: hash }, null, 2)}\n`);
+  renameSync(temporary, file);
 }
 
 /** The viewer page for `slides` (data URLs). Theme variables only, no page background. */

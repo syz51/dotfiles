@@ -86,6 +86,8 @@ test("a deck is stale only when it changed since its render and the transcript n
   writeFileSync(deck, "v2");
   expect(staleDecks(state, named)).toEqual([deck]);
   expect(staleDecks(state, `{"text":"other work"}`)).toEqual([]);
+  expect(staleDecks(state, `{"text":"saved old-Talk 1119.pptx and Talk 1119.pptx.bak"}`)).toEqual([]);
+  expect(staleDecks(state, `{"text":"cp \\"$O/Talk 1119.pptx\\" ."}`)).toEqual([deck]);
 });
 
 test("the hook blocks a stop once for a changed deck, then lets it through", () => {
@@ -101,6 +103,14 @@ test("the hook blocks a stop once for a changed deck, then lets it through", () 
   expect(hook({ transcript_path: transcript, stop_hook_active: true }).exitCode).toBe(0);
   render(deck, tools);
   expect(hook({ transcript_path: transcript }).exitCode).toBe(0);
+});
+
+test("without shown decks the hook passes without reading the transcript", () => {
+  expect(hook({ transcript_path: join(dir, "missing-dir") }).exitCode).toBe(0);
+  mkdirSync(join(dir, "transcript-dir"));
+  const run = hook({ transcript_path: join(dir, "transcript-dir") });
+  expect(run.exitCode).toBe(0);
+  expect(run.stderr.toString()).toBe("");
 });
 
 test("the hook fails open on unreadable state", () => {

@@ -9,10 +9,18 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { sha256, shown } from "../bin/deck-view.js";
 
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Whether `transcript` names `deck`: its file name after a path separator, quote, space or
+ * line start, and not followed by more of a name, so old-talk.pptx does not name talk.pptx.
+ * A deck of the same name in another folder still matches; the hook then asks for one render. */
+export const names = (transcript, deck) =>
+  new RegExp(`(?:^|[/\\s"'\`])${escape(basename(deck))}(?![\\w.-])`, "m").test(transcript);
+
 /** The shown decks that changed since their last render and that `transcript` names. */
 export function staleDecks(state, transcript) {
   return Object.entries(state).filter(([deck, hash]) =>
-    existsSync(deck) && transcript.includes(basename(deck)) && sha256(deck) !== hash).map(([deck]) => deck);
+    existsSync(deck) && names(transcript, deck) && sha256(deck) !== hash).map(([deck]) => deck);
 }
 
 if (import.meta.main) {
@@ -20,7 +28,9 @@ if (import.meta.main) {
   if (input.stop_hook_active || typeof input.transcript_path !== "string" || !existsSync(input.transcript_path)) process.exit(0);
   let stale;
   try {
-    stale = staleDecks(shown(), readFileSync(input.transcript_path, "utf8"));
+    const state = shown();
+    // Most sessions never render a deck: skip reading their transcript.
+    stale = Object.keys(state).length === 0 ? [] : staleDecks(state, readFileSync(input.transcript_path, "utf8"));
   } catch (error) {
     process.stderr.write(`deck-view hook skipped: ${error.message}\n`);
     process.exit(0);
