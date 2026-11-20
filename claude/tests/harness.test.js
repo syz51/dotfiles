@@ -340,6 +340,7 @@ describe("background review", () => {
     ["review-dismissed", "the real owner-check finding was not recorded as skipped"],
     ["review-uncategorized", "a finding has no category"],
     ["review-other-model", "the reviewer did not run on the session's model"],
+    ["review-other-effort", "the reviewer did not run at the session's effort"],
   ])
     test(mode, async () => {
       const run = await runLive("live.test.js", name, mode);

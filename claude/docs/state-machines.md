@@ -502,7 +502,8 @@ Machines: 16
   - `claude/CLAUDE.md:86` names the `diff-review` skill for the review effort -> the skill has no effort text. Not enforced; `claude/agents/reviewer.md:5` sets `effort: high`.
 - Gaps:
   - G1 (P9): The pointer at `claude/CLAUDE.md:86` names a skill that sets no effort. Verdict: confirmed. Evidence: `grep -c -i effort claude/skills/diff-review/SKILL.md` prints 0 (exit 1); line 5 of `claude/agents/reviewer.md` is `effort: high`. Task: dotfiles-564.
-- Tests: `claude/tests/config.test.js:87` (expected `effort: "high"`), `:1039` (pins the pointer text)
+  - After the audit, dotfiles-763 removed `effort` from `claude/agents/reviewer.md`. The reviewer runs at the session's effort, and `claude/reference/review.md` names `modelSettings` in `claude/settings.json` as its source. The rule no longer names the skill for the effort.
+- Tests: `claude/tests/config.test.js` (the reviewer policy without `effort`; "reviewer sets no effort"; the test that pins the Review rule text)
 
 ### No-session-env
 

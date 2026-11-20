@@ -81,10 +81,12 @@ const COMPUTER_USE = "mcp__plugin_computer-use_desktop";
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED] },
   worker: { model: "inherit", effort: "high", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
-  // worker and reviewer run on the session's model, Opus or Fable, at high (dotfiles-502).
+  // worker runs on the session's model, Opus or Fable, at high (dotfiles-502). reviewer
+  // runs on it too, and sets no effort: an agent without one takes the session's effort, so
+  // a review runs at the effort settings.json configures for the model (dotfiles-763).
   // The Review rule's reviewer has its recipe preloaded (dotfiles-446).
   // solver (Opus at xhigh) was folded into worker: 7 calls in a week (dotfiles-457).
-  reviewer: { model: "inherit", effort: "high", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
+  reviewer: { model: "inherit", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -96,7 +98,7 @@ describe("agents", () => {
 
   test.each(Object.entries(POLICY))("%s frontmatter matches the policy", (name, policy) => {
     const { meta, body } = frontmatter(`claude/agents/${name}.md`);
-    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", "effort", "model", "name", ...(policy.skills ? ["skills"] : [])]);
+    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", ...(policy.effort ? ["effort"] : []), "model", "name", ...(policy.skills ? ["skills"] : [])]);
     expect(meta.skills).toBe(policy.skills);
     expect(meta.name).toBe(name);
     expect(meta.model).toBe(policy.model);
@@ -117,6 +119,17 @@ describe("agents", () => {
 
   test("worker runs at the configured Opus effort, so an Opus session's parallel track loses none", () => {
     expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
+  });
+
+  // A reviewer with `effort: high` ran at high from a Fable 5.2 session, whose configured
+  // effort is medium. Session records show that an agent without `effort` runs at its
+  // session's effort, and that the Agent tool's `effort` input beats the frontmatter
+  // (dotfiles-763).
+  test("reviewer sets no effort, and the review reference names the effort settings.json configures for each model", () => {
+    expect(frontmatter("claude/agents/reviewer.md").meta.effort).toBeUndefined();
+    const [, opus, fable] = referenceRules("review").match(/sets per model \(`(\w+)` on Opus 5\.5, `(\w+)` on Fable 5\.2\)/);
+    expect(opus).toBe(configuredEffort("claude-opus-5-5"));
+    expect(fable).toBe(configuredEffort("claude-fable-5-2"));
   });
 
   test("the worker owns its whole track, stays within its assigned files and verifies hard problems", () => {
@@ -195,7 +208,7 @@ describe("global instructions", () => {
       /external writes/,
       /read-only/,
       /The `reviewer` agent is the only review process/,
-      /it reviews on the session.s model at `high` effort/,
+      /it reviews as its `diff-review` skill says, on the session.s model and effort\./,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -1065,14 +1078,14 @@ describe("rules the live suites test", () => {
   // A wrapper agent only called /code-review, which forks the real reviewer itself at the
   // level's effort, and its relay dropped the findings' category fields (dotfiles-386). A
   // skill's own background fork waits in an SDK session, so the session starts the agent.
-  test("Review runs once in the background reviewer agent, on the session's model at high, pinned to the commit", () => {
+  test("Review runs once in the background reviewer agent, on the session's model at its effort, pinned to the commit", () => {
     const review = `${section("Review")}${referenceRules("review")}`;
     expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
-    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews on the session's model at `high` effort as its `diff-review` skill says/);
+    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews as its `diff-review` skill says, on the session's model and effort\./);
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
     expect(review).toMatch(/Run the review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/It works in this checkout on the session's model at its own effort, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It works in this checkout on the session's model at the session's effort, which `modelSettings` in `settings\.json` sets per model \(`high` on Opus 5\.5, `medium` on Fable 5\.2\), so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
     expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);

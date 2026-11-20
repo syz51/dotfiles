@@ -1293,7 +1293,7 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   passes, so the session's output shows that the copy in the checkout, not a
   worktree's, passed. The session hands a commit's review to one
   `reviewer` agent in the background, in the same checkout, with the commit's SHA in its
-  prompt and no `/code-review` call. It answers a follow-up question while the review
+  prompt and no `/code-review` call. The reviewer runs at the session's effort. It answers a follow-up question while the review
   runs. The review reaches the reply and leaves the checkout, remote and worktrees as
   they were. After the review, the session records each finding once
   through `ReportFindings`, with a category and an outcome. The real owner-check
