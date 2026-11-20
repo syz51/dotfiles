@@ -630,16 +630,19 @@ describe("work board", () => {
     expect(rule).toContain("- Before `task_done`, and before ending a turn, file each remaining step, follow-up and suggestion, checking first for a task that covers it (add a note there instead): your task's remaining scope as a sub-task (parent: your task);");
     expect(rule).toContain("work you find outside it as a proposal (`auto=false`, a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L) on the board of the work's repository, or on this one when that repository has none, with the task you found it in as parent or named in the body;");
     expect(rule).toContain("my decision or action as a task with `auto=false`, set `blocked` only once its `ask_user` is accepted. Your task stays open until every acceptance check passes. Where another section names the place for something, such as storage problems, it goes there.");
-    expect(rule).toMatch(/When filing fails, report the item in the reply instead\. Don't ask me before filing/);
-    expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
+    expect(rule).toMatch(/When filing fails, report the item instead\. Don't ask before filing/);
+    expect(rule).toMatch(/A handoff's `next` holds only your claimed task's first action/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
   });
 
   // A report listed five items under "What still depends on you"; one had a task id, and
   // the other four had no task or ask until the user asked whether all was tracked
   // (dotfiles-427). An id on each open item makes an unfiled one visible in the report.
+  // A verdict judge cut "Chinese-language scholarship in general" from guwen-8, a part of an
+  // agent's plan for the owner's topic. Nobody filed it; the survey said "No action: the
+  // decision on guwen-8 cut" it, and the owner met a decision they never made (dotfiles-785).
   test("each open item of a reply names the task or ask that holds it", () => {
-    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. When filing fails, report the item in the reply instead. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.\n";
+    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names its task or ask. File an item with no id, or state why it needs no work; an agent's cut or verdict is no reason and not my decision. When filing fails, report the item instead. Don't ask before filing. A handoff's `next` holds only your claimed task's first action.\n";
     expect(section("Work board")).toContain(rule);
     expect(globalInstructions).not.toContain("Name what you filed in your reply");
   });
