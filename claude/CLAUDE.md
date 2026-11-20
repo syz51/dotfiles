@@ -83,7 +83,7 @@
 
 ## Review
 
-- The `reviewer` agent is the only review process. For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done; it reviews on the session's model at `high` effort as its `diff-review` skill says. A change may skip review only when every file it changes is on the trivial list in `~/.claude/factory/scoring/review-scope.toml`, such as lockfiles; no repository is exempt. Don't run a second review, `/code-review`, `/simplify`, or `/security-review` unless I ask.
+- The `reviewer` agent is the only review process. For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done; it reviews as its `diff-review` skill says, on the session's model and effort. A change may skip review only when every file it changes is on the trivial list in `~/.claude/factory/scoring/review-scope.toml`, such as lockfiles; no repository is exempt. Don't run a second review, `/code-review`, `/simplify`, or `/security-review` unless I ask.
 - Before you start the `reviewer` agent, read `~/.claude/reference/review.md`: how to run it in the background, decide on its findings and record their outcomes.
 
 ## Basic safeguards

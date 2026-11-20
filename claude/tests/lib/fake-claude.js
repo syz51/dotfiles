@@ -192,7 +192,8 @@ if (mode.startsWith("tracks-")) {
   // tracks-explorer sends the shipping track to an explorer, tracks-third adds a
   // general-purpose agent, tracks-two-reviews runs the reviewer twice,
   // tracks-review-foreground runs it in the foreground, tracks-review-worktree gives it a
-  // worktree, and tracks-review-early starts it before the tracks return.
+  // worktree, tracks-review-early starts it before the tracks return, and
+  // tracks-review-effort runs it at the worker's effort, below the session's.
   const prompt = args[args.indexOf("-p") + 1];
   const codes = Object.fromEntries([...prompt.matchAll(/(\w+)\/code\.js must export CODE set to "([^"]+)"/g)].map((match) => [match[1], match[2]]));
   const fixes = { pricing: ["price.js", "sum + item.price, 1)", "sum + item.price, 0)"], shipping: ["weight.js", "grams / 100;", "grams / 1000;"] };
@@ -206,6 +207,9 @@ if (mode.startsWith("tracks-")) {
       () => ({ text: background ? "Async agent launched successfully." : "No findings." }));
     if (background) emit({ type: "system", subtype: "task_started", task_id: `task_${spawn}`, tool_use_id: spawn, is_backgrounded: true });
     emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: `msg_${spawn}`, model: option("--model"), content: [{ type: "text", text: "[]" }] } });
+    // The reviewer reads a changed file, at the session's effort unless the mode pins it to the worker's.
+    if (mode === "tracks-review-effort") agentRuntime.set(spawn, workerRuntime);
+    readFile(join(cwd, "pricing/price.js"), spawn);
     if (background) emit({ type: "system", subtype: "task_notification", task_id: `task_${spawn}`, tool_use_id: spawn, status: "completed" });
   };
   if (mode === "tracks-third") tool("Agent", { subagent_type: "general-purpose", prompt: "Survey pricing/ and shipping/." }, () => ({ text: "Surveyed." }));
@@ -236,7 +240,7 @@ if (mode.startsWith("tracks-")) {
   for (const { module, dir } of tracks)
     bash(`git -c commit.gpgsign=false merge --quiet --no-edit worktree-${module} && git worktree remove "${dir}" && git branch --quiet -d worktree-${module}`);
   bash(tracks.map(({ module }) => `bun ${module}/check.js`).join(" && "));
-  if (mode === "tracks-review" || mode === "tracks-two-reviews") review();
+  if (mode === "tracks-review" || mode === "tracks-two-reviews" || mode === "tracks-review-effort") review();
   if (mode === "tracks-two-reviews") review();
   if (mode === "tracks-review-foreground") review({ background: false });
   if (mode === "tracks-review-worktree") review({ isolation: "worktree" });
@@ -297,6 +301,9 @@ if (mode.startsWith("review-")) {
     // The reviewer's own messages carry the Agent call as their parent.
     if (mode === "review-skill") tool("Skill", { skill: "code-review", args: `medium origin/main...${sha}` }, () => ({ text: findings }), spawn);
     else emit({ type: "assistant", parent_tool_use_id: spawn, message: { id: "msg_reviewer", model: mode === "review-other-model" ? (option("--model") === "claude-opus-5-5" ? "claude-fable-5-2" : "claude-opus-5-5") : option("--model"), content: [{ type: "text", text: findings }] } });
+    // The reviewer reads the change, at the session's effort unless the mode gives it another.
+    if (mode === "review-other-effort") agentRuntime.set(spawn, { model: option("--model"), effort: option("--effort") === "low" ? "medium" : "low" });
+    readFile(join(cwd, "auth/access.js"), spawn);
     const finish = (status = "completed") => {
       emit({ type: "system", subtype: "task_notification", task_id: "task_review", tool_use_id: spawn, status });
       emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });

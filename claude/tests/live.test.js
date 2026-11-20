@@ -85,6 +85,16 @@ function assertAgentRan(session, name, { count = 1 } = {}) {
   return spawns;
 }
 
+// The reviewer sets no effort of its own: every tool call it made ran at its session's
+// effort (dotfiles-763). In a session at the effort settings.json configures for its model,
+// this cannot tell a reviewer pinned to that same level; config.test.js pins the missing
+// frontmatter, and the parallel tracks scenario runs above the configured effort.
+function assertReviewerEffort(session) {
+  const calls = session.preToolUse.filter((record) => record.agent_type === "reviewer");
+  for (const call of calls) expect(call.effort, "the reviewer did not run at the session's effort").toEqual({ level: session.effort });
+  return calls;
+}
+
 describe.skipIf(!LIVE)("live Claude Code", () => {
   beforeAll(() => suite.setup());
   afterAll(() => suite.teardown(), TEARDOWN_TIMEOUT);
@@ -459,6 +469,7 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
       const messages = subagentMessages(run.events, [spawn]).filter((message) => message.message.model !== "<synthetic>");
       expect(messages.length, "no messages from the reviewer agent").toBeGreaterThan(0);
       for (const message of messages) expect(message.message.model, "the reviewer did not run on the session's model").toBe(run.init.model);
+      expect(assertReviewerEffort(run).length, "the reviewer made no tool calls").toBeGreaterThan(0);
 
       // The session ended its first turn while the review ran, so the follow-up reached a
       // free session, and it answered without waiting on the review: no tool call between
@@ -618,6 +629,9 @@ describe.skipIf(!LIVE)("live Claude Code", () => {
         expect(reviewer.input.isolation, "the review got a worktree of its own").toBeUndefined();
         expect(usedAt(reviewer.id), "the review started before both tracks returned").toBeGreaterThan(Math.max(...ends.values()));
       }
+      // This session runs above its model's configured effort, so a reviewer pinned to
+      // another effort fails here.
+      assertReviewerEffort(run);
 
       // Both tracks' work is in this checkout, and their worktrees and branches are gone.
       for (const [module, code] of Object.entries(codes)) {
