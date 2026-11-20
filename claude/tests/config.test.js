@@ -638,9 +638,9 @@ describe("work board", () => {
   // A report listed five items under "What still depends on you"; one had a task id, and
   // the other four had no task or ask until the user asked whether all was tracked
   // (dotfiles-427). An id on each open item makes an unfiled one visible in the report.
-  // A verdict judge cut "Chinese-language scholarship in general" from guwen-8, scope the
-  // owner had asked for in guwen-7. Nobody filed it; the survey said "No action: the decision
-  // on guwen-8 cut" it, and the owner read that as their own decision (dotfiles-785).
+  // A verdict judge cut "Chinese-language scholarship in general" from guwen-8, a part of an
+  // agent's plan for the owner's topic. Nobody filed it; the survey said "No action: the
+  // decision on guwen-8 cut" it, and the owner met a decision they never made (dotfiles-785).
   test("each open item of a reply names the task or ask that holds it", () => {
     const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names its task or ask. File an item with no id, or state why it needs no work; an agent's cut or verdict is no reason and not my decision. When filing fails, report the item instead. Don't ask before filing. A handoff's `next` holds only your claimed task's first action.\n";
     expect(section("Work board")).toContain(rule);
