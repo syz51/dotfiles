@@ -827,7 +827,15 @@ It runs `~/.cargo/bin/board` and does nothing until that is installed. The board
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
 `board` rejects that call's `pre-tool-use` event, which the script reports as a failed hook
-rather than the exit code that would block the call. On each Mac, with a device token created
+rather than the exit code that would block the call. A second `pre-tool-use` entry, with
+matcher `mcp__.*__(delegate_task|t3_thread_launch|create_threads)` and a 10-second timeout,
+lets the board refuse a thread an agent starts through T3 past the device's run limit.
+Never run `board install claude --write` on `~/.claude/settings.json`: the file is tracked
+here, and the command changes it. It once added a direct `board hook` entry beside every
+wrapper entry, so each hook ran twice (dotfiles-520). After a board upgrade, run
+`board install claude --check ~/.claude/settings.json` where board has `--check`, or the
+"work board" tests in `claude/tests/config.test.js`, and add what they name to
+`claude/settings.json` through `board-hook.sh`. On each Mac, with a device token created
 on the server host. The Pro keeps `board` and its token for config-sync's reports, but skips
 the last three lines: it runs no Claude MCP server and no `board watch`, whose coordinators
 would run Claude:

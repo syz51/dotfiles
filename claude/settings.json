@@ -48,6 +48,16 @@
         ]
       },
       {
+        "matcher": "mcp__.*__(delegate_task|t3_thread_launch|create_threads)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" pre-tool-use claude",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "^mcp__board__ask_user$",
         "hooks": [
           {

@@ -1,5 +1,7 @@
 // Offline checks of the Claude Code configuration kept in this repository. They read
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
+// One exception, skipped in CI: the "work board" suite compares the tracked hooks with what
+// the installed `board` prints, so a board upgrade that adds a hook fails here (dotfiles-520).
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -502,30 +504,66 @@ describe("work board", () => {
     Stop: "stop", SessionEnd: "session-end",
   };
 
+  // The threads an agent starts through T3: board refuses one past the device's run limit.
+  // Its timeout covers T3 listing the device's threads (agent-board hook/launch.rs).
+  const LAUNCH = "mcp__.*__(delegate_task|t3_thread_launch|create_threads)";
+
+  // A second entry for an event and matcher runs board twice: each session then gets the
+  // board state twice in its first prompt, and every reminder twice (agent-board-524).
   test.each([
-    ["claude/settings.json", "claude", "$HOME/.claude/hooks", CLAUDE_EVENTS],
-    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", CODEX_EVENTS],
-  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, dir, events) => {
+    ["claude/settings.json", "claude", "$HOME/.claude/hooks", [...Object.entries(CLAUDE_EVENTS), ["PreToolUse", "pre-tool-use"]]],
+    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", Object.entries(CODEX_EVENTS)],
+  ])("%s runs exactly one board hook per event and matcher, through the tracked script", (path, runtime, dir, events) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
     const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
-    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
-    for (const { hook, match } of found) {
+    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(events));
+    const keys = found.map(({ event, matcher }) => `${event} ${matcher ?? ""}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const { matcher, hook, match } of found) {
       expect(match?.[2]).toBe(runtime);
       expect(hook.command).toStartWith(`/bin/sh "${dir}/board-hook.sh" `);
-      expect(hook.timeout).toBeLessThanOrEqual(5);
+      expect(hook.timeout).toBeLessThanOrEqual(matcher === LAUNCH ? 10 : 5);
     }
     expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
+  });
+
+  // `board install <runtime>` prints the hooks the installed board needs and writes nothing.
+  // A hook it adds must be added here through the wrapper: `board install claude --write`
+  // on this tracked file left it changed and ran every hook twice (dotfiles-520). Skipped
+  // where board is not installed, as in CI.
+  // The binary board-hook.sh runs, not another `board` on PATH. A failure after a board upgrade
+  // means the upgrade changed a hook: make the same change in the tracked file.
+  const BOARD = join(process.env.HOME ?? "", ".cargo/bin/board");
+  test.skipIf(!existsSync(BOARD)).each([
+    ["claude/settings.json", "claude"],
+    ["codex/hooks.json", "codex"],
+  ])("%s holds the events, matchers and timeouts that board install %s prints", (path, runtime) => {
+    const printed = spawnSync(BOARD, ["install", runtime], { encoding: "utf8", timeout: 10_000 });
+    expect(printed.status, printed.stderr || String(printed.error)).toBe(0);
+    // The hooks are the first JSON block: comment lines starting with # separate the blocks.
+    const block = printed.stdout.split(/^#.*$/m).find((part) => part.trim());
+    // No matcher and "*" both match every value.
+    const rows = (hooks) => boardHooks(hooks).map(({ event, matcher, hook }) => `${event} ${matcher === "*" ? "" : matcher ?? ""} ${hook.timeout}`).sort();
+    expect(rows(JSON.parse(read(path)).hooks)).toEqual(rows(JSON.parse(block).hooks));
   });
 
   // Matchers as `board install` writes them. board marks each shell call's start, so
   // PostToolUse (or PostToolUseFailure, as a failing command may still change files) can
   // record the files it changed.
   test.each([
-    ["claude/settings.json", { PostToolUse: "*", SessionStart: "startup|resume|clear|compact", PreToolUse: "Bash", PostToolUseFailure: "Bash" }],
-    ["codex/hooks.json", { SessionStart: "startup|resume|clear|compact|fork", PreToolUse: "Bash" }],
+    ["claude/settings.json", { PostToolUse: ["*"], SessionStart: ["startup|resume|clear|compact"], PreToolUse: ["Bash", LAUNCH], PostToolUseFailure: ["Bash"] }],
+    ["codex/hooks.json", { SessionStart: ["startup|resume|clear|compact|fork"], PreToolUse: ["Bash"] }],
   ])("%s gives the board hooks the matchers board install writes", (path, matchers) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
-    for (const [event, matcher] of Object.entries(matchers)) expect(found.find((entry) => entry.event === event)?.matcher, event).toBe(matcher);
+    // Every entry of the event, in order: a second copy under another spelling of a matcher
+    // (`^Bash$`) would run board twice, and a changed launch matcher would end the launch limit.
+    for (const [event, expected] of Object.entries(matchers)) expect(found.filter((entry) => entry.event === event).map((entry) => entry.matcher), event).toEqual(expected);
+  });
+
+  test("claude/settings.json gives the launch-limit hook the timeout board install writes", () => {
+    const launch = boardHooks(JSON.parse(read("claude/settings.json")).hooks).filter((entry) => entry.matcher === LAUNCH);
+    expect(launch.map((entry) => [entry.event, entry.hook.timeout])).toEqual([["PreToolUse", 10]]);
+    for (const tool of ["mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_launch", "mcp__t3-code__create_threads"]) expect(new RegExp(LAUNCH).test(tool), tool).toBe(true);
   });
 
   function withHome(body) {
