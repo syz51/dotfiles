@@ -502,19 +502,45 @@ describe("work board", () => {
     Stop: "stop", SessionEnd: "session-end",
   };
 
+  // The threads an agent starts through T3: board refuses one past the device's run limit.
+  // Its timeout covers T3 listing the device's threads (agent-board hook/launch.rs).
+  const LAUNCH = "mcp__.*__(delegate_task|t3_thread_launch|create_threads)";
+
+  // A second entry for an event and matcher runs board twice: each session then gets the
+  // board state twice in its first prompt, and every reminder twice (agent-board-524).
   test.each([
-    ["claude/settings.json", "claude", "$HOME/.claude/hooks", CLAUDE_EVENTS],
-    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", CODEX_EVENTS],
-  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, dir, events) => {
+    ["claude/settings.json", "claude", "$HOME/.claude/hooks", [...Object.entries(CLAUDE_EVENTS), ["PreToolUse", "pre-tool-use"]]],
+    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", Object.entries(CODEX_EVENTS)],
+  ])("%s runs exactly one board hook per event and matcher, through the tracked script", (path, runtime, dir, events) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
     const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
-    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
-    for (const { hook, match } of found) {
+    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(events));
+    const keys = found.map(({ event, matcher }) => `${event} ${matcher ?? ""}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const { matcher, hook, match } of found) {
       expect(match?.[2]).toBe(runtime);
       expect(hook.command).toStartWith(`/bin/sh "${dir}/board-hook.sh" `);
-      expect(hook.timeout).toBeLessThanOrEqual(5);
+      expect(hook.timeout).toBeLessThanOrEqual(matcher === LAUNCH ? 10 : 5);
     }
     expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
+  });
+
+  // `board install <runtime>` prints the hooks the installed board needs and writes nothing.
+  // A hook it adds must be added here through the wrapper: `board install claude --write`
+  // on this tracked file left it changed and ran every hook twice (dotfiles-520). Skipped
+  // where board is not installed, as in CI.
+  const BOARD = [Bun.which("board"), join(process.env.HOME ?? "", ".cargo/bin/board")].find((path) => path && existsSync(path));
+  test.skipIf(!BOARD).each([
+    ["claude/settings.json", "claude"],
+    ["codex/hooks.json", "codex"],
+  ])("%s holds the events, matchers and timeouts that board install %s prints", (path, runtime) => {
+    const printed = spawnSync(BOARD, ["install", runtime], { encoding: "utf8" });
+    expect(printed.status, printed.stderr).toBe(0);
+    // The hooks are the first JSON block: comment lines starting with # separate the blocks.
+    const block = printed.stdout.split(/^#.*$/m).find((part) => part.trim());
+    // No matcher and "*" both match every value.
+    const rows = (hooks) => boardHooks(hooks).map(({ event, matcher, hook }) => `${event} ${matcher === "*" ? "" : matcher ?? ""} ${hook.timeout}`).sort();
+    expect(rows(JSON.parse(read(path)).hooks)).toEqual(rows(JSON.parse(block).hooks));
   });
 
   // Matchers as `board install` writes them. board marks each shell call's start, so
