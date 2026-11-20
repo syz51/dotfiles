@@ -127,7 +127,7 @@ describe("agents", () => {
   // (dotfiles-763).
   test("reviewer sets no effort, and the review reference names the effort settings.json configures for each model", () => {
     expect(frontmatter("claude/agents/reviewer.md").meta.effort).toBeUndefined();
-    const [, opus, fable] = referenceRules("review").match(/sets per model \(`(\w+)` on Opus 5\.5, `(\w+)` on Fable 5\.2\)/);
+    const [, opus, fable] = referenceRules("review").match(/sets for the model \(`(\w+)` on Opus 5\.5, `(\w+)` on Fable 5\.2\)/);
     expect(opus).toBe(configuredEffort("claude-opus-5-5"));
     expect(fable).toBe(configuredEffort("claude-fable-5-2"));
   });
@@ -1085,7 +1085,7 @@ describe("rules the live suites test", () => {
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
     expect(review).toMatch(/Run the review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/It works in this checkout on the session's model at the session's effort, which `modelSettings` in `settings\.json` sets per model \(`high` on Opus 5\.5, `medium` on Fable 5\.2\), so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It works in this checkout on the session's model at the session's effort, by default the one `modelSettings` in `settings\.json` sets for the model \(`high` on Opus 5\.5, `medium` on Fable 5\.2\), so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
     expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);

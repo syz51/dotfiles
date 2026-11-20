@@ -370,6 +370,7 @@ describe("parallel tracks", () => {
     ["tracks-review-foreground", "the review ran in the foreground"],
     ["tracks-review-worktree", "the review got a worktree of its own"],
     ["tracks-review-early", "the review started before both tracks returned"],
+    ["tracks-review-effort", "the reviewer did not run at the session's effort"],
   ])
     test(mode, async () => {
       const run = await runLive("live.test.js", name, mode);

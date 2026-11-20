@@ -86,7 +86,9 @@ function assertAgentRan(session, name, { count = 1 } = {}) {
 }
 
 // The reviewer sets no effort of its own: every tool call it made ran at its session's
-// effort, which settings.json configures per model (dotfiles-763).
+// effort (dotfiles-763). In a session at the effort settings.json configures for its model,
+// this cannot tell a reviewer pinned to that same level; config.test.js pins the missing
+// frontmatter, and the parallel tracks scenario runs above the configured effort.
 function assertReviewerEffort(session) {
   const calls = session.preToolUse.filter((record) => record.agent_type === "reviewer");
   for (const call of calls) expect(call.effort, "the reviewer did not run at the session's effort").toEqual({ level: session.effort });
