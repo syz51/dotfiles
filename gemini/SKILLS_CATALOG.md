@@ -4,11 +4,12 @@ Single canonical directory for global skills on every Mac (Air and Pro): **`~/.g
 
 Antigravity discovers global skills from `~/.gemini/config/skills/<name>/SKILL.md` and project-scoped skills automatically from `<repo>/.agents/skills/<name>/SKILL.md`.
 
-## Global Skills (12 total — `~/.gemini/config/skills/`)
+## Global Skills (13 total — `~/.gemini/config/skills/`)
 
 | Skill | Canonical Path | Source / Owner | Use When | Helper Script / Command |
 | --- | --- | --- | --- | --- |
-| `frontend-ui` | `~/.gemini/config/skills/frontend-ui` | `syz51/agent-skills` (`current/skills/frontend-ui`) | Building, styling, polishing, or reviewing web UI (React, Next.js, Vue, Nuxt, Vite, CSS). Load before language skills; also check `~/.config/claude/frontend-avoid.md`. | `uv run --script ~/.local/share/agent-skills/repository/scripts/read_guidance.py` |
+| `frontend-ui` | `~/.gemini/config/skills/frontend-ui` | `syz51/agent-skills` (`current/skills/frontend-ui`) | Building, styling, polishing, or reviewing web apps/product UI and framework tooling (React, Next.js, Vue, Nuxt, Vite, CSS). Load before language skills; also check `~/.config/claude/frontend-avoid.md`. | `uv run --script ~/.local/share/agent-skills/repository/scripts/read_guidance.py` |
+| `design-taste-frontend` | `~/.gemini/config/skills/design-taste-frontend` | `Leonxlnx/taste-skill` (`~/Documents/ChatGPT/taste-skill/skills/taste-skill`) | Anti-slop art direction (tasteskill 2.5) for landing pages, company/product/marketing/editorial sites, or bespoke visual direction. Run its `.mjs` scripts with `bun`. | `bun ~/Documents/ChatGPT/taste-skill/skills/taste-skill/scripts/start.mjs` |
 | `typescript` | `~/.gemini/config/skills/typescript` | `syz51/agent-skills` (`current/skills/typescript`) | TypeScript implementation, review, debugging, migration, or `tsconfig`/tooling changes. | `read_guidance.py` |
 | `rust` | `~/.gemini/config/skills/rust` | `syz51/agent-skills` (`current/skills/rust`) | `.rs` code, Cargo/toolchain configuration, compiler errors, linting, or Rust compatibility work. | `read_guidance.py` |
 | `tauri` | `~/.gemini/config/skills/tauri` | `syz51/agent-skills` (`current/skills/tauri`) | Tauri desktop/mobile app work (frontend + Rust integration). Use alongside `frontend-ui`. | `read_guidance.py` |
@@ -32,12 +33,6 @@ Antigravity discovers global skills from `~/.gemini/config/skills/<name>/SKILL.m
 | `test-t3-mobile` | `.agents/skills/test-t3-mobile` | `syz51/t3code` | Integrated mobile testing in T3 Code using cached native dev clients (`vp run mobile:install`). |
 | `tuios` | `skills/tuios/SKILL.md` (embedded via `tuios --skill`) | `syz51/tuios` | Driving panes, sessions, fleets, and MCP inside a running TUIOS daemon. |
 
-## Optional / Standalone Skills (not globally exposed)
-
-| Skill | Location | Notes |
-| --- | --- | --- |
-| `design-taste-frontend` | `~/Documents/ChatGPT/taste-skill/skills/taste-skill/SKILL.md` (Air only) | Standalone clone of `Leonxlnx/taste-skill` (tasteskill v2). Kept out of `~/.gemini/config/skills/` intentionally so it does not compete with `frontend-ui`; read directly by path when requested. |
-
 ## Built-in Antigravity Skills
 
 Bundled by Antigravity itself (mounted automatically, not stored in `~/.gemini/config/skills/`):
@@ -51,7 +46,8 @@ Bundled by Antigravity itself (mounted automatically, not stored in `~/.gemini/c
 
 - **Dotfiles skills (6)** and `~/.gemini/config/{GEMINI.md,SKILLS_CATALOG.md,hooks.json,mcp_config.json}` are verified every 30 minutes by `config-sync` (`~/.config/config-sync/config_sync.py check`).
 - **Managed skills (6)** are deployed atomically to `~/.local/share/agent-skills/current/skills/` by the hourly `com.syz51.agent-skills.sync` LaunchAgent on each Mac.
-- To repair or bootstrap all 12 global symlinks on a Mac:
+- **External skill (1)**: `design-taste-frontend` is cloned from `https://github.com/Leonxlnx/taste-skill.git` at `~/Documents/ChatGPT/taste-skill` on both Air and Pro.
+- To repair or bootstrap all 13 global symlinks on a Mac:
 
 ```sh
 mkdir -p ~/.gemini/config/skills
@@ -64,4 +60,5 @@ done
 for s in content-research-writer find-skills frontend-ui rust tauri typescript; do
   ln -sfn ~/.local/share/agent-skills/current/skills/$s ~/.gemini/config/skills/$s
 done
+ln -sfn ~/Documents/ChatGPT/taste-skill/skills/taste-skill ~/.gemini/config/skills/design-taste-frontend
 ```
