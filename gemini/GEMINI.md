@@ -5,7 +5,7 @@ All 13 global skills are exposed in `~/.gemini/config/skills/` and cataloged (wi
 
 Load the matching skill before starting relevant work:
 - `frontend-ui`: frontend/UI work or tooling (TSX, Vue, CSS). Also read `~/.config/claude/frontend-avoid.md` for declined UI patterns.
-- `design-taste-frontend`: anti-slop art direction (tasteskill v2) for landing pages, marketing/editorial sites, portfolios, or bespoke visual direction (run its `.mjs` scripts with `bun`).
+- `design-taste-frontend`: anti-slop art direction (tasteskill 2.5) for landing pages, company/product/marketing/editorial sites, or bespoke visual direction (run its `.mjs` scripts with `bun`).
 - `typescript`: TypeScript implementation, review, debugging, migration, or tooling.
 - `rust`: Rust or Cargo/toolchain work.
 - `tauri`: Tauri desktop app work.
