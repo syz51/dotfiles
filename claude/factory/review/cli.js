@@ -1,8 +1,9 @@
-// review: the weekly review of each board repository's main. One /code-review session
-// reviews the last days of main in a fresh clone; a verify session checks each finding
-// against the current code. Confirmed findings are filed as proposals on the
-// repository's board; the result, rejected findings with their reasons included, is
-// printed and kept in the state folder. Settings live in config.json beside this file.
+// review: the weekly review of each board repository's main. One diff-review session
+// (via Antigravity / Gemini 4 Neon through agy-run) reviews the last days of main in a
+// fresh clone; a verify session checks each finding against the current code. Confirmed
+// findings are filed as proposals on the repository's board; the result, rejected findings
+// with their reasons included, is printed and kept in the state folder. Settings live in
+// config.json beside this file.
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,14 +15,15 @@ import { ClaudeCallError, runTask } from "../lib/claude.js";
 import { clip } from "../lib/proposal.js";
 import { statePath, writeJsonAtomic } from "../lib/state.js";
 import { benchSettings } from "../bench/runner.js";
-import { LEVELS, recipeOf, reviewPrompt, reviewSession } from "../bench/review/review.js";
 import { call } from "../board/cli.js";
 
 export const CONFIG_FILE = join(import.meta.dir, "config.json");
+export const DIFF_REVIEW_SKILL = join(import.meta.dir, "..", "..", "skills", "diff-review", "SKILL.md");
 // The board identity the filed proposals carry.
 export const AGENT = "claude:factory-weekly-review";
 const REVIEW_TIMEOUT_MS = 40 * 60_000;
 const VERIFY_TIMEOUT_MS = 20 * 60_000;
+const REVIEW_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 const VERIFY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 const OUTPUT_CHARS = 60_000;
 const TITLES = 200;
@@ -29,9 +31,9 @@ const CLOSED = new Set(["done", "dropped"]);
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js review [options]
 
-Reviews the last days of main for each configured board's repositories with /code-review,
-checks each finding against current main, and files the confirmed ones as proposals on
-that board. Settings: ${CONFIG_FILE}.
+Reviews the last days of main for each configured board's repositories with the diff-review
+skill on Gemini 4 Neon (via agy-run), checks each finding against current main, and files
+the confirmed ones as proposals on that board. Settings: ${CONFIG_FILE}.
 
   --board SLUG   review only this board's repositories (repeatable)
   --dry-run      review and verify, but file nothing
@@ -39,7 +41,9 @@ that board. Settings: ${CONFIG_FILE}.
   --json         print the result as JSON
   --help`;
 
+const LEVELS = ["low", "medium", "high", "xhigh", "max"];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const FULL_MODEL_ID = /^(?:claude|gemini)-[a-z0-9.-]+$/;
 
 // The config, checked: { boards, days, branch, model, level, verifyModel, verifyEffort,
 // reviewBudgetUsd, verifyBudgetUsd }.
@@ -49,7 +53,7 @@ export function loadConfig(file = CONFIG_FILE) {
   if (!Array.isArray(config.boards) || !config.boards.length || !config.boards.every((slug) => typeof slug === "string" && /^[a-z0-9][a-z0-9-]*$/.test(slug))) problems.push("boards must be a non-empty list of board slugs");
   if (!Number.isInteger(config.days) || config.days < 1) problems.push("days must be a positive integer");
   if (typeof config.branch !== "string" || !/^[\w./-]+$/.test(config.branch)) problems.push("branch must be a branch name");
-  for (const key of ["model", "verifyModel"]) if (!/^claude-[a-z0-9-]+$/.test(config[key] ?? "")) problems.push(`${key} must be a full model ID`);
+  for (const key of ["model", "verifyModel"]) if (!FULL_MODEL_ID.test(config[key] ?? "")) problems.push(`${key} must be a full model ID`);
   if (!LEVELS.includes(config.level)) problems.push(`level must be one of ${LEVELS.join(", ")}`);
   if (!EFFORTS.includes(config.verifyEffort)) problems.push(`verifyEffort must be one of ${EFFORTS.join(", ")}`);
   for (const key of ["reviewBudgetUsd", "verifyBudgetUsd"]) if (!(typeof config[key] === "number" && config[key] > 0)) problems.push(`${key} must be a positive number`);
@@ -98,6 +102,29 @@ export async function prepare(url, dir, { branch, days, now = Date.now() }) {
   await git(["checkout", "--quiet", "--detach", head], dir);
   await git(["remote", "remove", "origin"], dir);
   return { base, head, commits };
+}
+
+// Reads the diff-review skill body (without YAML frontmatter) so the review session runs
+// the exact tracked recipe even in an isolated headless profile (such as agy-run).
+export function diffReviewInstructions(file = DIFF_REVIEW_SKILL) {
+  return readFileSync(file, "utf8").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/, "").trim();
+}
+
+export function reviewPrompt({ base, head }, { skill = diffReviewInstructions() } = {}) {
+  return [
+    `Follow the diff-review skill instructions below to review the git diff range \`${base}...${head}\`.`,
+    `Target: ${base}...${head}`,
+    skill,
+  ].join("\n\n");
+}
+
+// True when the diff-review output is explicitly an empty JSON findings array `[]`.
+export function isEmptyReview(text) {
+  const trimmed = String(text ?? "").trim();
+  const fenced = /^```(?:json)?\s*\n?([\s\S]*?)\n?```$/i.exec(trimmed);
+  const candidate = (fenced ? fenced[1] : trimmed).trim();
+  if (candidate !== "[]") return false;
+  return true;
 }
 
 export const verifySchema = {
@@ -152,7 +179,7 @@ export async function openTitles(board) {
 export function proposalBody(finding, { repo, base, head, level, date }) {
   return [
     `Proposal: ${finding.summary}`,
-    `Evidence: the weekly review (/code-review ${level}) of ${repo} main ${base.slice(0, 8)}..${head.slice(0, 8)} reported it at ${finding.location}. A verify pass on ${head.slice(0, 8)} confirmed it: ${finding.reason}`,
+    `Evidence: the weekly review (diff-review ${level}) of ${repo} main ${base.slice(0, 8)}..${head.slice(0, 8)} reported it at ${finding.location}. A verify pass on ${head.slice(0, 8)} confirmed it: ${finding.reason}`,
     `Change: ${finding.change}`,
     `Size: ${finding.size}`,
     `Found by the factory's weekly review of main on ${date}.`,
@@ -185,23 +212,24 @@ export async function reviewRepo({ board, repo }, config, { file = true, now = D
     let task;
     try {
       task = await runTask({
-        prompt: reviewPrompt({ base: record.base, head: record.head }, config.level), cwd: dir, model: config.model, effort: config.level,
-        settings, budgetUsd: config.reviewBudgetUsd, timeoutMs: REVIEW_TIMEOUT_MS, env: sessionEnv,
+        prompt: reviewPrompt({ base: record.base, head: record.head }), cwd: dir, model: config.model, effort: config.level,
+        settings, tools: REVIEW_TOOLS, budgetUsd: config.reviewBudgetUsd, timeoutMs: REVIEW_TIMEOUT_MS, env: sessionEnv,
       });
     } catch (error) {
       if (!(error instanceof ClaudeCallError)) throw error;
       return { ...record, reviewCostUSD: error.costUSD ?? config.reviewBudgetUsd, error: `review session: ${error.message}` };
     }
     record.reviewCostUSD = task.costUSD;
-    record.recipe = recipeOf(task.events);
+    record.recipe = `diff-review (${config.level})`;
     if (!task.ok) return { ...record, error: `review session ended without a result (${sessionError(task)})` };
-    const session = reviewSession(task.events);
-    if (!session) return { ...record, error: "the review session did not call the code-review skill" };
+    const reviewOutput = task.finalText.trim();
+    if (!reviewOutput) return { ...record, error: "review session returned no output" };
+    if (isEmptyReview(reviewOutput)) return record;
     const titles = await openTitles(board);
     let verify;
     try {
       verify = await runTask({
-        prompt: verifyPrompt({ base: record.base, head: record.head, output: session.output, titles }), cwd: dir, model: config.verifyModel,
+        prompt: verifyPrompt({ base: record.base, head: record.head, output: reviewOutput, titles }), cwd: dir, model: config.verifyModel,
         effort: config.verifyEffort, settings, tools: VERIFY_TOOLS, schema: verifySchema, budgetUsd: config.verifyBudgetUsd, timeoutMs: VERIFY_TIMEOUT_MS, env: sessionEnv,
       });
     } catch (error) {
