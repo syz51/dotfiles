@@ -158,7 +158,7 @@ function parseOptions(argv) {
       days: { type: "string", default: "30" },
       threshold: { type: "string", default: "3" },
       dimension: { type: "string", multiple: true, default: [] },
-      model: { type: "string", default: "claude-opus-5-5" },
+      model: { type: "string", default: "gemini-4-neon" },
       effort: { type: "string", default: "high" },
       "budget-usd": { type: "string", default: "3" },
       "max-total-usd": { type: "string", default: "10" },

@@ -210,7 +210,7 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW })).toBe(0);
 
     const [proposer] = log("claude.jsonl");
-    expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--permission-mode", "acceptEdits", "--model", "claude-opus-5-5", "--effort", "high", "--max-budget-usd", "3"]));
+    expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--permission-mode", "acceptEdits", "--model", "gemini-4-neon", "--effort", "high", "--max-budget-usd", "3"]));
     expect(proposer.args).not.toContain("--mcp-config");
     // Reads of credentials, raw transcripts and the state folder are denied, whatever the
     // user's settings allow; an absolute path is written //path.

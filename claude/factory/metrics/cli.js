@@ -3,6 +3,7 @@
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadAntigravitySessions } from "../lib/antigravity.js";
 import { loadCodexSessions } from "../lib/codex.js";
 import { litellmFetchedAt, refreshLitellm } from "../lib/litellm.js";
 import { priceSource } from "../lib/pricing.js";
@@ -124,7 +125,7 @@ export async function buildReport(options) {
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
   const entries = { current: [], previous: [] };
-  for (const session of [...await loadSessionsParallel({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until })]) {
+  for (const session of [...await loadSessionsParallel({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until }), ...loadAntigravitySessions({ since: previousSince, until })]) {
     const ended = Date.parse(session.endedAt);
     if (!Number.isFinite(ended) || ended <= previousSince || ended > until) continue;
     if (session.automation && !options.includeAutomation) {

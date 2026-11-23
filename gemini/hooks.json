@@ -1,0 +1,125 @@
+{
+  "command-guards": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-git-push",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-runtimes",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-main-checkout",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-pr-merge",
+            "timeout": 45
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" post-tool-use auto-merge",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  },
+  "board-integration": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" session-start antigravity",
+        "timeout": 5
+      },
+      {
+        "type": "command",
+        "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" session-start stale-base",
+        "timeout": 10
+      }
+    ],
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" user-prompt-submit antigravity",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" pre-tool-use antigravity",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp_t3-code_(delegate_task|t3_thread_launch|create_threads)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" pre-tool-use antigravity",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp_board_ask_user",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-asks",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" post-tool-use antigravity",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" stop antigravity",
+        "timeout": 5
+      },
+      {
+        "type": "command",
+        "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" stop open-items",
+        "timeout": 10
+      },
+      {
+        "type": "command",
+        "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" stop deck-view",
+        "timeout": 10
+      }
+    ]
+  }
+}

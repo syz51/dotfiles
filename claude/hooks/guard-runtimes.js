@@ -216,8 +216,8 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
   }
   const runs = `${command} runs ${tool}${via ? ` through ${via}` : ""}.`;
   if (CODEX.test(tool)) {
-    return `${runs} The user has only a Claude plan, so never start the Codex CLI or a gpt-* model. Do the work `
-      + "with Claude instead; in a Codex session, stop and ask the user to continue it in Claude.";
+    return `${runs} The user has no Codex subscription, so never start the Codex CLI or a gpt-* model. Do the work `
+      + "in Antigravity (Gemini 4 Neon) instead.";
   }
   if (JS_TOOL.test(tool) && (remote || blocked.remote)) {
     return `${command} runs ${tool}${via ? ` through ${via}` : ""} on the remote host over ssh. JavaScript runs through bun there too: `

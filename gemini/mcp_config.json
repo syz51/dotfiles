@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "board": {
+      "command": "/Users/sunyizhe/.cargo/bin/board",
+      "args": ["mcp"]
+    },
+    "desktop": {
+      "command": "/Users/sunyizhe/.bun/bin/bun",
+      "args": ["/Users/sunyizhe/.config/claude/marketplace/computer-use/server/desktop.js"]
+    }
+  }
+}

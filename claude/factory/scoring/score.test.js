@@ -193,11 +193,11 @@ describe("score command", () => {
     // The judge cannot read the reference files the instructions point at, so it gets their rules.
     expect(systemOf(call)).toContain(`<reference file="~/.claude/reference/merge.md">\n${readFileSync(join(REFERENCE_DIR, "merge.md"), "utf8").trimEnd()}\n</reference>`);
     expect(call.stdin).toContain("(no project CLAUDE.md found)");
-    expect(call.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5-5", "--effort", "medium", "--max-budget-usd", "0.8"]));
+    expect(call.args).toEqual(expect.arrayContaining(["--model", "gemini-4-neon", "--effort", "low", "--max-budget-usd", "0.8"]));
     const records = scores();
     expect(records).toHaveLength(3);
     const judged = records.find((record) => record.sessionId === corrected.sessionId);
-    expect(judged).toMatchObject({ rubricVersion: RUBRIC.version, model: "claude-opus-5-5", effort: "medium", costUSD: 0.05, error: null, corrections: [] });
+    expect(judged).toMatchObject({ rubricVersion: RUBRIC.version, model: "gemini-4-neon", effort: "low", costUSD: 0.05, error: null, corrections: [] });
     expect(judged.transcriptSha).toMatch(/^[0-9a-f]{64}$/);
     expect(judged.detectors["package-runner"].verdict).toBe("fail");
     expect(Object.keys(judged.dimensions).sort()).toEqual(judgeDimensions().map((dimension) => dimension.id).sort());

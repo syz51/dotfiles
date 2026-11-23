@@ -1317,13 +1317,11 @@ describe("lean prompt", () => {
   });
 
   // board task dotfiles-270: Haiku never gave the bar, so Opus never scored a candidate.
-  test("the ui-climb skill makes Haiku the regression pre-check and Opus the bar judge", () => {
+  test("the ui-climb skill makes Gemini 4 Neon (low) the regression pre-check and Gemini 4 Neon (high) the bar judge", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
-    expect(skill).toContain("Haiku is the regression pre-check and Opus is the bar judge");
-    expect(skill).toContain("does not score under main by more than `pass.regression` (default 2) times Haiku's noise; a round it fails stops before Opus");
-    expect(skill).toContain("Opus alone applies `pass.min`, `pass.gain` and `pass.references`");
-    expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
-    expect(skill).not.toContain("Haiku gates the Opus judge");
+    expect(skill).toContain("Gemini 4 Neon (`low` effort) regression pre-check first and a Gemini 4 Neon (`high` effort) bar judge second");
+    expect(skill).toContain("does not score under main by more than `pass.regression` (default 2) times its noise; a round it fails stops before the bar judge");
+    expect(skill).toContain("The bar judge alone applies `pass.min`, `pass.gain` and `pass.references`");
   });
 
   // board task dotfiles-272: a climb kept every round and handed over a branch worse than an earlier round.

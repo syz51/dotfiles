@@ -264,7 +264,7 @@ describe("friction run", () => {
     // turn that filed feedback, the automation session or the running Codex turn.
     expect(judged).toHaveLength(2);
     for (const call of judged) {
-      expect(call.args).toEqual(expect.arrayContaining(["--model", "claude-haiku-5-5", "--max-budget-usd", "0.05", "--tools", "", "--no-session-persistence"]));
+      expect(call.args).toEqual(expect.arrayContaining(["--model", "gemini-4-neon", "--effort", "low", "--max-budget-usd", "0.05", "--tools", "", "--no-session-persistence"]));
       expect(call.system).toContain("`storage`: Shared storage");
       expect(call.system).not.toContain(roots.person.sessionId);
     }

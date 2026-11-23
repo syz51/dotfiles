@@ -14,10 +14,18 @@ import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused 
 import { projectsRoot, readRecords } from "./transcripts.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
-// By default the API-first wrapper: billed to the API while it has credit, else the
-// subscription (claude/bin/claude-api).
+// By default the Antigravity ACP runner (reusing T3 Code's Google OAuth login with Gemini 4 Neon).
+// Falls back to claude-api only when CLAUDE_FACTORY_PROVIDER=claude or CLAUDE_FACTORY_BIN is explicitly set.
+export const AGY_RUN = join(import.meta.dir, "..", "..", "..", "gemini", "bin", "agy-run");
 export const API_FIRST = join(import.meta.dir, "..", "..", "bin", "claude-api");
 export const claudeBin = () => process.env.CLAUDE_FACTORY_BIN || API_FIRST;
+export const useAntigravity = () =>
+  !process.env.CLAUDE_FACTORY_BIN && process.env.CLAUDE_FACTORY_PROVIDER !== "claude" && existsSync(AGY_RUN);
+
+function agyEffortFor(model, effort) {
+  if (typeof model === "string" && /haiku/i.test(model) && (!effort || effort === "medium")) return "low";
+  return effort || "low";
+}
 
 const quietEnv = (overrides = {}) => childEnv(process.env, {
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
@@ -65,6 +73,36 @@ function eventsOf(result, what) {
 export async function judge({ prompt, content, system, schema, model, effort = "medium", budgetUsd = 0.5, timeoutMs = 240_000 }) {
   const cwd = mkdtempSync(join(tmpdir(), "claude-factory-judge-"));
   try {
+    if (useAntigravity()) {
+      const argv = [
+        AGY_RUN,
+        "--no-tools",
+        "--model", model || "gemini-4-neon",
+        "--effort", agyEffortFor(model, effort),
+        "--output-format", "stream-json",
+        "--json-schema", JSON.stringify(schema),
+        "--timeout", String(timeoutMs),
+      ];
+      if (system) {
+        const file = join(cwd, "judge-system.md");
+        writeFileSync(file, system);
+        argv.push("--system-file", file);
+      }
+      if (content) argv.push("--content-json", "-");
+      const input = content ? JSON.stringify(content) : prompt;
+      let result;
+      try {
+        result = await runProcess(argv, { cwd, env: quietEnv(), timeout: timeoutMs + 15_000, input });
+      } catch (error) {
+        const events = partialEvents(error.stdout);
+        throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events, stderr: (error.stderr ?? "").slice(-2000) });
+      }
+      const events = eventsOf(result, "Judge call");
+      const final = resultEvent(events);
+      if (!completed(events) || !final.structured_output || typeof final.structured_output !== "object")
+        throw new ClaudeCallError(`Judge call failed: ${final?.subtype ?? "no result"}`, { events, stderr: result.stderr.slice(-2000), code: result.code });
+      return { output: final.structured_output, costUSD: final?.total_cost_usd ?? 0, events };
+    }
     const argv = [claudeBin(), "--print", "--setting-sources", "", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "--model", model, "--effort", effort,
       "--max-budget-usd", String(budgetUsd), "--output-format", "stream-json", "--verbose",
@@ -138,6 +176,42 @@ export async function runTask({
   prompt, cwd, model, effort, agent, settings, tools, schema, budgetUsd = 2, timeoutMs = 900_000,
   permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false, readEffort = false,
 }) {
+  if (useAntigravity()) {
+    const argv = [
+      AGY_RUN,
+      "--full-access",
+      "--cwd", cwd,
+      "--model", model || "gemini-4-neon",
+      "--effort", agyEffortFor(model, effort || "high"),
+      "--output-format", "stream-json",
+      "--timeout", String(timeoutMs),
+    ];
+    if (schema) argv.push("--json-schema", JSON.stringify(schema));
+    let result;
+    let timedOut = false;
+    try {
+      result = await runProcess(argv, { cwd, env: quietEnv(env), timeout: timeoutMs + 15_000, input: prompt });
+    } catch (error) {
+      if (!/^Process timeout/.test(error.message ?? "")) throw error;
+      timedOut = true;
+      result = { code: null, stdout: error.stdout ?? "", stderr: error.stderr ?? "", durationMs: timeoutMs };
+    }
+    const events = timedOut ? partialEvents(result.stdout) : eventsOf(result, "Task run");
+    const final = resultEvent(events);
+    return {
+      events,
+      ...(readEffort ? { efforts: null } : {}),
+      ok: !timedOut && completed(events),
+      timedOut,
+      finalText: typeof final?.result === "string" ? final.result : "",
+      ...(schema ? { output: final?.structured_output && typeof final.structured_output === "object" ? final.structured_output : null } : {}),
+      costUSD: final?.total_cost_usd ?? 0,
+      turns: final?.num_turns ?? 1,
+      durationMs: result.durationMs ?? 0,
+      code: result.code,
+      stderr: result.stderr.slice(-2000),
+    };
+  }
   const argv = [claudeBin(), "--print", ...(readEffort ? [] : ["--no-session-persistence"]), "--output-format", "stream-json", "--verbose",
     "--permission-mode", permissionMode, "--max-budget-usd", String(budgetUsd)];
   if (schema) argv.push("--json-schema", JSON.stringify(schema));
