@@ -89,18 +89,41 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     }
   });
 
+  test("documents every ask-policy reason from claude/hooks/ask-policy.json", () => {
+    const policy = JSON.parse(read("claude/hooks/ask-policy.json"));
+    const reasons = Object.keys(policy.reasons);
+    expect(reasons.length).toBeGreaterThan(0);
+    for (const reason of reasons) {
+      expect(geminiMd).toContain(`- \`${reason}\`:`);
+    }
+  });
+
+  test("lists all 12 global skills matching SKILLS_CATALOG.md and keeps frontend-avoid unconditional", () => {
+    const catalog = read("gemini/SKILLS_CATALOG.md");
+    const catalogSkills = [...catalog.matchAll(/`~\/\.gemini\/config\/skills\/([a-z0-9-]+)`/g)].map(
+      ([, name]) => name,
+    );
+    expect(catalogSkills.length).toBe(12);
+    for (const skill of catalogSkills) {
+      expect(geminiMd).toContain(`\`${skill}\``);
+    }
+    expect(geminiMd).toContain("For all `frontend-ui` work, also check `~/.config/claude/frontend-avoid.md`");
+  });
+
   test("aligns with hooks configured in gemini/hooks.json", () => {
     const hooksRaw = JSON.stringify(hooksJson);
-    for (const hook of [
-      "guard-runtimes",
+    const hookedInGeminiMd = [
       "guard-main-checkout",
       "guard-pr-merge",
       "auto-merge",
       "guard-asks",
       "open-items",
-      "board-hook.sh",
-    ]) {
+    ];
+    for (const hook of [...hookedInGeminiMd, "guard-runtimes", "board-hook.sh"]) {
       expect(hooksRaw).toContain(hook);
+    }
+    for (const hook of hookedInGeminiMd) {
+      expect(geminiMd).toContain(`\`${hook}\``);
     }
   });
 
@@ -110,5 +133,8 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(JSON.stringify(mcpConfig.mcpServers.desktop)).toContain(
       "claude/marketplace/computer-use/server/desktop.js",
     );
+    expect(geminiMd).toContain("`board` MCP server");
+    expect(geminiMd).toContain("`desktop` MCP server");
+    expect(geminiMd).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
   });
 });

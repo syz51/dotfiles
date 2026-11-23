@@ -12,7 +12,7 @@
 
 - All 12 global skills live in `~/.gemini/config/skills/` and are cataloged (with project-scoped and built-in skills) in `~/.gemini/config/SKILLS_CATALOG.md`.
 - Read the matching skill's `SKILL.md` before starting relevant work (`frontend-ui`, `typescript`, `rust`, `tauri`, `content-research-writer`, `find-skills`, `headless-browser`, `cheat-sheets`, `ui-climb`, `diff-review`, `full-stop`, `work-stages`).
-- When both `frontend-ui` and a language skill apply, read `frontend-ui` first, and check `~/.config/claude/frontend-avoid.md` for declined UI patterns. Follow each skill's routing to the references the task needs; unrelated work in a TypeScript or Rust repository needs neither language skill.
+- For all `frontend-ui` work, also check `~/.config/claude/frontend-avoid.md` for declined UI patterns. When both `frontend-ui` and a language skill apply, read `frontend-ui` first. Follow each skill's routing to the references the task needs; unrelated work in a TypeScript or Rust repository needs neither language skill.
 
 ## Workflow
 
@@ -36,7 +36,7 @@
 
 - Before ending the turn that finishes your work in a T3 thread, review the session and file anything you hit but did not report yet:
   - Report setup friction (a tool, hook, instruction, or setup problem, including ones you worked around) via the `feedback` tool or `board feedback`; a repeat adds to the existing task.
-  - File a board `Proposal:` only for a tool or command that does not exist yet (a repeated manual step a tool should do, or a mistake a tool could have caught), searching the board first and adding a note if one already covers it.
+  - For setup/workflow improvements during this sweep, file a board `Proposal:` for a tool or command that does not exist yet (a repeated manual step a tool should do, or a mistake a tool could have caught), searching the board first and adding a note if one already covers it. (Out-of-scope code bugs and follow-ups still follow the `Proposal:` rules in the Work board section.)
   - File each item in one place only, never both. Name each id in your reply (or state that you hit none). `invoke_subagent` subagents file nothing and report these to their parent.
 - Settle the thread as a separate final step *after* `task_done` and other board calls have returned and been handled (never in the same tool batch). Call `t3_thread_organize` with `action: "settle"` (no `threadId`) only when nothing remains to do, track, or file, every open item in your reply names its task or ask id, and nothing waits on the thread (no running job, open PR to merge or fix, owned task in `doing`, unanswered question/ask, or report item needing user action). Mention that you settled it. If more work turns up, call `action: "unsettle"`. A brief or routine with its own settle rule overrides this. Board coordinators and `invoke_subagent` subagents never settle themselves; `delegate_task` and `t3_thread_launch` threads do.
 
@@ -70,7 +70,7 @@
 
 - You have standing authorization to delegate whenever parallelizing genuinely pays off: sizeable, independent tracks needing little shared context that can run at the same time (such as investigating separate areas in parallel, or running one track while you continue other work). Unless asked, do not hand a single track to an agent just to wait on it; do small or interactive work yourself. Do not use subagents merely to verify your own work beyond the Review section.
 - Use Antigravity's native orchestration stack and T3 Code threads:
-  - `invoke_subagent` (`TypeName: "research"`): parallel read-only codebase research (read-only sandbox, no network/shell).
+  - `invoke_subagent` (`TypeName: "research"`): parallel read-only codebase exploration (keep file reads inside the active workspace and avoid `run_command`, which blocks on permission prompts).
   - `invoke_subagent` (`TypeName: "self"`, `Workspace: "share"` or `"branch"` for edits): parallel independent tracks that need commands or file edits.
   - `define_subagent`: custom scoped roles when needed on the fly.
   - `run_workflow` (read the `run-workflow` skill first): code-orchestrated Python fan-out/fan-in or staged pipelines across many files, modules, or review angles.
@@ -84,7 +84,7 @@
 ## Review
 
 - For every change you push or merge, in any repository the user owns or works in, run one background diff review on the final committed diff before pushing or reporting done. Skip review only when every changed file matches the trivial list in `~/.config/claude/factory/scoring/review-scope.toml` (lockfiles, test snapshots, raster images); no repository is exempt.
-- Commit the final diff, then launch one background `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, explicitly instructed to stay strictly read-only — do not edit files or modify git state) to review `origin/<base>...<SHA>` following the `diff-review` skill (`~/.gemini/config/skills/diff-review/SKILL.md`). Because Antigravity subagents prompt and time out on paths outside the parent's active workspace, pass the diff and `diff-review` angles inline to a `research` subagent (or run `~/.local/bin/agy-run` in the target worktree) whenever reviewing a commit outside the active workspace.
+- Commit the final diff, then launch one background read-only subagent to review `origin/<base>...<SHA>` using the `diff-review` skill angles (lines, removed behavior, callers/callees, security/data, rules, tests/docs, cleanup; returning typed JSON). Because Antigravity subagents prompt and time out on out-of-workspace file reads or shell commands, include the `diff-review` instructions inline (do not tell a subagent to read `~/.gemini/config/skills/diff-review/SKILL.md`): use `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, strictly read-only) when reviewing inside the active workspace, or pass the diff (inline or in a temp file inside the active workspace) to a `research` subagent (read-only, no `run_command`) — or run `~/.local/bin/agy-run` in the target worktree — when the commit is outside the active workspace.
 - While it runs, continue unblocked work that leaves that diff alone or answer messages, but do not push or report done until its findings are handled. Cancel and restart it only if the diff changes mid-review.
 - Verify each finding against the code before deciding: fix every real defect within what the change is meant to do and rerun the affected checks (never run a second review after fixes); file real out-of-scope defects on the board (or report where there is no board) instead of fixing them; report rejected false positives with reasons in your reply.
 
