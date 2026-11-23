@@ -33,6 +33,129 @@ describe("Antigravity hook adapter", () => {
       toolCall: { id: "t3", name: "run_command", args: { CommandLine: "git push --force origin main" } },
     });
     expect(res.decision).toBe("deny");
+    expect(res.reason).toContain("guard-git-push");
+  });
+
+  test("PreToolUse combined command-guards runs all four guards in-process with identical deny/allow behavior", () => {
+    const combined = "guard-git-push,guard-runtimes,guard-main-checkout,guard-pr-merge";
+
+    expect(
+      runAdaptedHook("pre-tool-use", combined, {
+        cwd: "/tmp",
+        toolCall: { id: "c1", name: "run_command", args: { CommandLine: "ls -la && uv run python -V" } },
+      }),
+    ).toEqual({ decision: "allow" });
+
+    const badPy = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c2", name: "run_command", args: { CommandLine: "python3 -c 'print(1)'" } },
+    });
+    expect(badPy.decision).toBe("deny");
+    expect(badPy.reason).toContain("guard-runtimes");
+
+    const badPush = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c3", name: "run_command", args: { CommandLine: "git push --force origin main" } },
+    });
+    expect(badPush.decision).toBe("deny");
+    expect(badPush.reason).toContain("guard-git-push");
+
+    const badMerge = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c4", name: "run_command", args: { CommandLine: "gh pr merge 1 --admin" } },
+    });
+    expect(badMerge.decision).toBe("deny");
+    expect(badMerge.reason).toContain("guard-pr-merge");
+
+    // Line continuation and brace expansion cannot evade prefilters
+    const contMerge = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c5", name: "run_command", args: { CommandLine: "g\\\nh pr m\\\nerge 1 --admin" } },
+    });
+    expect(contMerge.decision).toBe("deny");
+    expect(contMerge.reason).toContain("guard-pr-merge");
+
+    // guard-main-checkout blocks branch switches in a simulated shared main checkout
+    const badMain = runAdaptedHook(
+      "pre-tool-use",
+      combined,
+      {
+        cwd: "/fake/repo",
+        toolCall: { id: "c6", name: "run_command", args: { CommandLine: "git switch -c feat" } },
+      },
+      {
+        runners: {
+          tempRoots: [],
+          gitLenient: (_dir, args) => {
+            if (args[0] === "rev-parse" && args.includes("--git-common-dir")) {
+              return "/fake/repo/.git\n/fake/repo/.git\n/fake/repo";
+            }
+            return undefined;
+          },
+        },
+      },
+    );
+    expect(badMain.decision).toBe("deny");
+    expect(badMain.reason).toContain("guard-main-checkout");
+  });
+
+  test("PreToolUse isolates errors in earlier guards so fail-closed guard-pr-merge still blocks", () => {
+    const combined = "guard-git-push,guard-runtimes,guard-main-checkout,guard-pr-merge";
+    const res = runAdaptedHook(
+      "pre-tool-use",
+      combined,
+      {
+        cwd: "/tmp",
+        toolCall: {
+          id: "iso1",
+          name: "run_command",
+          args: { CommandLine: "git push origin feat && gh pr merge 1 --admin" },
+        },
+      },
+      {
+        runners: {
+          gitStrict: () => {
+            throw new Error("simulated git timeout");
+          },
+        },
+      },
+    );
+    expect(res.decision).toBe("deny");
+    expect(res.reason).toContain("guard-pr-merge");
+  });
+
+  test("PreToolUse guard-pr-merge fails closed if its runner throws", () => {
+    const res = runAdaptedHook(
+      "pre-tool-use",
+      "guard-pr-merge",
+      {
+        cwd: "/tmp",
+        toolCall: {
+          id: "fc1",
+          name: "run_command",
+          args: { CommandLine: "gh pr merge 1 --squash" },
+        },
+      },
+      {
+        runners: {
+          gh: () => {
+            throw new Error("simulated gh failure");
+          },
+        },
+      },
+    );
+    expect(res.decision).toBe("deny");
+    expect(res.reason).toContain("guard-pr-merge");
+    expect(res.reason).toContain("simulated gh failure");
+  });
+
+  test("PostToolUse auto-merge fast-paths non-PR commands to empty object", () => {
+    expect(
+      runAdaptedHook("post-tool-use", "auto-merge", {
+        cwd: "/tmp",
+        toolCall: { id: "p1", name: "run_command", args: { CommandLine: "git status" } },
+      }),
+    ).toEqual({});
   });
 
   test("PreToolUse guard-asks blocks ask without Reason and allows listed Reason", () => {
