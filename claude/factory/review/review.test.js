@@ -4,13 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main } from "../cli.js";
 import { readJsonl } from "../lib/state.js";
-import { AGENT, CONFIG_FILE, loadConfig, prepare, proposalBody, remoteUrl, reviewRepo, summaryLines, verifyPrompt, verifySchema } from "./cli.js";
+import {
+  AGENT, CONFIG_FILE, DIFF_REVIEW_SKILL, diffReviewInstructions, isEmptyReview,
+  loadConfig, prepare, proposalBody, remoteUrl, reviewPrompt, reviewRepo, summaryLines,
+  verifyPrompt, verifySchema,
+} from "./cli.js";
 
 const FAKE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
 const SCRIPT = join(import.meta.dir, "testing", "fake-session.js");
 const DAY = 86_400_000;
 // The command reads the clock, so the remotes' commits are dated from it.
 const NOW = Date.now();
+const DEFAULT_REVIEW_JSON = JSON.stringify([
+  { file: "a.js", line: 1, category: "correctness", summary: "lock race REAL", failure_scenario: "Two callers race." },
+  { file: "a.js", line: 2, category: "conventions", summary: "naming", failure_scenario: "Style nit." },
+]);
 let scratch;
 let remotes;
 let commits;
@@ -63,15 +71,46 @@ if (args[0] === "add") {
   return path;
 }
 
+// A fake agy-run binary: verifies the Antigravity ACP runner path end to end.
+function fakeAgyRun() {
+  const path = join(scratch, "fake-agy-run");
+  writeFileSync(path, `#!/usr/bin/env bun
+const fs = require("fs");
+const args = process.argv.slice(2);
+const stdin = await Bun.stdin.text();
+const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+const verify = opt("--json-schema") !== undefined;
+fs.appendFileSync(process.env.FAKE_AGY_LOG, JSON.stringify({ kind: verify ? "verify" : "review", args, stdin }) + "\\n");
+const model = opt("--model") || "gemini-4-neon";
+const init = { type: "system", subtype: "init", session_id: "agy-test", model, tools: [], mcp_servers: [] };
+if (verify) {
+  const findings = [{ summary: "lock race REAL", location: "a.js:1", verdict: "confirmed", reason: "verified in code", title: "Fix lock race REAL", change: "Use a lock.", size: "S", priority: "p2" }];
+  const final = { type: "result", subtype: "success", is_error: false, duration_ms: 10, result: JSON.stringify({ findings }), structured_output: { findings }, total_cost_usd: 0, session_id: "agy-test" };
+  console.log(JSON.stringify(init));
+  console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: final.result }] } }));
+  console.log(JSON.stringify(final));
+} else {
+  const text = process.env.FAKE_REVIEW_TEXT || "[]";
+  const final = { type: "result", subtype: "success", is_error: false, duration_ms: 10, result: text, total_cost_usd: 0, session_id: "agy-test" };
+  console.log(JSON.stringify(init));
+  console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } }));
+  console.log(JSON.stringify(final));
+}
+`);
+  chmodSync(path, 0o755);
+  return path;
+}
+
 beforeEach(() => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "claude-factory-review-main-test-")));
   remotes = join(scratch, "remotes");
   commits = makeRemote("dotfiles", [10, 3, 1]);
   setEnv({
-    CLAUDE_FACTORY_BIN: FAKE, CLAUDE_FACTORY_STATE: join(scratch, "state"), FAKE_CLAUDE_MODE: "script", FAKE_CLAUDE_SCRIPT: SCRIPT,
+    CLAUDE_FACTORY_BIN: FAKE, CLAUDE_FACTORY_AGY_BIN: undefined, CLAUDE_FACTORY_PROVIDER: undefined,
+    CLAUDE_FACTORY_STATE: join(scratch, "state"), FAKE_CLAUDE_MODE: "script", FAKE_CLAUDE_SCRIPT: SCRIPT,
     CLAUDE_FACTORY_BOARD: fakeBoard(), FAKE_BOARD_LOG: join(scratch, "board.jsonl"), CLAUDE_FACTORY_REVIEW_REMOTE: remotes,
-    FAKE_REVIEW_LOG: join(scratch, "sessions.jsonl"), FAKE_REVIEW_TEXT: "Findings:\n- lock race REAL\n- naming",
-    FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_NO_SKILL: undefined, FAKE_VERIFY_NONE: undefined, FAKE_BOARD_ADD_FAIL: undefined,
+    FAKE_REVIEW_LOG: join(scratch, "sessions.jsonl"), FAKE_REVIEW_TEXT: DEFAULT_REVIEW_JSON,
+    FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_EMPTY: undefined, FAKE_VERIFY_NONE: undefined, FAKE_BOARD_ADD_FAIL: undefined,
   });
 });
 afterEach(() => {
@@ -89,17 +128,29 @@ const boardCalls = () => readJsonl(join(scratch, "board.jsonl"));
 const target = { board: "dotfiles", repo: "github.com/o/dotfiles" };
 
 describe("config", () => {
-  test("the shipped config reviews dotfiles and agent-board at high within a per-repository cap", () => {
+  test("the shipped config reviews dotfiles and agent-board on gemini-4-neon at high within a per-repository cap", () => {
     const shipped = loadConfig(CONFIG_FILE);
     expect(shipped.boards).toEqual(["dotfiles", "agent-board"]);
-    expect([shipped.days, shipped.branch, shipped.level]).toEqual([7, "main", "high"]);
+    expect([shipped.days, shipped.branch, shipped.model, shipped.level, shipped.verifyModel, shipped.verifyEffort])
+      .toEqual([7, "main", "gemini-4-neon", "high", "gemini-4-neon", "high"]);
     expect(shipped.reviewBudgetUsd + shipped.verifyBudgetUsd).toBeLessThanOrEqual(10);
   });
 
-  test("a bad config names every problem", () => {
-    const file = join(scratch, "bad.json");
-    writeFileSync(file, JSON.stringify({ boards: [], days: 0, branch: "main", model: "opus", level: "ultra", verifyModel: "claude-opus-5-5", verifyEffort: "high", reviewBudgetUsd: 0, verifyBudgetUsd: 1 }));
-    expect(() => loadConfig(file)).toThrow(/boards must be.*days must be.*model must be.*level must be.*reviewBudgetUsd must be/);
+  test("loadConfig accepts both gemini-* and claude-* full model IDs and rejects short aliases", () => {
+    const okFile = join(scratch, "ok.json");
+    writeFileSync(okFile, JSON.stringify({
+      boards: ["dotfiles"], days: 7, branch: "main",
+      model: "gemini-4-neon", level: "high", verifyModel: "claude-opus-5-5", verifyEffort: "medium",
+      reviewBudgetUsd: 5, verifyBudgetUsd: 2,
+    }));
+    expect(loadConfig(okFile).model).toBe("gemini-4-neon");
+
+    const badFile = join(scratch, "bad.json");
+    writeFileSync(badFile, JSON.stringify({
+      boards: [], days: 0, branch: "main", model: "opus", level: "ultra",
+      verifyModel: "neon", verifyEffort: "high", reviewBudgetUsd: 0, verifyBudgetUsd: 1,
+    }));
+    expect(() => loadConfig(badFile)).toThrow(/boards must be.*days must be.*model must be.*verifyModel must be.*level must be.*reviewBudgetUsd must be/);
   });
 
   test("repositories clone from GitHub over SSH, or from the test folder", () => {
@@ -125,24 +176,27 @@ describe("prepare", () => {
 });
 
 describe("reviewRepo", () => {
-  test("reviews the window, verifies against main and files the confirmed findings as proposals", async () => {
+  test("reviews the window with diff-review, verifies against main and files the confirmed findings as proposals", async () => {
     const record = await reviewRepo(target, config(), { now: NOW });
     expect(record.error).toBeNull();
     expect([record.base, record.head, record.commits]).toEqual([commits[0], commits[2], 2]);
-    expect([record.reviewCostUSD, record.verifyCostUSD, record.recipe]).toEqual([0.7, 0.4, "high effort → test recipe"]);
+    expect([record.reviewCostUSD, record.verifyCostUSD, record.recipe]).toEqual([0.7, 0.4, "diff-review (high)"]);
     const [review, verify] = sessions();
-    // The review session runs the skill on the window in a clone with no remote.
+    // The review session embeds diff-review on the window in a clone with no remote.
     expect(review.kind).toBe("review");
-    expect(review.stdin).toContain(`code-review skill with args "high ${commits[0]}...${commits[2]}"`);
+    expect(review.stdin).toContain(`Target: ${commits[0]}...${commits[2]}`);
+    expect(review.stdin).toContain("# Diff review");
     expect([review.head, review.remotes]).toEqual([commits[2], ""]);
-    expect(review.args.slice(review.args.indexOf("--model"), review.args.indexOf("--model") + 4)).toEqual(["--model", "claude-opus-5-5", "--effort", "high"]);
+    expect(review.args.slice(review.args.indexOf("--model"), review.args.indexOf("--model") + 4)).toEqual(["--model", "gemini-4-neon", "--effort", "high"]);
+    expect(review.args[review.args.indexOf("--tools") + 1]).toBe("Read,Grep,Glob,Bash");
     expect(review.args[review.args.indexOf("--max-budget-usd") + 1]).toBe("5");
     // The verify session reads the code at main with read-only tools and sees the open tasks.
     expect(verify.kind).toBe("verify");
     expect(verify.head).toBe(commits[2]);
+    expect(verify.args.slice(verify.args.indexOf("--model"), verify.args.indexOf("--model") + 4)).toEqual(["--model", "gemini-4-neon", "--effort", "high"]);
     expect(verify.args[verify.args.indexOf("--tools") + 1]).toBe("Read,Grep,Glob,Bash");
     expect(JSON.parse(verify.args[verify.args.indexOf("--json-schema") + 1])).toEqual(verifySchema);
-    expect(verify.stdin).toContain("- lock race REAL\n- naming");
+    expect(verify.stdin).toContain("lock race REAL");
     expect(verify.stdin).toContain("- Existing task");
     expect(verify.stdin).not.toContain("Finished task");
     // One proposal for the confirmed finding; the rejected one is kept with its reason.
@@ -152,9 +206,31 @@ describe("reviewRepo", () => {
     expect(title).toBe("Fix lock race REAL");
     const option = (name) => rest[rest.indexOf(name) + 1];
     expect([option("--board"), option("--auto"), option("--agent"), option("--priority")]).toEqual(["dotfiles", "false", AGENT, "p2"]);
-    expect(option("--body")).toMatch(/^Proposal: lock race REAL\n\nEvidence: the weekly review \(\/code-review high\) of github.com\/o\/dotfiles main [0-9a-f]{8}\.\.[0-9a-f]{8} reported it at a\.js:1\. A verify pass on [0-9a-f]{8} confirmed it: reason 1\n\nChange: Change it\.\n\nSize: S\n\nFound by the factory's weekly review of main on \d{4}-\d{2}-\d{2}\.$/);
+    expect(option("--body")).toMatch(/^Proposal: lock race REAL\n\nEvidence: the weekly review \(diff-review high\) of github.com\/o\/dotfiles main [0-9a-f]{8}\.\.[0-9a-f]{8} reported it at a\.js:1\. A verify pass on [0-9a-f]{8} confirmed it: reason 1\n\nChange: Change it\.\n\nSize: S\n\nFound by the factory's weekly review of main on \d{4}-\d{2}-\d{2}\.$/);
     expect(record.confirmed.map((finding) => [finding.title, finding.task])).toEqual([["Fix lock race REAL", "dotfiles-501"]]);
     expect(record.rejected.map((finding) => [finding.summary, finding.reason])).toEqual([["naming", "reason 2"]]);
+  });
+
+  test("routes through agy-run (Antigravity / Gemini 4 Neon) by default when CLAUDE_FACTORY_BIN is unset", async () => {
+    const agyLog = join(scratch, "agy.jsonl");
+    setEnv({ CLAUDE_FACTORY_BIN: undefined, CLAUDE_FACTORY_AGY_BIN: fakeAgyRun(), FAKE_AGY_LOG: agyLog });
+    const record = await reviewRepo(target, config(), { now: NOW, file: false });
+    expect(record.error).toBeNull();
+    expect(record.recipe).toBe("diff-review (high)");
+    expect(record.confirmed.map((f) => f.title)).toEqual(["Fix lock race REAL"]);
+    const calls = readJsonl(agyLog);
+    expect(calls.map((c) => c.kind)).toEqual(["review", "verify"]);
+    expect(calls[0].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json"]));
+    expect(calls[0].stdin).toContain(`Target: ${commits[0]}...${commits[2]}`);
+    expect(calls[1].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--json-schema"]));
+  });
+
+  test("an empty diff-review array skips the verify session", async () => {
+    setEnv({ FAKE_REVIEW_TEXT: "[]" });
+    const record = await reviewRepo(target, config(), { now: NOW });
+    expect(record.error).toBeNull();
+    expect([record.confirmed, record.rejected, record.verifyCostUSD]).toEqual([[], [], 0]);
+    expect(sessions().map((s) => s.kind)).toEqual(["review"]);
   });
 
   test("a dry run verifies but files nothing", async () => {
@@ -184,11 +260,11 @@ describe("reviewRepo", () => {
     expect(record.error).toBe("review session ended without a result (error_max_budget_usd, is_error)");
     expect([record.reviewCostUSD, record.verifyCostUSD]).toEqual([0.3, 0]);
 
-    setEnv({ FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_NO_SKILL: "1" });
+    setEnv({ FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_EMPTY: "1" });
     record = await reviewRepo(target, config(), { now: NOW });
-    expect(record.error).toBe("the review session did not call the code-review skill");
+    expect(record.error).toBe("review session returned no output");
 
-    setEnv({ FAKE_REVIEW_NO_SKILL: undefined, FAKE_VERIFY_NONE: "1" });
+    setEnv({ FAKE_REVIEW_EMPTY: undefined, FAKE_VERIFY_NONE: "1" });
     record = await reviewRepo(target, config(), { now: NOW });
     expect(record.error).toBe("verify session ended without findings (no structured output)");
     expect(record.verifyCostUSD).toBe(0.4);
@@ -201,16 +277,33 @@ describe("reviewRepo", () => {
 });
 
 describe("prompts and report", () => {
+  test("reviewPrompt embeds diff-review instructions without YAML frontmatter", () => {
+    expect(existsSync(DIFF_REVIEW_SKILL)).toBe(true);
+    const body = diffReviewInstructions();
+    expect(body.startsWith("# Diff review")).toBe(true);
+    expect(body).not.toMatch(/^---/);
+    const text = reviewPrompt({ base: "aaa", head: "bbb" });
+    expect(text).toContain("Target: aaa...bbb");
+    expect(text).toContain(body);
+  });
+
+  test("isEmptyReview matches bare or fenced empty JSON arrays only", () => {
+    expect(isEmptyReview("[]")).toBe(true);
+    expect(isEmptyReview("```json\n[]\n```")).toBe(true);
+    expect(isEmptyReview(DEFAULT_REVIEW_JSON)).toBe(false);
+    expect(isEmptyReview("")).toBe(false);
+  });
+
   test("the verify prompt cuts a long review and says when there are no open tasks", () => {
     const text = verifyPrompt({ base: "a", head: "b", output: "x".repeat(70_000), titles: [] });
     expect(text).toContain("[review output cut at 60000 characters]");
     expect(text).toContain("Open tasks on this repository's board:\n(none)");
   });
 
-  test("the proposal body starts with Proposal: and cites the range", () => {
+  test("the proposal body starts with Proposal: and cites the range and diff-review", () => {
     const body = proposalBody({ summary: "s", location: "f:1", reason: "r", change: "c", size: "M" }, { repo: "github.com/o/n", base: "1".repeat(40), head: "2".repeat(40), level: "high", date: "2026-11-09" });
     expect(body.startsWith("Proposal: s\n\nEvidence:")).toBe(true);
-    expect(body).toContain("main 11111111..22222222 reported it at f:1");
+    expect(body).toContain("weekly review (diff-review high) of github.com/o/n main 11111111..22222222 reported it at f:1");
   });
 
   test("summary lines name a failed repository with its range and cost", () => {
