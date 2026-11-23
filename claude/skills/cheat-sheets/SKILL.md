@@ -19,7 +19,7 @@ the sheets it lists. It needs only `bun`, and `pdftotext` (poppler) for text cop
 ## Run
 
 ```sh
-C=~/.claude/skills/cheat-sheets/scripts/cheatsheets.ts
+C=~/.config/claude/skills/cheat-sheets/scripts/cheatsheets.ts
 bun $C find git              # ids, newest year, formats, copies and titles
 bun $C find amazon web services --limit 5
 bun $C find --refresh latex  # fetch the index now instead of after 7 days
@@ -32,7 +32,7 @@ bun $C get Git-1             # download one item and print its paths
 - `get <id>` takes an id from `find`. It downloads the saved copies, else the online
   copy, else the newest web.archive.org snapshot, into `~/.cache/cheat-sheets/files/<id>/`.
   It runs `pdftotext -layout` on each PDF and prints `file` and `text` paths. Read
-  the `.txt` with the Read tool; read images and PDFs directly.
+  the `.txt` with `read_file` (or the Read tool); read images and PDFs directly.
 - Ids number the items within each section, so they can shift when the index is
   refreshed. Run `get` with an id from the latest `find`.
 
