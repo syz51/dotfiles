@@ -38,7 +38,7 @@ can name. Keep a candidate you only half believe; drop one with no nameable fail
    a new precondition, a changed return shape or wording, a new error, a changed order.
 4. **Security and data.** Check input that crosses a trust boundary, secrets in code or
    logs, widened permissions, and destructive commands that lost a check.
-5. **Rules.** Read the `CLAUDE.md` files that govern the changed files: the user's, the
+5. **Rules.** Read the instruction files (`GEMINI.md`, `AGENTS.md`, `CLAUDE.md`) that govern the changed files: the user's, the
    repository root's and those in parent folders of a changed file. Report a breach only
    when you can quote the rule and the line that breaks it.
 6. **Tests and documents.** Find behavior the diff changes while its tests or documents

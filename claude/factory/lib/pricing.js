@@ -18,6 +18,13 @@ export const PRICES = {
   "claude-opus-5": { input: 5, output: 25, cacheRead: 0.5 },
   // Haiku 5.5 charges more for a request whose prompt exceeds 100K tokens.
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, long: { above: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05 } },
+  // Antigravity / Gemini 4 Neon (covered by Google AI subscription; estimated API-equivalent rates).
+  "gemini-4-neon": { input: 2.5, output: 15, cacheRead: 0.25 },
+  "gemini-4-neon-low": { input: 2.5, output: 15, cacheRead: 0.25 },
+  "gemini-4-neon-medium": { input: 2.5, output: 15, cacheRead: 0.25 },
+  "gemini-4-neon-high": { input: 2.5, output: 15, cacheRead: 0.25 },
+  "gemini-4-neon-xhigh": { input: 2.5, output: 15, cacheRead: 0.25 },
+  "gemini-3.8-flash": { input: 0.3, output: 2.5, cacheRead: 0.03 },
 };
 
 // Where a model's price comes from: "table", "litellm", or null when it has none.

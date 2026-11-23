@@ -49,8 +49,8 @@ relative to its folder. Start from:
     { "id": "peer", "title": "A product people admire for this kind of screen", "url": "https://example.com/public-page", "views": ["desktop-light"], "steps": [{ "wait": 1500 }] }
   ],
   "judges": [
-    { "model": "claude-haiku-5-5", "effort": "high", "samples": 2 },
-    { "model": "claude-opus-5-5", "effort": "high", "samples": 2 }
+    { "model": "gemini-4-neon", "effort": "low", "samples": 2 },
+    { "model": "gemini-4-neon", "effort": "high", "samples": 2 }
   ],
   "pass": { "min": 8, "gain": 0.5, "references": 0.25 },
   "budgetUsd": { "call": 3, "round": 15, "run": 120 },
@@ -82,11 +82,9 @@ relative to its folder. Start from:
   that every judge passes without every reference is a **provisional pass** (exit 4), not
   a pass on the bar. `"pass": { "allReferences": false }` lets such a round pass; set it
   only on the owner's word.
-- The council is a Haiku judge first and one Opus judge second, as in the template. Use
-  only Opus, Haiku or Fable 5.2 models. Haiku is the regression pre-check and Opus is the bar
-  judge. Haiku runs first, cheaply, and only checks that the candidate does not score
-  under main by more than `pass.regression` (default 2) times Haiku's noise; a round it
-  fails stops before Opus. Opus alone applies `pass.min`, `pass.gain` and
+- The council is a Gemini 4 Neon (`low` effort) regression pre-check first and a Gemini 4 Neon (`high` effort) bar judge second, as in the template. The pre-check runs first, cheaply, and only checks that the candidate does not score
+  under main by more than `pass.regression` (default 2) times its noise; a round it
+  fails stops before the bar judge. The bar judge alone applies `pass.min`, `pass.gain` and
   `pass.references`. In general every judge before the last is a pre-check and the last
   applies the bar. Until a round has heard from every judge, rounds run them all, so you
   learn whether they agree.
