@@ -62,18 +62,17 @@ describe("config", () => {
     ]);
   });
 
-  test("the skill's template is a valid configuration whose council is Haiku, then one Opus judge", () => {
+  test("the skill's template is a valid configuration whose council is Gemini 4 Neon low, then high", () => {
     const skill = readFileSync(join(import.meta.dir, "..", "..", "skills", "ui-climb", "SKILL.md"), "utf8");
     const template = JSON.parse(skill.match(/^```json\n([\s\S]*?)^```$/m)[1]);
     const config = validateConfig(template, FILE);
-    expect(config.judges.map((judge) => judge.model)).toEqual(["claude-haiku-5-5", "claude-opus-5-5"]);
+    expect(config.judges.map((judge) => `${judge.model}@${judge.effort}`)).toEqual(["gemini-4-neon@low", "gemini-4-neon@high"]);
     expect(config.pass.regression).toBe(2);
     // The default bar leads the best reference; calibration replaces the placeholders.
     expect(config.pass.references).toBe(0.25);
     expect(skill.replace(/\s+/g, " ")).toContain("The template's values are placeholders: the run's first calibration derives both from the bar judge's scores");
     expect(skill.replace(/\s+/g, " ")).toContain("Every calibration with references prints a **derived bar**");
-    expect(skill).toContain("The council is a Haiku judge first and one Opus judge second");
-    expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
+    expect(skill).toContain("The council is a Gemini 4 Neon (`low` effort) regression pre-check first and a Gemini 4 Neon (`high` effort) bar judge second");
   });
 
   test.each([
