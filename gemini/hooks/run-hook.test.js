@@ -33,6 +33,48 @@ describe("Antigravity hook adapter", () => {
       toolCall: { id: "t3", name: "run_command", args: { CommandLine: "git push --force origin main" } },
     });
     expect(res.decision).toBe("deny");
+    expect(res.reason).toContain("guard-git-push");
+  });
+
+  test("PreToolUse combined command-guards runs all four guards in-process with identical deny/allow behavior", () => {
+    const combined = "guard-git-push,guard-runtimes,guard-main-checkout,guard-pr-merge";
+
+    expect(
+      runAdaptedHook("pre-tool-use", combined, {
+        cwd: "/tmp",
+        toolCall: { id: "c1", name: "run_command", args: { CommandLine: "ls -la && uv run python -V" } },
+      }),
+    ).toEqual({ decision: "allow" });
+
+    const badPy = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c2", name: "run_command", args: { CommandLine: "python3 -c 'print(1)'" } },
+    });
+    expect(badPy.decision).toBe("deny");
+    expect(badPy.reason).toContain("guard-runtimes");
+
+    const badPush = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c3", name: "run_command", args: { CommandLine: "git push --force origin main" } },
+    });
+    expect(badPush.decision).toBe("deny");
+    expect(badPush.reason).toContain("guard-git-push");
+
+    const badMerge = runAdaptedHook("pre-tool-use", combined, {
+      cwd: "/tmp",
+      toolCall: { id: "c4", name: "run_command", args: { CommandLine: "gh pr merge 1 --admin" } },
+    });
+    expect(badMerge.decision).toBe("deny");
+    expect(badMerge.reason).toContain("guard-pr-merge");
+  });
+
+  test("PostToolUse auto-merge fast-paths non-PR commands to empty object", () => {
+    expect(
+      runAdaptedHook("post-tool-use", "auto-merge", {
+        cwd: "/tmp",
+        toolCall: { id: "p1", name: "run_command", args: { CommandLine: "git status" } },
+      }),
+    ).toEqual({});
   });
 
   test("PreToolUse guard-asks blocks ask without Reason and allows listed Reason", () => {

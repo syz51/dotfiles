@@ -6,22 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-git-push",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-runtimes",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-main-checkout",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-pr-merge",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-git-push,guard-runtimes,guard-main-checkout,guard-pr-merge",
             "timeout": 45
           }
         ]
