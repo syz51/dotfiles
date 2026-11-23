@@ -58,6 +58,19 @@ function mainCheckoutTempRoots() {
   return roots.filter((root) => existsSync(root)).map((root) => realpathSync(root));
 }
 
+function resolveBranchPrStdout(cwd) {
+  // Antigravity PostToolUse does not pass command stdout; resolve the current branch's PR URL via gh.
+  const pr = spawnSync("gh", ["pr", "view", "--json", "url", "-q", ".url"], {
+    cwd,
+    encoding: "utf8",
+    timeout: 5000,
+  });
+  if (pr.status === 0 && pr.stdout?.trim()) {
+    return `${pr.stdout.trim()}\n`;
+  }
+  return "";
+}
+
 export function extractLastAssistantMessage(transcriptPath) {
   if (!transcriptPath || !existsSync(transcriptPath)) return "";
   try {
@@ -88,6 +101,11 @@ function extractCommand(agyInput) {
   return "";
 }
 
+function normalizeForPrefilter(command) {
+  // Collapse POSIX backslash-newline line continuations before stripping quotes and backslashes.
+  return command.replace(/\\\r?\n/g, "").replace(/["'\\]/g, "");
+}
+
 export function translateInput(event, hookName, agyInput) {
   const cwd = typeof agyInput?.cwd === "string" && agyInput.cwd ? agyInput.cwd : process.cwd();
   if (event === "pre-tool-use") {
@@ -99,18 +117,10 @@ export function translateInput(event, hookName, agyInput) {
   }
   if (event === "post-tool-use") {
     const command = extractCommand(agyInput);
-    let stdout = "";
-    if (hookName === "auto-merge" && !agyInput?.error && command && createsPullRequest(command, cwd)) {
-      // Antigravity PostToolUse does not pass command stdout; resolve the current branch's PR URL via gh.
-      const pr = spawnSync("gh", ["pr", "view", "--json", "url", "-q", ".url"], {
-        cwd,
-        encoding: "utf8",
-        timeout: 5000,
-      });
-      if (pr.status === 0 && pr.stdout?.trim()) {
-        stdout = `${pr.stdout.trim()}\n`;
-      }
-    }
+    const stdout =
+      hookName === "auto-merge" && !agyInput?.error && command && createsPullRequest(command, cwd)
+        ? resolveBranchPrStdout(cwd)
+        : "";
     return {
       cwd,
       tool_name: "Bash",
@@ -167,11 +177,11 @@ export function translateOutput(event, exitCode, stdout, stderr) {
   return {};
 }
 
-function runInProcessPreToolUse(hookName, command, cwd) {
-  const unquoted = command.replace(/["'\\]/g, "");
+function runInProcessPreToolUse(hookName, command, cwd, runners = {}) {
+  const unquoted = normalizeForPrefilter(command);
   if (hookName === "guard-git-push") {
     if (/\bgit\b/i.test(unquoted) && /\bpush\b|alias\./i.test(unquoted)) {
-      const violation = findGitPushViolation(command, cwd, runGitStrict);
+      const violation = findGitPushViolation(command, cwd, runners.gitStrict ?? runGitStrict);
       if (violation) return { decision: "deny", reason: `Blocked by the guard-git-push hook: ${violation}` };
     }
     return { decision: "allow" };
@@ -182,8 +192,13 @@ function runInProcessPreToolUse(hookName, command, cwd) {
     return { decision: "allow" };
   }
   if (hookName === "guard-main-checkout") {
-    if (/\b(?:git|gh)\b/i.test(unquoted)) {
-      const violation = findMainCheckoutViolation(command, cwd, runGitLenient, mainCheckoutTempRoots());
+    if (/\b(?:git|gh|xargs)\b/i.test(unquoted)) {
+      const violation = findMainCheckoutViolation(
+        command,
+        cwd,
+        runners.gitLenient ?? runGitLenient,
+        runners.tempRoots ?? mainCheckoutTempRoots(),
+      );
       if (violation) return { decision: "deny", reason: `Blocked by the guard-main-checkout hook: ${violation}` };
     }
     return { decision: "allow" };
@@ -192,8 +207,8 @@ function runInProcessPreToolUse(hookName, command, cwd) {
     // Fail closed if the merge guard throws, matching claude/hooks/guard-pr-merge.js.
     let violation;
     try {
-      if (/merge|gh|[$`*?[]/i.test(unquoted)) {
-        violation = findMergeViolation(command, cwd, runGh);
+      if (/merge|gh|[$`*?[{]/i.test(unquoted)) {
+        violation = findMergeViolation(command, cwd, runners.gh ?? runGh);
       }
     } catch (error) {
       violation = `the guard failed (${error.message}), so it cannot check this command.`;
@@ -211,11 +226,29 @@ const IN_PROCESS_PRE = new Set([
   "guard-pr-merge",
 ]);
 
+function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin) {
+  const scriptPath = join(hooksDir, `${hookName}.js`);
+  if (!existsSync(scriptPath)) {
+    return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
+  }
+  const claudeInput = translateInput(event, hookName, agyInput);
+  if (event === "post-tool-use" && hookName === "auto-merge" && !claudeInput.tool_response.stdout) {
+    return {};
+  }
+  const run = spawnSync(bunBin, [scriptPath], {
+    input: JSON.stringify(claudeInput),
+    encoding: "utf8",
+    timeout: 45_000,
+    env: process.env,
+  });
+  return translateOutput(event, run.status ?? 0, run.stdout ?? "", run.stderr ?? "");
+}
+
 export function runAdaptedHook(
   event,
   hookSpec,
   agyInput,
-  { hooksDir = HOOKS_DIR, bunBin = process.execPath } = {},
+  { hooksDir = HOOKS_DIR, bunBin = process.execPath, runners = {} } = {},
 ) {
   if (event === "post-tool-use" && agyInput?.error) {
     return {};
@@ -236,63 +269,72 @@ export function runAdaptedHook(
   if (event === "pre-tool-use") {
     const command = extractCommand(agyInput);
     for (const hookName of hookNames) {
-      if (useInProcess && IN_PROCESS_PRE.has(hookName)) {
-        if (!command) continue;
-        const res = runInProcessPreToolUse(hookName, command, cwd);
-        if (res && res.decision === "deny") return res;
-        continue;
+      // Isolate each guard so a crash in an earlier fail-open guard never skips later guards
+      // (especially fail-closed guard-pr-merge).
+      try {
+        if (useInProcess && IN_PROCESS_PRE.has(hookName)) {
+          if (!command) continue;
+          const res = runInProcessPreToolUse(hookName, command, cwd, runners);
+          if (res && res.decision === "deny") return res;
+          continue;
+        }
+        const res = runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin);
+        if (res.decision === "deny") return res;
+      } catch (err) {
+        if (hookName === "guard-pr-merge") {
+          return {
+            decision: "deny",
+            reason: `Blocked by the guard-pr-merge hook: the guard failed (${err.message}), so it cannot check this command.`,
+          };
+        }
+        process.stderr.write(`run-hook guard error (${hookName}): ${err.message}\n`);
       }
-      const scriptPath = join(hooksDir, `${hookName}.js`);
-      if (!existsSync(scriptPath)) continue;
-      const claudeInput = translateInput(event, hookName, agyInput);
-      const run = spawnSync(bunBin, [scriptPath], {
-        input: JSON.stringify(claudeInput),
-        encoding: "utf8",
-        timeout: 45_000,
-        env: process.env,
-      });
-      const res = translateOutput(event, run.status ?? 0, run.stdout ?? "", run.stderr ?? "");
-      if (res.decision === "deny") return res;
     }
     return { decision: "allow" };
   }
 
-  const hookName = hookNames[0];
-  if (event === "post-tool-use" && hookName === "auto-merge" && useInProcess) {
-    const command = extractCommand(agyInput);
-    if (!command || !/gh/i.test(command) || !createsPullRequest(command, cwd)) {
-      return {};
-    }
-    const pr = spawnSync("gh", ["pr", "view", "--json", "url", "-q", ".url"], {
-      cwd,
-      encoding: "utf8",
-      timeout: 5000,
-    });
-    const stdout = pr.status === 0 && pr.stdout?.trim() ? `${pr.stdout.trim()}\n` : "";
-    if (!stdout || !stdout.includes("/pull/")) return {};
-    try {
-      autoMergeReport(command, cwd, stdout, (args, timeout) => runGh(cwd, args, timeout));
-    } catch {
-      // Non-blocking PostToolUse hook, matching claude/hooks/auto-merge.js
+  if (event === "post-tool-use") {
+    for (const hookName of hookNames) {
+      if (hookName === "auto-merge" && useInProcess) {
+        const command = extractCommand(agyInput);
+        if (!command || !/gh/i.test(command) || !createsPullRequest(command, cwd)) {
+          continue;
+        }
+        const stdout = resolveBranchPrStdout(cwd);
+        if (!stdout || !stdout.includes("/pull/")) continue;
+        try {
+          const text = autoMergeReport(command, cwd, stdout, (args, timeout) =>
+            (runners.gh ?? runGh)(cwd, args, timeout),
+          );
+          if (text) process.stderr.write(`${text}\n`);
+        } catch (err) {
+          process.stderr.write(`auto-merge hook failed (${err.message})\n`);
+        }
+        continue;
+      }
+      runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin);
     }
     return {};
   }
 
-  const scriptPath = join(hooksDir, `${hookName}.js`);
-  if (!existsSync(scriptPath)) {
-    return event === "stop" ? { decision: "allow" } : {};
+  if (event === "session-start") {
+    const injectSteps = [];
+    for (const hookName of hookNames) {
+      const res = runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin);
+      if (Array.isArray(res.injectSteps)) injectSteps.push(...res.injectSteps);
+    }
+    return injectSteps.length > 0 ? { injectSteps } : {};
   }
-  const claudeInput = translateInput(event, hookName, agyInput);
-  if (event === "post-tool-use" && hookName === "auto-merge" && !claudeInput.tool_response.stdout) {
-    return {};
+
+  if (event === "stop") {
+    for (const hookName of hookNames) {
+      const res = runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin);
+      if (res.decision === "continue") return res;
+    }
+    return { decision: "allow" };
   }
-  const run = spawnSync(bunBin, [scriptPath], {
-    input: JSON.stringify(claudeInput),
-    encoding: "utf8",
-    timeout: 45_000,
-    env: process.env,
-  });
-  return translateOutput(event, run.status ?? 0, run.stdout ?? "", run.stderr ?? "");
+
+  return {};
 }
 
 if (import.meta.main) {
