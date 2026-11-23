@@ -511,6 +511,7 @@ if (import.meta.main) {
       verbose: { type: "boolean", default: false },
       "max-budget-usd": { type: "string" },
       "add-dir": { type: "string", multiple: true },
+      cap: { type: "string" },
       version: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -572,10 +573,13 @@ if (import.meta.main) {
         : JSON.parse(raw);
   }
 
-  let prompt = positionals.join(" ");
+  const isPreflight = positionals[0] === "preflight";
+  let prompt = (isPreflight ? positionals.slice(1) : positionals).join(" ");
   let contentBlocks;
 
-  if (values["content-json"]) {
+  if (isPreflight) {
+    prompt = "Preflight check: reply with minimal valid JSON matching the schema (e.g. an empty list) and no prose.";
+  } else if (values["content-json"]) {
     const raw =
       values["content-json"] === "-"
         ? await readStdin()
@@ -613,7 +617,7 @@ if (import.meta.main) {
     });
 
     if (values["output-format"] === "json") {
-      process.stdout.write(`${JSON.stringify(res)}\n`);
+      process.stdout.write(`${JSON.stringify({ is_error: false, ...res })}\n`);
     } else if (values["output-format"] === "stream-json") {
       const init = {
         type: "system",
