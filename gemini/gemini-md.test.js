@@ -78,6 +78,8 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
   test("warns against invoke_subagent run_command timeouts and stages diffs for read_file-only review", () => {
     expect(geminiMd).not.toContain('use `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, strictly read-only)');
     expect(geminiMd).toContain("Do not rely on `invoke_subagent` running `git diff` or other `run_command` calls");
+    expect(geminiMd).toContain("temporary file inside the active workspace");
+    expect(geminiMd).toContain("`research` subagent using `read_file` only");
     expect(geminiMd).toContain("`invoke_subagent` `run_command` calls time out in T3 Antigravity threads");
     expect(geminiMd).toContain("use `delegate_task` or `~/.local/bin/agy-run`");
   });

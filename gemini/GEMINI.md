@@ -70,7 +70,7 @@
 
 - You have standing authorization to delegate whenever parallelizing genuinely pays off: sizeable, independent tracks needing little shared context that can run at the same time (such as investigating separate areas in parallel, or running one track while you continue other work). Unless asked, do not hand a single track to an agent just to wait on it; do small or interactive work yourself. Do not use subagents merely to verify your own work beyond the Review section.
 - Use Antigravity's native orchestration stack and T3 Code threads:
-  - `invoke_subagent` (`TypeName: "research"`): parallel read-only exploration using `read_file` (keep reads inside the active workspace and avoid `run_command`, which times out in restricted/pre-`t3code-293` T3 Antigravity threads).
+  - `invoke_subagent` (`TypeName: "research"`): parallel read-only exploration using `read_file` (keep reads inside the active workspace and avoid `run_command`, which times out in T3 Antigravity threads without unrestricted `full-access`).
   - `invoke_subagent` (`TypeName: "self"`, `Workspace: "share"` or `"branch"` for edits): in-process background tracks (uses no extra T3 turn slot); note `invoke_subagent` `run_command` calls time out in T3 Antigravity threads without unrestricted `full-access` (`--dangerously-skip-permissions`), so use `delegate_task` or `~/.local/bin/agy-run` when shell-command tracks hit that timeout.
   - `define_subagent`: custom scoped roles when needed on the fly.
   - `run_workflow` (read the `run-workflow` skill first): code-orchestrated Python fan-out/fan-in or staged pipelines across many files, modules, or review angles.
