@@ -86,11 +86,18 @@ def links(repo: Path) -> list:
 
     A Mac with neither ~/.claude nor the `claude` command, such as the Pro, where no Claude
     model runs, needs no ~/.claude link. An existing ~/.claude is checked even when the command
-    is missing, so a moved or updating install does not hide a copy."""
+    is missing, so a moved or updating install does not hide a copy. When ~/.gemini/config
+    exists, its GEMINI.md, hooks.json and mcp_config.json links are checked as well."""
     claude_home = HOME / ".claude"
     has_claude = os.path.lexists(claude_home) or shutil.which("claude", path=SEARCH_PATH)
     claude = [(claude_home, repo / "claude")] if has_claude else []
-    return claude + [(Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md")]
+    gemini_config = HOME / ".gemini" / "config"
+    gemini = (
+        [(gemini_config / name, repo / "gemini" / name) for name in ("GEMINI.md", "hooks.json", "mcp_config.json")]
+        if os.path.lexists(gemini_config)
+        else []
+    )
+    return claude + gemini + [(Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md")]
 
 
 @dataclass

@@ -70,23 +70,24 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
     if (mtimeMs < since) continue;
     const { records, malformed } = readJsonlRecords(file);
     if (!records.length) continue;
-    const times = records.map((r) => r.created_at).filter(Boolean);
-    const { startedAt, endedAt, durationMs } = timestamps(times);
+    const { startedAt, endedAt } = timestamps(records.map((r) => ({ timestamp: r.created_at })));
     const endMs = Date.parse(endedAt);
-    if (Number.isFinite(endMs) && (endMs <= since || endMs > until)) continue;
+    if (!Number.isFinite(endMs) || endMs <= since || endMs > until) continue;
+    const startMs = Date.parse(startedAt);
+    const durationMs = Number.isFinite(startMs) ? Math.max(0, endMs - startMs) : 0;
 
     const prompts = [];
     const requests = [];
-    const models = {};
     for (const r of records) {
       if (r.type === "USER_INPUT" && r.source === "USER_EXPLICIT") {
         const text = unwrapUserRequest(r.content);
         if (text) prompts.push({ at: r.created_at ?? null, text, source: "user" });
       } else if (r.type === "PLANNER_RESPONSE" && r.model) {
         const model = String(r.model);
-        models[model] = (models[model] ?? 0) + 1;
+        const effortMatch = /-(low|medium|high|xhigh)$/.exec(model);
         requests.push({
           model,
+          effort: effortMatch ? effortMatch[1] : null,
           usage: {
             input: Number(r.input_tokens ?? 0),
             output: Number(r.output_tokens ?? 0),
@@ -109,18 +110,25 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       cwd,
       branch: null,
       entrypoint: "t3-code",
+      title: null,
       startedAt,
       endedAt,
       durationMs,
       automation: isAutomation(cwd),
-      origin: "user",
+      origin: prompts.length ? "person" : null,
       prompts,
       hostPrompts: 0,
-      model: topKey(models),
-      models,
+      model: topKey(priced.models),
+      models: priced.models,
+      efforts: priced.efforts,
       usage: priced.usage,
-      costUSD: priced.costUSD,
+      costByModel: priced.costByModel,
+      costUSD: priced.estimatedCostUSD,
+      estimatedCostUSD: priced.estimatedCostUSD,
+      costSource: "estimated",
       unpriced: priced.unpriced,
+      assistantMessages: requests.length,
+      prLinks: [],
       toolCalls: [],
       subagents: [],
       apiErrors: {},

@@ -1,12 +1,12 @@
 ---
 name: ui-climb
-description: Hill-climb a web UI's design to a pass bar with the factory's `ui` command, a Claude judge council that scores screenshots blind against main and reference products. Covers the climb configuration, calibration, rounds that fix the judges' findings, `score:` notes, the report, the PR and the owner's merge decision. Use when a task asks to climb, score or redesign a web UI's look against a bar, or names a `ui-climb.json`.
+description: Hill-climb a web UI's design to a pass bar with the factory's `ui` command, a Gemini 4 Neon judge council that scores screenshots blind against main and reference products. Covers the climb configuration, calibration, rounds that fix the judges' findings, `score:` notes, the report, the PR and the owner's merge decision. Use when a task asks to climb, score or redesign a web UI's look against a bar, or names a `ui-climb.json`.
 ---
 
 # UI climb
 
 A climb improves a web UI in rounds. Each round the factory's `ui` command checks the
-committed candidate with deterministic gates, then a council of Claude judges scores
+committed candidate with deterministic gates, then a council of Gemini 4 Neon judges scores
 screenshots of it beside main and reference products, unlabeled and shuffled, against
 a fixed rubric. You fix what they report, commit and run the next round, until a round
 passes, the climb plateaus or the budget is spent. The owner decides whether the result
@@ -113,9 +113,9 @@ most categories, or whose scores vary by more than a point between calls. Then t
 judge cannot steer the climb: use a stronger model or effort, or better screens, and
 calibrate again. Rounds refuse to run without a passing calibration.
 
-Each judge is calibrated on its own, Haiku too: its noise sets its pre-check floor
+Each judge is calibrated on its own, the low-effort pre-check too: its noise sets its pre-check floor
 (`pass.regression` times it, or main's spread over the run's rounds when larger). Only
-the bar judge, Opus, gets a bar reach check, since Haiku never applies the bar.
+the high-effort bar judge gets a bar reach check, since the pre-check never applies the bar.
 
 On the climb's first calibration, read the bar judge's row of the table first. A reference
 whose score in its References column is more than a point under its Main column is far
