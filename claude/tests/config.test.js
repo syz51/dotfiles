@@ -932,7 +932,7 @@ describe("full stop", () => {
     expect(body).toContain("turn auto-merge off with `gh pr merge <n> --disable-auto`, then make it a draft with `gh pr ready <n> --undo`");
     expect(body).toContain("When GitHub refuses a draft, open it without `--draft`, then at once run `gh pr merge <n> --disable-auto`");
     expect(body).toContain("Never run `gh pr ready`, merge, turn on auto-merge, push to the default branch, or ask another agent to do one of these, until the user releases it.");
-    expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.claude/reference/merge.md` says.");
+    expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.config/claude/reference/merge.md` says.");
     expect(read("claude/hooks/auto-merge.js")).toContain("if (view.isDraft) return");
     expect(read("claude/hooks/guard-pr-merge.js")).toContain("if (view.isDraft) return");
   });

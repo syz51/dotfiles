@@ -581,8 +581,15 @@ class InstallTests(unittest.TestCase):
         pairs = self.links(lexists=False, which=None, gemini=True)
         self.assertEqual(pairs, [
             (Path.home() / ".gemini/config/GEMINI.md", Path("/r/gemini/GEMINI.md")),
+            (Path.home() / ".gemini/config/SKILLS_CATALOG.md", Path("/r/gemini/SKILLS_CATALOG.md")),
             (Path.home() / ".gemini/config/hooks.json", Path("/r/gemini/hooks.json")),
             (Path.home() / ".gemini/config/mcp_config.json", Path("/r/gemini/mcp_config.json")),
+            (Path.home() / ".gemini/config/skills/cheat-sheets", Path("/r/claude/skills/cheat-sheets")),
+            (Path.home() / ".gemini/config/skills/diff-review", Path("/r/claude/skills/diff-review")),
+            (Path.home() / ".gemini/config/skills/full-stop", Path("/r/claude/skills/full-stop")),
+            (Path.home() / ".gemini/config/skills/headless-browser", Path("/r/claude/skills/headless-browser")),
+            (Path.home() / ".gemini/config/skills/ui-climb", Path("/r/claude/skills/ui-climb")),
+            (Path.home() / ".gemini/config/skills/work-stages", Path("/r/claude/skills/work-stages")),
             (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")),
         ])
 

@@ -22,7 +22,10 @@ one, otherwise in the reply.
 The last column names an agent only for a stage that splits into independent parallel
 tracks. One track stays with one agent through every stage it needs: an explorer's
 findings are not handed to a worker, and a single track is not delegated to wait on.
-Codex and runtimes without these agents do the stage themselves.
+In Antigravity / T3 Code, map `explorer` to the `research` subagent (read-only),
+`worker` to `self` or `delegate_task` (`isolation: "worktree"` for file edits), and
+`reviewer` to a `research` subagent using the `diff-review` skill. Codex and runtimes
+without these agents do the stage themselves.
 
 ## Across stages
 
@@ -30,7 +33,7 @@ Codex and runtimes without these agents do the stage themselves.
 - Subagents put their findings, decisions, open questions and work found outside their track in their report; the parent records them on the board. Read-only work in its own thread, such as a review or an investigation, records them itself.
 - Before `task_done`, and before ending a turn, file what is still to do as the Work board section says.
 - Report friction with `feedback` and continue. Its `activity` is the stage in lowercase (`explore`, `research`, `design`, `plan` or `build`), `review` for Verify, or `operate` when running a service.
-- The rules in `CLAUDE.md` or `AGENTS.md` (delegation, work board, review, safeguards) take precedence over this skill.
+- The rules in `GEMINI.md`, `AGENTS.md` or `CLAUDE.md` (delegation, work board, review, safeguards) take precedence over this skill.
 
 ## Feedback on this skill
 

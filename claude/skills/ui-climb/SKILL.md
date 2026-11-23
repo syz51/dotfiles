@@ -13,7 +13,7 @@ passes, the climb plateaus or the budget is spent. The owner decides whether the
 merges.
 
 ```sh
-UI="bun ~/.claude/factory/cli.js ui"   # every subcommand takes --config PATH (default ui-climb.json)
+UI="bun ~/.config/claude/factory/cli.js ui"   # every subcommand takes --config PATH (default ui-climb.json)
 $UI capture     # screenshots of the working tree, main and the references, page checks; no judges
 $UI calibrate   # can the judges tell main from a degraded control, and how noisy are they
 $UI round       # gates, then judges, on HEAD; exit 0 pass, 1 fail, 2 error, 3 budget spent, 4 provisional pass
@@ -97,7 +97,7 @@ relative to its folder. Start from:
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
-  and prompts) and the owner's declined patterns in `~/.claude/frontend-avoid.md`.
+  and prompts) and the owner's declined patterns in `~/.config/claude/frontend-avoid.md`.
   Changing any of them needs `--new-run`, which captures main and calibrates again;
   scores across runs do not compare. When a round refuses because the factory changed
   under the run, start a new run and say why in a note.
@@ -215,9 +215,11 @@ Hand over the champion, never a later round that scored lower.
 2. Unless the last round already ran every judge on that design, run
    `$UI round --all-judges` on the commit you hand over, so the owner sees every judge's
    score. Record its `score:` line.
-3. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
-   Artifact: load that tool with ToolSearch `select:Artifact`. Attach the file's path only
-   when ToolSearch cannot load it.
+3. `$UI report --out <file>` writes one self-contained HTML file. In Antigravity / T3 Code,
+   render it inline with `html_preview` and `html_render` (or attach the file path when it
+   exceeds the inline limit). In Claude Code, publish it as a private Artifact:
+   load that tool with ToolSearch `select:Artifact`, attaching the file's path only when
+   ToolSearch cannot load it.
 4. Push the branch and open a PR with the climb's commits, held as a draft as the
    `full-stop` skill says, so nothing merges it before the owner answers. Its body names the champion
    round and has the last `score:` line, the rounds table from `$UI status`, what changed and why, the conflicts left

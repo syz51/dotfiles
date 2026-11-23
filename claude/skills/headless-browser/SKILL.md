@@ -6,13 +6,13 @@ description: Screenshot and check web pages in a local headless Chromium. Use it
 # Headless browser
 
 `scripts/browse.ts` opens a page in headless Chromium, runs steps in the order
-given, saves PNG screenshots and prints one JSON report. Read each PNG with the
-Read tool to see it.
+given, saves PNG screenshots and prints one JSON report. Read each PNG with
+`read_file` (or the Read tool) to see it.
 
 ## Run
 
 ```sh
-B=~/.claude/skills/headless-browser/scripts/browse.ts
+B=~/.config/claude/skills/headless-browser/scripts/browse.ts
 bun $B localhost:5173
 bun $B localhost:5173/settings --width 390 --height 844 --full
 bun $B https://example.com --scheme dark --element 'main'
@@ -37,7 +37,7 @@ error. It is 3 when Playwright is not installed.
 ## Setup
 
 When the script exits 3, or after Playwright's browser cache was cleared, run
-`sh ~/.claude/skills/headless-browser/scripts/setup.sh`. It installs the pinned
+`sh ~/.config/claude/skills/headless-browser/scripts/setup.sh`. It installs the pinned
 package from `bun.lock` and the matching `chromium-headless-shell` into
 Playwright's cache (`~/Library/Caches/ms-playwright`), and is safe to repeat.
 Do not delete that cache or the skill's `node_modules` during task cleanup:
