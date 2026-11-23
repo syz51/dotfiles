@@ -23,12 +23,16 @@ const AGENT_SKILLS = [
   "typescript",
 ];
 
+const EXTERNAL_SKILLS = [
+  "design-taste-frontend",
+];
+
 describe("gemini skills catalog and cross-machine skill hygiene", () => {
   const catalog = read("gemini/SKILLS_CATALOG.md");
   const geminiMd = read("gemini/GEMINI.md");
 
-  test("catalog lists all 12 global skills under ~/.gemini/config/skills/", () => {
-    for (const name of [...DOTFILES_SKILLS, ...AGENT_SKILLS]) {
+  test("catalog lists all 13 global skills under ~/.gemini/config/skills/", () => {
+    for (const name of [...DOTFILES_SKILLS, ...AGENT_SKILLS, ...EXTERNAL_SKILLS]) {
       expect(catalog).toContain(`\`${name}\``);
       expect(catalog).toContain(`\`~/.gemini/config/skills/${name}\``);
     }
