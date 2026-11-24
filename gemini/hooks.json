@@ -10,11 +10,31 @@
             "timeout": 45
           }
         ]
+      },
+      {
+        "matcher": "call_mcp_tool|mcp_t3-code_pull_request_merge",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use guard-pr-merge",
+            "timeout": 45
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" post-tool-use auto-merge",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "call_mcp_tool|mcp_t3-code_pull_request_create",
         "hooks": [
           {
             "type": "command",

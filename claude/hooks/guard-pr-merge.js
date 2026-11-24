@@ -356,6 +356,53 @@ function missingCi(query, dir, api, repo, owner, name, oid, base, rollup) {
   return names;
 }
 
+/**
+ * Core GitHub verification shared by `gh pr merge` (Bash) and T3's `pull_request_merge` (MCP).
+ * Returns why the merge must not run, or undefined.
+ */
+function judgePullRequest({ selector, repo: repoFlag, auto, matchHead, formatStalePin, formatMissingPin, formatBehind }, where, query) {
+  const view = query(where, ["pr", "view", ...(selector === undefined ? [] : [selector]),
+    ...(repoFlag === undefined ? [] : ["--repo", repoFlag]), "--json", VIEW_FIELDS], "read the pull request");
+  if (view.state !== "OPEN") return undefined; // gh refuses to merge a closed or merged pull request itself
+  const url = new URL(view.url);
+  const [owner, name] = url.pathname.split("/").filter(Boolean);
+  const api = ["api", "--hostname", url.host];
+  const repo = `repos/${owner}/${name}`;
+  const pr = `pull request #${view.number}`;
+  // The rollup is the checks of this commit, read in the same query.
+  const head = view.headRefOid;
+  if (matchHead !== undefined && matchHead !== head) {
+    return formatStalePin(pr, head, view.url);
+  }
+  if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
+  if (auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
+  if (view.mergeStateStatus === "BEHIND") {
+    // A required check makes GitHub wait, so auto-merge saves re-waiting each time the branch falls behind.
+    return formatBehind(pr, view.baseRefName, view.url, !auto && requiresChecks(query, where, api, repo, view.baseRefName));
+  }
+  if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
+  const rollup = view.statusCheckRollup ?? [];
+  let checks = classifyChecks(rollup);
+  // The GraphQL call costs time and rate-limit points, so it runs only when billing can decide
+  // the merge: every failed check is a failed Actions job.
+  if (checks.failed.length > 0 && checks.failed.length === checks.actionsFailed) {
+    checks = classifyChecks(rollup, billingSkippedJobs(query, where, api, owner, name, head));
+  }
+  const { pending, failed } = checks;
+  if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
+  if (pending.length > 0) return `checks are still running on ${pr}'s head commit: ${list(pending)}. Wait until they finish and pass, then merge.`;
+  const missing = missingCi(query, where, api, repo, owner, name, head, view.baseRefName, rollup);
+  if (missing.length > 0) {
+    return `${pr}'s head commit has no check yet from ${list(missing)}, which run on every pull request, so CI may not have started. Wait for their checks to appear and pass, then merge.`;
+  }
+  // GitHub refuses a merge whose --match-head-commit / expectedHeadSha is not the head, so a
+  // commit pushed after this check cannot merge on the checks of the one before.
+  if (matchHead === undefined) {
+    return formatMissingPin(pr, head, view.url);
+  }
+  return undefined;
+}
+
 /** Why `gh pr merge` with `merge` run in `dir` must not run, or undefined. */
 function judgeMerge(merge, words, next, dir, query, { setsHost, setsRepo, setsGitDir, remote }) {
   if (merge.unresolved !== undefined) {
@@ -377,50 +424,27 @@ function judgeMerge(merge, words, next, dir, query, { setsHost, setsRepo, setsGi
     return "the guard cannot tell which directory, and so which repository, it runs in. Run it after a literal `cd`, or pass -R OWNER/REPO and the pull request number.";
   }
   const where = dir ?? process.cwd();
-  const view = query(where, ["pr", "view", ...(merge.selector === undefined ? [] : [merge.selector]),
-    ...(merge.repo === undefined ? [] : ["--repo", merge.repo]), "--json", VIEW_FIELDS], "read the pull request");
-  if (view.state !== "OPEN") return undefined; // gh refuses to merge a closed or merged pull request itself
-  const url = new URL(view.url);
-  const [owner, name] = url.pathname.split("/").filter(Boolean);
-  const api = ["api", "--hostname", url.host];
-  const repo = `repos/${owner}/${name}`;
-  const pr = `pull request #${view.number}`;
-  // The rollup is the checks of this commit, read in the same query.
-  const head = view.headRefOid;
-  if (merge.matchHead !== undefined && merge.matchHead !== head) {
-    return `--match-head-commit ${merge.matchHead} is not ${pr}'s head commit ${head}. Wait for that commit's checks to pass, then rerun with it: ${rerun(words, next, merge, view.url, head)}.`;
-  }
-  if (view.isDraft) return `${pr} is a draft. Mark it ready with \`gh pr ready\` only when the work is done and its checks pass.`;
-  if (merge.auto && !MERGEABLE_NOW.has(view.mergeStateStatus) && requiresChecks(query, where, api, repo, view.baseRefName)) return undefined;
-  if (view.mergeStateStatus === "BEHIND") {
-    // The URL names the pull request from any directory, whatever -R or selector the merge used.
-    const update = `${pr} is behind ${view.baseRefName}. Update it first (\`gh pr update-branch ${view.url}\`)`;
-    // A required check makes GitHub wait, so auto-merge saves re-waiting each time the branch falls behind.
-    return !merge.auto && requiresChecks(query, where, api, repo, view.baseRefName)
-      ? `${update}, then, in a separate command, rerun this merge with --auto and watch the pull request; GitHub merges it once ${view.baseRefName}'s required checks pass.`
-      : `${update}, then wait for its checks to pass.`;
-  }
-  if (view.mergeStateStatus === "DIRTY") return `${pr} conflicts with ${view.baseRefName}. Resolve the conflicts first, then wait for its checks to pass.`;
-  const rollup = view.statusCheckRollup ?? [];
-  let checks = classifyChecks(rollup);
-  // The GraphQL call costs time and rate-limit points, so it runs only when billing can decide
-  // the merge: every failed check is a failed Actions job.
-  if (checks.failed.length > 0 && checks.failed.length === checks.actionsFailed) {
-    checks = classifyChecks(rollup, billingSkippedJobs(query, where, api, owner, name, head));
-  }
-  const { pending, failed } = checks;
-  if (failed.length > 0) return `checks failed on ${pr}'s head commit: ${list(failed)}. Fix them; merge only once every check passes.`;
-  if (pending.length > 0) return `checks are still running on ${pr}'s head commit: ${list(pending)}. Wait until they finish and pass, then merge.`;
-  const missing = missingCi(query, where, api, repo, owner, name, head, view.baseRefName, rollup);
-  if (missing.length > 0) {
-    return `${pr}'s head commit has no check yet from ${list(missing)}, which run on every pull request, so CI may not have started. Wait for their checks to appear and pass, then merge.`;
-  }
-  // GitHub refuses a merge whose --match-head-commit is not the head, so a commit pushed after
-  // this check cannot merge on the checks of the one before.
-  if (merge.matchHead === undefined) {
-    return `the checks passed on ${pr}'s head commit ${head}. Pin the merge to that commit, so GitHub refuses it if the head moves: ${rerun(words, next, merge, view.url, head)}.`;
-  }
-  return undefined;
+  return judgePullRequest(
+    {
+      selector: merge.selector,
+      repo: merge.repo,
+      auto: merge.auto,
+      matchHead: merge.matchHead,
+      formatStalePin: (pr, head, url) =>
+        `--match-head-commit ${merge.matchHead} is not ${pr}'s head commit ${head}. Wait for that commit's checks to pass, then rerun with it: ${rerun(words, next, merge, url, head)}.`,
+      formatMissingPin: (pr, head, url) =>
+        `the checks passed on ${pr}'s head commit ${head}. Pin the merge to that commit, so GitHub refuses it if the head moves: ${rerun(words, next, merge, url, head)}.`,
+      formatBehind: (pr, base, url, suggestAuto) => {
+        // The URL names the pull request from any directory, whatever -R or selector the merge used.
+        const update = `${pr} is behind ${base}. Update it first (\`gh pr update-branch ${url}\`)`;
+        return suggestAuto
+          ? `${update}, then, in a separate command, rerun this merge with --auto and watch the pull request; GitHub merges it once ${base}'s required checks pass.`
+          : `${update}, then wait for its checks to pass.`;
+      },
+    },
+    where,
+    query,
+  );
 }
 
 /**
@@ -590,6 +614,88 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
   return merges[0].check();
 }
 
+const MCP_MERGE_TOOLS = new Set(["mcp__t3-code__pull_request_merge", "mcp_t3-code_pull_request_merge"]);
+const MCP_REPO = /^(?:[^/\s]+\/)?[^/\s]+\/[^/\s]+$/;
+
+/**
+ * Returns why a T3 MCP `pull_request_merge` call with `toolInput` from `cwd` must not run, or
+ * undefined when it may. Reuses the exact same GitHub check, billing-skipped CircleCI fallback,
+ * missing-CI, draft, behind/dirty, and head-pin verification as `findMergeViolation`.
+ */
+export function findMcpMergeViolation(toolInput, cwd, run, { budgetMs = BUDGET_MS } = {}) {
+  const fail = (reason) => `pull_request_merge: ${reason}`;
+  if (toolInput === null || typeof toolInput !== "object" || Array.isArray(toolInput)) {
+    return fail("arguments are not an object, so the guard cannot check this merge.");
+  }
+  if (toolInput.stack !== undefined && toolInput.stack !== false) {
+    return fail("stack=true merges multiple pull requests at once, including lower stack layers the guard cannot check. Merge each pull request individually with stack omitted or false.");
+  }
+  if (toolInput.auto !== undefined && typeof toolInput.auto !== "boolean") {
+    return fail(`invalid auto value \`${String(toolInput.auto)}\`, so the guard cannot check this merge.`);
+  }
+  const auto = toolInput.auto === true;
+  let selector;
+  if (toolInput.number !== undefined && toolInput.number !== null && toolInput.number !== "") {
+    if (typeof toolInput.number === "number" && Number.isInteger(toolInput.number) && toolInput.number > 0) {
+      selector = String(toolInput.number);
+    } else if (typeof toolInput.number === "string" && /^[1-9]\d*$/.test(toolInput.number.trim())) {
+      selector = toolInput.number.trim();
+    } else {
+      return fail(`invalid pull request number \`${String(toolInput.number)}\`, so the guard cannot check this merge.`);
+    }
+  }
+  let repo;
+  if (toolInput.repository !== undefined && toolInput.repository !== null && toolInput.repository !== "") {
+    if (typeof toolInput.repository !== "string" || toolInput.repository.startsWith("-") || !MCP_REPO.test(toolInput.repository)) {
+      return fail(`invalid repository \`${String(toolInput.repository)}\`, so the guard cannot check this merge.`);
+    }
+    repo = toolInput.repository;
+  }
+  let matchHead;
+  if (toolInput.expectedHeadSha !== undefined && toolInput.expectedHeadSha !== null && toolInput.expectedHeadSha !== "") {
+    if (typeof toolInput.expectedHeadSha !== "string") {
+      return fail("invalid expectedHeadSha, so the guard cannot check this merge.");
+    }
+    matchHead = toolInput.expectedHeadSha;
+  }
+  if (toolInput.environmentId !== undefined && toolInput.environmentId !== null && toolInput.environmentId !== "") {
+    if (typeof toolInput.environmentId !== "string") {
+      return fail("invalid environmentId, so the guard cannot check this merge.");
+    }
+    if (toolInput.environmentId.trim() !== "" && (repo === undefined || selector === undefined)) {
+      return fail("environmentId targets another environment whose repository and branch the guard cannot read locally. Pass both repository and number explicitly.");
+    }
+  }
+  const where = typeof cwd === "string" && cwd ? cwd : process.cwd();
+  const query = makeQuery(run, Date.now() + budgetMs);
+  try {
+    const reason = judgePullRequest(
+      {
+        selector,
+        repo,
+        auto,
+        matchHead,
+        formatStalePin: (pr, head) =>
+          `expectedHeadSha ${matchHead} is not ${pr}'s head commit ${head}. Wait for that commit's checks to pass, then rerun with expectedHeadSha "${head}".`,
+        formatMissingPin: (pr, head) =>
+          `the checks passed on ${pr}'s head commit ${head}. Pin the merge to that commit by passing expectedHeadSha "${head}", so GitHub refuses it if the head moves.`,
+        formatBehind: (pr, base, url, suggestAuto) => {
+          const update = `${pr} is behind ${base}. Update it first (\`gh pr update-branch ${url}\`)`;
+          return suggestAuto
+            ? `${update}, then rerun this merge with auto=true and watch the pull request; GitHub merges it once ${base}'s required checks pass.`
+            : `${update}, then wait for its checks to pass.`;
+        },
+      },
+      where,
+      query,
+    );
+    return reason && fail(reason);
+  } catch (error) {
+    if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
+    throw error;
+  }
+}
+
 export function runGh(dir, args, timeout) {
   const result = spawnSync("gh", args, {
     cwd: dir,
@@ -607,12 +713,17 @@ if (import.meta.main) {
   let violation;
   try {
     const input = JSON.parse(readFileSync(0, "utf8"));
-    const command = input?.tool_input?.command;
-    // A cheap prefilter. Without quotes and backslashes, m"erge" and m\erge read as merge; a
-    // command the shell fills in has $ or `, and one that a glob names, as in [g]h, has * ? or [;
-    // the parser refuses them when it reaches gh.
-    if (typeof command === "string" && /merge|gh|[$`*?[]/i.test(command.replace(/["'\\]/g, ""))) {
-      violation = findMergeViolation(command, typeof input.cwd === "string" ? input.cwd : process.cwd(), runGh);
+    const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+    if (MCP_MERGE_TOOLS.has(input?.tool_name)) {
+      violation = findMcpMergeViolation(input?.tool_input, cwd, runGh);
+    } else {
+      const command = input?.tool_input?.command;
+      // A cheap prefilter. Without quotes and backslashes, m"erge" and m\erge read as merge; a
+      // command the shell fills in has $ or `, and one that a glob names, as in [g]h, has * ? or [;
+      // the parser refuses them when it reaches gh.
+      if (typeof command === "string" && /merge|gh|[$`*?[]/i.test(command.replace(/["'\\]/g, ""))) {
+        violation = findMergeViolation(command, cwd, runGh);
+      }
     }
   } catch (error) {
     // A crash would be a non-blocking hook error and let the merge through, so it blocks instead.
