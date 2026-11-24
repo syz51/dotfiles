@@ -434,3 +434,55 @@ test("gitAlias follows -c aliases and reports those it cannot read", () => {
     expect(gitAlias(settings(...words), "p")).toEqual({ unknown: words.at(-1) === "alias.q=p" ? "alias.p=q" : words[1] });
   }
 });
+
+test("a cd in eval, source or a non-last piped compound command marks the directory uncertain with candidates (dotfiles-306)", () => {
+  const lastMake = (source, cwd = "/repo") => {
+    let found;
+    visitCommands(source, cwd, (words, dir, { dirs }) => {
+      if (words[0] === "make") found = { dir, dirs };
+    });
+    return found;
+  };
+  // eval
+  expect(lastMake("eval cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval 'cd sub'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/repo/sub"] });
+  expect(lastMake("eval -- cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval \"eval 'cd /other'\"; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval 'cd $X'; make")).toEqual({ dir: undefined, dirs: ["/repo"] });
+  expect(lastMake("eval 'echo hi'; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("eval '(cd /other)'; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("eval 'cd /other' | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("true | eval 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  // source and .
+  expect(lastMake("source /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake(". /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("echo 'cd /other' | source /dev/stdin; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source <(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake(". <(printf 'cd /other\\n'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source =(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source /dev/stdin <<< 'cd /other' | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  // non-last piped or backgrounded compound commands
+  expect(lastMake("while read l; do cd /other; done < f | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("until false; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("for x in a b; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("if true; then cd /other; fi | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("case a in a) cd /other;; esac | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done |& cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done & make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done | make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do echo hi; done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("while read l; do (cd /other); done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  // compound command as whole command or last part of a pipeline stays tracked as today
+  expect(lastMake("while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("echo a | while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("for x in a; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("if true; then cd /other; fi; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("case a in a) cd /other;; esac; make")).toEqual({ dir: "/other", dirs: undefined });
+  // relative cd and wrappers propagate across candidate dirs; absolute cd and plain cd $X reset
+  expect(lastMake("eval cd /other; cd sub; make")).toEqual({ dir: undefined, dirs: ["/repo/sub", "/other/sub"] });
+  expect(lastMake("eval cd /other; env -C sub make")).toEqual({ dir: undefined, dirs: ["/repo/sub", "/other/sub"] });
+  expect(lastMake("eval cd /other; cd /abs; make")).toEqual({ dir: "/abs", dirs: undefined });
+  expect(lastMake("cd $X; make")).toEqual({ dir: undefined, dirs: undefined });
+  // subshell still isolates uncertain state
+  expect(lastMake("(eval cd /other); make")).toEqual({ dir: "/repo", dirs: undefined });
+});

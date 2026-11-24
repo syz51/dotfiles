@@ -305,30 +305,36 @@ const mergeReason = (top) => `it merges a pull request from ${top}, a main check
  * `tempRoots` (absolute, resolved paths) are never treated as shared.
  */
 export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
-  return visitCommands(command, cwd, (words, dir, { appended, opaque, remote }) => {
+  return visitCommands(command, cwd, (words, dir, { appended, opaque, remote, dirs }) => {
     // A command over ssh changes a repository on another host, not a checkout here.
     if (remote) return undefined;
     // macOS volumes ignore case, so GIT and Git run git too.
     const name = basename(words[0]).toLowerCase();
-    let reason;
-    if (opaque) {
-      // xargs runs a command the guard cannot see; in a main checkout it may change the branch.
-      const top = dir === undefined ? undefined : sharedMainCheckout(dir, git, tempRoots);
-      if (top !== undefined) reason = `xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
-    } else if (name === "git") reason = gitCommand(words, dir, git, tempRoots, appended);
-    else if (name === "gh" && dir !== undefined) {
-      // gh reads options anywhere, and one before the subcommand may take the next word as its
-      // value, so with such an option any checkout or merge word counts.
-      const { path: [group, subcommand], other } = ghSubcommands(words, 2);
-      // xargs may add the subcommand itself.
-      const hidden = appended && (group === undefined || (group === "pr" && subcommand === undefined) || other !== undefined);
-      const merges = hidden || (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
-      const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
-        || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
-      const top = merges || checksOut ? sharedMainCheckout(dir, git, tempRoots) : undefined;
-      if (top !== undefined) reason = merges ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
+    // When a cd inside eval, source or a non-last piped compound command left the directory
+    // uncertain, judge every known candidate directory and refuse if any is a main checkout.
+    const candidates = dirs !== undefined ? (dirs.length > 0 ? dirs : [undefined]) : [dir];
+    for (const candidate of candidates) {
+      let reason;
+      if (opaque) {
+        // xargs runs a command the guard cannot see; in a main checkout it may change the branch.
+        const top = candidate === undefined ? undefined : sharedMainCheckout(candidate, git, tempRoots);
+        if (top !== undefined) reason = `xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
+      } else if (name === "git") reason = gitCommand(words, candidate, git, tempRoots, appended);
+      else if (name === "gh" && candidate !== undefined) {
+        // gh reads options anywhere, and one before the subcommand may take the next word as its
+        // value, so with such an option any checkout or merge word counts.
+        const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+        // xargs may add the subcommand itself.
+        const hidden = appended && (group === undefined || (group === "pr" && subcommand === undefined) || other !== undefined);
+        const merges = hidden || (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
+        const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
+          || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
+        const top = merges || checksOut ? sharedMainCheckout(candidate, git, tempRoots) : undefined;
+        if (top !== undefined) reason = merges ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
+      }
+      if (reason) return `\`${words.join(" ")}\`: ${reason}`;
     }
-    return reason && `\`${words.join(" ")}\`: ${reason}`;
+    return undefined;
   });
 }
 

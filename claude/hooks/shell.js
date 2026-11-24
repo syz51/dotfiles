@@ -10,6 +10,9 @@ const MAX_DEPTH = 8;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
+const COMPOUND_OPEN = { while: "done", until: "done", for: "done", if: "fi", case: "esac" };
+const COMPOUND_CLOSE = new Set(Object.values(COMPOUND_OPEN));
+const STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "-"]);
 /** git's global options that take the next word as their value, for the guards that read git commands. */
 export const GIT_VALUE_OPTIONS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--attr-source"]);
 /**
@@ -259,7 +262,7 @@ export function parseScript(source) {
     } else if (c === "\\") {
       if (source[i + 1] !== "\n") word = (word ?? "") + (source[i + 1] ?? "");
       i += 2;
-    } else if ((c === "$" && source[i + 1] === "(") || c === "`") {
+    } else if (((c === "$" || (word === undefined && (c === "<" || c === "="))) && source[i + 1] === "(") || c === "`") {
       const { body, end } = substitution(source, i);
       current.substitutions.push(body);
       word = (word ?? "") + source.slice(i, end);
@@ -481,9 +484,35 @@ function splitString(value) {
   return words;
 }
 
-/** Whether a shell invocation reads its commands from standard input (no -c and no script file). */
+/** Known candidate directories for a state: `dirs` when uncertain, `[dir]` when known, `[]` when unknown. */
+const candidatesOf = (dir, dirs) => (dirs !== undefined ? dirs : dir !== undefined ? [dir] : []);
+
+/** Deduplicated known directories from `lists`. */
+const mergeCandidates = (...lists) => [...new Set(lists.flat().filter((path) => path !== undefined))];
+
+/** Moves `(dir, dirs)` by `path`, keeping candidate dirs when uncertain, or clears both on a remote host. */
+function moveDir(dir, dirs, path, remote) {
+  if (remote) return { dir: undefined, dirs: undefined };
+  if (dirs === undefined) return { dir: changeDirectory(dir, path), dirs: undefined };
+  if (path === undefined || path === "~" || path.startsWith("~/") || path.startsWith("/")) {
+    return { dir: changeDirectory(undefined, path), dirs: undefined };
+  }
+  if (path === "-" || /[$`*?[]/.test(path)) return { dir: undefined, dirs: undefined };
+  return { dir: undefined, dirs: mergeCandidates(dirs.map((base) => changeDirectory(base, path))) };
+}
+
+/** The file or substitution operand of `source` or `.`, or undefined for any other command. */
+function sourceTarget(words) {
+  if (words[0] !== "source" && words[0] !== ".") return undefined;
+  return words[1] === "--" ? words[2] : words[1];
+}
+
+/** Whether a shell or `source /dev/stdin` invocation reads its commands from standard input. */
 function readsStdin(words) {
-  if (words.length === 0 || !SHELLS.has(basename(words[0]))) return false;
+  if (words.length === 0) return false;
+  const target = sourceTarget(words);
+  if (target !== undefined) return STDIN_PATHS.has(target);
+  if (!SHELLS.has(basename(words[0]))) return false;
   const fish = basename(words[0]) === "fish";
   for (let i = 1; i < words.length; i += 1) {
     const word = words[i];
@@ -503,7 +532,7 @@ function readsStdin(words) {
  * reading it. `-o RemoteCommand=…` runs its command there too. `-o ProxyCommand=…` and similar
  * options run their command here, in `dir`.
  */
-function sshProgram(argv, i, dir) {
+function sshProgram(argv, i, dir, dirs) {
   const takesValue = (option) => /^-[A-Za-z]$/.test(option) && SSH_VALUE_LETTERS.includes(option[1]);
   const before = skipOptions(argv, i + 1, takesValue);
   const hasHost = before.next < argv.length;
@@ -512,7 +541,7 @@ function sshProgram(argv, i, dir) {
   const settings = options.filter(([option, value]) => option === "-o" && value !== undefined).map(([, value]) => value);
   const commandsOf = (pattern) => settings.map((value) => pattern.exec(value)?.[1])
     .filter((command) => command !== undefined && command.trim().toLowerCase() !== "none");
-  const local = commandsOf(SSH_LOCAL_COMMAND).map((command) => [command, dir]);
+  const local = commandsOf(SSH_LOCAL_COMMAND).map((command) => ({ script: command, dir, dirs }));
   const words = argv.slice(after.next).join(" ");
   const nested = [...commandsOf(SSH_REMOTE_COMMAND), ...(words === "" ? [] : [words])];
   const stdin = hasHost && !options.some(([option]) => SSH_NO_STDIN.has(option));
@@ -520,22 +549,22 @@ function sshProgram(argv, i, dir) {
     const inner = program(command.argv, undefined);
     return readsStdin(inner.words) || inner.reads?.() === true;
   })));
-  return { words: [], nested, local, dir: undefined, remote: true, reads, reparses: true };
+  return { words: [], nested, local, dir: undefined, dirs: undefined, remote: true, reads, reparses: true };
 }
 
 /**
  * Skips assignments, shell keywords, and wrappers, collecting command strings that wrappers run.
  * On another host (`remote`), a wrapper's directory change leaves the directory unknown.
  */
-function program(argv, dir, remote = false) {
-  const chdir = (path) => (remote ? undefined : changeDirectory(dir, path));
+function program(argv, dir, remote = false, dirs = undefined) {
+  const chdir = (path) => { ({ dir, dirs } = moveDir(dir, dirs, path, remote)); };
   let appended = false; // xargs adds words read from standard input
   // Whether a skipped word runs the words after it as a command: a wrapper, an assignment, or
   // a second xargs. The first xargs alone runs echo.
   let runner = false;
   let replace; // xargs' -I or -J string, which each input line replaces
   let filled = false; // the input fills in an `env -S` string, so it may supply any words
-  let envDir; // the directory an env started in while it parses its `env -S` words again
+  let envDir; // the directory state an env started in while it parses its `env -S` words again
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
@@ -550,20 +579,20 @@ function program(argv, dir, remote = false) {
       continue;
     }
     if (name === "ssh") {
-      const remote = sshProgram(argv, i, dir);
+      const remote = sshProgram(argv, i, dir, dirs);
       return { ...remote, appended };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`.
       i += 1;
       while (i < argv.length && argv[i].startsWith("-")) i += ["-n", "--interval", "-q", "--equexit"].includes(argv[i]) ? 2 : 1;
-      return { words: [], nested: [argv.slice(i).join(" ")], dir, appended, reparses: true };
+      return { words: [], nested: [argv.slice(i).join(" ")], dir, dirs, appended, reparses: true };
     }
     if (name === "command") {
       // `command -v NAME` and `command -V NAME` look a command up without running it.
       let j = i + 1;
       while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, appended };
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, dirs, appended };
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     runner = name !== "xargs" || appended;
@@ -575,10 +604,10 @@ function program(argv, dir, remote = false) {
       // env puts the words of an `env -S` string where the option was and parses them again,
       // so they come before the words after it, which reach the command as its arguments.
       // env changes directory once, to its last -C, from the directory it started in.
-      const base = envDir ?? dir;
+      const base = envDir ?? { dir, dirs };
       const split = options.find(([option]) => option === "-S" || option === "--split-string");
       for (const [option, value] of options) {
-        if (option === "-C" || option === "--chdir") dir = remote ? undefined : changeDirectory(base, value);
+        if (option === "-C" || option === "--chdir") ({ dir, dirs } = moveDir(base.dir, base.dirs, value, remote));
         if (option === split?.[0]) break;
       }
       if (split !== undefined) {
@@ -592,7 +621,7 @@ function program(argv, dir, remote = false) {
       envDir = undefined;
     }
     if (name === "sudo") {
-      for (const [option, value] of options) if (option === "-D" || option === "--chdir") dir = chdir(value);
+      for (const [option, value] of options) if (option === "-D" || option === "--chdir") chdir(value);
     }
     if (name === "timeout") i += 1; // the duration
     if (name === "xargs") {
@@ -610,7 +639,7 @@ function program(argv, dir, remote = false) {
   const words = argv.slice(i).map(fill);
   // `fills`: the input fills in the command's name or an `env -S` string.
   const fills = filled || (words[0] ?? "").includes(FILLED);
-  return { words, nested: [], dir, appended, bare, fills };
+  return { words, nested: [], dir, dirs, appended, bare, fills };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -630,16 +659,30 @@ function shellScripts(words) {
 }
 
 /** The commands `find … -exec command … ;` runs, with their directory: `-execdir` and `-okdir` run in each match's own. */
-function findScripts(words, dir) {
+function findScripts(words, dir, dirs) {
   const scripts = [];
   for (let i = 1; i < words.length; i += 1) {
     if (!FIND_EXEC.has(words[i])) continue;
     let j = i + 1;
     while (j < words.length && words[j] !== ";" && words[j] !== "+") j += 1;
-    scripts.push([quote(words.slice(i + 1, j)), words[i].endsWith("dir") ? undefined : dir]);
+    const perMatch = words[i].endsWith("dir");
+    scripts.push({ script: quote(words.slice(i + 1, j)), dir: perMatch ? undefined : dir, dirs: perMatch ? undefined : dirs });
     i = j;
   }
   return scripts;
+}
+
+/** Text printed by a `<(…)` or `=(…)` process substitution passed to `source` or `.`. */
+function processSubScript(word) {
+  if (!/^[<=]\(.*\)$/s.test(word)) return undefined;
+  const parts = [];
+  for (const { argv, inputs } of parseScript(word.slice(2, -1)).commands) {
+    parts.push(...inputs);
+    const { words } = program(argv, undefined);
+    const text = words.length > 0 ? printed(words) : undefined;
+    if (text !== undefined) parts.push(text);
+  }
+  return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
 /**
@@ -672,6 +715,8 @@ function printed(words, depth = 0) {
 
 function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
+  state.cdCount ??= 0;
+  state.cdTargets ??= [];
   // Whether this script runs on another host, over ssh.
   const here = state.remote === true;
   // Whether xargs adds words to the command that runs this script, such as `xargs ssh host
@@ -679,29 +724,62 @@ function inspect(source, state, visit, depth, tooDeep) {
   // cannot tell which command gets them and treats every command in it as getting more words.
   const added = state.appended === true;
   const { commands } = parseScript(source);
+  const snapshot = () => ({
+    dir: state.dir,
+    dirs: state.dirs ? [...state.dirs] : undefined,
+    cdCount: state.cdCount,
+    cdLen: state.cdTargets.length,
+  });
+  const restore = (snap) => {
+    state.dir = snap.dir;
+    state.dirs = snap.dirs ? [...snap.dirs] : undefined;
+    state.cdCount = snap.cdCount;
+    state.cdTargets.length = snap.cdLen;
+  };
+  const markUncertain = (beforeSnap, targets) => {
+    state.dir = undefined;
+    state.dirs = mergeCandidates(candidatesOf(beforeSnap.dir, beforeSnap.dirs), targets);
+  };
   // Text printed inside each open `{ …; }` group or `( … )` subshell, so a group piped into a
   // shell feeds it everything its commands print.
   const groups = [];
-  // The directory before each open `( … )` subshell: a `cd` inside one ends with it.
+  // The directory state before each open `( … )` subshell: a `cd` inside one ends with it.
   const subshells = [];
-  const leave = (count) => {
-    for (let k = 0; k < count && subshells.length > 0; k += 1) state.dir = subshells.pop();
-  };
-  // The directory before each open `{ …; }` group: zsh runs a group that a `|` or `&` follows
-  // in a subshell, so a `cd` inside it ends with it.
+  // The directory state before each open `{ …; }` group: zsh runs a group that a `|` or `&`
+  // follows in a subshell, so a `cd` inside it ends with it.
   const braces = [];
+  // Open compound commands (`while`, `until`, `for`, `if`, `case`): when a `|` or `&` follows
+  // the closing keyword and a `cd` ran inside, the directory becomes uncertain with both the
+  // pre-compound directory and the `cd` targets as candidates.
+  const compounds = [];
+  const leave = (count) => {
+    for (let k = 0; k < count && subshells.length > 0; k += 1) {
+      restore(subshells.pop());
+      while (braces.length > 0 && braces.at(-1).subshellDepth > subshells.length) braces.pop();
+      while (compounds.length > 0 && compounds.at(-1).subshellDepth > subshells.length) compounds.pop();
+    }
+  };
   let pipeline = [];
   for (const command of commands) {
-    for (let k = 0; k < command.opens; k += 1) subshells.push(state.dir);
+    for (let k = 0; k < command.opens; k += 1) subshells.push(snapshot());
     for (const word of command.argv) {
+      if (word === "{") braces.push({ ...snapshot(), subshellDepth: subshells.length });
+      else if (Object.hasOwn(COMPOUND_OPEN, word)) {
+        compounds.push({ close: COMPOUND_OPEN[word], before: snapshot(), subshellDepth: subshells.length });
+      }
       if (!SHELL_KEYWORDS.has(word)) break;
-      if (word === "{") braces.push(state.dir);
     }
-    if (command.argv[0] === "}" && braces.length > 0) {
+    if (command.argv[0] === "}" && braces.length > 0 && braces.at(-1).subshellDepth === subshells.length) {
       const before = braces.pop();
-      if (["|", "|&", "&"].includes(command.next)) state.dir = before;
+      if (["|", "|&", "&"].includes(command.next)) restore(before);
+    } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
+      && compounds.at(-1)?.close === command.argv[0] && compounds.at(-1).subshellDepth === subshells.length) {
+      const entry = compounds.pop();
+      if (["|", "|&", "&"].includes(command.next) && state.cdCount > entry.before.cdCount) {
+        markUncertain(entry.before, [...state.cdTargets.slice(entry.before.cdLen), ...candidatesOf(state.dir, state.dirs)]);
+      }
     }
-    const run = program(command.argv, state.dir, here);
+    const run = program(command.argv, state.dir, here, state.dirs);
     for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
     const text = run.words.length > 0 ? printed(run.words) : undefined;
     run.printed = text === undefined ? [] : [text];
@@ -710,39 +788,73 @@ function inspect(source, state, visit, depth, tooDeep) {
       run.printed = groups.pop();
       groups.at(-1)?.push(...run.printed);
     }
-    // `before` is the shell's directory when this part starts, where its substitutions run.
-    pipeline.push({ command, run, before: state.dir });
+    // `before` and `beforeDirs` hold the shell's directory state when this part starts, where its substitutions run.
+    pipeline.push({ command, run, before: state.dir, beforeDirs: state.dirs ? [...state.dirs] : undefined });
     if (command.next === "|" || command.next === "|&") {
       leave(command.closes);
       continue;
     }
-    // A shell reading standard input runs the heredocs, here-strings and printed text piped to it.
+    // A shell or `source /dev/stdin` reading standard input runs the heredocs, here-strings and printed text piped to it.
     const fed = pipeline.length > 1 || pipeline[0].command.inputs.length > 0;
     const reader = fed ? pipeline.findIndex(({ run: { words, reads } }) => reads?.() === true || readsStdin(words)) : -1;
     // A background job and every part of a pipeline but the last run in a subshell, so a `cd`
     // there moves nothing after it. zsh, the shell Claude Code runs commands in, runs the last
     // part in the current shell, so a `cd` there moves later commands; bash would not.
     const background = pipeline.at(-1).command.next === "&";
-    for (const [index, { command: { argv, inputs, substitutions }, run: { words, nested, local, dir, remote, printed: text, appended, reparses, bare, fills }, before }] of pipeline.entries()) {
+    const readerInShell = reader !== -1 && !background && reader === pipeline.length - 1 && !here
+      && sourceTarget(pipeline[reader].run.words) !== undefined;
+    for (const [index, { command: { argv, inputs, substitutions }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
+      const lastInShell = !background && index === pipeline.length - 1 && !here;
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
       // run on the remote host; its local options' commands run here. The words xargs adds to
       // ssh or watch join the script they run.
-      const scripts = [...substitutions.map((script) => [script, before, here]),
-        ...nested.map((script) => [script, dir, here || Boolean(remote), appended]),
-        ...(local ?? []).map(([script, where, adds]) => [script, where, here, adds])];
-      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => [script, dir, here]));
-      if (name === "eval") scripts.push([words.slice(1).join(" "), dir, here]);
-      if (name === "find") scripts.push(...findScripts(words, dir).map(([script, where]) => [script, where, here]));
+      const scripts = [
+        ...substitutions.map((script) => ({ script, dir: before, dirs: beforeDirs, remote: here })),
+        ...nested.map((script) => ({ script, dir, dirs, remote: here || Boolean(remote), appended })),
+        ...(local ?? []).map((entry) => ({ ...entry, remote: here })),
+      ];
+      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => ({ script, dir, dirs, remote: here })));
+      if (name === "eval") {
+        const evalWords = words[1] === "--" ? words.slice(2) : words.slice(1);
+        scripts.push({ script: evalWords.join(" "), dir, dirs, remote: here, sameShell: lastInShell });
+      }
+      const sourced = sourceTarget(words);
+      if (sourced !== undefined) {
+        const inline = processSubScript(sourced);
+        if (inline !== undefined) scripts.push({ script: inline, dir, dirs, remote: here, sameShell: lastInShell });
+      }
+      if (name === "find") scripts.push(...findScripts(words, dir, dirs).map((entry) => ({ ...entry, remote: here })));
       if (reader !== -1) {
         const piped = index < reader ? [...inputs, ...text] : inputs;
-        scripts.push(...piped.map((script) => [script, pipeline[reader].run.dir, here || Boolean(pipeline[reader].run.remote)]));
+        const targetRun = pipeline[reader].run;
+        scripts.push(...piped.map((script) => ({
+          script,
+          dir: targetRun.dir,
+          dirs: targetRun.dirs,
+          remote: here || Boolean(targetRun.remote),
+          sameShell: readerInShell,
+        })));
       }
-      for (const [script, where, onRemote, adds] of scripts) {
-        const violation = script === undefined ? undefined
-          : inspect(script, { dir: where, remote: onRemote, appended: added || adds === true }, visit, depth + 1, tooDeep);
+      for (const { script, dir: where, dirs: whereDirs, remote: onRemote, appended: adds, sameShell } of scripts) {
+        if (script === undefined) continue;
+        const child = {
+          dir: where,
+          dirs: whereDirs ? [...whereDirs] : undefined,
+          remote: onRemote,
+          appended: added || adds === true,
+          cdCount: 0,
+          cdTargets: [],
+        };
+        const violation = inspect(script, child, visit, depth + 1, tooDeep);
         if (violation) return violation;
+        if (sameShell && child.cdCount > 0) {
+          const prev = snapshot();
+          state.cdCount += child.cdCount;
+          state.cdTargets.push(...child.cdTargets);
+          markUncertain(prev, [...child.cdTargets, ...candidatesOf(child.dir, child.dirs)]);
+        }
       }
       // Words xargs adds that make a command the guard cannot see: ssh and watch parse them
       // again as a script, wrappers with no command run them as one, a shell's `-c` without its
@@ -752,16 +864,25 @@ function inspect(source, state, visit, depth, tooDeep) {
       const opaque = (added || appended) && (reparses === true || bare === true || fills === true || name === "find" || name === "eval"
         || (SHELLS.has(name) && shellScripts(words).some((script) => script === undefined || script.includes(FILLED))));
       if (opaque) {
-        const violation = visit(argv, dir ?? before, { appended: true, opaque: true, remote: here });
+        const opaqueDir = dir !== undefined || dirs !== undefined ? dir : before;
+        const opaqueDirs = dir !== undefined || dirs !== undefined ? dirs : beforeDirs;
+        const violation = visit(argv, opaqueDir, { appended: true, opaque: true, remote: here, ...(opaqueDirs !== undefined && { dirs: opaqueDirs }) });
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
         if (background || index < pipeline.length - 1) continue;
+        state.cdCount += 1;
         // A directory on another host is unknown here, whatever path it names.
-        if (name === "popd" || here) state.dir = undefined;
-        else state.dir = changeDirectory(before, words.slice(1).find((arg) => !/^-[LPe@]+$/.test(arg)));
+        if (name === "popd" || here) {
+          state.dir = undefined;
+          state.dirs = undefined;
+        } else {
+          const arg = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
+          ({ dir: state.dir, dirs: state.dirs } = moveDir(before, beforeDirs, arg, here));
+          state.cdTargets.push(...candidatesOf(state.dir, state.dirs));
+        }
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here });
+        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, ...(dirs !== undefined && { dirs }) });
         if (violation) return violation;
       }
     }
@@ -772,14 +893,15 @@ function inspect(source, state, visit, depth, tooDeep) {
 }
 
 /**
- * Calls `visit(words, dir, { appended, opaque, remote })` for every command `source` would run,
- * after wrappers, through shells, substitutions, `eval`, `find -exec` and `ssh`; `dir` is its
- * directory when known, and always undefined for a command on another host, `appended` says
- * that xargs adds arguments the guard cannot see, and `remote` says that it runs on another
- * host over `ssh`. `opaque` says that the words xargs adds may run a command the guard cannot
- * see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or `xargs find`; then
- * `words` are the xargs command's own words, and the command they name is visited too. A word
- * that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
+ * Calls `visit(words, dir, { appended, opaque, remote, dirs })` for every command `source` would run,
+ * after wrappers, through shells, substitutions, `eval`, `source`, `find -exec` and `ssh`; `dir` is its
+ * directory when known, and always undefined for a command on another host or when a `cd` inside `eval`,
+ * `source` or a non-last piped compound command leaves the directory uncertain (in which case `dirs` lists
+ * the known candidate directories), `appended` says that xargs adds arguments the guard cannot see, and
+ * `remote` says that it runs on another host over `ssh`. `opaque` says that the words xargs adds may run
+ * a command the guard cannot see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or
+ * `xargs find`; then `words` are the xargs command's own words, and the command they name is visited too.
+ * A word that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.
  */
