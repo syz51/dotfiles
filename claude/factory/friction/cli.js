@@ -54,8 +54,8 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js friction <run|install|uninsta
     --max-age-hours N    never look further back than this (default 48)
     --min-score N        friction score a turn needs to be judged (default 4)
     --max-turns N        turns to judge per run (default 8)
-    --model MODEL        judge model (default claude-haiku-5-5)
-    --effort LEVEL       judge effort (default medium)
+    --model MODEL        judge model (default gemini-4-neon)
+    --effort LEVEL       judge effort (default low)
     --budget-usd N       budget per judge call (default 0.05)
     --max-total-usd N    stop before judge spending could pass this (default 0.30)
     --dry-run            list the turns that would be judged; call and write nothing
@@ -256,7 +256,7 @@ export const feedbackText = (finding, { harness, sessionId, turn, cwd }) => {
   const where = cwd ? ` in ${cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd}` : "";
   return [
     finding.title, "", ...(finding.detail ? [finding.detail, ""] : []), ...(finding.error ? [`Error: ${finding.error}`, ""] : []),
-    `Captured from ${harness === "codex" ? "Codex" : "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
+    `Captured from ${{ claude: "Claude Code", codex: "Codex", antigravity: "Antigravity" }[harness] ?? "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
   ].join("\n");
 };
 
@@ -518,7 +518,7 @@ export async function run(argv, context) {
     case "run":
       return runFriction(options, context);
     case "install": {
-      const text = plist({ path: await toolPath({ required: ["claude"], purpose: "friction capture" }) });
+      const text = plist({ path: await toolPath({ required: ["agy-run"], purpose: "friction capture" }) });
       if (options.print) {
         console.log(text);
         return 0;
