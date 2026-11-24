@@ -152,5 +152,7 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
       serverUrl: "https://notebook.googleapis.com/mcp",
       authProviderType: "google_credentials",
     });
+    expect(geminiMd).toContain("`gemini-notebook` MCP server");
+    expect(geminiMd).toContain("~/.config/gemini/docs/gemini-notebook-mcp.md");
   });
 });
