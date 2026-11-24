@@ -35,19 +35,18 @@ export function loadAskPolicy(policyPath = process.env.ASK_POLICY ?? join(import
 }
 
 /**
- * Parses a shell command's argv for a `board ask` invocation.
- * Returns `{ question, kind }` when `words` invokes `board ask`, or `undefined` otherwise
- * (non-`board` commands, other subcommands like `board asks` or `board help ask`, or help/version flags).
+ * Returns the index of the `board` subcommand in `words`, or `-1` when `words` is not a
+ * `board` invocation or terminates before a subcommand due to help/version/`--`.
  */
-export function parseBoardAskCommand(words) {
-  if (!Array.isArray(words) || words.length === 0) return undefined;
-  if (basename(words[0]).toLowerCase() !== "board") return undefined;
+function boardSubcommandIndex(words) {
+  if (!Array.isArray(words) || words.length === 0) return -1;
+  if (basename(words[0]).toLowerCase() !== "board") return -1;
 
   let i = 1;
   while (i < words.length && words[i].startsWith("-")) {
     const word = words[i];
     if (word === "-h" || word === "--help" || word === "-V" || word === "--version" || word === "--") {
-      return undefined;
+      return -1;
     }
     if (word.includes("=")) {
       i += 1;
@@ -57,8 +56,17 @@ export function parseBoardAskCommand(words) {
       i += 1;
     }
   }
+  return i;
+}
 
-  if (words[i] !== "ask") return undefined;
+/**
+ * Parses a shell command's argv for a `board ask` invocation.
+ * Returns `{ question, kind }` when `words` invokes `board ask`, or `undefined` otherwise
+ * (non-`board` commands, other subcommands like `board asks` or `board help ask`, or help/version flags).
+ */
+export function parseBoardAskCommand(words) {
+  const i = boardSubcommandIndex(words);
+  if (i < 0 || words[i] !== "ask") return undefined;
 
   let kind = "decision";
   let questionFlag;
@@ -100,9 +108,20 @@ export function parseBoardAskCommand(words) {
 export function findBoardAskViolation(command, cwd, policy) {
   if (typeof command !== "string") return undefined;
   const unquoted = command.replace(/\\\r?\n/g, "").replace(/["'\\]/g, "");
-  if (!/\bboard\b/i.test(unquoted) || !/\bask\b/i.test(unquoted)) return undefined;
+  if (!/board/i.test(unquoted)) return undefined;
   let loaded = policy;
-  return visitCommands(command, cwd, (words) => {
+  return visitCommands(command, cwd, (words, _dir, { appended, opaque }) => {
+    if (opaque) {
+      return "xargs runs a command the guard cannot inspect (`opaque`), so it cannot verify whether it invokes `board ask`.";
+    }
+    const subIdx = boardSubcommandIndex(words);
+    if (subIdx < 0) return undefined;
+    if (appended && subIdx >= words.length) {
+      return "xargs supplies arguments to `board` that the guard cannot check; pass the subcommand and arguments directly.";
+    }
+    if (appended && words[subIdx] === "ask") {
+      return "xargs supplies arguments to `board ask` that the guard cannot check; pass the arguments directly.";
+    }
     const parsed = parseBoardAskCommand(words);
     if (!parsed) return undefined;
     loaded ??= loadAskPolicy();
@@ -134,10 +153,9 @@ export function askViolation(input, policy) {
 
 if (import.meta.main) {
   const input = JSON.parse(readFileSync(0, "utf8"));
-  const policy = loadAskPolicy();
   const violation = input?.tool_name === "Bash"
-    ? findBoardAskViolation(input?.tool_input?.command, typeof input.cwd === "string" ? input.cwd : process.cwd(), policy)
-    : askViolation(input?.tool_input, policy);
+    ? findBoardAskViolation(input?.tool_input?.command, typeof input.cwd === "string" ? input.cwd : process.cwd())
+    : askViolation(input?.tool_input, loadAskPolicy());
   if (violation) {
     process.stderr.write(`Blocked by the guard-asks hook: ${violation}\n`);
     process.exit(2);

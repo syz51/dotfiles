@@ -442,6 +442,47 @@ describe("Antigravity hook adapter", () => {
     }
   });
 
+  test("translateInput for guard-asks unwraps call_mcp_tool, skips non-ask MCP tools, and handles omitted toolCall.name commands", () => {
+    expect(
+      translateInput("pre-tool-use", "guard-asks", {
+        cwd: "/tmp",
+        toolCall: {
+          name: "call_mcp_tool",
+          args: {
+            ServerName: "board",
+            ToolName: "ask_user",
+            Arguments: JSON.stringify({ kind: "decision", question: "Reason: design. Pick A?" }),
+          },
+        },
+      }),
+    ).toEqual({
+      cwd: "/tmp",
+      tool_name: "mcp__board__ask_user",
+      tool_input: { kind: "decision", question: "Reason: design. Pick A?" },
+    });
+
+    expect(
+      translateInput("pre-tool-use", "guard-asks", {
+        cwd: "/tmp",
+        toolCall: {
+          name: "call_mcp_tool",
+          args: { ServerName: "desktop", ToolName: "screenshot", Arguments: {} },
+        },
+      }),
+    ).toBeNull();
+
+    expect(
+      translateInput("pre-tool-use", "guard-asks", {
+        cwd: "/tmp",
+        toolCall: { args: { CommandLine: 'board ask "No reason"' } },
+      }),
+    ).toEqual({
+      cwd: "/tmp",
+      tool_name: "Bash",
+      tool_input: { command: 'board ask "No reason"' },
+    });
+  });
+
   test("gemini/hooks.json wires guard-asks on run_command, call_mcp_tool, and mcp_board_ask_user", () => {
     const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
     const cmdGuards = hooksJson["command-guards"].PreToolUse.find((g) => g.matcher === "run_command");

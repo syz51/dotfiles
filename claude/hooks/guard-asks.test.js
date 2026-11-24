@@ -106,6 +106,15 @@ describe("as a hook", () => {
     });
     expect(allowed.status).toBe(0);
     expect(allowed.stderr).toBe("");
+
+    // Unrelated Bash commands skip loading ASK_POLICY altogether
+    const unrelated = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", cwd: "/tmp", tool_input: { command: "ls -la" } }),
+      encoding: "utf8",
+      env: { ...process.env, ASK_POLICY: "/nonexistent/ask-policy.json" },
+    });
+    expect(unrelated.status).toBe(0);
+    expect(unrelated.stderr).toBe("");
   });
 });
 
@@ -159,6 +168,13 @@ describe("board ask CLI parsing", () => {
     expect(findBoardAskViolation('board ask --option "Reason: design" "Should I pick A?"', "/tmp", POLICY)).toMatch(/names no reason/);
     expect(findBoardAskViolation('board ask --kind action "Reason: design. Merge PR"', "/tmp", POLICY)).toMatch(/an action ask hands the user a step/);
     expect(findBoardAskViolation('board status && sh -c \'board ask "No reason"\'', "/tmp", POLICY)).toMatch(/names no reason/);
+    // env -S word separator (\_) and xargs smuggling cannot bypass the guard
+    expect(findBoardAskViolation(`env -S 'board\\_ask\\_"No reason"'`, "/tmp", POLICY)).toMatch(/names no reason/);
+    expect(findBoardAskViolation(`echo 'ask "No reason"' | xargs board`, "/tmp", POLICY)).toMatch(/xargs supplies arguments to `board`/);
+    expect(findBoardAskViolation(`echo '--kind action' | xargs board ask "Reason: design. Merge?"`, "/tmp", POLICY)).toMatch(/xargs supplies arguments to `board ask`/);
+    expect(findBoardAskViolation(`echo 'board ask "No reason"' | xargs sh -c`, "/tmp", POLICY)).toMatch(/xargs runs a command the guard cannot inspect/);
+    // xargs with a non-ask board subcommand still passes
+    expect(findBoardAskViolation("echo dotfiles-822 | xargs board show", "/tmp", POLICY)).toBeUndefined();
     expect(findBoardAskViolation('board ask --kind action "Reason: only-me. Unlock screen"', "/tmp", POLICY)).toBeUndefined();
     expect(findBoardAskViolation("board ask --help", "/tmp", POLICY)).toBeUndefined();
     expect(findBoardAskViolation("board asks --status all", "/tmp", POLICY)).toBeUndefined();

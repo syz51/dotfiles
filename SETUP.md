@@ -421,13 +421,16 @@ change the branch, as `echo feature | xargs git checkout` can, but not file rest
 opaque command, in a main checkout. It fails
 open when it cannot tell the repository, such as with `--git-dir` or a directory held
 in a variable, and for scripts nested too deeply to parse.
-guard-asks (Claude Code only) checks each board `ask_user` call against
-`claude/hooks/ask-policy.json`, the reasons the Autonomy section of `claude/CLAUDE.md` lets
-agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-me`,
-`security` and `intent`. An ask
+guard-asks checks each board `ask_user` call against
+`claude/hooks/ask-policy.json`, the reasons the Autonomy section of `claude/CLAUDE.md` and
+`gemini/GEMINI.md` let agents notify the user for: `design`, `cost`, `irreversible`, `outside`,
+`only-me`, `security` and `intent`. An ask
 must name one as `Reason: <name>`, and an `action` ask, which hands the user a step, must
 name `only-me`. Otherwise the hook refuses the ask and lists what the agent should do
-instead. Edit the JSON file to change the reasons. The `board ask` CLI is not checked.
+instead. Edit the JSON file to change the reasons. Claude Code (`claude/settings.json`) checks
+only the MCP `ask_user` tool (not the `board ask` CLI); Antigravity (`gemini/hooks.json`) checks
+both lazy/eager MCP `ask_user` calls (`call_mcp_tool`, `mcp_board_ask_user`) and `board ask` CLI
+invocations through `run_command`.
 open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
 work board, it blocks the stop once when an item under an open-item heading, such as
 "Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no

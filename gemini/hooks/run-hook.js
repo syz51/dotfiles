@@ -150,8 +150,9 @@ export function translateInput(event, hookName, agyInput) {
   if (event === "pre-tool-use") {
     if (hookName === "guard-asks") {
       const toolName = agyInput?.toolCall?.name ?? "";
-      if (toolName === "run_command" || toolName === "Bash") {
-        return { cwd, tool_name: "Bash", tool_input: { command: extractCommand(agyInput) } };
+      const command = extractCommand(agyInput);
+      if (toolName === "run_command" || toolName === "Bash" || (!toolName && command)) {
+        return { cwd, tool_name: "Bash", tool_input: { command } };
       }
       const askInput = extractAskUserInput(agyInput);
       if (askInput === null) return null;
