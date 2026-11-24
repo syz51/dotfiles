@@ -84,11 +84,96 @@ const FILLED = "${xargs}";
 // find actions that run a command up to `;` or `+`.
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 
+const ANSI_C_ESCAPES = { a: "\x07", b: "\b", e: "\x1b", E: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v", "\\": "\\", "'": "'", '"': '"', "?": "?" };
+
 /** Index of the quote closing a string opened at `start`, past backslash escapes when `escapes`; source.length when unclosed. */
 function closeQuote(source, start, quote, escapes) {
   let i = start + 1;
   while (i < source.length && source[i] !== quote) i += escapes && source[i] === "\\" ? 2 : 1;
   return Math.min(i, source.length);
+}
+
+/**
+ * The ANSI-C `$'…'` string starting at `start`: its text and the index just past the closing
+ * quote (or source.length when unclosed). Decodes single-character escapes (`\'`, `\\`, `\n`, …)
+ * so scripts passed to `sh -c` or `eval` keep their real quotes, and prefixes `$` when any other
+ * escape (such as `\x6d` or `\u…`) remains so `expands()` still treats the word as shell-filled.
+ */
+function ansiCQuote(source, start) {
+  let j = start + 2;
+  let text = "";
+  let unknown = false;
+  while (j < source.length && source[j] !== "'") {
+    if (source[j] === "\\" && j + 1 < source.length) {
+      const next = source[j + 1];
+      if (Object.hasOwn(ANSI_C_ESCAPES, next)) text += ANSI_C_ESCAPES[next];
+      else {
+        unknown = true;
+        text += `\\${next}`;
+      }
+      j += 2;
+    } else {
+      text += source[j];
+      j += 1;
+    }
+  }
+  return { text: unknown ? `$${text}` : text, end: j < source.length ? j + 1 : source.length };
+}
+
+/**
+ * The double-quoted `"…"` string starting at `start`: its text (with double-quote escapes
+ * removed and substitutions or parameter expansions kept raw) and the index just past the
+ * closing quote (or source.length when unclosed). When `substitutions` is given, any command
+ * substitution inside the string (including inside nested `${…}`) is appended to it.
+ */
+function doubleQuote(source, start, substitutions) {
+  let j = start + 1;
+  let text = "";
+  while (j < source.length && source[j] !== '"') {
+    if (source[j] === "\\" && j + 1 < source.length && '"\\$`\n'.includes(source[j + 1])) {
+      if (source[j + 1] !== "\n") text += source[j + 1];
+      j += 2;
+    } else if (source[j] === "$" && source[j + 1] === "{") {
+      const { end } = parameterExpansion(source, j, true, substitutions);
+      text += source.slice(j, end);
+      j = end;
+    } else if ((source[j] === "$" && source[j + 1] === "(") || source[j] === "`") {
+      const { body, end } = substitution(source, j);
+      substitutions?.push(body);
+      text += source.slice(j, end);
+      j = end;
+    } else {
+      text += source[j];
+      j += 1;
+    }
+  }
+  return { text, end: j < source.length ? j + 1 : source.length };
+}
+
+/**
+ * The parameter expansion `${…}` starting at `start`: the index just past its matching `}`
+ * (or source.length when unclosed). Tracks nested `${…}`, quotes, escapes, and command
+ * substitutions so `(` and `)` inside `${…}` stay plain characters. Inside double quotes
+ * (`doubleQuoted`), single quotes are literal as in POSIX and zsh, while nested double quotes
+ * still quote `}`.
+ */
+function parameterExpansion(source, start, doubleQuoted, substitutions) {
+  let j = start + 2;
+  while (j < source.length) {
+    const c = source[j];
+    if (c === "}") return { end: j + 1 };
+    if (c === "\\") j += 2;
+    else if (c === "$" && source[j + 1] === "{") j = parameterExpansion(source, j, doubleQuoted, substitutions).end;
+    else if ((c === "$" && source[j + 1] === "(") || c === "`") {
+      const { body, end } = substitution(source, j);
+      substitutions?.push(body);
+      j = end;
+    } else if (c === '"') j = doubleQuote(source, j, substitutions).end;
+    else if (!doubleQuoted && c === "$" && source[j + 1] === "'") j = closeQuote(source, j + 1, "'", true) + 1;
+    else if (!doubleQuoted && c === "'") j = closeQuote(source, j, "'", false) + 1;
+    else j += 1;
+  }
+  return { end: source.length };
 }
 
 /** Whether the reserved word `name` starts at `i`: at a word boundary and followed by one. */
@@ -103,7 +188,7 @@ const reserved = (source, i, name) => source.startsWith(name, i)
 function substitution(source, start) {
   if (source[start] === "`") {
     const close = closeQuote(source, start, "`", true);
-    return { body: source.slice(start + 1, close), end: close + 1 };
+    return { body: source.slice(start + 1, close), end: close < source.length ? close + 1 : source.length };
   }
   let depth = 1;
   let cases = 0;
@@ -111,7 +196,11 @@ function substitution(source, start) {
   while (i < source.length) {
     const c = source[i];
     if (c === "\\") i += 2;
-    else if (c === "'" || c === '"') i = closeQuote(source, i, c, c === '"') + 1;
+    else if (c === "$" && source[i + 1] === "'") i = closeQuote(source, i + 1, "'", true) + 1;
+    else if (c === "$" && source[i + 1] === "{") i = parameterExpansion(source, i, false).end;
+    else if (c === "'") i = closeQuote(source, i, "'", false) + 1;
+    else if (c === '"') i = doubleQuote(source, i).end;
+    else if (c === "`") i = closeQuote(source, i, "`", true) + 1;
     else if (reserved(source, i, "case")) {
       cases += 1;
       i += 4;
@@ -245,27 +334,20 @@ export function parseScript(source) {
       word = (word ?? "") + source.slice(i + 1, stop);
       i = stop + 1;
     } else if (c === '"') {
-      let j = i + 1;
-      let text = "";
-      while (j < source.length && source[j] !== '"') {
-        if (source[j] === "\\" && j + 1 < source.length && '"\\$`\n'.includes(source[j + 1])) {
-          if (source[j + 1] !== "\n") text += source[j + 1];
-          j += 2;
-        } else if ((source[j] === "$" && source[j + 1] === "(") || source[j] === "`") {
-          const { body, end } = substitution(source, j);
-          current.substitutions.push(body);
-          text += source.slice(j, end);
-          j = end;
-        } else {
-          text += source[j];
-          j += 1;
-        }
-      }
+      const { text, end } = doubleQuote(source, i, current.substitutions);
       word = (word ?? "") + text;
-      i = j + 1;
+      i = end;
     } else if (c === "\\") {
       if (source[i + 1] !== "\n") word = (word ?? "") + (source[i + 1] ?? "");
       i += 2;
+    } else if (c === "$" && source[i + 1] === "'") {
+      const { text, end } = ansiCQuote(source, i);
+      word = (word ?? "") + text;
+      i = end;
+    } else if (c === "$" && source[i + 1] === "{") {
+      const { end } = parameterExpansion(source, i, false, current.substitutions);
+      word = (word ?? "") + source.slice(i, end);
+      i = end;
     } else if (((c === "$" || (word === undefined && (c === "<" || c === "="))) && source[i + 1] === "(") || c === "`") {
       const { body, end } = substitution(source, i);
       current.substitutions.push(body);

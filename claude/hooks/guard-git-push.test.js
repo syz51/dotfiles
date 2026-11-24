@@ -139,6 +139,20 @@ describe("blocks", () => {
     ['(echo git push -f origin main) 2>"$HOME/$(echo err)" | sh'],
     ["cat <<EOF\n$(git push -f origin main)\nEOF"],
     ["cat <<EOF\n`git push -f origin main`\nEOF"],
+    // \' and \\ inside $'...', and $(...) inside ${...} (dotfiles-308)
+    ["echo $'a\\'b'; git push --force origin feature"],
+    ["echo $'a\\\\'; git push --force origin feature"],
+    ["echo $'a\\\\\\'b'; git push --force origin feature"],
+    ["echo ${x:-$(git push --force origin feature)}"],
+    ["echo $(echo $'a\\')'; git push --force origin feature)"],
+    ["echo $(echo ${x/)/y}; git push --force origin feature)"],
+    ["echo $(echo `echo ')'`; git push --force origin feature)"],
+    ['echo $(echo "${x:-"a)b"}"; git push --force origin feature)'],
+    ['echo "${x:-\'}"; git push --force origin main'],
+    ['echo "${x:-\'$(git push --force origin main)\'}"'],
+    ["sh -c $'echo \\'\"\\'; git push --force origin main'"],
+    ["sh -c $'echo \\' #\\'; git push --force origin main'"],
+    ["sh -c $'echo \\'${\\'; git push --force origin main'"],
   ])("%s", (command, repo = {}) => {
     expect(verdict(command, repo)).toBeDefined();
   });
@@ -234,7 +248,13 @@ describe("a cd in a subshell, a background job or an earlier pipeline part moves
   const push = "git push --force-with-lease=trunk:abc origin trunk";
   const trunkIn = (dir, calls) => fakeGit({ remoteHead: { [dir]: "origin/trunk" }, calls });
 
-  test.each([[`(cd /tmp); ${push}`], [`cd /tmp & ${push}`], [`cd /tmp | true; ${push}`]])(
+  test.each([
+    [`(cd /tmp); ${push}`],
+    [`cd /tmp & ${push}`],
+    [`cd /tmp | true; ${push}`],
+    [`(echo \${x/)/y}; cd /tmp); ${push}`],
+    [`(cd /tmp; echo \${x/(/y}); ${push}`],
+  ])(
     "%s is checked in the session's directory",
     (command) => {
       expect(findViolation(command, "/repo", trunkIn("/repo"))).toContain("trunk");
@@ -392,6 +412,12 @@ describe("hook process", () => {
     } finally {
       git(work, "config", "--unset", "remote.origin.mirror");
     }
+  });
+
+  test("blocks a force push after an ANSI-C quote with \\' (dotfiles-308)", () => {
+    const result = bash("echo $'a\\'b'; git push --force origin feature", join(root, "work"));
+    expect(result.code).toBe(2);
+    expect(result.stderr).toStartWith("Blocked by the guard-git-push hook:");
   });
 
   test("ignores other commands and tools", () => {
