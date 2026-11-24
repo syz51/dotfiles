@@ -58,6 +58,9 @@ const referenceRules = (name) => `${read(`claude/reference/${name}.md`).split("\
 // evidence for the rule stays in its test's comment. Text the board server's own
 // instructions already give is not repeated.
 const POINTERS = {
+  // The seven ask-policy reason definitions apply when notifying the user; the always-loaded
+  // pointer keeps all seven reason names in Autonomy (dotfiles-113).
+  asking: ["Autonomy", "- Before you notify me (`ask_user`, `board ask` or a question in chat), read `~/.claude/reference/asking.md`: the seven allowed reasons (`design`, `cost`, `irreversible`, `outside`, `only-me`, `security`, `intent`), which `~/.claude/hooks/ask-policy.json` lists."],
   merge: ["Autonomy", "Before a `gh pr merge`, read `~/.claude/reference/merge.md`: what the guard-pr-merge hook refuses, and how to land a pull request that is BEHIND its base branch."],
   // The brief, worktree and verification rules apply only once a session spawns: 2,164
   // characters that every request carried (dotfiles-513).
@@ -455,6 +458,32 @@ describe("global instructions", () => {
   test("Delegation names one route for local delegates and cross-repo board work", () => {
     expect(referenceRules("t3-delegation")).toContain("- A local `delegate_task` leaves out `target.projectId`; T3 refuses another project's id, even with a local `target.environmentId`. To dispatch a board task whose code is in another repository, call `t3_thread_launch` with that project's `projectId` and `workspaceStrategy` `{type: \"worktree\", baseRef: \"origin/<default branch>\", startFromOrigin: true}`. That thread opens its own PR there. Dispatching a board task counts as my standing request for such a thread; work you find in another repository still becomes a proposal.");
   });
+
+  // Claude Code's shell snapshot shadows grep with bundled ugrep, shadows find with bfs, and
+  // sets nobareglobqual (board-feedback-158, -305, -864, -870, -892, -1055, -1116, -1182;
+  // dotfiles-113). The user chose to keep grep and find as normal tools and only document
+  // their behavior and fallbacks.
+  test("Working preferences document Claude Code's bundled ugrep, bfs, and nobareglobqual without banning grep or find", () => {
+    const line = section("Working preferences").split("\n").find((entry) => entry.startsWith("- In Claude Code's Bash tool, `grep` is bundled ugrep"));
+    expect(line).toBeDefined();
+    for (const part of [
+      "`grep` is bundled ugrep",
+      "`find` is bfs",
+      "`nobareglobqual` disables zsh glob qualifiers (use `find`)",
+      "bounded repeats (such as `.{0,300}`, or shorter on long UTF-8/CJK lines)",
+      "complex CJK alternations",
+      "use `rg` (not `command grep`, capped at 255) or `grep -F -e`",
+      "dash patterns need `-e` (`--` fails)",
+      "for order-sensitive multi-file output use `grep --sort=name`, `command grep` or `cat ... | grep`",
+      "bfs rejects relative `-newermt` times",
+      "use `-mmin`/`-mtime`, an ISO 8601 date or `command find` for `/usr/bin/find`",
+      "do not hide `find`'s stderr where an empty result means safe",
+    ]) expect(line).toContain(part);
+    // Keep grep and find as normal tools rather than banning them in general.
+    expect(line).not.toMatch(/\b(?:avoid|never use|stop using|do not use)\s+(?:`?grep`?|`?find`?)/i);
+    // Codex does not run Claude Code's shell snapshot.
+    expect(read("codex/AGENTS.md")).not.toMatch(/\bugrep\b|\bbfs\b|\bnobareglobqual\b/);
+  });
 });
 
 describe("settings", () => {
@@ -619,6 +648,12 @@ describe("settings", () => {
     // The gate checks only the MCP tool, so the always-loaded text states the action limit for the CLI and chat.
     expect(policy.action_reasons).toEqual(["only-me"]);
     expect(section("Autonomy")).toContain("Only an `only-me` ask may hand me an action. A hook checks board `ask_user` calls against these rules; follow them in the `board ask` CLI and in chat too.");
+    // Every ask-policy reason is named in the always-loaded Autonomy pointer and defined in asking.md.
+    const asking = referenceRules("asking");
+    for (const name of Object.keys(policy.reasons)) {
+      expect(section("Autonomy")).toContain(`\`${name}\``);
+      expect(asking).toContain(`  - ${name}: `);
+    }
   });
 
   // The open-items check covers a reply that lists unfinished work without a task_done, which the
