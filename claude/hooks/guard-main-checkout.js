@@ -12,8 +12,9 @@
 // checkout, the agent runs that one git command with `-c claude.mainCheckout=allow`, which
 // the guard lets through; the block message says so, so agents never hand the command back
 // to the user. Even then it refuses what would lose work another thread may own: a discarding
-// reset --hard, checkout -f or switch -f while tracked files have changes, and stash drop or
-// clear. The user can allow every such command for one repository with
+// reset --hard, checkout -f or switch -f while tracked files have changes, stash clear, and
+// stash drop unless one named `stash@{<n>}` entry already has a direct backup ref to its
+// commit at `refs/stash-backup/<sha>`. The user can allow every such command for one repository with
 // `git config claude.mainCheckout allow`, which the guard refuses to let a session run.
 // This is a guardrail against mistakes, not a security
 // boundary: it follows an alias that `-c` sets on the command, and blocks one it cannot read
@@ -45,6 +46,11 @@ const SAFE_SUBCOMMANDS = {
   bisect: ["log", "view", "visualize", "reset", "terms", "help"],
 };
 const MOVING_RESETS = ["--hard", "--keep", "--merge", "--soft"];
+const STASH_BACKUP_PREFIX = "refs/stash-backup/";
+const STASH_REF = /^(?:refs\/)?stash@\{\d+\}$/;
+const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+// Shell loop or function forms that can execute a verified `stash drop` more than once.
+const REPEATING_SHELL = /(?:^|[;|&({\n'"`])\s*(?:for|while|until|select|repeat|function)\b|(?:^|[;|&({\n'"`])\s*[A-Za-z_][A-Za-z0-9_]*\s*\(\s*\)\s*[{(]/;
 const FF_MODES = ["--ff", "--no-ff", "--ff-only"];
 // Options that leave a --ff-only merge or pull a fast-forward: output, and turning rebase,
 // autostash and the editor off.
@@ -237,13 +243,72 @@ function discardsChanges(subcommand, args) {
 }
 
 /**
+ * The single named stash entry (`stash@{<n>}` or `refs/stash@{<n>}`) in `git stash drop`, or
+ * undefined when the entry is omitted, not a `stash@{<n>}` ref, repeated, or paired with an
+ * unrecognized option.
+ */
+function stashDropRef(args) {
+  let ref;
+  let afterDash = false;
+  for (const arg of args.slice(1)) {
+    if (!afterDash && arg === "--") {
+      afterDash = true;
+    } else if (!afterDash && (arg === "-q" || arg === "--quiet")) {
+      continue;
+    } else if (!afterDash && arg.startsWith("-")) {
+      return undefined;
+    } else if (ref !== undefined) {
+      return undefined;
+    } else {
+      ref = arg;
+    }
+  }
+  return ref !== undefined && STASH_REF.test(ref) ? ref : undefined;
+}
+
+/** Whether a git command beside a verified `stash drop` may shift `refs/stash` or alter backup refs. */
+function mayMutateStash(subcommand, args) {
+  if (subcommand === "stash") return !SAFE_SUBCOMMANDS.stash.includes(args[0] ?? "");
+  return ["update-ref", "symbolic-ref", "reflog", "merge", "rebase", "pull"].includes(subcommand);
+}
+
+/**
+ * Why `git -c claude.mainCheckout=allow stash drop|clear ...` in `top` must still not run, or
+ * undefined when dropping one named `stash@{<n>}` whose commit is kept by a direct backup ref at
+ * `refs/stash-backup/<sha>`.
+ */
+function stashLossReason(top, args, dir, git) {
+  if (args[0] === "clear") {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`stash clear\` is never allowed there. `
+      + "Leave other stashes in place, or back up and drop one named `stash@{<n>}` entry at a time.";
+  }
+  const ref = stashDropRef(args);
+  if (ref === undefined) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and a dropped entry has no backup. `
+      + "Name one entry as `stash@{<n>}`, keep its commit first with `git update-ref refs/stash-backup/<sha> refs/stash@{<n>}`, "
+      + "then run `git -c claude.mainCheckout=allow stash drop <ref>`.";
+  }
+  const fullRef = ref.startsWith("refs/") ? ref : `refs/${ref}`;
+  const sha = git(dir, ["rev-parse", "--verify", "--quiet", `${fullRef}^{commit}`]);
+  if (!sha || !COMMIT_SHA.test(sha)) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`${fullRef}\` did not resolve to a stash commit to verify against ${STASH_BACKUP_PREFIX}. `
+      + "Check `git stash list`, keep the commit with `git update-ref refs/stash-backup/<sha> refs/stash@{<n>}`, then run this command again.";
+  }
+  const backupRef = `${STASH_BACKUP_PREFIX}${sha}`;
+  const backup = git(dir, ["for-each-ref", "--count=1", "--format=%(refname) %(objecttype) %(objectname) %(symref)", backupRef]);
+  if (backup !== `${backupRef} commit ${sha}`) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`${ref}\` (${sha}) has no backup ref at \`${backupRef}\`. `
+      + `Keep it recoverable first with \`git update-ref ${backupRef} ${fullRef}\`, then run this command again.`;
+  }
+  return undefined;
+}
+
+/**
  * Why a change the user asked for in the shared checkout `top` must still not run, or undefined:
  * it would lose work that may be another thread's.
  */
 function lossReason(top, subcommand, args, dir, git) {
-  if (subcommand === "stash" && ["drop", "clear"].includes(args[0]))
-    return `it deletes stashed work in ${top}, a main checkout other threads share, and a dropped entry has no backup. `
-      + "Leave the stash in place: keeping an entry costs nothing.";
+  if (subcommand === "stash" && ["drop", "clear"].includes(args[0])) return stashLossReason(top, args, dir, git);
   if (!discardsChanges(subcommand, args) || noTrackedChanges(dir, git)) return undefined;
   return `it would discard changes to tracked files in ${top}, a main checkout other threads share, and they may be another thread's work. `
     + "Set them aside first with `git -c claude.mainCheckout=allow stash push -m <why>`, which keeps them recoverable, then run the command again.";
@@ -261,32 +326,40 @@ function gitCommand(words, cwd, git, tempRoots, appended) {
   const alias = gitAlias(settings, subcommand);
   if (alias?.unknown !== undefined) {
     const top = unknownRepo || dir === undefined ? undefined : sharedMainCheckout(dir, git, tempRoots);
-    return top && `\`${alias.unknown}\` makes the git subcommand an alias the guard cannot read, and it may change the branch of ${top}, `
-      + "a main checkout other threads share. Run the command it stands for instead.";
+    return top ? { reason: `\`${alias.unknown}\` makes the git subcommand an alias the guard cannot read, and it may change the branch of ${top}, `
+      + "a main checkout other threads share. Run the command it stands for instead." } : undefined;
   }
   if (alias !== undefined) [subcommand, ...args] = [...alias.words, ...args];
   if (subcommand === "config" && setsOverride(args))
-    return "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
-      + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}`;
+    return { reason: "claude.mainCheckout in git config is the user's standing switch for the guard-main-checkout hook, and only the user sets it. "
+      + `For one change the user asked for in a main checkout, pass it on that git command instead: ${USER_ASKED_ROUTE}` };
   // The words xargs adds to a bare `git` can hold `-C <path>`, which names any repository.
   if (appended && subcommand === undefined) {
-    return "xargs adds the git subcommand and options the guard cannot see, and they may switch a main checkout other threads share. Write the command out literally.";
+    return { reason: "xargs adds the git subcommand and options the guard cannot see, and they may switch a main checkout other threads share. Write the command out literally." };
   }
   if (subcommand === "config" && appended && !args.some((arg) => CONFIG_READS.includes(arg))) {
-    return "xargs adds words the guard cannot see to `git config`, and they may set claude.mainCheckout, which only the user sets. Write the command out literally.";
+    return { reason: "xargs adds words the guard cannot see to `git config`, and they may set claude.mainCheckout, which only the user sets. Write the command out literally." };
   }
   // The words xargs adds can make a safe form change the branch, as `git checkout` plus a branch name does.
   if (appended && !keepsForm(subcommand, args) && !unknownRepo && dir !== undefined) {
     const top = sharedMainCheckout(dir, git, tempRoots);
-    if (top !== undefined) return `xargs adds words the guard cannot see, and they may change the branch of ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
+    if (top !== undefined) return { reason: `xargs adds words the guard cannot see, and they may change the branch of ${top}, a main checkout other threads share. ${XARGS_ROUTE}` };
   }
+  const stashMutator = mayMutateStash(subcommand, args);
   const configuredFastForward = configured && ["merge", "pull"].includes(subcommand) && fastForwardOnly(args);
-  if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) return undefined;
+  if (!(changesBranch(subcommand, args) || configuredFastForward) || unknownRepo || dir === undefined) {
+    return stashMutator ? { stashMutator: true } : undefined;
+  }
   const top = sharedMainCheckout(dir, git, tempRoots);
-  if (top === undefined) return undefined;
-  if (userAsked) return lossReason(top, subcommand, args, dir, git);
+  if (top === undefined) return stashMutator ? { stashMutator: true } : undefined;
+  if (userAsked) {
+    const reason = lossReason(top, subcommand, args, dir, git);
+    if (reason) return { reason };
+    if (subcommand === "stash" && args[0] === "drop") return { stashDrop: true };
+    return stashMutator ? { stashMutator: true } : undefined;
+  }
   if (switchesToCleanDefault(subcommand, args, dir, git)) return undefined;
-  return blockReason(top, HINTS[subcommand] ?? "", USER_ASKED_ROUTE);
+  return { reason: blockReason(top, HINTS[subcommand] ?? "", USER_ASKED_ROUTE) };
 }
 
 // `gh pr checkout` takes no git options, so the user-asked route goes through git.
@@ -305,7 +378,9 @@ const mergeReason = (top) => `it merges a pull request from ${top}, a main check
  * `tempRoots` (absolute, resolved paths) are never treated as shared.
  */
 export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
-  return visitCommands(command, cwd, (words, dir, { appended, opaque, remote, dirs }) => {
+  const stashDrops = [];
+  let stashMutator;
+  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote, dirs }) => {
     // A command over ssh changes a repository on another host, not a checkout here.
     if (remote) return undefined;
     // macOS volumes ignore case, so GIT and Git run git too.
@@ -323,13 +398,19 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     }
     if (name === "git") {
       const seen = new Set();
+      let droppedHere = false;
+      let mutatedHere = false;
       for (const candidate of candidates) {
         const resolved = gitGlobalOptions(words, candidate).dir;
         if (seen.has(resolved)) continue;
         seen.add(resolved);
-        const reason = gitCommand(words, candidate, git, tempRoots, appended);
-        if (reason) return `\`${words.join(" ")}\`: ${reason}`;
+        const result = gitCommand(words, candidate, git, tempRoots, appended);
+        if (result?.reason) return `\`${words.join(" ")}\`: ${result.reason}`;
+        if (result?.stashDrop) droppedHere = true;
+        if (result?.stashMutator) mutatedHere = true;
       }
+      if (droppedHere) stashDrops.push(words);
+      else if (mutatedHere) stashMutator ??= words;
       return undefined;
     }
     if (name === "gh") {
@@ -349,6 +430,22 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     }
     return undefined;
   });
+  if (violation || stashDrops.length === 0) return violation;
+  // The guard verifies `stash@{<n>}` against refs/stash-backup/ once before the shell runs, so
+  // chained stash mutations or loops could shift stash indices and drop an unbacked entry.
+  if (stashDrops.length > 1) {
+    return `\`${stashDrops[1].join(" ")}\`: the same command runs another \`git stash drop\`, and an earlier drop shifts \`stash@{<n>}\` indices before the next runs. `
+      + "Drop each backed-up stash entry in its own command.";
+  }
+  if (stashMutator !== undefined) {
+    return `\`${stashDrops[0].join(" ")}\`: the same command also runs \`${stashMutator.join(" ")}\`, which may shift \`refs/stash\` or alter backup refs before or after the drop. `
+      + "Run `git -c claude.mainCheckout=allow stash drop <ref>` in its own command.";
+  }
+  if (REPEATING_SHELL.test(command)) {
+    return `\`${stashDrops[0].join(" ")}\`: it runs \`git stash drop\` inside a shell loop or function, which may execute more than once as \`stash@{<n>}\` indices shift. `
+      + "Run `git -c claude.mainCheckout=allow stash drop <ref>` once in its own command.";
+  }
+  return undefined;
 }
 
 function runGit(dir, args) {
