@@ -295,7 +295,10 @@ describe("settings", () => {
     expect(seen).toContain("claude/hooks/shell.js");
   });
 
-  // A 200K window is a trial from 2026-11-08; SETUP.md gives the reason and the baseline.
+  // Kept at 200K after the 2026-11-09..23 trial (dotfiles-313): vs 300K, main-thread cache reads
+  // fell 150K -> 90K/call (-40%), total cache reads per done task fell 10.6M -> 5.3M (-50%),
+  // net Opus-5.5-equivalent cost fell 14.4%/1K calls, and 600 auto-compactions had 0 thrash
+  // notices and 100% resumption; <200K disables background compaction summaries. See SETUP.md.
   // A per-model autoCompactWindow (which /autocompact saves) would override it unseen.
   test("conversations compact against a 200K window, not the 1M one", () => {
     expect(settings.autoCompactWindow).toBe(200000);
