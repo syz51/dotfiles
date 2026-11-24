@@ -233,9 +233,9 @@ describe("reviewRepo", () => {
     expect(record.confirmed.map((f) => f.title)).toEqual(["Fix lock race REAL"]);
     const calls = readJsonl(agyLog);
     expect(calls.map((c) => c.kind)).toEqual(["review", "verify"]);
-    expect(calls[0].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json"]));
+    expect(calls[0].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--tools", "Read,Grep,Glob,Bash", "--settings"]));
     expect(calls[0].stdin).toContain(`Target: ${commits[0]}...${commits[2]}`);
-    expect(calls[1].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--json-schema"]));
+    expect(calls[1].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--tools", "Read,Grep,Glob,Bash", "--settings", "--json-schema"]));
   });
 
   test("an empty diff-review array skips the verify session", async () => {

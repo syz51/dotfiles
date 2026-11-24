@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { buildAgyPolicy } from "../../../gemini/bin/agy-run-policy.js";
 import { logResultCost } from "../../bin/api-first.js";
 import { projectName } from "../../tests/lib/cleanup.js";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
@@ -61,6 +62,16 @@ function eventsOf(result, what) {
   }
 }
 
+function assertJudgeClean(events) {
+  for (const event of events) {
+    if (event.type === "system" && event.subtype === "init"
+      && ((event.tools ?? []).some((tool) => tool !== STRUCTURED_TOOL) || (event.mcp_servers ?? []).length))
+      throw new ClaudeCallError("Judge session exposed tools or MCP servers", { events });
+    if (event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use" && block.name !== STRUCTURED_TOOL))
+      throw new ClaudeCallError("Judge session used a tool", { events });
+  }
+}
+
 // A tool-less call that must answer with JSON matching schema. No settings, CLAUDE.md,
 // MCP servers, skills or slash commands load; a session that exposes or uses any tool
 // other than the structured-output one fails closed. system holds instructions that stay
@@ -99,6 +110,7 @@ export async function judge({ prompt, content, system, schema, model, effort = "
         throw new ClaudeCallError(`Judge call did not finish: ${error.message}`, { events, stderr: (error.stderr ?? "").slice(-2000) });
       }
       const events = eventsOf(result, "Judge call");
+      assertJudgeClean(events);
       const final = resultEvent(events);
       if (!completed(events) || !final.structured_output || typeof final.structured_output !== "object")
         throw new ClaudeCallError(`Judge call failed: ${final?.subtype ?? "no result"}`, { events, stderr: result.stderr.slice(-2000), code: result.code });
@@ -134,13 +146,7 @@ export async function judge({ prompt, content, system, schema, model, effort = "
       return { result, events };
     }, timeoutMs);
     const spentUSD = refused ? cost(refused.events) : 0;
-    for (const event of events) {
-      if (event.type === "system" && event.subtype === "init"
-        && ((event.tools ?? []).some((tool) => tool !== STRUCTURED_TOOL) || (event.mcp_servers ?? []).length))
-        throw new ClaudeCallError("Judge session exposed tools or MCP servers", { events });
-      if (event.type === "assistant" && (event.message?.content ?? []).some((block) => block.type === "tool_use" && block.name !== STRUCTURED_TOOL))
-        throw new ClaudeCallError("Judge session used a tool", { events });
-    }
+    assertJudgeClean(events);
     const final = resultEvent(events);
     const costUSD = spentUSD + (final?.total_cost_usd ?? 0);
     if (!completed(events) || !final.structured_output || typeof final.structured_output !== "object")
@@ -178,15 +184,42 @@ export async function runTask({
   permissionMode = "bypassPermissions", env = {}, addDirs = [], strictMcp = false, readEffort = false,
 }) {
   if (useAntigravity()) {
+    if (agent) {
+      throw new ClaudeCallError(`Antigravity runner does not support agent "${agent}"`);
+    }
+    const noTools = Array.isArray(tools) && tools.length === 0;
+    try {
+      buildAgyPolicy({
+        cwd,
+        noTools,
+        fullAccess: permissionMode === "bypassPermissions" && !noTools,
+        permissionMode,
+        tools,
+        settings,
+        strictMcp,
+        addDirs,
+      });
+    } catch (error) {
+      throw new ClaudeCallError(`Antigravity runner cannot enforce requested restrictions: ${error.message}`);
+    }
     const argv = [
       agyBin(),
-      "--full-access",
       "--cwd", cwd,
       "--model", model || "gemini-4-neon",
       "--effort", agyEffortFor(model, effort || "high"),
       "--output-format", "stream-json",
       "--timeout", String(timeoutMs),
     ];
+    if (noTools) {
+      argv.push("--no-tools", "--tools", "");
+    } else {
+      if (permissionMode === "bypassPermissions") argv.push("--full-access");
+      else argv.push("--permission-mode", permissionMode);
+      if (Array.isArray(tools)) argv.push("--tools", tools.join(","));
+    }
+    if (strictMcp) argv.push("--strict-mcp-config");
+    if (settings) argv.push("--settings", settings);
+    for (const dir of addDirs) argv.push("--add-dir", dir);
     if (schema) argv.push("--json-schema", JSON.stringify(schema));
     let result;
     let timedOut = false;

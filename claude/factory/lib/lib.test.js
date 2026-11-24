@@ -746,6 +746,71 @@ describe("claude runner", () => {
     fake("exit", { FAKE_CLAUDE_EXIT: "5" });
     await expect(runTask({ prompt: "x", cwd: scratch })).rejects.toThrow("exit 5");
   });
+
+  test("under useAntigravity(), runTask forwards restrictions instead of --full-access and fails closed on unsupported ones", async () => {
+    const logPath = join(scratch, "agy.jsonl");
+    const fakeAgy = join(scratch, "fake-agy-run");
+    writeFileSync(
+      fakeAgy,
+      `#!/usr/bin/env bun
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const stdin = await Bun.stdin.text();
+appendFileSync(${JSON.stringify(logPath)}, JSON.stringify({ args, stdin }) + "\\n");
+const tools = process.env.FAKE_AGY_TOOLS ? JSON.parse(process.env.FAKE_AGY_TOOLS) : ["Read", "Edit", "Write"];
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s1", model: "gemini-4-neon", tools, mcp_servers: [] }));
+console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, duration_ms: 5, result: "ok", total_cost_usd: 0, session_id: "s1" }));
+`,
+    );
+    chmodSync(fakeAgy, 0o755);
+    setEnv({ CLAUDE_FACTORY_BIN: undefined, CLAUDE_FACTORY_PROVIDER: undefined, CLAUDE_FACTORY_AGY_BIN: fakeAgy, FAKE_AGY_TOOLS: undefined });
+
+    const cwd = mkdtempSync(join(scratch, "agy-task-"));
+    const settings = JSON.stringify({ permissions: { deny: ["Read(~/.ssh/**)"] } });
+    const restricted = await runTask({
+      prompt: "edit rule",
+      cwd,
+      model: "gemini-4-neon",
+      effort: "high",
+      tools: ["Read", "Edit", "Write", "Glob", "Grep"],
+      strictMcp: true,
+      settings,
+      permissionMode: "acceptEdits",
+      addDirs: [scratch],
+    });
+    expect(restricted.ok).toBe(true);
+    const agyCalls = () => readJsonl(logPath);
+    const [first] = agyCalls();
+    expect(first.args).not.toContain("--full-access");
+    expect(first.args).toEqual(
+      expect.arrayContaining([
+        "--permission-mode", "acceptEdits",
+        "--tools", "Read,Edit,Write,Glob,Grep",
+        "--strict-mcp-config",
+        "--settings", settings,
+        "--add-dir", scratch,
+      ]),
+    );
+
+    // tools: [] maps to --no-tools without --full-access
+    await runTask({ prompt: "report", cwd, tools: [], strictMcp: true });
+    const second = agyCalls()[1];
+    expect(second.args).not.toContain("--full-access");
+    expect(second.args).toEqual(expect.arrayContaining(["--no-tools", "--tools", "", "--strict-mcp-config"]));
+
+    // Unsupported restrictions fail closed before spawning agy-run
+    const beforeCount = agyCalls().length;
+    await expect(runTask({ prompt: "x", cwd, agent: "explorer" })).rejects.toThrow(/does not support agent/);
+    await expect(runTask({ prompt: "x", cwd, settings: JSON.stringify({ sandbox: { enabled: true } }) })).rejects.toThrow(/sandbox/);
+    await expect(runTask({ prompt: "x", cwd, permissionMode: "plan" })).rejects.toThrow(/permission-mode/);
+    await expect(runTask({ prompt: "x", cwd, tools: ["UnknownTool"] })).rejects.toThrow(/Unsupported tool/);
+    expect(agyCalls()).toHaveLength(beforeCount);
+
+    // judge() under useAntigravity() also fails closed if init exposes a non-structured tool
+    setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Bash"]) });
+    await expect(judge({ prompt: "grade", schema, model: "gemini-4-neon" })).rejects.toBeInstanceOf(ClaudeCallError);
+  });
 });
 
 describe("default binary", () => {
