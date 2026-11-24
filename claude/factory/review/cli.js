@@ -15,7 +15,7 @@ import { ClaudeCallError, runTask } from "../lib/claude.js";
 import { clip } from "../lib/proposal.js";
 import { statePath, writeJsonAtomic } from "../lib/state.js";
 import { benchSettings } from "../bench/runner.js";
-import { call } from "../board/cli.js";
+import { call, listTasks } from "../board/cli.js";
 
 export const CONFIG_FILE = join(import.meta.dir, "config.json");
 export const DIFF_REVIEW_SKILL = join(import.meta.dir, "..", "..", "skills", "diff-review", "SKILL.md");
@@ -26,7 +26,6 @@ const VERIFY_TIMEOUT_MS = 20 * 60_000;
 const REVIEW_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 const VERIFY_TOOLS = ["Read", "Grep", "Glob", "Bash"];
 const OUTPUT_CHARS = 60_000;
-const TITLES = 200;
 const CLOSED = new Set(["done", "dropped"]);
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js review [options]
@@ -168,11 +167,10 @@ export function verifyPrompt({ base, head, output, titles }) {
   ].join("\n\n");
 }
 
-// Titles of the board's tasks that are not done or dropped, newest first.
+// Titles of every non-closed task on the board.
 export async function openTitles(board) {
-  const tasks = await call(["ls", "--board", board, "--json", "--limit", "1000"]);
-  if (!Array.isArray(tasks)) throw new Error(`board ls --board ${board}: expected a list of tasks`);
-  return tasks.filter((task) => !CLOSED.has(task?.status) && typeof task?.title === "string").map((task) => task.title).slice(0, TITLES);
+  const tasks = await listTasks(["--board", board, "--open", "--fields", "id,title,status"]);
+  return tasks.filter((task) => !CLOSED.has(task?.status) && typeof task?.title === "string").map((task) => task.title);
 }
 
 // The proposal body for one confirmed finding.
