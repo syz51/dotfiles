@@ -12,6 +12,10 @@
 - Keep temporary files in the session scratchpad if there is one, otherwise in one task directory under `$TMPDIR`; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created.
 - To continue a branch that another worktree has checked out, which git refuses to check out twice, work on a local branch started from `origin/<branch>` and push to `<branch>`; brief a child that continues one the same way.
 
+## Autonomy
+
+- When a hook, guard or instruction blocks a safe step, find the allowed route, or change the guard or instruction in a worktree so it allows that step while keeping its protection, under the Review rules, and report it as Feedback. Put any change that loosens a guard, cap, budget, threshold or allowlist in the PR body under `Loosens:` and in your report to me. Never pass a guard through an opaque script, and never weaken the ask gate.
+
 ## Work board
 
 - When the session context names a work board for this repository, it is the shared plan for every thread and device: claim a task (`task_claim`) before working on it, lease files before changing them (`lease_paths`), keep your handoff current (`handoff_set`), finish with `task_done` and its evidence, and ask me through `ask_user` instead of waiting. Use the `board` CLI where the MCP tools are missing.

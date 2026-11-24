@@ -176,9 +176,131 @@ describe("global instructions", () => {
   // 2026-11-04 to 23.8k on 11-09, and each new rule raised this cap (21,500 to 22,400 on
   // 11-12), so the cap never stopped growth. dotfiles-513 sorted the rules by the rule above
   // POINTERS: 22,585 to 16,804. The cap sits just above the size. A new rule displaces text
-  // of the same length, by the sorting rule; never raise the cap to fit one.
+  // of the same length, by the sorting rule; never raise the cap to fit one. Raising this
+  // cap needs the user's approval through `ask_user`.
   test("the global instructions stay under their size budget", () => {
     expect(globalInstructions.length).toBeLessThan(17_000);
+  });
+
+  // Agents raised the size cap 4 times in a day because the old test comment authorized it
+  // (dotfiles-514). Pin the approval rule in the comment and reject self-authorizing limit
+  // comments across tests, hooks and review-scope.toml.
+  test("the size-budget comment requires ask_user approval and no limit comment self-authorizes raises", () => {
+    const self = read("claude/tests/config.test.js");
+    const marker = '  test("the global instructions stay under their size budget"';
+    const before = self.slice(0, self.indexOf(marker)).trimEnd().split("\n");
+    const commentLines = [];
+    for (let i = before.length - 1; i >= 0 && /^\s*\/\//.test(before[i]); i--) commentLines.unshift(before[i].replace(/^\s*\/\/\s?/, ""));
+    const comment = commentLines.join(" ");
+    expect(comment).toContain("A new rule displaces text");
+    expect(comment).toContain("never raise the cap to fit one");
+    expect(comment).toContain("Raising this cap needs the user's approval through `ask_user`");
+    expect(comment).not.toMatch(/raise it when/i);
+
+    const selfAuth = /\b(?:raise|bump|increase|widen|loosen|relax)\s+(?:it|the\s+(?:cap|limit|budget|threshold|allowlist))\s+when\b|\btune\s+the\s+list\s+here\s+at\s+any\s+time\b/i;
+    const files = [
+      ...[new Bun.Glob("claude/tests/**/*.js"), new Bun.Glob("claude/hooks/**/*.{js,sh}")].flatMap((glob) => [...glob.scanSync({ cwd: REPO })]),
+      "claude/factory/scoring/review-scope.toml",
+    ];
+    const offenders = [];
+    for (const file of files) {
+      if (file.includes("node_modules/")) continue;
+      const lines = read(file).split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (!trimmed.startsWith("//") && !trimmed.startsWith("#") && !trimmed.startsWith("*")) continue;
+        const pair = `${trimmed} ${(lines[i + 1] ?? "").trim().replace(/^(?:\/\/|#|\*)\s*/, "")}`;
+        if (selfAuth.test(pair)) offenders.push(`${file}:${i + 1}: ${trimmed}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("Autonomy requires a Loosens: line in the PR body and user report when loosening a guard or limit", () => {
+    const rule = "Put any change that loosens a guard, cap, budget, threshold or allowlist in the PR body under `Loosens:` and in your report to me.";
+    expect(section("Autonomy")).toContain(rule);
+    expect(read("codex/AGENTS.md")).toContain(rule);
+  });
+
+  // Raising an upper bound or lowering a lower bound in claude/tests without a `Loosens:`
+  // line in the branch's commit messages fails here (dotfiles-514).
+  test("raising a numeric limit in claude/tests requires a Loosens: line in a commit message", () => {
+    const BOUND = /\.(toBeLessThan|toBeLessThanOrEqual|toBeGreaterThan|toBeGreaterThanOrEqual)\((\d[\d_]*(?:\.\d+)?)\)/;
+    const parseBound = (line) => {
+      const trimmed = line.trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) return null;
+      const match = BOUND.exec(trimmed);
+      if (!match) return null;
+      return {
+        method: match[1],
+        value: Number(match[2].replace(/_/g, "")),
+        skeleton: trimmed.replace(BOUND, ".$1(<N>)"),
+        line: trimmed,
+      };
+    };
+    const unlabeledLimitRaises = (diffText, commitMessages) => {
+      if (/^Loosens:\s+\S/m.test(commitMessages)) return [];
+      const violations = [];
+      let file = "";
+      let removed = [];
+      let added = [];
+      const flush = () => {
+        for (const rem of removed) {
+          const r = parseBound(rem);
+          if (!r) continue;
+          for (const add of added) {
+            const a = parseBound(add);
+            if (!a || a.skeleton !== r.skeleton) continue;
+            const upper = r.method.startsWith("toBeLessThan");
+            if ((upper && a.value > r.value) || (!upper && a.value < r.value)) {
+              violations.push({ file, before: r.line, after: a.line });
+            }
+          }
+        }
+        removed = [];
+        added = [];
+      };
+      for (const raw of diffText.split("\n")) {
+        if (raw.startsWith("+++ b/")) { flush(); file = raw.slice(6); }
+        else if (raw.startsWith("@@ ")) flush();
+        else if (raw.startsWith("-") && !raw.startsWith("---")) removed.push(raw.slice(1));
+        else if (raw.startsWith("+") && !raw.startsWith("+++")) added.push(raw.slice(1));
+      }
+      flush();
+      return violations;
+    };
+
+    const capRaiseDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -181 +181 @@",
+      "-    expect(globalInstructions.length).toBeLessThan(17_000);",
+      "+    expect(globalInstructions.length).toBeLessThan(17_500);",
+    ].join("\n");
+    const floorDropDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -1457 +1457 @@",
+      '-    expect(flag("retry")).toBeGreaterThanOrEqual(5);',
+      '+    expect(flag("retry")).toBeGreaterThanOrEqual(3);',
+    ].join("\n");
+    const tightenDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -181 +181 @@",
+      "-    expect(globalInstructions.length).toBeLessThan(22_400);",
+      "+    expect(globalInstructions.length).toBeLessThan(17_000);",
+    ].join("\n");
+    expect(unlabeledLimitRaises(capRaiseDiff, "Add new rule")).toHaveLength(1);
+    expect(unlabeledLimitRaises(floorDropDiff, "Adjust retry check")).toHaveLength(1);
+    expect(unlabeledLimitRaises(capRaiseDiff, "Add new rule\n\nLoosens: raise cap 17,000 -> 17,500")).toEqual([]);
+    expect(unlabeledLimitRaises(tightenDiff, "Trim instructions")).toEqual([]);
+
+    const hasOriginMain = spawnSync("git", ["rev-parse", "--verify", "origin/main"], { cwd: REPO, encoding: "utf8" }).status === 0;
+    if (hasOriginMain) {
+      const diff = spawnSync("git", ["diff", "--unified=0", "origin/main...HEAD", "--", "claude/tests"], { cwd: REPO, encoding: "utf8" });
+      const log = spawnSync("git", ["log", "--format=%B", "origin/main..HEAD"], { cwd: REPO, encoding: "utf8" });
+      expect(diff.status).toBe(0);
+      expect(log.status).toBe(0);
+      expect(unlabeledLimitRaises(diff.stdout, log.stdout)).toEqual([]);
+    }
   });
 
   // Tool results kept in context cost 15.2% of a week's weighted tokens, Bash alone 11.1%:
@@ -1161,6 +1283,8 @@ describe("rules the live suites test", () => {
     expect(body).toMatch(/Change nothing: no edits, no commits, no pushes, no board or network writes\. Do every\nstep yourself, without agents\./);
     expect(body).toMatch(/Run `git diff <target>`/);
     expect(body).toMatch(/read a file as the commit has it: `git show <commit>:<path>`/);
+    expect(body).toMatch(/raised limit, cap, budget or threshold, a widened allowlist, or\s+a deleted or relaxed assertion is a weakened guarantee/);
+    expect(body).toMatch(/report it as\s+a finding unless the PR body[\s\S]*has a `Loosens:` line for it/);
     expect(body).toMatch(/keep at most 10/);
     expect(body).toMatch(/Reply with only a JSON array, `\[\]` when nothing remains/);
     for (const field of ["file", "line", "category", "summary", "failure_scenario"]) expect(body).toContain(`"${field}":`);
