@@ -560,10 +560,43 @@ Review docs on code.claude.com, read 2026-11-07.
   - Inner review agents cost $416.49 (median $2.33). With wrappers, reviews took 11.7%
     of $3,763.
   - The median review returned 15 findings, the cap. 3 of 151 returned none. These counts
-    are estimates parsed from free-text replies. A sample of about 12 triage replies
-    accepted 12-15 of 15 findings. dotfiles-100 checks both against recorded outcomes.
+    were estimates parsed from free-text replies; a sample of about 12 triage replies
+    accepted 12-15 of 15 findings (80-100%). Measured recorded outcomes below replace both
+    estimates.
   - No review recorded its outcomes as typed data.
   - Sessions with many reviews reviewed distinct commits, not one change in a loop.
+- Measured over the 14 days after `ReportFindings` merged (2026-11-07 15:11Z to
+  2026-11-21 15:11Z, `dotfiles-114`; Air Claude transcripts archived at
+  `cloud:archive/air-2026-11-24/air-claude-projects-2026-11-24.tar.zst`, measured with
+  `claude/factory/metrics`, automation excluded; Pro's pre-2026-11-12 archive adds only
+  2 recorded reviews / 20 fixed findings):
+  - 692 reviews ran in 440 of 2,045 sessions (`high` 331, `xhigh` 254, `medium` 105,
+    `default` 2), costing $922.63 (median $0.88, 11.2% of window spend).
+  - **586 reviews recorded outcomes** (4,037 findings, 23 zero-finding reviews): **median
+    6 findings per recorded review** (IQR 3-10, mean 6.9); **fixed 3,327 (82.4%)**,
+    **no_change_needed 396 (9.8%)**, **skipped 314 (7.8%)**; real/accepted
+    (`fixed + skipped`) 90.2%; defects (`correctness`, `reliability`, `security`) 52.8%.
+  - The window spans the 2026-11-11 09:55Z switch (PR #164, `dotfiles-386`) from
+    `/code-review xhigh` to the background `reviewer` agent (`diff-review`), followed by
+    `high` effort (`a12daa5`) and reviewing every pushed/merged change (PR #218,
+    `dotfiles-487`, 2026-11-12):
+    - **`/code-review xhigh` regime** (2026-11-07 15:11Z to 2026-11-11 09:55Z: 241 reviews,
+      $579.50, median $2.17, 15.4% of spend): **162 recorded reviews**, 2,122 findings,
+      **median 13 findings** (all 167 `xhigh`-paired triages in the 14-day window: 2,262
+      findings, median 13, IQR 10.5-15, 0 clean reviews, 55/167 at 15+; fixed 78.2%,
+      no_change_needed 11.7%, skipped 10.1%, accepted 88.3%). Even apples-to-apples on
+      `xhigh`, recorded median findings were **13** rather than the free-text estimate of
+      **15** (the cap), and **78.3% fixed** (1,661 fixed, 248 no_change_needed 11.7%,
+      213 skipped 10.0%; 88.3% accepted when counting real skipped/filed findings alongside
+      fixed).
+    - **`reviewer` agent regime** (2026-11-11 09:55Z to 2026-11-21 15:11Z: 451 reviews,
+      $343.14, median $0.55, 7.7% of spend): **424 recorded reviews**, 1,915 findings,
+      **median 4 findings** (`high`: 314 triages, median 3, 21 clean, 90.6% fixed / 5.0%
+      no_change_needed / 4.4% skipped; `medium`: 101 triages, median 5, 2 clean, 81.4%
+      fixed / 12.5% no_change_needed / 6.1% skipped); overall **fixed 1,666 (87.0%)**,
+      **no_change_needed 148 (7.7%)**, **skipped 101 (5.3%)**; defects 53.3%.
+  - Weekly reports over 2026-11-02 to 2026-11-23 recorded 0 reverts across reviewed and
+    unreviewed merged PRs.
 - Decision (user, 2026-11-07, ask #37): a circuit breaker. Agents keep merging, and PRs to
   high-impact paths wait for the user while the revert rate of reviewed PRs is above a
   limit. The limit, window, reset rule and paths stay in one config file the user can
