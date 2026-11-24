@@ -110,6 +110,7 @@
 - Remote VPS hosts are configured in `~/.ssh/config.d/vps.conf` (`sai` for agent-board, storage pool, CI runners, Supabase; `svps` for HashiCorp Vault, Dokploy, storage pool) and Mac SSH hosts in `~/.ssh/config.d/`.
 - Vault operator access uses the client cert in `~/.local/share/vps-infra/secrets/vault-operator/` over SSH forward to `svps` (see `~/Documents/vps/docs/vault.md#operator-access`).
 - Desktop computer use (`desktop` MCP server, lazy-loaded via `call_mcp_tool`, backed by `~/.config/claude/marketplace/computer-use/server/desktop.js`) provides macOS screenshots, mouse, and keyboard control shared across agents. Call `request_access` with app names (approved automatically under default `auto` policy, except `DIALOG_APPS` such as terminals/agent apps/editors/System Settings which always prompt, and finance/health/government/password apps which are always refused), respect the single-session lock and Stop/Esc panel, and always call `release` when finished. Docs and permission troubleshooting: `~/.config/claude/marketplace/computer-use/README.md`.
+- Gemini Notebook (`gemini-notebook` MCP server, lazy-loaded via `call_mcp_tool`, backed by `https://notebook.googleapis.com/mcp` with Google ADC) manages notebooks and sources on the user's personal Google account; if ADC is missing or expired, follow `~/.config/gemini/docs/gemini-notebook-mcp.md`.
 
 ## Feedback
 
