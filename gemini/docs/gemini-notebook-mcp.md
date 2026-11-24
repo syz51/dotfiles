@@ -114,3 +114,26 @@ gnotebook sync ./notebooks-manifest.json
 - **Strict idempotency:** Tracks ingested `(notebook, key, sha256)` in `0600` `~/.local/share/gnotebook/state.json` and checks live `list_sources` so re-runs never duplicate sources (use `--allow-update` to append a dated version tag `[vYYYY-MM-DD-xxxxxx]` when content changes).
 - **Unreachable-URL fallback:** Non-HTML `.md`/`.txt` URLs and `code: 9` unreachable web pages automatically fall back to local HTTP fetch + Markdown ingestion (`--no-fallback-fetch` disables).
 - **Rate pacing & retries:** Paces writes at `<= 18 RPM` (official cap: `20 RPM`) and honors `429` `RetryInfo.retryDelay` with jitter.
+
+## 7. `gnotebook-monitor` official API release monitor
+
+Because the Gemini Notebook API is in Public Preview (with delete, Drive URLs, Q&A retrieval, and artifact generation on Google's roadmap), `~/.local/bin/gnotebook-monitor` watches Google's public unauthenticated endpoints so it never depends on the 7-day OAuth refresh token:
+
+- `https://notebook.googleapis.com/$discovery/rest?version=v1` (methods, schemas/fields, OAuth scopes — ignores revision-only doc bumps)
+- New API version probes (`v1alpha`, `v1beta`, `v1beta1`, `v2`)
+- `https://developers.google.com/notebook/docs/mcp` (Available MCP tools table)
+- `https://developers.google.com/notebook/docs/roadmap` (Roadmap items)
+
+```bash
+# Run a check manually (first run seeds baseline in ~/.local/state/gnotebook-monitor/state.json)
+gnotebook-monitor check
+
+# Inspect current baseline snapshot and LaunchAgent state
+gnotebook-monitor status
+
+# Install/uninstall the 12-hour macOS LaunchAgent (com.syz51.gnotebook-monitor)
+gnotebook-monitor install
+gnotebook-monitor uninstall
+```
+
+When a structural API, MCP tool, version, or roadmap change appears, `gnotebook-monitor` checks the `dotfiles` work board for an existing matching change key (preventing duplicates across Macs), files a ready `p2` integration task on `dotfiles`, and sends a macOS notification.

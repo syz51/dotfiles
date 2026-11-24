@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+# Resolve symlinks so this wrapper works when linked from ~/.local/bin/gnotebook-monitor
+SELF="$0"
+while [ -L "$SELF" ]; do
+  TARGET="$(readlink "$SELF")"
+  case "$TARGET" in
+    /*) SELF="$TARGET" ;;
+    *) SELF="$(dirname "$SELF")/$TARGET" ;;
+  esac
+done
+DIR="$(CDPATH= cd -- "$(dirname "$SELF")" && pwd)"
+exec "$HOME/.bun/bin/bun" "$DIR/gnotebook-monitor.js" "$@"
