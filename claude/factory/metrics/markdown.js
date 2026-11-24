@@ -88,6 +88,30 @@ function renderReviews(reviews) {
   return lines;
 }
 
+function renderSkills(skills, priorSkills) {
+  const lines = ["## Dotfiles skills", ""];
+  if (!skills?.length) {
+    lines.push("No dotfiles skills configured.", "");
+    return lines;
+  }
+  const prior = new Map((priorSkills ?? []).map((row) => [row.name, row.loads]));
+  lines.push(table(
+    ["Skill", "Loads", "Previous", "Skill tool", "Preloads", "Reads", "Sessions", "With correction"],
+    skills.map((row) => [
+      row.name,
+      row.loads,
+      prior.get(row.name) ?? 0,
+      row.toolCalls,
+      row.preloads,
+      row.reads,
+      row.sessions,
+      row.corrections.sessions ? `${row.corrections.withCorrection}/${row.corrections.sessions} (${pct(row.corrections.rate)})` : "n/a",
+    ]),
+  ), "");
+  lines.push("Loads count Claude Code Skill tool calls (main and subagents), agent preloads (such as `reviewer` → `diff-review`), and reads of installed `SKILL.md` files. With correction counts person-run sessions that had a heuristic correction follow-up after the skill's first load.", "");
+  return lines;
+}
+
 export function renderMarkdown(report) {
   const { window, previousWindow: before, current, previous: prior } = report;
   const lines = [];
@@ -125,6 +149,7 @@ export function renderMarkdown(report) {
     : "None in either window.", "");
 
   lines.push(...renderReviews(current.reviews));
+  lines.push(...renderSkills(current.skills, prior.skills));
 
   lines.push("## Subagents and models", "");
   lines.push(`Subagents: ${current.subagents.runs} runs, ${usd(current.subagents.costUSD)} estimated, ${pct(current.subagents.share)} of the estimated cost (previous window ${pct(prior.subagents.share)}).`, "");

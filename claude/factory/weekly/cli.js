@@ -10,6 +10,7 @@ import { acquireLock, readJsonl, stateDir, statePath, writeJsonAtomic } from "..
 import { stateDir as apiStateDir } from "../../bin/api-first.js";
 import { summaryLines as boardLines } from "../board/cli.js";
 import { summaryLines as evolveLines } from "../evolve/cli.js";
+import { dotfilesSkills, skillCommits, weeklySkillLines, weeklySkillReport } from "../metrics/skills.js";
 import { summaryLines as reviewLines } from "../review/cli.js";
 import { detectorDimensions } from "../scoring/rubric.js";
 
@@ -82,21 +83,24 @@ function highlights(name, output) {
 }
 
 // One step as a child process, so a crash in one does not stop the others.
+// Returns { step, parsed } where parsed is the JSON output for json steps (kept in memory only).
 async function runStep([name, argv, kind], env) {
   const started = Date.now();
   try {
     const result = await runProcess([process.execPath, cli(), ...argv], { env, timeout: TIMEOUTS[name] ?? STEP_TIMEOUT });
     const step = { name, code: result.code, durationMs: Date.now() - started, stderr: tail(result.stderr, 8) };
+    let parsed = null;
     if (kind === "json") {
       try {
-        step.highlights = highlights(name, JSON.parse(result.stdout));
+        parsed = JSON.parse(result.stdout);
+        step.highlights = highlights(name, parsed);
       } catch (error) {
         step.error = `unreadable output: ${error.message}`;
       }
     } else step.output = tail(result.stdout);
-    return step;
+    return { step, parsed };
   } catch (error) {
-    return { name, code: null, durationMs: Date.now() - started, error: error.message, stderr: tail(error.stderr ?? "", 8) };
+    return { step: { name, code: null, durationMs: Date.now() - started, error: error.message, stderr: tail(error.stderr ?? "", 8) }, parsed: null };
   }
 }
 
@@ -140,6 +144,8 @@ function renderSummary(run) {
     if (failed(step) && step.stderr) lines.push("```", step.stderr, "```");
     lines.push("");
   }
+  if (run.skillsError) lines.push("## Dotfiles skills (last 7 days)", "", `- Unavailable: ${run.skillsError}`, "");
+  else if (run.skills) lines.push("## Dotfiles skills (last 7 days)", "", ...weeklySkillLines(run.skills), "");
   return lines.join("\n");
 }
 
@@ -170,13 +176,29 @@ export async function runWeekly({ pr = true, scoreUsd, sample, notifyDone = fals
   }
   try {
     const run = { startedAt: new Date().toISOString(), steps: [] };
-    for (const step of steps({ pr, scoreUsd, sample })) run.steps.push(await runStep(step, { ...env, CLAUDE_FACTORY_STATE: stateDir() }));
+    const parsedByStep = {};
+    for (const spec of steps({ pr, scoreUsd, sample })) {
+      const { step, parsed } = await runStep(spec, { ...env, CLAUDE_FACTORY_STATE: stateDir() });
+      run.steps.push(step);
+      if (parsed !== null) parsedByStep[step.name] = parsed;
+    }
     run.finishedAt = new Date().toISOString();
+    const untilMs = Date.parse(run.startedAt);
+    const sinceMs = untilMs - 7 * 86_400_000;
     // Optional: a damaged billing log must not cost the report.
     try {
-      run.billing = billingSummary(join(apiStateDir(env), "decisions.jsonl"), Date.parse(run.startedAt) - 7 * 86_400_000);
+      run.billing = billingSummary(join(apiStateDir(env), "decisions.jsonl"), sinceMs);
     } catch (error) {
       run.billingError = error.message;
+    }
+    // Per-skill summary for dotfiles-owned skills: reuses metrics' transcript loads and
+    // evolve's feedback records, plus git commits touching claude/skills in the window.
+    try {
+      const skills = dotfilesSkills();
+      const { bySkill, error: commitsError } = await skillCommits({ since: sinceMs, until: untilMs, skills, env });
+      run.skills = weeklySkillReport({ metrics: parsedByStep.metrics ?? null, evolve: parsedByStep.evolve ?? null, commits: bySkill, commitsError, skills });
+    } catch (error) {
+      run.skillsError = error.message;
     }
     const path = statePath("reports", `weekly-${run.startedAt.slice(0, 10)}.md`);
     writeFileSync(path, renderSummary(run));

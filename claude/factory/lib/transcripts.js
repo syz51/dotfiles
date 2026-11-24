@@ -178,6 +178,9 @@ export const topKey = (counts) => Object.entries(counts).reduce((best, entry) =>
 // A tool call that runs the /code-review skill, unless it was refused or interrupted.
 export const isCodeReview = (call) => call.name === "Skill" && call.input?.skill === "code-review" && call.ok !== false;
 
+// A tool call that loads a skill, unless it was refused or interrupted.
+export const isSkillCall = (call) => call.name === "Skill" && typeof call.input?.skill === "string" && call.ok !== false;
+
 // A tool call that starts the `reviewer` agent (claude/agents/reviewer.md), which the
 // Review rule has a session start for its review, unless it was refused or interrupted.
 export const isReviewerRun = (call) => ["Agent", "Task"].includes(call.name) && call.input?.subagent_type === "reviewer" && call.ok !== false;
@@ -214,6 +217,8 @@ function parseSubagents(dir) {
       reviewFork: REVIEW_PROMPT.test(textOf(records.find((record) => record.type === "user")?.message?.content)),
       // The /code-review runs this agent started: the Skill call's arguments.
       codeReviews: summary.toolCalls.filter(isCodeReview).map((call) => ({ at: call.at, args: String(call.input.args ?? "") })),
+      // Skill tool calls this agent made (not refused or interrupted).
+      skillCalls: summary.toolCalls.filter(isSkillCall).map((call) => ({ at: call.at, skill: call.input.skill })),
       model: topKey(summary.models),
       effort: topKey(summary.efforts),
       usage: summary.usage,

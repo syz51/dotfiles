@@ -10,6 +10,7 @@ import { API_FIRST, ClaudeCallError, judge, runTask } from "./claude.js";
 import { fromLitellm, litellmFetchedAt, LITELLM_FILE, LITELLM_URL, MAX_AGE_MS, refreshLitellm } from "./litellm.js";
 import { normalizeUsage, priceSource, requestCost } from "./pricing.js";
 import { appendJsonl, readJsonl, readJson, stateDir, statePath, writeJsonAtomic } from "./state.js";
+import { loadAntigravitySessions } from "./antigravity.js";
 import { Transcript, usage, writeProjects } from "./testing/transcripts.js";
 import * as transcripts from "./transcripts.js";
 import { isAgentBrief, isAutomation, isHostPrompt, loadSessions, loadSessionsParallel, parseSession, readRecords, sessionFiles } from "./transcripts.js";
@@ -220,16 +221,71 @@ describe("transcripts", () => {
 
   test("estimates cost with subagents when there is no cost-state", () => {
     const main = new Transcript().prompt("go").text("ok", { use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
-    const agent = new Transcript({ sessionId: main.sessionId }).text("found", { model: "claude-haiku-5-5", effort: "xhigh", use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
+    const agent = new Transcript({ sessionId: main.sessionId })
+      .tool("Skill", { skill: "work-stages" }, "loaded", { model: "claude-haiku-5-5", effort: "xhigh", use: usage(0, 0, { cacheRead: 0, cacheWrite: 0 }) })
+      .tool("Skill", { skill: "cheat-sheets" }, "denied", { isError: true, model: "claude-haiku-5-5", effort: "xhigh", use: usage(0, 0, { cacheRead: 0, cacheWrite: 0 }) })
+      .text("found", { model: "claude-haiku-5-5", effort: "xhigh", use: usage(0, 1e6, { cacheRead: 0, cacheWrite: 0 }) });
     const root = writeProjects([{ transcript: main, subagents: [{ id: "agent-a1", meta: { agentType: "explorer", description: "look" }, transcript: agent }] }]);
     try {
       const [session] = loadSessions({ root });
       expect(session.costSource).toBe("estimated");
       expect(session.costUSD).toBeCloseTo(20 + 0.5);
-      expect(session.subagents).toEqual([expect.objectContaining({ id: "agent-a1", agentType: "explorer", model: "claude-haiku-5-5", effort: "xhigh", costUSD: 0.5, assistantMessages: 1, toolCalls: 0 })]);
+      expect(session.subagents).toEqual([expect.objectContaining({
+        id: "agent-a1", agentType: "explorer", model: "claude-haiku-5-5", effort: "xhigh", costUSD: 0.5, assistantMessages: 3, toolCalls: 2,
+        skillCalls: [{ at: expect.any(String), skill: "work-stages" }],
+      })]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("loadAntigravitySessions extracts PLANNER_RESPONSE tool calls, pairs GENERIC results and classifies agent briefs", () => {
+    const brain = join(scratch, "brain");
+    const logs = join(brain, "conv-a", ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-24T10:00:00Z", content: "<user_request>Hello</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-24T10:00:05Z",
+        model: "gemini-4-neon-high",
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 0,
+        tool_calls: [
+          { name: "read_file", args: { Path: "\"/Users/u/.gemini/config/skills/diff-review/SKILL.md\"", StartLine: "1" } },
+          { name: "read_file", args: { Path: "\"/Users/u/missing.md\"" } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Showing lines 1-70 of 70" },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Encountered error in tool execution: file does not exist" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const agentLogs = join(brain, "conv-b", ".system_generated", "logs");
+    mkdirSync(agentLogs, { recursive: true });
+    writeFileSync(join(agentLogs, "transcript.jsonl"), [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-24T10:05:00Z", content: "<user_request>Delegated task: fix it</user_request>" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const byId = Object.fromEntries(loadAntigravitySessions({ roots: [brain] }).map((s) => [s.id, s]));
+    expect(byId["conv-a"].origin).toBe("person");
+    expect(byId["conv-b"].origin).toBe("agent");
+    expect(byId["conv-a"].toolCalls).toEqual([
+      {
+        id: null,
+        name: "read_file",
+        input: { Path: "/Users/u/.gemini/config/skills/diff-review/SKILL.md", StartLine: 1 },
+        at: "2026-11-24T10:00:05Z",
+        ok: true,
+        output: "Showing lines 1-70 of 70",
+      },
+      {
+        id: null,
+        name: "read_file",
+        input: { Path: "/Users/u/missing.md" },
+        at: "2026-11-24T10:00:05Z",
+        ok: false,
+        output: "Encountered error in tool execution: file does not exist",
+      },
+    ]);
   });
 
   test("a fork counts only its own records and names its parent", () => {

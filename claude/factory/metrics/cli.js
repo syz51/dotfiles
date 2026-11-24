@@ -14,6 +14,7 @@ import { findReverts, lookupPrs } from "./github.js";
 import { renderHistory, renderMarkdown } from "./markdown.js";
 import { sessionPrs, sessionPushes } from "./prs.js";
 import { reviewStats, sessionReviews } from "./reviews.js";
+import { agentPreloads, dotfilesSkills, sessionSkillLoads, skillStats } from "./skills.js";
 import { attributePrs, windowStats } from "./stats.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -124,6 +125,8 @@ export async function buildReport(options) {
   if (options.gh) await refreshLitellm({ notes });
   const excluded = { automation: 0, project: 0, hostPrompts: 0 };
   const needle = options.project?.toLowerCase();
+  const skills = dotfilesSkills();
+  const preloads = agentPreloads();
   const entries = { current: [], previous: [] };
   for (const session of [...await loadSessionsParallel({ since: previousSince, until }), ...loadCodexSessions({ since: previousSince, until }), ...loadAntigravitySessions({ since: previousSince, until })]) {
     const ended = Date.parse(session.endedAt);
@@ -139,7 +142,8 @@ export async function buildReport(options) {
     const prompts = session.prompts;
     excluded.hostPrompts += session.hostPrompts;
     entries[ended > since ? "current" : "previous"].push({
-      session, prompts, prs: sessionPrs(session), pushes: sessionPushes(session), corrections: countCorrections(prompts), reviews: sessionReviews(session),
+      session, prompts, prs: sessionPrs(session), pushes: sessionPushes(session), corrections: countCorrections(prompts),
+      reviews: sessionReviews(session), skillLoads: sessionSkillLoads(session, { skills, preloads }),
     });
   }
   const all = [...entries.current, ...entries.previous];
@@ -153,7 +157,7 @@ export async function buildReport(options) {
     prInfo = new Map([...states].map(([key, state]) => [key, { ...state, revertedBy: reverted.get(key) ?? null }]));
   } else notes.push("GitHub lookups were skipped (--no-gh), so PR states, merged-PR counts and reverts are unknown.");
 
-  const stats = (list) => ({ ...windowStats(list, prInfo), reviews: reviewStats(list, prInfo) });
+  const stats = (list) => ({ ...windowStats(list, prInfo), reviews: reviewStats(list, prInfo), skills: skillStats(list, { skills }) });
   const projectKeys = [...new Set(all.map((entry) => entry.session.project))];
   const projects = projectKeys.map((project) => {
     const of = (list) => list.filter((entry) => entry.session.project === project);
