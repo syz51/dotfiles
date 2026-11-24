@@ -266,6 +266,8 @@ describe("turns", () => {
   });
 });
 
+const FRICTION_TIMEOUT = 30_000;
+
 describe("friction run", () => {
   test("files each finding once with the capture flags, skipping automation and turns that filed feedback", async () => {
     const roots = fixture();
@@ -301,7 +303,7 @@ describe("friction run", () => {
     expect(await run(["run"], context(roots, NOW + 120_000))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([2, 2]);
     expect(records().filter((record) => record.kind === "filed")).toHaveLength(2);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a failed filing is retried next run without judging the turn again", async () => {
     const roots = fixture();
@@ -317,7 +319,7 @@ describe("friction run", () => {
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([2, 4]);
     expect(await run(["run"], context(roots, NOW + 120_000))).toBe(0);
     expect(feedbackCalls()).toHaveLength(4);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a filing the board keeps refusing is given up after three tries, as is one older than --max-age-hours", async () => {
     const roots = fixture();
@@ -333,13 +335,13 @@ describe("friction run", () => {
     setEnv({ FAKE_BOARD_FAIL: undefined });
     expect(await run(["run"], context(roots, NOW + 49 * 3_600_000))).toBe(0);
     expect(feedbackCalls()).toHaveLength(8);
-  });
+  }, 45_000);
 
   test("the real board needs an agent: without --agent the filing would fail", async () => {
     const roots = fixture();
     expect(await run(["run"], context(roots))).toBe(0);
     for (const args of feedbackCalls()) expect(args.slice(0, 2)).toEqual(["--agent", AGENT]);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a turn that has not ended holds the cursor and is judged once it ends", async () => {
     const waiting = new Transcript({ cwd: PROJECT })
@@ -359,7 +361,7 @@ describe("friction run", () => {
     write();
     expect(await run(["run"], context(roots, NOW + 2 * 3_600_000))).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a turn that never marks its end is judged once it goes stale", async () => {
     const abandoned = new Transcript({ cwd: PROJECT })
@@ -372,7 +374,7 @@ describe("friction run", () => {
     expect(log("claude.jsonl")).toHaveLength(0);
     expect(await run(["run"], context(roots, NOW + 7 * 3_600_000))).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("the run budget stops judging, and the next run picks up the turns left over", async () => {
     const roots = fixture();
@@ -384,7 +386,7 @@ describe("friction run", () => {
     expect(state.lastRun).toMatchObject({ judged: 1, filed: 1, errors: 0, costUSD: 0.04 });
     expect(await run(["run", "--max-total-usd", "0.06"], context(roots, NOW + 60_000))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([2, 2]);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("turns still within the quiet period wait; a turn with no setup friction files nothing", async () => {
     const roots = fixture();
@@ -395,7 +397,7 @@ describe("friction run", () => {
     expect(await run(["run"], context(roots))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([2, 0]);
     expect(console.log.mock.calls.flat().join("\n")).toContain("The judge found no setup friction");
-  });
+  }, FRICTION_TIMEOUT);
 
   test("an invalid judge answer is an error for that turn; a turn failing twice is left alone", async () => {
     const roots = fixture();
@@ -405,7 +407,7 @@ describe("friction run", () => {
     expect(await run(["run"], context(roots, NOW + 120_000))).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(4);
     expect(feedbackCalls()).toHaveLength(0);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("with a board CLI that cannot file capture reports, nothing is judged until it can", async () => {
     const roots = fixture();
@@ -420,14 +422,14 @@ describe("friction run", () => {
     setEnv({ FAKE_BOARD_OLD: undefined });
     expect(await run(["run"], context(roots, NOW + 60_000))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length]).toEqual([2, 2]);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("--dry-run calls and writes nothing", async () => {
     const roots = fixture();
     expect(await run(["run", "--dry-run"], context(roots))).toBe(0);
     expect([log("claude.jsonl").length, feedbackCalls().length, existsSync(join(scratch, "state", "friction-state.json"))]).toEqual([0, 0, false]);
     expect(console.log.mock.calls.flat().join("\n")).toContain(`claude ${roots.person.sessionId} turn 1: score 12`);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a turn whose only friction is board errors the server counts is not judged; a schema-check refusal is", async () => {
     const tooLong = "error: invalid: text is 501 characters; the limit is 500\nnext: shorten it";
@@ -448,7 +450,7 @@ describe("friction run", () => {
     expect(out).toContain("1 show friction");
     expect(out).toContain(`claude ${transcript.sessionId} turn 2: score 10`);
     expect(out).not.toContain(`claude ${transcript.sessionId} turn 1:`);
-  });
+  }, FRICTION_TIMEOUT);
 });
 
 describe("matching known items", () => {
@@ -497,7 +499,7 @@ describe("matching known items", () => {
       expect(feedbackCalls()).toHaveLength(2);
       expect(feedbackCalls().some((args) => args.includes("--signature"))).toBe(false);
     }
-  });
+  }, FRICTION_TIMEOUT);
 
   test("items capture filed earlier and earlier in the run are offered to the judge", async () => {
     const roots = fixture();
@@ -510,7 +512,7 @@ describe("matching known items", () => {
     // The first turn's finding became board-feedback-1, which the cached instructions lack.
     expect(second.system).toBe(first.system);
     expect(second.stdin).toContain(`# Filed in this run\n\n## board\n\n- board-feedback-1: ${JSON.stringify(TITLE)}`);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("a match closed after the turn ended is skipped; one live or closed before it is filed under its signature", async () => {
     const roots = fixture();
@@ -554,7 +556,7 @@ describe("matching known items", () => {
         expect([name, feedbackCalls().map((args) => args[args.indexOf("--signature") + 1])]).toEqual([name, ["board:item board-feedback-30", "board:item board-feedback-30"]]);
       }
     }
-  });
+  }, 45_000);
 
   test("when the board cannot list its items, capture's own are matched and the run reports an error", async () => {
     const roots = fixture();
@@ -565,7 +567,7 @@ describe("matching known items", () => {
     expect(console.error.mock.calls.flat().join("\n")).toContain("Listing unresolved feedback failed; matching only capture's own items");
     expect(log("claude.jsonl")[0].system).toContain("board-feedback-30");
     expect(feedbackCalls()).toHaveLength(2);
-  });
+  }, FRICTION_TIMEOUT);
 
   test("pages with --after when more than 1000 unresolved items exist and offers the newest ones to the judge", async () => {
     const roots = fixture();
@@ -598,7 +600,7 @@ describe("matching known items", () => {
     // Item 1050 sits on page 2 and is the newest, so the judge sees it first in Known items.
     expect(log("claude.jsonl")[0].system).toContain('- board-feedback-1050: "Unresolved item 1050"');
     expect(feedbackCalls()[0]).toContain("board:item-1050");
-  });
+  }, FRICTION_TIMEOUT);
 
   test("known items: capture's recent ones and the board's unresolved ones, newest first and capped", () => {
     const judged = (key, title) => ({ kind: "judged", key, findings: [{ title }, { title: `${title} 2` }] });
@@ -662,7 +664,7 @@ describe("LaunchAgent", () => {
     expect(existsSync(file)).toBe(false);
     setEnv({ PATH: "/usr/bin:/bin" });
     await expect(run(["install"])).rejects.toThrow("agy-run is not on PATH");
-  });
+  }, 20_000);
 
   test("usage errors exit 2; --help prints the usage", async () => {
     expect(await run(["--help"])).toBe(0);

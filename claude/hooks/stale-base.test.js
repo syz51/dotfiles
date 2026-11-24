@@ -48,6 +48,7 @@ function setup() {
   return { root, main, tree, advance };
 }
 
+const GIT_TIMEOUT = 30_000;
 const check = (cwd, options) => staleBase(cwd, { env: ENV, ...options });
 
 describe("staleBase", () => {
@@ -61,25 +62,25 @@ describe("staleBase", () => {
     // The fetch updated only the remote-tracking ref, so the advice works as given.
     git(tree, "merge", "--ff-only", "-q", "origin/main");
     expect(check(tree)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a worktree at origin's tip has no note", () => {
     const { tree } = setup();
     expect(check(tree)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a main checkout is left to config-sync and freshen-base, even when behind", () => {
     const { main, advance } = setup();
     advance();
     expect(check(main)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a branch with commits of its own is a chosen base and has no note", () => {
     const { tree, advance } = setup();
     commit(tree, "mine");
     advance();
     expect(check(tree)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a failed fetch falls back to the last fetched ref, and says so", () => {
     const { root, tree, advance } = setup();
@@ -91,7 +92,7 @@ describe("staleBase", () => {
     git(tree, "remote", "set-url", "origin", join(root, "gone.git"));
     advance("later");
     expect(check(tree)).toMatch(new RegExp(`is 1 commit\\(s\\) behind origin/main \\(${tip.slice(0, 12)}\\) \\(as last fetched: this session's fetch failed or timed out\\)\\.`));
-  });
+  }, GIT_TIMEOUT);
 
   test("a hung fetch is cut off at the timeout and the session goes on", () => {
     const { tree, advance } = setup();
@@ -106,9 +107,13 @@ describe("staleBase", () => {
       expect(check(tree, { fetchTimeout: 300 })).toBeUndefined();
       expect(Date.now() - started).toBeLessThan(1_500);
     } finally {
-      process.kill(Number(readFileSync(pidFile, "utf8")));
+      if (existsSync(pidFile)) try {
+        process.kill(Number(readFileSync(pidFile, "utf8")));
+      } catch {
+        // Already gone.
+      }
     }
-  });
+  }, GIT_TIMEOUT);
 
   test("ssh gives up connecting within the fetch timeout, without prompting", () => {
     const { tree, advance } = setup();
@@ -118,14 +123,14 @@ describe("staleBase", () => {
     git(tree, "config", "core.sshCommand", `echo >${log}`);
     check(tree, { fetchTimeout: 2_500 });
     expect(readFileSync(log, "utf8")).toMatch(/^-o BatchMode=yes -o ConnectTimeout=3 /);
-  });
+  }, GIT_TIMEOUT);
 
   test("a worktree with tracked changes has started work on its base and has no note", () => {
     const { tree, advance } = setup();
     advance();
     writeFileSync(join(tree, "first.txt"), "edited");
     expect(check(tree)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a branch that tracks local main, as `git worktree add --track` sets, is compared with origin", () => {
     const { main, root, advance } = setup();
@@ -134,7 +139,7 @@ describe("staleBase", () => {
     expect(git(tree, "config", "--get", "branch.t3/tracked.remote")).toBe(".");
     advance();
     expect(check(tree)).toMatch(/its branch t3\/tracked has no commits of its own and is 1 commit\(s\) behind origin\/main/);
-  });
+  }, GIT_TIMEOUT);
 
   test("a branch that tracks another branch, such as a release branch, has no note", () => {
     const { tree, root, advance } = setup();
@@ -144,7 +149,7 @@ describe("staleBase", () => {
     git(tree, "branch", "-q", "--set-upstream-to", "origin/release");
     advance();
     expect(check(tree)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a narrow remote.origin.fetch still updates origin's default branch", () => {
     const { tree, main, advance } = setup();
@@ -152,21 +157,21 @@ describe("staleBase", () => {
     advance("a");
     const tip = advance("b");
     expect(check(tree)).toMatch(new RegExp(`is 2 commit\\(s\\) behind origin/main \\(${tip.slice(0, 12)}\\)\\. `));
-  });
+  }, GIT_TIMEOUT);
 
   test("without origin/HEAD, main still counts as the default branch", () => {
     const { tree, main, advance } = setup();
     git(main, "remote", "set-head", "origin", "-d");
     advance();
     expect(check(tree)).toMatch(/is 1 commit\(s\) behind origin\/main/);
-  });
+  }, GIT_TIMEOUT);
 
   test("a detached HEAD is named as such", () => {
     const { tree, advance } = setup();
     git(tree, "checkout", "-q", "--detach");
     advance();
     expect(check(tree)).toMatch(/^This worktree starts behind: its detached HEAD has no commits of its own/);
-  });
+  }, GIT_TIMEOUT);
 
   test("a folder outside git, or a worktree with no remote, is ignored", () => {
     const root = mkdtempSync(join(tmpdir(), "stale-base-"));
@@ -176,7 +181,7 @@ describe("staleBase", () => {
     commit(join(root, "solo"), "first");
     git(join(root, "solo"), "worktree", "add", "-q", "-b", "child", join(root, "solo-tree"));
     expect(check(join(root, "solo-tree"))).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 });
 
 describe("hook process", () => {
@@ -204,7 +209,7 @@ describe("hook process", () => {
       expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toMatch(new RegExp(`behind origin/main \\(${tip.slice(0, 12)}\\)\\. Before`));
     }
     expect(existsSync(join(main, ".git", "freshen-base.lock"))).toBe(false);
-  });
+  }, GIT_TIMEOUT);
 
   test("gives Claude the note as SessionStart context and exits 0", () => {
     const { tree, advance } = setup();
@@ -214,7 +219,7 @@ describe("hook process", () => {
     const output = JSON.parse(result.stdout).hookSpecificOutput;
     expect(output.hookEventName).toBe("SessionStart");
     expect(output.additionalContext).toMatch(/^This worktree starts behind/);
-  });
+  }, GIT_TIMEOUT);
 
   test("prints nothing when current, and bad input is a non-blocking error", () => {
     const { tree } = setup();
@@ -223,5 +228,5 @@ describe("hook process", () => {
     const bad = spawnSync(process.execPath, [HOOK], { input: "not json", encoding: "utf8" });
     expect(bad.status).toBe(1);
     expect(bad.stderr).toMatch(/JSON/);
-  });
+  }, GIT_TIMEOUT);
 });

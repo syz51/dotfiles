@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { git as proposalGit } from "../lib/proposal.js";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { RUBRIC } from "./rubric.js";
 import { allowedPath, alreadyProposed, failureGroups, leakedEvidence, readDenies, run } from "./propose.js";
@@ -201,9 +202,18 @@ describe("proposal rules", () => {
     expect(alreadyProposed(failed("error_during_execution"), "scope-creep", ["s1"], now)).toBeUndefined();
     expect(alreadyProposed(failed(null), "scope-creep", ["s1"], now)).toBeUndefined();
   });
+
+  test("proposal git disables background auto-maintenance and gc so fetch cannot race with gitState", async () => {
+    const maintenance = await proposalGit(scratch, ["config", "--get", "maintenance.auto"]);
+    const gc = await proposalGit(scratch, ["config", "--get", "gc.auto"]);
+    expect(maintenance.stdout.trim()).toBe("false");
+    expect(gc.stdout.trim()).toBe("0");
+  }, 15_000);
 });
 
 describe("propose command", () => {
+  const PROPOSE_TIMEOUT = 30_000;
+
   test("pushes a branch from the remote's main and opens a draft PR without the proposer's words or the evidence", async () => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
@@ -253,7 +263,7 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW + 60_000 })).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
     expect(output.join("\n")).toMatch(/scope-creep\s+3 failing sessions\s+already proposed/);
-  });
+  }, 45_000);
 
   test("proposes edits to gemini/GEMINI.md and prints gemini-4-neon default in --help", async () => {
     const { remote, source } = repository();
@@ -266,7 +276,7 @@ describe("propose command", () => {
     output.length = 0;
     expect(await run(["--help"])).toBe(0);
     expect(output.join("\n")).toContain("proposer model (default gemini-4-neon)");
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("rejects a proposer session that had more than the file tools", async () => {
     const { remote, source } = repository();
@@ -277,7 +287,7 @@ describe("propose command", () => {
     expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Bash"] });
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("under useAntigravity(), passes acceptEdits/tools/settings without --full-access and rejects empty or unrestricted init.tools", async () => {
     const { remote, source } = repository();
@@ -329,7 +339,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(call.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config"]));
     const settings = JSON.parse(call.args[call.args.indexOf("--settings") + 1]);
     expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", `Read(/${join(scratch, "state")}/**)`]));
-  });
+  }, 45_000);
 
   test.each([
     ["a settings file", { "claude/settings.json": '{"permissions":{"allow":["Bash"]}}\n' }, ["claude/settings.json"]],
@@ -345,7 +355,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(entry).toMatchObject({ status: "rejected-paths", rejected, tests: null });
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("an edit that breaks a test pinning rule text is recorded as failing tests, kept locally and not pushed", async () => {
     const { remote, source } = repository();
@@ -360,7 +370,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Delegate when it pays off.");
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("rejects a change that repeats the private evidence without pushing", async () => {
     const { remote, source } = repository();
@@ -372,7 +382,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(existsSync(proposals()[0].patchFile)).toBe(true);
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a failure after the push is recorded with the branch, the next dimension still runs, and a later run retries on a new branch", async () => {
     const { remote, source } = repository();
@@ -390,7 +400,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(await run(["--repo", source, "--dimension", "scope-creep"], { now: NOW + 3_600_000 })).toBe(0);
     expect(proposals()[2]).toMatchObject({ dimension: "scope-creep", status: "proposed", branch: "factory-proposal/scope-creep-20261105-100807" });
     expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "factory-proposal/delegation-fit-20261105-090807", "factory-proposal/scope-creep-20261105-100807", "main"].sort());
-  });
+  }, 45_000);
 
   test("a proposer run that fails is recorded at its budget without a branch", async () => {
     const { remote, source } = repository();
@@ -400,7 +410,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(proposals()[0]).toMatchObject({ status: "error", branch: null, pushed: false, costUSD: 3 });
     expect(proposals()[0].error).toContain("Task run");
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a proposer that hit its budget keeps its partial edits as a local patch, untested and unpushed", async () => {
     const { remote, source } = repository();
@@ -420,7 +430,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     edits({});
     expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "proposer-failed", paths: [], patchFile: null });
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a dry run runs the proposer and tests but pushes and opens nothing, and does not block a real run", async () => {
     const { remote, source } = repository();
@@ -435,14 +445,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(log("gh.jsonl")).toHaveLength(0);
     expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(0);
     expect(proposals()[1].status).toBe("proposed");
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("no change is recorded as such", async () => {
     const { source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
     expect(await run(["--repo", source], { now: NOW })).toBe(0);
     expect(proposals()[0]).toMatchObject({ status: "no-change", paths: [] });
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("stops starting sessions once the next budget would pass the run's total, and the rest qualify next run", async () => {
     const { source } = repository();
@@ -457,7 +467,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
 
     expect(await run(["--repo", source], { now: NOW + 1000 })).toBe(0);
     expect(proposals().map((entry) => entry.dimension)).toEqual(["scope-creep", "delegation-fit", "concise-reporting"]);
-  });
+  }, 45_000);
 
   test("never-attempted dimensions go before ones that keep retrying, so the limit starves none", async () => {
     const { source } = repository();
@@ -467,7 +477,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(await run(["--repo", source, "--max-total-usd", "3"], { now: NOW })).toBe(0);
     expect(proposals().map((entry) => entry.dimension)).toEqual(["scope-creep", "delegation-fit"]);
     expect(output.join("\n")).toContain("Not proposed this run: scope-creep.");
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a session whose stream never reported its cost counts at its budget", async () => {
     const { source } = repository();
@@ -475,7 +485,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     setEnv({ FAKE_RESULT: JSON.stringify({ type: "assistant", message: { content: [] } }) });
     await run(["--repo", source], { now: NOW });
     expect(proposals()[0].costUSD).toBe(3);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a session budget above the run's limit is rejected before anything runs", async () => {
     expect(await run(["--budget-usd", "12"])).toBe(2);
@@ -490,7 +500,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(await run(["--repo", source, "--max-total-usd", "5"], { now: NOW })).toBe(1);
     expect(proposals()).toHaveLength(1);
     expect(output.join("\n")).toContain("spent $3.00 of $5.00");
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("dimensions below the threshold or filtered out run nothing; --list prints the evidence", async () => {
     const { source } = repository();
@@ -503,5 +513,5 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(log("claude.jsonl")).toHaveLength(0);
     expect(output.join("\n")).toContain("- s2 (-Users-test-project): [T3] edited unrelated file in s2");
     expect(await run(["--dimension", "nope"])).toBe(2);
-  });
+  }, PROPOSE_TIMEOUT);
 });

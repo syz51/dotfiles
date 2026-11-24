@@ -430,7 +430,7 @@ describe("transcripts", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test("loadSessionsParallel skips a transcript removed after listing, and fails when a thread ends without an answer", async () => {
     const day = Date.parse("2026-11-01T00:00:00Z");
@@ -452,7 +452,7 @@ describe("transcripts", () => {
       mock.restore();
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   test("loadSessions skips a transcript removed after listing; other read errors stay fatal", () => {
     const kept = new Transcript({ start: Date.parse("2026-11-01T00:00:00Z") }).prompt("kept");
@@ -490,6 +490,7 @@ describe("transcripts", () => {
 });
 
 describe("claude runner", () => {
+  const RUNNER_TIMEOUT = 30_000;
   const schema = { type: "object", properties: { verdict: { type: "string" } }, required: ["verdict"] };
   const fake = (mode, extra = {}) => setEnv({ CLAUDE_FACTORY_BIN: FAKE, FAKE_CLAUDE_MODE: mode, FAKE_CLAUDE_LOG: join(scratch, "log.jsonl"), ...extra });
   const calls = () => readFileSync(join(scratch, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
@@ -509,7 +510,7 @@ describe("claude runner", () => {
     expect(call.args).not.toContain("--append-system-prompt-file");
     expect(call.args).not.toContain("--input-format");
     expect(existsSync(call.cwd)).toBe(false);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("judge sends content blocks, such as images, as one stream-json user message", async () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
@@ -519,7 +520,7 @@ describe("claude runner", () => {
     expect(call.args[call.args.indexOf("--input-format") + 1]).toBe("stream-json");
     expect(call.stdin.endsWith("\n")).toBe(true);
     expect(call.stdin.trim().split("\n").map((line) => JSON.parse(line))).toEqual([{ type: "user", message: { role: "user", content } }]);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("judge's shared instructions replace the default system prompt, where Claude Code caches them", async () => {
     fake("structured", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
@@ -532,28 +533,31 @@ describe("claude runner", () => {
     expect(call.args).not.toContain("--input-format");
     expect(call.stdin).toBe("one session");
     expect(existsSync(call.cwd)).toBe(false);
-  });
+  }, RUNNER_TIMEOUT);
 
   test.each(["tool", "mcp", "error", "malformed"])("judge fails closed on %s", async (mode) => {
     fake(mode);
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toBeInstanceOf(ClaudeCallError);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("a judge call that times out fails as a ClaudeCallError with its partial cost", async () => {
-    const script = join(scratch, "slow.js");
-    writeFileSync(script, `export default async ({ emit }) => { emit({ type: "system", subtype: "init", tools: [] }); process.stdout.write('{"type":"assist'); await Bun.sleep(5000); };`);
-    fake("script", { FAKE_CLAUDE_SCRIPT: script });
-    const error = await judge({ prompt: "x", schema, model: "m", timeoutMs: 300 }).catch((e) => e);
+    // A shell stand-in prints immediately without waiting for a child Bun VM to boot,
+    // so startup under load cannot race timeoutMs, and sleeps well past the deadline.
+    const bin = join(scratch, "slow-claude");
+    writeFileSync(bin, `#!/bin/sh\nprintf '%s\\n' '{"type":"system","subtype":"init","tools":[]}'\nprintf '%s' '{"type":"assist'\nexec sleep 30\n`);
+    chmodSync(bin, 0o755);
+    setEnv({ CLAUDE_FACTORY_BIN: bin });
+    const error = await judge({ prompt: "x", schema, model: "m", timeoutMs: 1000 }).catch((e) => e);
     expect(error).toBeInstanceOf(ClaudeCallError);
     expect(error.message).toContain("did not finish");
     expect(error.events.map((event) => event.subtype)).toEqual(["init"]);
     expect(error.costUSD).toBeNull();
-  });
+  }, RUNNER_TIMEOUT);
 
   test("judge reports the HTTP status of a failed call", async () => {
     fake("error");
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 429");
-  });
+  }, RUNNER_TIMEOUT);
 
   test("a call the API refused before it did anything runs once more, and only once", async () => {
     fake("refused", { FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}', FAKE_CLAUDE_COST: "0.02" });
@@ -575,7 +579,7 @@ describe("claude runner", () => {
     fake("error");
     await expect(judge({ prompt: "x", schema, model: "m" })).rejects.toThrow("HTTP 429");
     expect(calls()).toHaveLength(1);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("through claude-api, an unsaved call's result cost goes to claude-api's log by session", async () => {
     // A wrapper named claude-api around the fake, as the default binary is named.
@@ -610,7 +614,7 @@ describe("claude runner", () => {
     fake("structured", { API_FIRST_STATE: other, FAKE_CLAUDE_OUTPUT: '{"verdict":"pass"}' });
     await judge({ prompt: "x", schema, model: "m" });
     expect(existsSync(other)).toBe(false);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask passes the session options and returns the outcome", async () => {
     fake("task", { FAKE_CLAUDE_TEXT: "all done", FAKE_CLAUDE_WRITE: "out/answer.txt=42", FAKE_CLAUDE_COST: "0.5" });
@@ -629,7 +633,7 @@ describe("claude runner", () => {
     // Without a schema there is no structured output to return.
     expect(run.output).toBeUndefined();
     expect(call.args).not.toContain("--json-schema");
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask with a schema passes it and returns the structured output, or null without one", async () => {
     const schema = { type: "object", properties: { n: { type: "number" } } };
@@ -640,7 +644,7 @@ describe("claude runner", () => {
     expect(JSON.parse(calls()[0].args[calls()[0].args.indexOf("--json-schema") + 1])).toEqual(schema);
     fake("task");
     expect((await runTask({ prompt: "check", cwd, schema })).output).toBeNull();
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask with readEffort reads the effort from the transcript, then deletes it", async () => {
     const config = join(scratch, "config");
@@ -659,7 +663,7 @@ describe("claude runner", () => {
     expect(calls()[1].args).toContain("--no-session-persistence");
     expect(calls()[1].args).not.toContain("--session-id");
     expect(plain.efforts).toBeUndefined();
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask with readEffort counts each message once and skips subagents", async () => {
     const config = join(scratch, "config");
@@ -674,7 +678,7 @@ describe("claude runner", () => {
     fake("script", { FAKE_CLAUDE_SCRIPT: script, FAKE_CLAUDE_EFFORT: "xhigh" });
     const cwd = mkdtempSync(join(scratch, "task-"));
     expect((await runTask({ prompt: "x", cwd, effort: "low", readEffort: true, env: { CLAUDE_CONFIG_DIR: config } })).efforts).toEqual({ xhigh: 2 });
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask with readEffort deletes the transcript of a failed session and of a refused try", async () => {
     const config = join(scratch, "config");
@@ -704,7 +708,7 @@ describe("claude runner", () => {
     expect(new Set(ids).size).toBe(2);
     expect(run.efforts).toEqual({ medium: 1 });
     expect(existsSync(project)).toBe(false);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask with readEffort returns null efforts when no transcript was saved", async () => {
     const cwd = mkdtempSync(join(scratch, "task-"));
@@ -715,23 +719,29 @@ describe("claude runner", () => {
     fake("script", { FAKE_CLAUDE_SCRIPT: script });
     const run = await runTask({ prompt: "x", cwd, readEffort: true, env: { CLAUDE_CONFIG_DIR: join(scratch, "config") } });
     expect([run.ok, run.efforts]).toEqual([true, null]);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask returns what a session streamed before its deadline, flagged timedOut", async () => {
     const config = join(scratch, "config");
     const cwd = mkdtempSync(join(scratch, "task-"));
     const project = join(config, "projects", projectName(realpathSync(cwd)));
     // A session that saved its transcript, streamed its start and a message, then hung.
-    const script = join(scratch, "hang.js");
-    writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
-      export default async ({ emit, option }) => {
-        mkdirSync(${JSON.stringify(project)}, { recursive: true });
-        writeFileSync(${JSON.stringify(project)} + "/" + option("--session-id") + ".jsonl", JSON.stringify({ type: "assistant", effort: "low", message: { id: "m1" } }) + "\\n");
-        emit({ type: "system", subtype: "init", model: "m", tools: [] });
-        emit({ type: "assistant", parent_tool_use_id: null, message: { id: "m1", model: "m", content: [] } });
-        await Bun.sleep(5000);
-      };`);
-    fake("script", { FAKE_CLAUDE_SCRIPT: script });
+    const bin = join(scratch, "hang-claude");
+    writeFileSync(bin, [
+      "#!/bin/sh",
+      'sid=""',
+      "while [ $# -gt 0 ]; do",
+      '  if [ "$1" = "--session-id" ]; then sid="$2"; shift 2; else shift; fi',
+      "done",
+      `mkdir -p ${JSON.stringify(project)}`,
+      `printf '%s\\n' '{"type":"assistant","effort":"low","message":{"id":"m1"}}' > ${JSON.stringify(project)}"/$sid.jsonl"`,
+      `printf '%s\\n' '{"type":"system","subtype":"init","model":"m","tools":[]}'`,
+      `printf '%s\\n' '{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","model":"m","content":[]}}'`,
+      "exec sleep 30",
+      "",
+    ].join("\n"));
+    chmodSync(bin, 0o755);
+    setEnv({ CLAUDE_FACTORY_BIN: bin });
     const run = await runTask({ prompt: "x", cwd, timeoutMs: 1000, readEffort: true, env: { CLAUDE_CONFIG_DIR: config } });
     expect(run).toMatchObject({ timedOut: true, ok: false, code: null, costUSD: 0, finalText: "", efforts: { low: 1 } });
     expect(run.events.map((event) => event.type)).toEqual(["system", "assistant"]);
@@ -740,12 +750,12 @@ describe("claude runner", () => {
     // A session that finishes is not timedOut.
     fake("task");
     expect((await runTask({ prompt: "x", cwd })).timedOut).toBe(false);
-  });
+  }, RUNNER_TIMEOUT);
 
   test("runTask fails with the exit status when there is no stream", async () => {
     fake("exit", { FAKE_CLAUDE_EXIT: "5" });
     await expect(runTask({ prompt: "x", cwd: scratch })).rejects.toThrow("exit 5");
-  });
+  }, RUNNER_TIMEOUT);
 
   test("under useAntigravity(), runTask forwards restrictions instead of --full-access and fails closed on unsupported ones", async () => {
     const logPath = join(scratch, "agy.jsonl");
@@ -810,7 +820,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     // judge() under useAntigravity() also fails closed if init exposes a non-structured tool
     setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Bash"]) });
     await expect(judge({ prompt: "grade", schema, model: "gemini-4-neon" })).rejects.toBeInstanceOf(ClaudeCallError);
-  });
+  }, RUNNER_TIMEOUT);
 });
 
 describe("default binary", () => {

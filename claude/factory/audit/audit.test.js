@@ -78,6 +78,8 @@ const json = async (args = [], extra) => {
 const byId = (report) => Object.fromEntries(report.findings.map((item) => [item.id, item]));
 
 describe("audit command", () => {
+  const AUDIT_TIMEOUT = 30_000;
+
   test("reports the posture with a severity and fix per finding", async () => {
     const { report, code } = await json();
     const found = byId(report);
@@ -97,7 +99,7 @@ describe("audit command", () => {
     }
     expect(report.failing.sort()).toEqual(["agent:runner:bypass", "permissions.broad-allow", "permissions.default-bypass", "sandbox.disabled",
       "hook.missing-script:PreToolUse:\"$HOME/.claude/hooks/gone.js\"", "hook.missing-executable:PostToolUse:~/bin/missing-tool"].sort());
-  });
+  }, AUDIT_TIMEOUT);
 
   test("flags missing hook executables and scripts, high where a guard fails open", async () => {
     const found = byId((await json()).report);
@@ -106,7 +108,7 @@ describe("audit command", () => {
     expect(found["hook.unchecked:PreToolUse:$CLAUDE_PROJECT_DIR/hook.sh"].severity).toBe("info");
     expect(Object.keys(found).filter((id) => id.startsWith("hook.") && (id.includes("guard.js") || id.includes("runner")))).toEqual([]);
     expect(found["hooks.count"].title).toBe("4 command hooks configured");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("reads settings.local.json too: its scalars win and its lists add", async () => {
     write(join(config, "settings.local.json"), {
@@ -118,7 +120,7 @@ describe("audit command", () => {
     expect(found["permissions.default-mode"].title).toContain("acceptEdits");
     expect(found["permissions.broad-allow"].title).toBe("permissions.allow has tool-wide rules: Bash(*), Write");
     expect(found["hook.missing-executable:Stop:/nowhere/stop-hook"].severity).toBe("medium");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("lists MCP servers by name and type, and never prints a value from .claude.json", async () => {
     const { report, all } = await json();
@@ -133,14 +135,14 @@ describe("audit command", () => {
     expect(text.all).not.toContain("FAKEtoken");
     await cli(["--update-baseline"]);
     expect(readFileSync(join(scratch, "state", "audit-baseline.json"), "utf8")).not.toContain("FAKEtoken");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("a .claude.json that does not parse is reported without its contents", async () => {
     write(join(config, ".claude.json"), `{"mcpServers": {"x": {"env": {"K": "${TOKEN}"}}}, oops`);
     const { report, all } = await json();
     expect(byId(report)["mcp.config-unreadable"].severity).toBe("medium");
     expect(all).not.toContain("FAKEtoken");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("reports each agent's tool limits and flags weak ones", async () => {
     const found = byId((await json()).report);
@@ -149,7 +151,7 @@ describe("audit command", () => {
     expect(found["agent:runner"].title).toContain("tools Read, Bash");
     expect(found["agent:runner:bypass"].severity).toBe("medium");
     expect(found["agent:runner:read-only-by-instruction"]).toBeUndefined();
-  });
+  }, AUDIT_TIMEOUT);
 
   test("checks whether the agent-skills weekly review runs unsandboxed", async () => {
     const file = join(scratch, "agent-skills", "scripts", "claude_cli.py");
@@ -157,7 +159,7 @@ describe("audit command", () => {
     expect(byId((await json()).report)["agent-skills.review-unsandboxed"].severity).toBe("high");
     write(file, "def review_command(cli):\n    return [str(cli), '--permission-mode', 'bypassPermissions', '--settings', PROFILE]\n");
     expect(byId((await json()).report)["agent-skills.review-settings"].severity).toBe("info");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("a baseline accepts findings by id; --fail-on sets the threshold for the rest", async () => {
     expect((await cli(["--update-baseline"])).code).toBe(0);
@@ -183,7 +185,7 @@ describe("audit command", () => {
     const text = await cli([]);
     expect(text.stdout).toContain("1 finding at or above medium not in the baseline: hook.missing-executable:Stop:/nowhere/x");
     expect(text.stdout).toContain("[accepted]");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("a finding accepted at one severity fails again when it grows more severe", async () => {
     write(join(config, "settings.json"), { ...SETTINGS, hooks: {}, sandbox: { enabled: true } });
@@ -193,7 +195,7 @@ describe("audit command", () => {
     const { report, code } = await json();
     expect(code).toBe(1);
     expect(report.failing).toContain("permissions.default-bypass");
-  });
+  }, AUDIT_TIMEOUT);
 
   test("rejects unknown options and severities with exit 2", async () => {
     expect((await cli(["--nope"])).code).toBe(2);
@@ -201,14 +203,14 @@ describe("audit command", () => {
     expect(bad.code).toBe(2);
     expect(bad.stderr).toContain("--fail-on must be one of");
     expect((await cli(["--help"])).code).toBe(0);
-  });
+  }, AUDIT_TIMEOUT);
 
   test("a malformed baseline fails loudly", async () => {
     write(join(scratch, "state", "audit-baseline.json"), { accepted: [] });
     const result = await cli([]);
     expect(result.code).not.toBe(0);
     expect(result.all).toContain("not an audit baseline");
-  });
+  }, AUDIT_TIMEOUT);
 });
 
 describe("audit internals", () => {

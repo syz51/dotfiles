@@ -106,6 +106,9 @@ async function capture(fn) {
   }
 }
 
+const BENCH_TIMEOUT = 30_000;
+const GIT_TIMEOUT = 15_000;
+
 describe("cases", () => {
   test("validation reports every problem with the file path", () => {
     const file = writeCase(caseValue({ role: "boss", prompt: "", budgetUsd: 0, extra: 1, oracle: { command: "true" } }));
@@ -134,7 +137,7 @@ describe("cases", () => {
     const missing = writeCase(caseValue({ id: "gone", fixture: { type: "git", repo, commit: "0123456789abcdef0123456789abcdef01234567" } }), {});
     expect(() => loadCase(missing)).toThrow(`${missing}: fixture repository`);
     expect(() => loadCase(writeCase(caseValue({ id: "kind", fixture: { type: "zip" } }), {}))).toThrow("fixture.type");
-  });
+  }, GIT_TIMEOUT);
 
   test("loadCases lists valid cases sorted by id", () => {
     writeCase(caseValue({ id: "b-case" }));
@@ -149,7 +152,7 @@ describe("cases", () => {
     expect(count("explorer")).toBeGreaterThanOrEqual(2);
     expect(count("worker")).toBeGreaterThanOrEqual(4);
     expect(count("main")).toBeGreaterThanOrEqual(1);
-  });
+  }, GIT_TIMEOUT);
 
   // An overlay's tests import code that exists only in the case's fixture, so the root
   // bunfig.toml keeps `bun test` from discovering them in this checkout.
@@ -185,13 +188,13 @@ describe("cases", () => {
     expect(gitIn(repo, "status", "--porcelain")).toBe(before);
     expect(gitIn(repo, "worktree", "list").split("\n")).toHaveLength(1);
     expect(readdirSync(scratch).filter((name) => name.endsWith(".tar"))).toEqual([]);
-  });
+  }, GIT_TIMEOUT);
 
   test('repo "." is the repository containing the case', () => {
     const { repo, shas } = repoWith([{ "a.txt": "a" }, "one"]);
     const benchCase = loadCase(writeCase(caseValue({ fixture: { type: "git", repo: ".", commit: shas[0] } }), {}, join(repo, "cases")));
     expect(benchCase.fixture.repoPath).toBe(repo);
-  });
+  }, GIT_TIMEOUT);
 
   test("the agent override sets model and effort and keeps the rest", () => {
     const text = "---\nname: worker\ndescription: \"Works.\"\nmodel: opus\neffort: high\ndisallowedTools: Agent\n---\n\nBody line.\n";
@@ -218,10 +221,10 @@ describe("oracle", () => {
     const failed = await runOracle({ command: "echo broken >&2; exit 3", timeoutMs: 5000 }, scratch, answer);
     expect(failed).toMatchObject({ exit: 3, timedOut: false });
     expect(failed.output).toContain("broken");
-    const slow = await runOracle({ command: "echo started; sleep 5", timeoutMs: 200 }, scratch, answer);
+    const slow = await runOracle({ command: "echo started; sleep 30", timeoutMs: 200 }, scratch, answer);
     expect(slow).toMatchObject({ exit: null, timedOut: true });
     expect(slow.output).toContain("timed out after 200 ms");
-  });
+  }, BENCH_TIMEOUT);
 
   // A case that judges the final answer may keep reference/answer.md, right at its pinned
   // commit, and reference/parent-answer.md, right at the commit before it: the oracle must
@@ -238,14 +241,14 @@ describe("oracle", () => {
       const parent = join(benchCase.dir, "reference", "parent-answer.md");
       if (existsSync(parent)) expect(await check(parent), benchCase.id).not.toBe(0);
     }
-  });
+  }, BENCH_TIMEOUT);
 
   test("restores the overlay before running, so edited tests do not count", async () => {
     writeFiles(join(scratch, "overlay"), { "test.sh": "exit 1\n" });
     writeFiles(join(scratch, "work"), { "test.sh": "exit 0\n" });
     const result = await runOracle({ command: "sh test.sh", timeoutMs: 5000 }, join(scratch, "work"), "/dev/null", { overlayPath: join(scratch, "overlay") });
     expect(result.exit).toBe(1);
-  });
+  }, BENCH_TIMEOUT);
 });
 
 describe("runs", () => {
@@ -276,7 +279,7 @@ describe("runs", () => {
     });
     expect(record.durationMs).toBeGreaterThan(0);
     expect(Date.parse(record.at)).not.toBeNaN();
-  });
+  }, BENCH_TIMEOUT);
 
   test("the main role runs without an agent", async () => {
     const record = await runOne(loadCase(writeCase(caseValue())), runOptions());
@@ -284,7 +287,7 @@ describe("runs", () => {
     expect(sessions()[0].agentFile).toBeNull();
     expect(sessions()[0].settings.permissions.deny).toEqual(["WebFetch", "WebSearch"]);
     expect(record.pass).toBe(true);
-  });
+  }, BENCH_TIMEOUT);
 
   test("the oracle reads the final answer from FINAL_ANSWER_FILE outside the workspace", async () => {
     setEnv({ FAKE_BENCH_TEXT: "The hook is in hooks/guard.js" });
@@ -293,26 +296,26 @@ describe("runs", () => {
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: true, oracleExit: 0 });
     setEnv({ FAKE_BENCH_TEXT: "No idea" });
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, oracleExit: 1, error: null, infra: false });
-  });
+  }, BENCH_TIMEOUT);
 
   test("an oracle timeout fails the run", async () => {
-    const benchCase = loadCase(writeCase(caseValue({ oracle: { command: "sleep 5", timeoutMs: 200 } })));
+    const benchCase = loadCase(writeCase(caseValue({ oracle: { command: "sleep 30", timeoutMs: 200 } })));
     const record = await runOne(benchCase, runOptions());
     expect(record).toMatchObject({ pass: false, oracleExit: null, infra: false });
     expect(record.oracleOutput).toContain("timed out");
-  });
+  }, BENCH_TIMEOUT);
 
   test("a session that ends in error fails even when the oracle passes", async () => {
     setEnv({ FAKE_BENCH_SUBTYPE: "error_max_budget_usd" });
     const record = await runOne(loadCase(writeCase(caseValue())), runOptions());
     expect(record).toMatchObject({ pass: false, oracleExit: 0, infra: false, error: "session ended with error_max_budget_usd" });
-  });
+  }, BENCH_TIMEOUT);
 
   test("a session timeout is a model failure with unknown cost", async () => {
-    setEnv({ FAKE_BENCH_SLEEP: "3000" });
-    const record = await runOne(loadCase(writeCase(caseValue({ timeoutMs: 300 }))), runOptions());
-    expect(record).toMatchObject({ pass: false, infra: false, costUSD: null, error: "session timed out after 300 ms" });
-  });
+    setEnv({ FAKE_BENCH_SLEEP: "30000" });
+    const record = await runOne(loadCase(writeCase(caseValue({ timeoutMs: 1000 }))), runOptions());
+    expect(record).toMatchObject({ pass: false, infra: false, costUSD: null, error: "session timed out after 1000 ms" });
+  }, BENCH_TIMEOUT);
 
   test("the wrong model, API errors and a broken CLI are infrastructure failures", async () => {
     const benchCase = loadCase(writeCase(caseValue()));
@@ -326,7 +329,7 @@ describe("runs", () => {
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, infra: true, error: "session ended with an error result: Not logged in" });
     setEnv({ FAKE_CLAUDE_MODE: "exit" });
     expect(await runOne(benchCase, runOptions())).toMatchObject({ pass: false, infra: true });
-  });
+  }, BENCH_TIMEOUT);
 
   test("a session at another effort, or one whose effort is unrecorded, is an infrastructure failure", async () => {
     const benchCase = loadCase(writeCase(caseValue()));
@@ -342,12 +345,12 @@ describe("runs", () => {
     // The wrong model is reported over the wrong effort.
     setEnv({ FAKE_CLAUDE_EFFORT: "low", FAKE_BENCH_RAN: "claude-haiku-5-5" });
     expect((await runOne(benchCase, runOptions())).error).toContain("requested claude-opus-5-5 but the session ran claude-haiku-5-5");
-  });
+  }, BENCH_TIMEOUT);
 
   test("a dated ID of the requested model is the requested model", async () => {
     setEnv({ FAKE_BENCH_RAN: "claude-opus-5-5-20261001" });
     expect(await runOne(loadCase(writeCase(caseValue())), runOptions())).toMatchObject({ pass: true, infra: false, modelObserved: "claude-opus-5-5-20261001" });
-  });
+  }, BENCH_TIMEOUT);
 
   test("observedModels counts only the main thread", () => {
     expect(observedModels([
@@ -448,7 +451,7 @@ describe("bench run command", () => {
     const overlap = (time) => spans.filter(([from, to]) => from <= time && time < to).length;
     const peak = Math.max(...spans.map(([from]) => overlap(from)));
     expect(peak).toBe(2);
-  });
+  }, BENCH_TIMEOUT);
 
   test("stops at the total budget", async () => {
     setEnv({ FAKE_BENCH_COST: "0.5" });
@@ -459,7 +462,7 @@ describe("bench run command", () => {
     expect(code).toBe(0);
     expect(results()).toHaveLength(2);
     expect(out).toContain("1 runs not started");
-  });
+  }, BENCH_TIMEOUT);
 
   test("dry run prints the matrix and worst case without running", async () => {
     writeCase(caseValue({ budgetUsd: 0.75 }));
@@ -480,7 +483,7 @@ describe("bench run command", () => {
     expect(failed.out).toContain("INFRA");
     for (const args of [["--efforts", "ultra"], ["--models", "haiku"], ["--trials", "0"], ["--case", "missing"], ["--bogus"]])
       expect((await capture(() => main(["bench", "run", "--cases", casesDir, ...args]))).code).toBe(2);
-  });
+  }, BENCH_TIMEOUT);
 
   test("list shows the cases", async () => {
     writeCase(caseValue());
@@ -595,14 +598,14 @@ describe("add-from-commit", () => {
     expect(readFileSync(join(dest, "lib.sh"), "utf8")).toBe("echo 1\n");
     expect(await capture(() => main(["bench", "add-from-commit", "--cases", casesDir, "--repo", repo, "--sha", shas[1],
       "--tests", "test.sh", "--oracle", "sh test.sh", "--id", "two"]))).toMatchObject({ code: 1 });
-  });
+  }, BENCH_TIMEOUT);
 
   test('stores repo "." when the repository holds the cases folder', async () => {
     const { repo, shas } = repoWith([BROKEN, "start"], [FIXED, "fix"]);
     const { benchCase } = await addFromCommit({ repo, sha: shas[1], tests: ["test.sh"], oracle: "sh test.sh", id: "dot", casesDir: join(repo, "cases"), prompt: "Fix it." });
     expect(benchCase.fixture.repo).toBe(".");
     expect(benchCase.prompt).toBe("Fix it.");
-  });
+  }, BENCH_TIMEOUT);
 
   test("refuses a case whose oracle does not flip", async () => {
     const { repo, shas } = repoWith([FIXED, "start"], [{ "README.md": "docs\n" }, "Docs only"], [{ "lib.sh": "echo 3\n" }, "Break it"]);
@@ -617,5 +620,5 @@ describe("add-from-commit", () => {
     expect(existsSync(casesDir) ? readdirSync(casesDir) : []).toEqual([]);
     await expect(addFromCommit({ repo, sha: shas[1], tests: ["missing.sh"], oracle: "true", id: "missing", casesDir })).rejects.toThrow("does not exist");
     await expect(addFromCommit({ repo, sha: shas[1], tests: ["../x"], oracle: "true", id: "outside", casesDir })).rejects.toThrow("relative");
-  });
+  }, BENCH_TIMEOUT);
 });

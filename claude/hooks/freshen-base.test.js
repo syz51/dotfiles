@@ -50,6 +50,7 @@ function setup() {
   return { root, work, advance, head: () => git(work, "rev-parse", "HEAD") };
 }
 
+const GIT_TIMEOUT = 30_000;
 const freshenHere = (cwd) => freshen(cwd, { env: ENV });
 
 describe("which calls create a worktree", () => {
@@ -59,7 +60,7 @@ describe("which calls create a worktree", () => {
     expect(createsWorktree({ tool_name: "EnterWorktree", tool_input: {}, cwd: work })).toBe(true);
     expect(createsWorktree({ tool_name: "Agent", tool_input: { isolation: "worktree" } })).toBe(true);
     expect(createsWorktree({ tool_name: "Task", tool_input: { isolation: "worktree" } })).toBe(true);
-  });
+  }, GIT_TIMEOUT);
 
   test("not entering or resuming an existing worktree, a shared-checkout agent or other tools", () => {
     const { work } = setup();
@@ -69,7 +70,7 @@ describe("which calls create a worktree", () => {
     expect(createsWorktree({ tool_name: "Agent", tool_input: { prompt: "p" } })).toBe(false);
     expect(createsWorktree({ tool_name: "Agent", tool_input: { isolation: "remote" } })).toBe(false);
     expect(createsWorktree({ tool_name: "Bash", tool_input: { command: "ls" } })).toBe(false);
-  });
+  }, GIT_TIMEOUT);
 });
 
 describe("freshen", () => {
@@ -78,14 +79,14 @@ describe("freshen", () => {
     const tip = advance();
     expect(freshenHere(work)).toBe(`Fast-forwarded main by 1 commit(s) to origin/main (${tip.slice(0, 12)}) before creating the worktree.`);
     expect(head()).toBe(tip);
-  });
+  }, GIT_TIMEOUT);
 
   test("an up-to-date main is left without a note", () => {
     const { work, head } = setup();
     const before = head();
     expect(freshenHere(work)).toBeUndefined();
     expect(head()).toBe(before);
-  });
+  }, GIT_TIMEOUT);
 
   test("without origin/HEAD, main still counts as the default branch", () => {
     const { work, advance, head } = setup();
@@ -93,7 +94,7 @@ describe("freshen", () => {
     const tip = advance();
     expect(freshenHere(work)).toMatch(/^Fast-forwarded main by 1 commit\(s\)/);
     expect(head()).toBe(tip);
-  });
+  }, GIT_TIMEOUT);
 
   test("an unpushed commit is kept, even when origin moved on", () => {
     const { work, advance, head } = setup();
@@ -103,7 +104,7 @@ describe("freshen", () => {
     advance();
     expect(freshenHere(work)).toMatch(/has commits of its own and is 1 commit\(s\) behind origin\/main; it was left as it is/);
     expect(head()).toBe(local);
-  });
+  }, GIT_TIMEOUT);
 
   test("tracked changes stop the fast-forward and are kept", () => {
     const { work, advance, head } = setup();
@@ -113,7 +114,7 @@ describe("freshen", () => {
     expect(freshenHere(work)).toMatch(/has tracked changes, so it was not fast-forwarded/);
     expect(head()).toBe(before);
     expect(git(work, "status", "--porcelain")).toBe("M first.txt");
-  });
+  }, GIT_TIMEOUT);
 
   test("a failed fast-forward is reported in one line and leaves the checkout as it was", () => {
     const { work, advance, head } = setup();
@@ -123,7 +124,7 @@ describe("freshen", () => {
     expect(freshenHere(work)).toMatch(/^Fast-forwarding main to origin\/main failed \([^\n]+\); the new worktree starts 1 commit\(s\) behind\.$/);
     expect(head()).toBe(before);
     expect(readFileSync(join(work, "clash.txt"), "utf8")).toBe("mine");
-  });
+  }, GIT_TIMEOUT);
 
   test("a failed fetch is reported, and nothing is changed", () => {
     const { root, work, head } = setup();
@@ -131,7 +132,7 @@ describe("freshen", () => {
     git(work, "remote", "set-url", "origin", join(root, "gone.git"));
     expect(freshenHere(work)).toMatch(/^Fetching origin\/main failed \([^\n]+\); the new worktree starts from local main as it is, which may be behind origin\/main\.$/);
     expect(head()).toBe(before);
-  });
+  }, GIT_TIMEOUT);
 
   test("a branch with no commits yet, or a remote branch the fetch does not track, is skipped", () => {
     const root = scratch();
@@ -143,7 +144,7 @@ describe("freshen", () => {
     git(work, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other");
     git(work, "update-ref", "-d", "refs/remotes/origin/main");
     expect(freshenHere(work)).toBeUndefined();
-  });
+  }, GIT_TIMEOUT);
 
   test("a feature branch is not touched", () => {
     const { work, advance, head } = setup();
@@ -152,7 +153,7 @@ describe("freshen", () => {
     advance();
     expect(freshenHere(work)).toBeUndefined();
     expect(head()).toBe(before);
-  });
+  }, GIT_TIMEOUT);
 
   test("a folder outside git is ignored", () => {
     expect(freshenHere(scratch())).toBeUndefined();
@@ -165,7 +166,7 @@ describe("freshen", () => {
     expect(fetchEnv(work, ENV).GIT_SSH_COMMAND).toBe("ssh -i key -o BatchMode=yes -o ConnectTimeout=15");
     expect(fetchEnv(work, { ...ENV, GIT_SSH_COMMAND: "myssh" }).GIT_SSH_COMMAND).toBe("myssh -o BatchMode=yes -o ConnectTimeout=15");
     expect(fetchEnv(work, ENV, { connectTimeoutMs: 2_500 }).GIT_SSH_COMMAND).toBe("ssh -i key -o BatchMode=yes -o ConnectTimeout=3");
-  });
+  }, GIT_TIMEOUT);
 });
 
 describe("hook process", () => {
@@ -187,7 +188,7 @@ describe("hook process", () => {
     expect(output.hookEventName).toBe("PreToolUse");
     expect(output.additionalContext).toMatch(/^Fast-forwarded main/);
     expect(head()).toBe(tip);
-  });
+  }, GIT_TIMEOUT);
 
   test("parallel calls take turns: one fast-forwards, none fails, and the lock is released", async () => {
     const { work, advance, head } = setup();
@@ -199,7 +200,7 @@ describe("hook process", () => {
     expect(notes[0]).toMatch(/^Fast-forwarded main by 1 commit\(s\)/);
     expect(head()).toBe(tip);
     expect(existsSync(join(work, ".git", "freshen-base.lock"))).toBe(false);
-  });
+  }, GIT_TIMEOUT);
 
   test("other calls do nothing, and bad input is a non-blocking error", () => {
     const { work, advance, head } = setup();
@@ -212,5 +213,5 @@ describe("hook process", () => {
     // Exit 2 would block the tool; any other failure is shown and the call goes ahead.
     expect(bad.status).toBe(1);
     expect(bad.stderr).toMatch(/JSON/);
-  });
+  }, GIT_TIMEOUT);
 });

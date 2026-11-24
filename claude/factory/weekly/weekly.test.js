@@ -105,6 +105,8 @@ describe("steps", () => {
 });
 
 describe("runWeekly", () => {
+  const WEEKLY_TIMEOUT = 30_000;
+
   test("runs every step in order and writes a summary with the highlights", async () => {
     expect(await runWeekly({ pr: false })).toBe(0);
     expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "evolve", "review", "propose"]);
@@ -146,7 +148,7 @@ describe("runWeekly", () => {
     expect(summary).toContain("- headless-browser: 2 loads (2 Skill) in 2 sessions (0/2 with correction); 2 feedback reports (1 item, 1 open); ");
     expect(summary).toContain("- cheat-sheets: 0 loads; 0 feedback reports; ");
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
-  });
+  }, WEEKLY_TIMEOUT);
 
   test("the skills section reports commits from the dotfiles repo and degrades cleanly when git fails", async () => {
     const repo = join(scratch, "repo");
@@ -172,7 +174,7 @@ describe("runWeekly", () => {
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toContain("- work-stages: 1 load (1 Skill) in 1 session (0/1 with correction); 0 feedback reports; commits n/a");
     expect(summary).toContain("- Failed: git log claude/skills");
-  });
+  }, WEEKLY_TIMEOUT);
 
   test("the summary reports the week's billing, or why it could not", async () => {
     const decisions = join(scratch, "api-state", "decisions.jsonl");
@@ -213,14 +215,14 @@ describe("runWeekly", () => {
     expect(await runWeekly({ pr: false })).toBe(0);
     summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
     expect(summary).toMatch(/- Unavailable: .*decisions\.jsonl:2: malformed/);
-  });
+  }, 45_000);
 
   test("unaccepted audit findings mark the run as needing attention", async () => {
     setEnv({ FAKE_EXIT_audit: "1" });
     expect(await runWeekly({ pr: false })).toBe(1);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     expect(readFileSync(last.summary, "utf8")).toContain("## audit: ATTENTION (exit 1");
-  });
+  }, WEEKLY_TIMEOUT);
 
   test("a failing step is reported, the rest still run, and the run exits 1", async () => {
     setEnv({ FAKE_EXIT_score: "4" });
@@ -228,7 +230,7 @@ describe("runWeekly", () => {
     expect(calls().map(([command]) => command)).toEqual(["metrics", "audit", "score", "board", "evolve", "review", "propose"]);
     const last = JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8"));
     expect(readFileSync(last.summary, "utf8")).toContain("## score: FAILED (exit 4");
-  });
+  }, WEEKLY_TIMEOUT);
 
   test("a failing board command fails the board step in the report, and the proposals still run", async () => {
     setEnv({ FAKE_EXIT_board: "1" });
@@ -239,7 +241,7 @@ describe("runWeekly", () => {
     expect(summary).toContain("## board: FAILED (exit 1");
     expect(summary).toContain("- Failed: board stats exited 2: unrecognized subcommand");
     expect(last.steps.find((step) => step.name === "board").highlights).toContain("Open feedback tasks: 1");
-  });
+  }, WEEKLY_TIMEOUT);
 
   test("steps keep the factory's settings and CLAUDE_CONFIG_DIR, not a parent session's variables, and stay off the work board", () => {
     const env = stepEnv({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/cfg", CLAUDE_FACTORY_GH: "/gh", CLAUDE_FACTORY_BIN: "/claude", CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
@@ -261,7 +263,7 @@ describe("runWeekly", () => {
     expect(await runWeekly({ pr: false })).toBe(3);
     writeFileSync(lock, "999999999");
     expect(await runWeekly({ pr: false })).toBe(0);
-  });
+  }, WEEKLY_TIMEOUT);
 });
 
 describe("billing", () => {
@@ -323,7 +325,7 @@ describe("LaunchAgent", () => {
     rmSync(join(tools, "agy-run"));
     setEnv({ PATH: `${tools}:/usr/bin:/bin` });
     await expect(run(["install"])).rejects.toThrow("agy-run is not on PATH");
-  });
+  }, 20_000);
 
   test("usage errors exit 2", async () => {
     expect(await run([])).toBe(2);

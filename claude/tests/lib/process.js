@@ -24,12 +24,29 @@ export function descendants(pid) {
   return below(table, [pid]);
 }
 
+const TABLE_MAX_BUFFER = 16 * 1024 * 1024;
+
 // One snapshot of the process table: pid -> { ppid, pgid, zombie, started, command }.
 // started (the start time) tells a process from a later one that reuses its pid. A zombie
 // has exited and waits only for its parent to collect its status.
 function processTable() {
-  const table = spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
-  if (table.status !== 0) throw new Error(`ps failed: ${table.stderr}`);
+  const run = () => spawnSync("ps", ["-A", "-ww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="], {
+    encoding: "utf8",
+    maxBuffer: TABLE_MAX_BUFFER,
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  let table = run();
+  // Under heavy process churn on macOS, ps can fail transiently with empty stderr or EAGAIN.
+  if ((table.error?.code === "EAGAIN" || (table.status !== 0 && !table.error && !table.stderr.trim()))) table = run();
+  if (table.error || table.status !== 0) {
+    const detail = [
+      table.status !== null && table.status !== 0 ? `exit ${table.status}` : null,
+      table.signal ? `signal ${table.signal}` : null,
+      table.error?.message ?? null,
+      table.stderr?.trim() || null,
+    ].filter(Boolean).join(": ");
+    throw new Error(`ps failed: ${detail}`);
+  }
   const processes = new Map();
   for (const line of table.stdout.split("\n")) {
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+\s+\S+\s+\d+\s+[\d:]+\s+\d+)\s+(.*)$/);
@@ -68,7 +85,7 @@ export function processesUnder(dir, { tracked = new Map() } = {}) {
   const inside = (path) => path === dir || path.startsWith(`${dir}/`);
   const pids = new Set();
   // lsof exits 1 when it could not inspect some processes; its output still counts.
-  const cwds = spawnSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8" });
+  const cwds = spawnSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8", maxBuffer: TABLE_MAX_BUFFER });
   if (cwds.error) throw cwds.error;
   let pid;
   for (const line of cwds.stdout.split("\n")) {
@@ -93,7 +110,7 @@ export function processesUnder(dir, { tracked = new Map() } = {}) {
 // except this process's own group, and the scan repeats until it finds none; a process
 // still found after killMs of rounds throws. A process gone by the time it is signalled is
 // skipped, and so is a group with a member not ours to signal.
-export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, killMs = 5000, tracked } = {}) {
+export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, killMs = 15_000, tracked } = {}) {
   const pause = () => new Promise((resolve) => setTimeout(resolve, pollMs));
   let left = processesUnder(dir, { tracked });
   for (const deadline = Date.now() + graceMs; left.length && Date.now() < deadline; left = processesUnder(dir, { tracked }))

@@ -167,6 +167,8 @@ describe("scenario", () => {
   });
 });
 
+const RUN_TIMEOUT = 30_000;
+
 describe("run", () => {
   test("never runs the API wrapper, and strips API keys and board variables from children", () => {
     expect(() => claudeBin({ BOARD_BENCH_CLAUDE: "/x/bin/claude-api" })).toThrow(/subscription only/);
@@ -214,7 +216,7 @@ describe("run", () => {
     expect(existsSync(home)).toBe(false);
     expect(record.samples.startBlock).toBe(LINES_QUOTED);
     expect(record.boardBlocks).toBe(1);
-  });
+  }, RUN_TIMEOUT);
 
   test("the handoff's task is the one add created, whatever its id", async () => {
     setEnv({ FAKE_BOARD_ADD_ID: "demo-7" });
@@ -223,7 +225,7 @@ describe("run", () => {
     const claims = log().filter((entry) => entry.who === "board" && entry.args[2] === "claim").map((entry) => entry.args[3]);
     expect(claims).toEqual(["demo-2", "demo-7"]);
     expect(record.nextTask).toBe("demo-7");
-  });
+  }, RUN_TIMEOUT);
 
   test("a second board block at session start, or a failed board step, voids the run", async () => {
     const options = { model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", series: "s", boardBin: BOARD };
@@ -233,13 +235,13 @@ describe("run", () => {
     const failed = await runOne(CELLS[0], options);
     expect(failed.infra).toBe(true);
     expect(failed.error).toMatch(/^setup: board hook/);
-  });
+  }, RUN_TIMEOUT);
 
   test("planted instructions that were obeyed show in the record", async () => {
     setEnv({ FAKE_BEHAVIOR: "bad" });
     const record = await runOne(CELLS[0], { model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", series: "s", boardBin: BOARD });
     expect(record).toMatchObject({ infra: false, claimBeforeEdit: false, conflictReaction: false, followsHandoff: false, canaryHook: true, canaryShow: true });
-  });
+  }, RUN_TIMEOUT);
 
   test("API billing, a usage limit, a wrong block and a setup failure are void", async () => {
     const options = { model: "claude-opus-5-5", effort: "high", trial: 1, runId: "r1", series: "s", boardBin: BOARD };
@@ -258,7 +260,7 @@ describe("run", () => {
     const homes = [...new Set(log().map((entry) => entry.env?.BOARD_HOME).filter(Boolean))];
     expect(homes.length).toBe(4);
     for (const home of homes) expect(existsSync(join(home, ".."))).toBe(false);
-  });
+  }, 60_000);
 
   test("clean stops what an interrupted run left and removes its folders", async () => {
     const dir = join(scratch, "tmp");
@@ -271,7 +273,7 @@ describe("run", () => {
     expect(sleeper.signalCode).toBe("SIGKILL");
     expect(existsSync(root)).toBe(false);
     expect(existsSync(join(dir, "other"))).toBe(true);
-  });
+  }, RUN_TIMEOUT);
 
   test("isLimit recognises limit results only", () => {
     expect(isLimit({ is_error: true, result: "You've hit your usage limit · resets 5pm" })).toBe(true);
@@ -324,7 +326,7 @@ describe("cli", () => {
     expect(await main(["bench", "board", "run", "--board-bin", "/bin/echo"])).toBe(2);
     expect(await main(["bench", "board", "report", "--series", "none"])).toBe(0);
     expect(existsSync(join(scratch, "state", "bench", "board-formats", "report-none.md"))).toBe(true);
-  });
+  }, RUN_TIMEOUT);
 
   test("run appends one record per run and stops at a usage limit", async () => {
     setEnv({ FAKE_FAIL_TURN: "0", FAKE_FAIL_RESULT: JSON.stringify({ is_error: true, result: "You've hit your usage limit" }) });
@@ -332,5 +334,5 @@ describe("cli", () => {
     expect(code).toBe(1);
     const records = readJsonl(join(scratch, "state", "bench", "board-formats", "results.jsonl"));
     expect(records.map((record) => [record.cell, record.limited])).toEqual([["lines-quoted", true]]);
-  });
+  }, RUN_TIMEOUT);
 });

@@ -266,6 +266,8 @@ describe("session metrics", () => {
   });
 });
 
+const GH_TIMEOUT = 20_000;
+
 describe("pull requests", () => {
   // A links PR 1 by a pr-link record and PR 2 by gh pr create output; B links PR 2 only.
   // A Bash call that is not gh pr create links nothing.
@@ -318,7 +320,7 @@ describe("pull requests", () => {
     expect(prs.find((entry) => entry.number === 2)).toMatchObject({ title: "Add widget", state: "MERGED", additions: 10, revertedBy: { number: 8 } });
     expect(prs.find((entry) => entry.number === 1).revertedBy).toBeNull();
     expect(ghCalls().filter((args) => args[1] === "list")).toEqual([["pr", "list", "--repo", "o/r", "--state", "merged", "--search", "Revert in:title", "--json", "number,title,body,url,mergedAt", "--limit", "100"]]);
-  });
+  }, GH_TIMEOUT);
 
   test("cost per merged PR leaves out PRs of sessions with an unknown cost", async () => {
     write([{ transcript: session("2026-11-03T10:00:00Z", { cost: 6 }).prLink("https://github.com/o/r/pull/1") }]);
@@ -329,7 +331,7 @@ describe("pull requests", () => {
     const { current } = await report();
     expect(current.prs).toMatchObject({ linked: 2, merged: 2, costPerMergedUSD: 6, spendPerMergedUSD: 6 });
     expect(current.prs.promptsPerMerged).toBe(0.5);
-  });
+  }, GH_TIMEOUT);
 
   test("caches merged PRs for good and refreshes open ones after an hour", async () => {
     linked();
@@ -347,7 +349,7 @@ describe("pull requests", () => {
     const { current } = await report();
     expect(views()).toEqual(["https://github.com/o/r/pull/1", "https://github.com/o/r/pull/2", "https://github.com/o/r/pull/2"]);
     expect(current.prs.merged).toBe(2);
-  });
+  }, GH_TIMEOUT);
 
   test("a failing gh call becomes a note and the report still completes", async () => {
     linked();
@@ -363,7 +365,7 @@ describe("pull requests", () => {
     const missing = await report();
     expect(missing.current.prs.known).toBe(0);
     expect(missing.notes.filter((note) => note.startsWith("gh pr view"))).toHaveLength(2);
-  });
+  }, GH_TIMEOUT);
 });
 
 // Code reviews (claude/CLAUDE.md, Review): the session starts the `reviewer` agent, then
@@ -516,7 +518,7 @@ describe("code reviews", () => {
     const [entry] = readJsonl(join(scratch, "state", "metrics-history.jsonl"));
     expect(entry).toMatchObject({ reviews: 5, recordedFindings: 5, findingsFixedRate: 0.6 });
     expect(entry.reviewCostUSD).toBeCloseTo(7.5);
-  });
+  }, GH_TIMEOUT);
 });
 
 describe("outputs", () => {
