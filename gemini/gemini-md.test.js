@@ -84,6 +84,8 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("do not duplicate the diff or skill text into the parent prompt");
     expect(geminiMd).toContain("Keep subagent prompts lean");
     expect(geminiMd).toContain("restricted sessions without skip-permissions");
+    expect(geminiMd).toContain("inline the `diff-review` instructions");
+    expect(geminiMd).toContain("temporary file inside the active workspace");
     expect(geminiMd).toContain("`read_file`-only `research` subagent");
     expect(geminiMd).toContain("`delegate_task` / `~/.local/bin/agy-run`");
     expect(geminiMd).not.toContain(
