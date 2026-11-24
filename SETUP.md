@@ -481,18 +481,38 @@ speaks when a subagent starts, and at session start or after compaction, when th
 folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
 the guard. Re-measure the forms when a Claude Code update changes the
 guard's messages.
-`claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
-compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
-window, and long threads re-read most of that context on every call. The value applies to
-every session, subagents included, on the Air. It was 300000, which compacts near 267K,
-from 2026-11-06. From 2026-11-08 it is 200000, which compacts near 167K, as a trial. At
-300000, on the Air from 2026-11-06 to part of 2026-11-08, a main-thread call read 150K
-cached tokens on average, 26% of calls carried more than 200K of context, and all calls
-read 1.85B, 4.03B and 4.69B cached tokens a day. Compare at least three full days at
-200000 with that baseline. A lower window lowers reads per call by construction, so judge
-it by total cache-read tokens per day and per board task done, and watch compactions per
-session. Then set the chosen value, update this paragraph and the test and its comment in
-`claude/tests/config.test.js`.
+
+`claude/settings.json` sets `autoCompactWindow` to `200000`, the context window that Claude
+Code compacts against. It compacts about 33K below the window, so near 167K instead of near
+967K for Opus 5.5's 1M window, preventing long threads from re-reading hundreds of thousands
+of tokens on every call. The value applies to every Claude Code session, subagents included,
+on the Air. It was `300000` (compacting near 267K) from 2026-11-06 until 2026-11-08 14:47Z
+(PR #148), then trialed and kept at `200000` after measuring 15 full UTC days (2026-11-09 to
+2026-11-23, archived at `cloud:archive/air-2026-11-24/air-claude-projects-2026-11-24.tar.zst`)
+against the 300K baseline (`2026-11-06` to `2026-11-08 14:47Z`, 2.62 days):
+
+- Cache-read tokens per main-thread call fell 40% (`150K` -> `90K`; `102K` on `11-09`..`10`
+  before the `11-11` instruction trim), and calls above 200K context fell from `26.0%` to `0.0%`.
+- Total cache-read tokens per day fell from `3.55B` main / `4.22B` all per 24h (`1.85B / 2.28B`,
+  `3.31B / 4.03B`, `4.14B / 4.75B`) to `0.47B` main / `0.59B` all (`0.79B / 1.03B` in
+  `11-09`..`13`). Because daily volume also varied, normalized by paginated board tasks done
+  across all 13 boards (`1,040` in the baseline vs `1,654` over `11-09`..`23`), total cache
+  reads per done task fell 50% (`10.6M` -> `5.3M`; `5.7M` over `11-09`..`22` before Antigravity
+  tasks, `6.7M` in `11-09`..`13`, and `19.2M` -> `9.6M` excluding `board-feedback`).
+- Compactions rose from `4.9` to `7.7` per 1K main calls (`0.55` -> `0.17` per session overall,
+  `0.55` -> `0.29` excluding temp folders, `2.35` -> `3.12` per 100+-call session), with median
+  auto trigger `268K` -> `168K` and median compaction duration `69s` -> `60s`. Across 600
+  auto-compactions there were `0` `"Autocompact is thrashing"` system notices, `100%` resumed
+  with follow-up calls (`99.8%` with tool calls), and `0` back-to-back compactions within 5 calls.
+- Holding pricing fixed at Opus 5.5 rates, net main-thread cost per 1K calls fell 14.4%
+  (`$61.42` -> `$52.55`): cache-read savings (`-$11.96`) clearly outweighed higher 1h cache
+  writes (`+$4.41`, including ~37K median first-request write after each compaction).
+
+`200000` stays the floor because values below `200000` turn off background compaction summaries
+and increase compaction cache-write and file re-read overhead for smaller read savings. To
+reverse, change `autoCompactWindow` in `claude/settings.json` (for example `300000`, or
+`233000` to target a ~200K trigger) and update this section and `claude/tests/config.test.js`.
+
 Do not replace an existing tool home without backing up its local data.
 
 Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
