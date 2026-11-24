@@ -779,7 +779,14 @@ describe("storage rule", () => {
     expect(rule).toMatch(/never run workloads as root on sai or svps; svps runs no jobs/i);
     expect(rule).not.toContain("`vps-46`");
     expect(rule).not.toContain("`vps-45`");
-    expect(rule).toMatch(/read the Pro's threads or files from the Air also goes as a note on `vps-247` while it is open/);
+    expect(rule).not.toContain("`vps-247`");
+    expect(rule).toContain("`t3_environment_links`");
+    expect(rule).toContain("`delegate_task`");
+    expect(rule).toContain("`t3_thread_read`");
+    expect(rule).toContain("`git -C ~/.config log -1`");
+    expect(rule).toContain("~/.ssh/config.d/");
+    expect(rule).not.toMatch(/`ssh [\w.-]+`/);
+    expect(rule).not.toMatch(/\.ts\.net\b/);
   });
 
   test("keeps every Claude model off the Pro, in an always-loaded rule", () => {
