@@ -303,8 +303,12 @@ guards treat as filled in by the shell, and a command whose name or script holds
 opaque. guard-git-push and guard-pr-merge refuse an opaque command; guard-main-checkout
 refuses one in a main checkout, unless it runs inside a remote script. Forms such as
 `git ls-files | xargs grep foo` and `ls | xargs -n1 basename` are not opaque.
-guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'s Autonomy
-section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
+guard-pr-merge (Claude Code and Antigravity) enforces the merge rule in `claude/CLAUDE.md`'s
+and `gemini/GEMINI.md`'s Autonomy section on both `gh pr merge` shell calls and T3 Code's
+`pull_request_merge` MCP tool (`mcp__t3-code__pull_request_merge` / `mcp_t3-code_pull_request_merge`,
+refusing `stack=true`, invalid arguments, drafts, behind/dirty branches, failing/pending/missing
+checks, stale/missing `expectedHeadSha`, and remote `environmentId` calls without explicit
+`repository` and `number`). Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
 head commit. A merge that it checks like a direct merge must also pin that head with
 `--match-head-commit <SHA>`, the `headRefOid` read in the same query as the checks, so
@@ -366,8 +370,10 @@ GraphQL call, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot
 see gh aliases, scripts, an endpoint held wholly in a variable, a query read from a file,
 or curl.
-`claude/hooks/auto-merge.js` (Claude Code only, a PostToolUse hook on Bash) turns on
-auto-merge after a Bash call that ran `gh pr create` succeeds. For each pull request URL
+`claude/hooks/auto-merge.js` (Claude Code and Antigravity, a PostToolUse hook on Bash/`run_command`
+and T3 Code's `pull_request_create` MCP tool) turns on
+auto-merge after a Bash call that ran `gh pr create` or a non-draft, non-private
+`pull_request_create` MCP call succeeds (resolving the PR URL from tool output or `gh pr view --json url -q .url` in `cwd`). For each pull request URL
 the call printed on a line of its own, it turns on auto-merge when the
 repository's owner is in its `OWNERS` list (`syz51`), the repository allows auto-merge,
 the pull request is open, not a draft and has no auto-merge request, and the base branch

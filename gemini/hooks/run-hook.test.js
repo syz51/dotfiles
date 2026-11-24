@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractAskUserInput,
   extractLastAssistantMessage,
+  extractMcpPrCreateInput,
+  extractMcpPrMergeInput,
   runAdaptedHook,
   translateInput,
   translateOutput,
@@ -545,5 +548,319 @@ describe("Antigravity hook adapter", () => {
     });
     expect(out.stop_hook_active).toBe(true);
     expect(out.transcript_path).toBe("/tmp/nonexistent.jsonl");
+  });
+
+  test("PreToolUse guard-pr-merge validates mcp_t3-code_pull_request_merge allow/deny, CircleCI fallback, draft, auto, and fail-closed", () => {
+    const HEAD = "abc123";
+    const ok = (value) => ({ code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "" });
+    const run = (name, status, conclusion, extra = {}) => ({
+      __typename: "CheckRun",
+      workflowName: "Checks",
+      name,
+      status,
+      conclusion,
+      ...extra,
+    });
+    const ctx = (name, state) => ({ __typename: "StatusContext", context: name, state });
+    const BILLING_TEXT =
+      "The job was not started because recent account payments have failed or your spending limit needs to be increased.";
+    const PROTECTED = {
+      protection: {
+        enabled: true,
+        required_status_checks: { enforcement_level: "everyone", contexts: ["Portable tests"], checks: [] },
+      },
+    };
+    const VIEW = {
+      number: 12,
+      url: "https://github.com/syz51/dotfiles/pull/12",
+      state: "OPEN",
+      isDraft: false,
+      mergeStateStatus: "CLEAN",
+      baseRefName: "main",
+      headRefOid: HEAD,
+      statusCheckRollup: [run("Portable tests", "COMPLETED", "SUCCESS")],
+    };
+    const makeGh = ({ view = {}, branch, ci = {}, graphql, calls = [] } = {}) => (dir, args) => {
+      calls.push({ dir, args });
+      if (args[0] === "pr" && args[1] === "view") return ok({ ...VIEW, ...view });
+      const path = args[3];
+      if (path === "graphql" && args.some((a) => a.startsWith("query=") && a.includes("workflows: object"))) {
+        return ok({
+          data: {
+            repository: {
+              head: { oid: view.headRefOid ?? HEAD },
+              workflows: ci.files
+                ? { entries: Object.entries(ci.files).map(([name, text]) => ({ name, type: "blob", object: { text, isTruncated: false } })) }
+                : null,
+              baseWorkflows: null,
+              circleci: ci.circleci ? { oid: "c1" } : null,
+            },
+          },
+        });
+      }
+      if (path === "graphql") return ok(graphql);
+      if (path.includes("/rules/branches/")) return ok([]);
+      if (path.includes("/branches/")) return ok(branch ?? { protection: { enabled: false } });
+      if (path.includes("/actions/workflows")) return ok({ total_count: 0, workflows: [] });
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    };
+
+    const callMerge = (args, ghOpts = {}, cwd = "/repo") =>
+      runAdaptedHook(
+        "pre-tool-use",
+        "guard-pr-merge",
+        { cwd, toolCall: { id: "m1", name: "mcp_t3-code_pull_request_merge", args } },
+        { runners: { gh: typeof ghOpts === "function" ? ghOpts : makeGh(ghOpts) } },
+      );
+
+    // Passing direct merge with explicit number/repository and matching expectedHeadSha
+    const calls = [];
+    expect(callMerge({ number: 12, repository: "syz51/dotfiles", expectedHeadSha: HEAD, method: "squash" }, { calls })).toEqual({
+      decision: "allow",
+    });
+    expect(calls[0].args).toContain("12");
+    expect(calls[0].args).toContain("--repo");
+
+    // Passing direct merge defaulting to current branch's PR in cwd
+    const cwdCalls = [];
+    expect(callMerge({ expectedHeadSha: HEAD }, { calls: cwdCalls }, "/wt")).toEqual({ decision: "allow" });
+    expect(cwdCalls[0]).toEqual({ dir: "/wt", args: ["pr", "view", "--json", expect.any(String)] });
+
+    // Failing check -> deny
+    const failed = callMerge(
+      { number: 12, expectedHeadSha: HEAD },
+      { view: { statusCheckRollup: [run("Portable tests", "COMPLETED", "FAILURE")] } },
+    );
+    expect(failed.decision).toBe("deny");
+    expect(failed.reason).toContain("checks failed");
+
+    // Pending check -> deny
+    const pending = callMerge(
+      { number: 12, expectedHeadSha: HEAD },
+      { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } },
+    );
+    expect(pending.decision).toBe("deny");
+    expect(pending.reason).toContain("still running");
+
+    // Missing CircleCI check -> deny
+    const missingCircle = callMerge({ number: 12, expectedHeadSha: HEAD }, { ci: { circleci: true } });
+    expect(missingCircle.decision).toBe("deny");
+    expect(missingCircle.reason).toContain("CircleCI");
+
+    // Billing-skipped Actions job with passing CircleCI fallback -> allow
+    const skippedJob = run("build", "COMPLETED", "FAILURE", {
+      detailsUrl: "https://github.com/syz51/dotfiles/actions/runs/7/job/11",
+    });
+    const billingGraphql = {
+      data: {
+        repository: {
+          object: {
+            checkSuites: {
+              nodes: [
+                {
+                  app: { slug: "github-actions" },
+                  checkRuns: {
+                    nodes: [
+                      {
+                        databaseId: 11,
+                        steps: { totalCount: 0 },
+                        annotations: {
+                          totalCount: 1,
+                          nodes: [{ path: ".github", message: BILLING_TEXT, annotationLevel: "FAILURE" }],
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    expect(
+      callMerge(
+        { number: 12, expectedHeadSha: HEAD },
+        { view: { statusCheckRollup: [skippedJob, ctx("ci/circleci: build", "SUCCESS")] }, graphql: billingGraphql },
+      ),
+    ).toEqual({ decision: "allow" });
+
+    // Draft PR -> deny
+    const draft = callMerge({ number: 12, expectedHeadSha: HEAD }, { view: { isDraft: true } });
+    expect(draft.decision).toBe("deny");
+    expect(draft.reason).toContain("is a draft");
+
+    // auto: true on check-gated base (BLOCKED) -> allow; on ungated base -> deny
+    expect(
+      callMerge(
+        { number: 12, auto: true, expectedHeadSha: HEAD },
+        { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } },
+      ),
+    ).toEqual({ decision: "allow" });
+
+    const autoUngated = callMerge(
+      { number: 12, auto: true, expectedHeadSha: HEAD },
+      { view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } },
+    );
+    expect(autoUngated.decision).toBe("deny");
+    expect(autoUngated.reason).toContain("still running");
+
+    // stack: true -> deny
+    const stacked = callMerge({ number: 12, expectedHeadSha: HEAD, stack: true });
+    expect(stacked.decision).toBe("deny");
+    expect(stacked.reason).toContain("stack=true");
+
+    // Fail closed when gh throws
+    const thrown = callMerge({ number: 12, expectedHeadSha: HEAD }, () => {
+      throw new Error("simulated gh crash");
+    });
+    expect(thrown.decision).toBe("deny");
+    expect(thrown.reason).toContain("simulated gh crash");
+
+    // Malformed call_mcp_tool JSON fails closed
+    const badLazy = runAdaptedHook("pre-tool-use", "guard-pr-merge", {
+      cwd: "/repo",
+      toolCall: {
+        id: "m-lazy",
+        name: "call_mcp_tool",
+        args: { ServerName: "t3-code", ToolName: "pull_request_merge", Arguments: "{bad json" },
+      },
+    });
+    expect(badLazy.decision).toBe("deny");
+    expect(badLazy.reason).toContain("guard-pr-merge");
+  });
+
+  test("PostToolUse auto-merge handles mcp_t3-code_pull_request_create for eligible syz51 PRs vs draft/private/non-syz51", () => {
+    const URL = "https://github.com/syz51/dotfiles/pull/12";
+    const ok = (value) => ({ code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "" });
+    const makeGh = ({ prUrl = URL, view = {}, calls = [] } = {}) => (_dir, args) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "view" && args.includes("-q")) return ok(`${prUrl}\n`);
+      if (args[0] === "pr" && args[1] === "view") {
+        return ok({
+          id: "PR_node12",
+          state: "OPEN",
+          isDraft: false,
+          baseRefName: "main",
+          mergeStateStatus: "BLOCKED",
+          autoMergeRequest: null,
+          ...view,
+        });
+      }
+      const path = args[3];
+      if (path === "graphql") return ok({ data: {} });
+      if (path.endsWith("/protection")) {
+        return ok({
+          required_status_checks: { contexts: ["Portable tests"], checks: [{ context: "Portable tests" }] },
+          required_pull_request_reviews: { required_approving_review_count: 0 },
+        });
+      }
+      if (path.includes("/rules/branches/")) return ok([]);
+      if (/^repos\/[^/]+\/[^/]+$/.test(path)) {
+        return ok({ allow_auto_merge: true, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: true });
+      }
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    };
+
+    // Eligible non-draft syz51 PR resolved via gh pr view fallback enables auto-merge
+    const eligibleCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        { cwd: "/repo", toolCall: { id: "c1", name: "mcp_t3-code_pull_request_create", args: { title: "Fix", body: "b" } } },
+        { runners: { gh: makeGh({ calls: eligibleCalls }) } },
+      ),
+    ).toEqual({});
+    expect(eligibleCalls.some((a) => a[0] === "pr" && a[1] === "view" && a.includes("-q"))).toBe(true);
+    expect(eligibleCalls.some((a) => a[3] === "graphql" && a.some((x) => x.includes("enablePullRequestAutoMerge")))).toBe(true);
+
+    // Draft and private PRs skip without calling gh at all
+    for (const args of [
+      { title: "WIP", body: "b", draft: true },
+      { title: "Priv", body: "b", private: true },
+    ]) {
+      const skipCalls = [];
+      expect(
+        runAdaptedHook(
+          "post-tool-use",
+          "auto-merge",
+          { cwd: "/repo", toolCall: { id: "c2", name: "mcp_t3-code_pull_request_create", args } },
+          { runners: { gh: makeGh({ calls: skipCalls }) } },
+        ),
+      ).toEqual({});
+      expect(skipCalls).toEqual([]);
+    }
+
+    // Non-syz51 PR does not enable auto-merge
+    const foreignCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        { cwd: "/repo", toolCall: { id: "c3", name: "mcp_t3-code_pull_request_create", args: { title: "Upstream", body: "b" } } },
+        { runners: { gh: makeGh({ prUrl: "https://github.com/pingdotgg/t3code/pull/9", calls: foreignCalls }) } },
+      ),
+    ).toEqual({});
+    expect(foreignCalls.some((a) => a[3] === "graphql")).toBe(false);
+  });
+
+  test("translateInput and extractors support mcp_t3-code_pull_request_merge and mcp_t3-code_pull_request_create", () => {
+    expect(
+      extractMcpPrMergeInput({
+        toolCall: { name: "mcp_t3-code_pull_request_merge", args: { number: 12, auto: true } },
+      }),
+    ).toEqual({ number: 12, auto: true });
+    expect(
+      extractMcpPrCreateInput({
+        toolCall: { name: "mcp_t3-code_pull_request_create", args: { title: "T", draft: false } },
+      }),
+    ).toEqual({ title: "T", draft: false });
+
+    expect(
+      translateInput("pre-tool-use", "guard-pr-merge", {
+        cwd: "/repo",
+        toolCall: { name: "mcp_t3-code_pull_request_merge", args: { number: 12 } },
+      }),
+    ).toEqual({
+      cwd: "/repo",
+      tool_name: "mcp__t3-code__pull_request_merge",
+      tool_input: { number: 12 },
+    });
+
+    expect(
+      translateInput("post-tool-use", "auto-merge", {
+        cwd: "/repo",
+        toolCall: { name: "mcp_t3-code_pull_request_create", args: { title: "T" } },
+      }),
+    ).toEqual({
+      cwd: "/repo",
+      tool_name: "mcp__t3-code__pull_request_create",
+      tool_input: { title: "T" },
+      tool_response: {},
+    });
+  });
+
+  test("gemini/hooks.json wires mcp_t3-code_pull_request_merge and mcp_t3-code_pull_request_create", () => {
+    const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
+    const mcpMerge = hooksJson["command-guards"].PreToolUse.find((g) => g.matcher === "mcp_t3-code_pull_request_merge");
+    expect(mcpMerge).toBeDefined();
+    expect(mcpMerge.hooks.some((h) => h.command.includes("guard-pr-merge") && h.timeout >= 45)).toBe(true);
+
+    const mcpCreate = hooksJson["command-guards"].PostToolUse.find((g) => g.matcher === "mcp_t3-code_pull_request_create");
+    expect(mcpCreate).toBeDefined();
+    expect(mcpCreate.hooks.some((h) => h.command.includes("auto-merge") && h.timeout >= 60)).toBe(true);
+  });
+
+  test("run-hook.js CLI fails closed on malformed stdin JSON when guard-pr-merge is active", () => {
+    const script = join(import.meta.dir, "run-hook.js");
+    const res = spawnSync(process.execPath, [script, "pre-tool-use", "guard-pr-merge"], {
+      input: "{ not valid json",
+      encoding: "utf8",
+    });
+    expect(res.status).toBe(0);
+    const parsed = JSON.parse(res.stdout);
+    expect(parsed.decision).toBe("deny");
+    expect(parsed.reason).toContain("Blocked by the guard-pr-merge hook");
   });
 });
