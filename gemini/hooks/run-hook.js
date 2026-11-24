@@ -132,6 +132,24 @@ function unwrapMcpArgs(rawArgs, { failClosed = false } = {}) {
   return failClosed ? false : {};
 }
 
+function extractMcpToolInput(agyInput, server, tool, directTools, { failClosed = false } = {}) {
+  const toolName = agyInput?.toolCall?.name ?? "";
+  const args = agyInput?.toolCall?.args;
+  if (toolName === "call_mcp_tool") {
+    const serverName = args?.ServerName ?? args?.serverName;
+    const mcpToolName = args?.ToolName ?? args?.toolName;
+    if (serverName !== server || mcpToolName !== tool) {
+      return null;
+    }
+    const rawArgs = args?.Arguments !== undefined ? args.Arguments : args?.arguments;
+    return unwrapMcpArgs(rawArgs, { failClosed });
+  }
+  if (directTools.has(toolName)) {
+    return unwrapMcpArgs(args, { failClosed });
+  }
+  return null;
+}
+
 /**
  * Extracts the board `ask_user` argument object from an Antigravity PreToolUse payload.
  * Returns the argument object when the tool call invokes board `ask_user` (either lazily via
@@ -139,21 +157,7 @@ function unwrapMcpArgs(rawArgs, { failClosed = false } = {}) {
  * `mcp_board_ask_user`), or `null` when the tool call is not an MCP `ask_user` call.
  */
 export function extractAskUserInput(agyInput) {
-  const toolName = agyInput?.toolCall?.name ?? "";
-  const args = agyInput?.toolCall?.args ?? {};
-  if (toolName === "call_mcp_tool") {
-    const serverName = args.ServerName ?? args.serverName;
-    const mcpToolName = args.ToolName ?? args.toolName;
-    if (serverName !== "board" || mcpToolName !== "ask_user") {
-      return null;
-    }
-    const rawArgs = args.Arguments !== undefined ? args.Arguments : args.arguments;
-    return unwrapMcpArgs(rawArgs);
-  }
-  if (DIRECT_ASK_TOOLS.has(toolName)) {
-    return unwrapMcpArgs(args);
-  }
-  return null;
+  return extractMcpToolInput(agyInput, "board", "ask_user", DIRECT_ASK_TOOLS);
 }
 
 /**
@@ -162,21 +166,7 @@ export function extractAskUserInput(agyInput) {
  * matching call has malformed non-object arguments so the fail-closed merge guard refuses it.
  */
 export function extractMcpPrMergeInput(agyInput) {
-  const toolName = agyInput?.toolCall?.name ?? "";
-  const args = agyInput?.toolCall?.args;
-  if (toolName === "call_mcp_tool") {
-    const serverName = args?.ServerName ?? args?.serverName;
-    const mcpToolName = args?.ToolName ?? args?.toolName;
-    if (serverName !== "t3-code" || mcpToolName !== "pull_request_merge") {
-      return null;
-    }
-    const rawArgs = args?.Arguments !== undefined ? args.Arguments : args?.arguments;
-    return unwrapMcpArgs(rawArgs, { failClosed: true });
-  }
-  if (DIRECT_PR_MERGE_TOOLS.has(toolName)) {
-    return unwrapMcpArgs(args, { failClosed: true });
-  }
-  return null;
+  return extractMcpToolInput(agyInput, "t3-code", "pull_request_merge", DIRECT_PR_MERGE_TOOLS, { failClosed: true });
 }
 
 /**
@@ -184,21 +174,7 @@ export function extractMcpPrMergeInput(agyInput) {
  * or `null` when the tool call is not an MCP `pull_request_create` call.
  */
 export function extractMcpPrCreateInput(agyInput) {
-  const toolName = agyInput?.toolCall?.name ?? "";
-  const args = agyInput?.toolCall?.args;
-  if (toolName === "call_mcp_tool") {
-    const serverName = args?.ServerName ?? args?.serverName;
-    const mcpToolName = args?.ToolName ?? args?.toolName;
-    if (serverName !== "t3-code" || mcpToolName !== "pull_request_create") {
-      return null;
-    }
-    const rawArgs = args?.Arguments !== undefined ? args.Arguments : args?.arguments;
-    return unwrapMcpArgs(rawArgs);
-  }
-  if (DIRECT_PR_CREATE_TOOLS.has(toolName)) {
-    return unwrapMcpArgs(args);
-  }
-  return null;
+  return extractMcpToolInput(agyInput, "t3-code", "pull_request_create", DIRECT_PR_CREATE_TOOLS);
 }
 
 function extractToolResponse(agyInput) {
@@ -527,7 +503,15 @@ if (import.meta.main) {
   let agyInput = {};
   try {
     const raw = readFileSync(0, "utf8").trim();
-    if (raw) agyInput = JSON.parse(raw);
+    if (!raw) {
+      if (failClosed) throw new Error("stdin hook payload is empty");
+    } else {
+      const parsed = JSON.parse(raw);
+      if (failClosed && (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        throw new Error("stdin hook payload is not a JSON object");
+      }
+      agyInput = parsed;
+    }
     const out = runAdaptedHook(event, hookSpec, agyInput);
     process.stdout.write(`${JSON.stringify(out)}\n`);
   } catch (err) {

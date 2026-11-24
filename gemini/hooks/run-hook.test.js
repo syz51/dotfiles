@@ -728,6 +728,50 @@ describe("Antigravity hook adapter", () => {
     });
     expect(badLazy.decision).toBe("deny");
     expect(badLazy.reason).toContain("guard-pr-merge");
+
+    // Valid call_mcp_tool for pull_request_merge enforces allow/deny, and unrelated tools pass through
+    expect(
+      runAdaptedHook(
+        "pre-tool-use",
+        "guard-pr-merge",
+        {
+          cwd: "/repo",
+          toolCall: {
+            id: "m-lazy-ok",
+            name: "call_mcp_tool",
+            args: { ServerName: "t3-code", ToolName: "pull_request_merge", Arguments: { number: 12, expectedHeadSha: HEAD } },
+          },
+        },
+        { runners: { gh: makeGh() } },
+      ),
+    ).toEqual({ decision: "allow" });
+
+    const lazyDraft = runAdaptedHook(
+      "pre-tool-use",
+      "guard-pr-merge",
+      {
+        cwd: "/repo",
+        toolCall: {
+          id: "m-lazy-draft",
+          name: "call_mcp_tool",
+          args: { ServerName: "t3-code", ToolName: "pull_request_merge", Arguments: JSON.stringify({ number: 12, expectedHeadSha: HEAD }) },
+        },
+      },
+      { runners: { gh: makeGh({ view: { isDraft: true } }) } },
+    );
+    expect(lazyDraft.decision).toBe("deny");
+    expect(lazyDraft.reason).toContain("is a draft");
+
+    expect(
+      runAdaptedHook("pre-tool-use", "guard-pr-merge", {
+        cwd: "/repo",
+        toolCall: {
+          id: "m-lazy-other",
+          name: "call_mcp_tool",
+          args: { ServerName: "board", ToolName: "task_list", Arguments: {} },
+        },
+      }),
+    ).toEqual({ decision: "allow" });
   });
 
   test("PostToolUse auto-merge handles mcp_t3-code_pull_request_create for eligible syz51 PRs vs draft/private/non-syz51", () => {
@@ -774,6 +818,42 @@ describe("Antigravity hook adapter", () => {
     ).toEqual({});
     expect(eligibleCalls.some((a) => a[0] === "pr" && a[1] === "view" && a.includes("-q"))).toBe(true);
     expect(eligibleCalls.some((a) => a[3] === "graphql" && a.some((x) => x.includes("enablePullRequestAutoMerge")))).toBe(true);
+
+    // Populated toolResponse uses returned URL directly without gh pr view -q .url fallback
+    const directRespCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        {
+          cwd: "/repo",
+          toolCall: { id: "c1-resp", name: "mcp_t3-code_pull_request_create", args: { title: "Fix", body: "b" } },
+          toolResponse: { structuredContent: { url: URL } },
+        },
+        { runners: { gh: makeGh({ calls: directRespCalls }) } },
+      ),
+    ).toEqual({});
+    expect(directRespCalls.some((a) => a[0] === "pr" && a[1] === "view" && a.includes("-q"))).toBe(false);
+    expect(directRespCalls.some((a) => a[3] === "graphql" && a.some((x) => x.includes("enablePullRequestAutoMerge")))).toBe(true);
+
+    // Lazy call_mcp_tool(t3-code, pull_request_create) enables auto-merge too
+    const lazyCreateCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        {
+          cwd: "/repo",
+          toolCall: {
+            id: "c1-lazy",
+            name: "call_mcp_tool",
+            args: { ServerName: "t3-code", ToolName: "pull_request_create", Arguments: JSON.stringify({ title: "Fix", body: "b" }) },
+          },
+        },
+        { runners: { gh: makeGh({ calls: lazyCreateCalls }) } },
+      ),
+    ).toEqual({});
+    expect(lazyCreateCalls.some((a) => a[3] === "graphql" && a.some((x) => x.includes("enablePullRequestAutoMerge")))).toBe(true);
 
     // Draft and private PRs skip without calling gh at all
     for (const args of [
@@ -841,26 +921,36 @@ describe("Antigravity hook adapter", () => {
     });
   });
 
-  test("gemini/hooks.json wires mcp_t3-code_pull_request_merge and mcp_t3-code_pull_request_create", () => {
+  test("gemini/hooks.json wires mcp_t3-code_pull_request_merge and mcp_t3-code_pull_request_create (including call_mcp_tool)", () => {
     const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
-    const mcpMerge = hooksJson["command-guards"].PreToolUse.find((g) => g.matcher === "mcp_t3-code_pull_request_merge");
+    const mcpMerge = hooksJson["command-guards"].PreToolUse.find((g) => g.matcher.includes("mcp_t3-code_pull_request_merge"));
     expect(mcpMerge).toBeDefined();
+    const mergeRe = new RegExp(`^(?:${mcpMerge.matcher})$`);
+    expect(mergeRe.test("mcp_t3-code_pull_request_merge")).toBe(true);
+    expect(mergeRe.test("call_mcp_tool")).toBe(true);
+    expect(mergeRe.test("read_file")).toBe(false);
     expect(mcpMerge.hooks.some((h) => h.command.includes("guard-pr-merge") && h.timeout >= 45)).toBe(true);
 
-    const mcpCreate = hooksJson["command-guards"].PostToolUse.find((g) => g.matcher === "mcp_t3-code_pull_request_create");
+    const mcpCreate = hooksJson["command-guards"].PostToolUse.find((g) => g.matcher.includes("mcp_t3-code_pull_request_create"));
     expect(mcpCreate).toBeDefined();
+    const createRe = new RegExp(`^(?:${mcpCreate.matcher})$`);
+    expect(createRe.test("mcp_t3-code_pull_request_create")).toBe(true);
+    expect(createRe.test("call_mcp_tool")).toBe(true);
+    expect(createRe.test("read_file")).toBe(false);
     expect(mcpCreate.hooks.some((h) => h.command.includes("auto-merge") && h.timeout >= 60)).toBe(true);
   });
 
-  test("run-hook.js CLI fails closed on malformed stdin JSON when guard-pr-merge is active", () => {
+  test("run-hook.js CLI fails closed on malformed, empty, or non-object stdin JSON when guard-pr-merge is active", () => {
     const script = join(import.meta.dir, "run-hook.js");
-    const res = spawnSync(process.execPath, [script, "pre-tool-use", "guard-pr-merge"], {
-      input: "{ not valid json",
-      encoding: "utf8",
-    });
-    expect(res.status).toBe(0);
-    const parsed = JSON.parse(res.stdout);
-    expect(parsed.decision).toBe("deny");
-    expect(parsed.reason).toContain("Blocked by the guard-pr-merge hook");
+    for (const badInput of ["{ not valid json", "", "null", "[]"]) {
+      const res = spawnSync(process.execPath, [script, "pre-tool-use", "guard-pr-merge"], {
+        input: badInput,
+        encoding: "utf8",
+      });
+      expect(res.status).toBe(0);
+      const parsed = JSON.parse(res.stdout);
+      expect(parsed.decision).toBe("deny");
+      expect(parsed.reason).toContain("Blocked by the guard-pr-merge hook");
+    }
   });
 });

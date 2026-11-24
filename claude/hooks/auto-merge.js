@@ -41,7 +41,7 @@ const PR_URL = /^https:\/\/([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/;
 const INLINE_PR_URL = /https:\/\/[^/\s"'<>]+\/[^/\s"'<>]+\/[^/\s"'<>]+\/pull\/\d+(?![/\w-])/g;
 const MCP_CREATE_TOOLS = new Set(["mcp__t3-code__pull_request_create", "mcp_t3-code_pull_request_create"]);
 const STRUCTURED_URL_KEYS = ["url", "html_url", "prUrl", "pullRequestUrl", "pull_request_url"];
-const STRUCTURED_CONTAINER_KEYS = ["pullRequest", "pull_request", "pr", "data", "result"];
+const STRUCTURED_CONTAINER_KEYS = ["structuredContent", "pullRequest", "pull_request", "pr", "data", "result"];
 
 /** Whether `command` runs `gh pr create` (or its alias `gh pr new`) anywhere shell.js can see. */
 export function createsPullRequest(command, cwd) {

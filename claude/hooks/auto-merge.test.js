@@ -207,6 +207,7 @@ describe("T3 MCP pull_request_create (dotfiles-824)", () => {
     expect(
       extractMcpPullRequestUrls({ content: [{ type: "text", text: JSON.stringify({ pullRequest: { url: URL } }) }] }),
     ).toEqual([URL]);
+    expect(extractMcpPullRequestUrls({ structuredContent: { url: URL } })).toEqual([URL]);
     expect(extractMcpPullRequestUrls(`Opened ${URL} (diff: ${URL}/files)`)).toEqual([URL]);
     expect(extractMcpPullRequestUrls({ isError: true, content: [{ type: "text", text: URL }] })).toEqual([]);
     expect(extractMcpPullRequestUrls(undefined)).toEqual([]);

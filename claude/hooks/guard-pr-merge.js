@@ -658,8 +658,13 @@ export function findMcpMergeViolation(toolInput, cwd, run, { budgetMs = BUDGET_M
     }
     matchHead = toolInput.expectedHeadSha;
   }
-  if (typeof toolInput.environmentId === "string" && toolInput.environmentId.trim() !== "" && (repo === undefined || selector === undefined)) {
-    return fail("environmentId targets another environment whose repository and branch the guard cannot read locally. Pass both repository and number explicitly.");
+  if (toolInput.environmentId !== undefined && toolInput.environmentId !== null && toolInput.environmentId !== "") {
+    if (typeof toolInput.environmentId !== "string") {
+      return fail("invalid environmentId, so the guard cannot check this merge.");
+    }
+    if (toolInput.environmentId.trim() !== "" && (repo === undefined || selector === undefined)) {
+      return fail("environmentId targets another environment whose repository and branch the guard cannot read locally. Pass both repository and number explicitly.");
+    }
   }
   const where = typeof cwd === "string" && cwd ? cwd : process.cwd();
   const query = makeQuery(run, Date.now() + budgetMs);

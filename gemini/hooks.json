@@ -12,7 +12,7 @@
         ]
       },
       {
-        "matcher": "mcp_t3-code_pull_request_merge",
+        "matcher": "call_mcp_tool|mcp_t3-code_pull_request_merge",
         "hooks": [
           {
             "type": "command",
@@ -34,7 +34,7 @@
         ]
       },
       {
-        "matcher": "mcp_t3-code_pull_request_create",
+        "matcher": "call_mcp_tool|mcp_t3-code_pull_request_create",
         "hooks": [
           {
             "type": "command",

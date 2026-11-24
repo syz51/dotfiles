@@ -929,6 +929,7 @@ describe("T3 MCP pull_request_merge (dotfiles-824)", () => {
     ["invalid auto type", { number: 12, auto: "yes", expectedHeadSha: HEAD }, {}, "invalid auto value"],
     ["invalid expectedHeadSha type", { number: 12, expectedHeadSha: 123 }, {}, "invalid expectedHeadSha"],
     ["non-object input", null, {}, "arguments are not an object"],
+    ["invalid environmentId type", { environmentId: { id: "env-remote" }, expectedHeadSha: HEAD }, {}, "invalid environmentId"],
     ["environmentId without repository and number", { environmentId: "env-remote", expectedHeadSha: HEAD }, {}, "environmentId targets another environment"],
   ])("refuses %s", (_, toolInput, options, reason) => {
     const violation = mcpVerdict(toolInput, options);
