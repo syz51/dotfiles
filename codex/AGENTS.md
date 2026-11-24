@@ -14,7 +14,7 @@
 
 ## Autonomy
 
-- When a hook, guard or instruction blocks a safe step, find the allowed route, or change the guard or instruction in a worktree so it allows that step while keeping its protection, under the Review rules, and report it as Feedback. Put any change that loosens a guard, cap, budget, threshold or allowlist in the PR body under `Loosens:` and in your report to me. Never pass a guard through an opaque script, and never weaken the ask gate.
+- When a hook, guard or instruction blocks a safe step, find the allowed route, or change the guard or instruction in a worktree so it allows that step while keeping its protection, under the Review rules, and report it as Feedback. Put any change that loosens a guard, cap, budget, threshold or allowlist in the commit message and PR body under `Loosens:` and in your report to me. Never pass a guard through an opaque script, and never weaken the ask gate.
 
 ## Work board
 

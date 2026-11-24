@@ -5,12 +5,15 @@
 // flags the unlabeled cap raise as a finding.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { agyBin } from "../factory/lib/claude.js";
 import { reviewPrompt } from "../factory/review/cli.js";
+import { partialEvents, resultEvent } from "./lib/stream.js";
 
-const AGY_RUN = process.env.CLAUDE_FACTORY_AGY_BIN || join(homedir(), ".local", "bin", "agy-run");
 const LIVE_AGY = process.env.RUN_AGY_LIVE === "1";
+const AGY_TIMEOUT_MS = 150_000;
+const SPAWN_TIMEOUT_MS = AGY_TIMEOUT_MS + 30_000;
 
 let scratch;
 
@@ -165,29 +168,43 @@ describe("diff-review weakened-guarantee fixture", () => {
   });
 
   test.skipIf(!LIVE_AGY)(
-    "live reviewer flags the unlabeled cap raise through diff-review (RUN_AGY_LIVE=1)",
+    "live reviewer flags the unlabeled cap raise and passes the labeled control (RUN_AGY_LIVE=1)",
     () => {
-      expect(existsSync(AGY_RUN), `agy-run not found at ${AGY_RUN}`).toBe(true);
-      const { repo, base, unlabeled } = createCapRaiseFixture(scratch);
-      const prompt = reviewPrompt({ base, head: unlabeled });
-      const run = Bun.spawnSync(
-        [AGY_RUN, "--cwd", repo, "--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json"],
-        { cwd: repo, stdin: Buffer.from(prompt), env: { ...process.env, AGENT_BOARD_HOOKS: "off" }, timeout: 180_000 },
-      );
-      expect(run.exitCode, run.stderr.toString()).toBe(0);
-      const events = run.stdout
-        .toString()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          try { return JSON.parse(line); } catch { return null; }
-        })
-        .filter(Boolean);
-      const result = events.findLast((event) => event.type === "result");
-      expect(result?.is_error).toBe(false);
-      const findings = parseFindingsJson(result?.result ?? "");
-      expect(flagsCapRaise(findings), `Expected cap-raise finding, got: ${JSON.stringify(findings)}`).toBe(true);
+      const bin = agyBin();
+      expect(existsSync(bin), `agy-run not found at ${bin}`).toBe(true);
+      const { repo, base, unlabeled, labeled } = createCapRaiseFixture(scratch);
+      const runReview = (head) => {
+        git(repo, ["checkout", "-q", head]);
+        const prompt = reviewPrompt({ base, head });
+        const run = Bun.spawnSync(
+          [
+            bin,
+            "--cwd",
+            repo,
+            "--full-access",
+            "--model",
+            "gemini-4-neon",
+            "--effort",
+            "high",
+            "--timeout",
+            String(AGY_TIMEOUT_MS),
+            "--output-format",
+            "stream-json",
+          ],
+          { cwd: repo, stdin: Buffer.from(prompt), env: { ...process.env, AGENT_BOARD_HOOKS: "off" }, timeout: SPAWN_TIMEOUT_MS },
+        );
+        expect(run.exitCode, run.stderr.toString()).toBe(0);
+        const result = resultEvent(partialEvents(run.stdout.toString()));
+        expect(result?.is_error).toBe(false);
+        return parseFindingsJson(result?.result ?? "");
+      };
+
+      const unlabeledFindings = runReview(unlabeled);
+      expect(flagsCapRaise(unlabeledFindings), `Expected cap-raise finding, got: ${JSON.stringify(unlabeledFindings)}`).toBe(true);
+
+      const labeledFindings = runReview(labeled);
+      expect(flagsCapRaise(labeledFindings), `Expected labeled cap raise not to be flagged, got: ${JSON.stringify(labeledFindings)}`).toBe(false);
     },
-    180_000,
+    SPAWN_TIMEOUT_MS * 2,
   );
 });

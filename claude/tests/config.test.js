@@ -198,6 +198,42 @@ describe("global instructions", () => {
     expect(comment).not.toMatch(/raise it when/i);
 
     const selfAuth = /\b(?:raise|bump|increase|widen|loosen|relax)\s+(?:it|the\s+(?:cap|limit|budget|threshold|allowlist))\s+when\b|\btune\s+the\s+list\s+here\s+at\s+any\s+time\b/i;
+    const extractComments = (text, hashComments) => {
+      const comments = [];
+      let inBlock = false;
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        let commentText = null;
+        if (inBlock) {
+          const end = trimmed.indexOf("*/");
+          commentText = (end >= 0 ? trimmed.slice(0, end) : trimmed).replace(/^\*\s?/, "");
+          if (end >= 0) inBlock = false;
+        } else if (trimmed.startsWith("/*")) {
+          const end = trimmed.indexOf("*/", 2);
+          commentText = (end >= 0 ? trimmed.slice(2, end) : trimmed.slice(2)).trim();
+          if (end < 0) inBlock = true;
+        } else if (trimmed.startsWith("//")) {
+          commentText = trimmed.slice(2).trim();
+        } else if (hashComments && trimmed.startsWith("#")) {
+          commentText = trimmed.slice(1).trim();
+        }
+        if (commentText !== null) comments.push({ line: i + 1, text: commentText });
+      }
+      return comments;
+    };
+    const scanComments = (text, hashComments = false) => {
+      const comments = extractComments(text, hashComments);
+      const hits = [];
+      for (let i = 0; i < comments.length; i++) {
+        const next = comments[i + 1];
+        const joined = next && next.line === comments[i].line + 1 ? `${comments[i].text} ${next.text}` : comments[i].text;
+        if (selfAuth.test(joined)) hits.push(`line ${comments[i].line}: ${comments[i].text}`);
+      }
+      return hits;
+    };
+    expect(scanComments("/* Raise the cap when a rule is added. */\n")).toHaveLength(1);
+    expect(scanComments("// raise the cap\nwhenReady();\n")).toEqual([]);
     const files = [
       ...[new Bun.Glob("claude/tests/**/*.js"), new Bun.Glob("claude/hooks/**/*.{js,sh}")].flatMap((glob) => [...glob.scanSync({ cwd: REPO })]),
       "claude/factory/scoring/review-scope.toml",
@@ -205,68 +241,72 @@ describe("global instructions", () => {
     const offenders = [];
     for (const file of files) {
       if (file.includes("node_modules/")) continue;
-      const lines = read(file).split("\n");
-      for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trim();
-        if (!trimmed.startsWith("//") && !trimmed.startsWith("#") && !trimmed.startsWith("*")) continue;
-        const pair = `${trimmed} ${(lines[i + 1] ?? "").trim().replace(/^(?:\/\/|#|\*)\s*/, "")}`;
-        if (selfAuth.test(pair)) offenders.push(`${file}:${i + 1}: ${trimmed}`);
-      }
+      const hashComments = file.endsWith(".sh") || file.endsWith(".toml");
+      for (const hit of scanComments(read(file), hashComments)) offenders.push(`${file}:${hit}`);
     }
     expect(offenders).toEqual([]);
   });
 
-  test("Autonomy requires a Loosens: line in the PR body and user report when loosening a guard or limit", () => {
-    const rule = "Put any change that loosens a guard, cap, budget, threshold or allowlist in the PR body under `Loosens:` and in your report to me.";
+  test("Autonomy requires a Loosens: line in the commit message, PR body and user report when loosening a guard or limit", () => {
+    const rule = "Put any change that loosens a guard, cap, budget, threshold or allowlist in the commit message and PR body under `Loosens:` and in your report to me.";
     expect(section("Autonomy")).toContain(rule);
     expect(read("codex/AGENTS.md")).toContain(rule);
   });
 
-  // Raising an upper bound or lowering a lower bound in claude/tests without a `Loosens:`
-  // line in the branch's commit messages fails here (dotfiles-514).
-  test("raising a numeric limit in claude/tests requires a Loosens: line in a commit message", () => {
+  // Raising an upper bound, lowering a lower bound, relaxing `<` to `<=` (`>` to `>=`), or
+  // deleting a numeric bound assertion in claude/tests without a `Loosens:` line in the
+  // branch's commit messages (or PR body in CI) fails here (dotfiles-514).
+  test("raising or deleting a numeric limit in claude/tests requires a Loosens: line", () => {
     const BOUND = /\.(toBeLessThan|toBeLessThanOrEqual|toBeGreaterThan|toBeGreaterThanOrEqual)\((\d[\d_]*(?:\.\d+)?)\)/;
     const parseBound = (line) => {
       const trimmed = line.trim();
-      if (trimmed.startsWith("//") || trimmed.startsWith("*")) return null;
+      if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*")) return null;
       const match = BOUND.exec(trimmed);
       if (!match) return null;
+      const method = match[1];
+      const upper = method.startsWith("toBeLessThan");
       return {
-        method: match[1],
+        method,
+        upper,
+        inclusive: method.endsWith("OrEqual"),
         value: Number(match[2].replace(/_/g, "")),
-        skeleton: trimmed.replace(BOUND, ".$1(<N>)"),
+        skeleton: trimmed.replace(BOUND, `.${upper ? "<UPPER>" : "<LOWER>"}(<N>)`),
         line: trimmed,
       };
     };
-    const unlabeledLimitRaises = (diffText, commitMessages) => {
-      if (/^Loosens:\s+\S/m.test(commitMessages)) return [];
-      const violations = [];
+    const isLoosened = (r, a) => {
+      if (r.upper) return a.value > r.value || (a.value === r.value && !r.inclusive && a.inclusive);
+      return a.value < r.value || (a.value === r.value && !r.inclusive && a.inclusive);
+    };
+    const unlabeledLimitRaises = (diffText, labelText) => {
+      if (/^Loosens:\s+\S/m.test(labelText)) return [];
+      const byFile = new Map();
       let file = "";
-      let removed = [];
-      let added = [];
-      const flush = () => {
-        for (const rem of removed) {
-          const r = parseBound(rem);
-          if (!r) continue;
-          for (const add of added) {
-            const a = parseBound(add);
-            if (!a || a.skeleton !== r.skeleton) continue;
-            const upper = r.method.startsWith("toBeLessThan");
-            if ((upper && a.value > r.value) || (!upper && a.value < r.value)) {
-              violations.push({ file, before: r.line, after: a.line });
-            }
-          }
-        }
-        removed = [];
-        added = [];
-      };
       for (const raw of diffText.split("\n")) {
-        if (raw.startsWith("+++ b/")) { flush(); file = raw.slice(6); }
-        else if (raw.startsWith("@@ ")) flush();
-        else if (raw.startsWith("-") && !raw.startsWith("---")) removed.push(raw.slice(1));
-        else if (raw.startsWith("+") && !raw.startsWith("+++")) added.push(raw.slice(1));
+        if (raw.startsWith("+++ b/")) {
+          file = raw.slice(6);
+          if (!byFile.has(file)) byFile.set(file, { removed: [], added: [] });
+        } else if (file && raw.startsWith("-") && !raw.startsWith("---")) {
+          const parsed = parseBound(raw.slice(1));
+          if (parsed) byFile.get(file).removed.push(parsed);
+        } else if (file && raw.startsWith("+") && !raw.startsWith("+++")) {
+          const parsed = parseBound(raw.slice(1));
+          if (parsed) byFile.get(file).added.push(parsed);
+        }
       }
-      flush();
+      const violations = [];
+      for (const [path, { removed, added }] of byFile) {
+        const remainingAdded = [...added];
+        for (const r of removed) {
+          const matchIdx = remainingAdded.findIndex((a) => a.skeleton === r.skeleton);
+          if (matchIdx === -1) {
+            violations.push({ file: path, before: r.line, after: "(deleted)" });
+            continue;
+          }
+          const [a] = remainingAdded.splice(matchIdx, 1);
+          if (isLoosened(r, a)) violations.push({ file: path, before: r.line, after: a.line });
+        }
+      }
       return violations;
     };
 
@@ -275,6 +315,24 @@ describe("global instructions", () => {
       "@@ -181 +181 @@",
       "-    expect(globalInstructions.length).toBeLessThan(17_000);",
       "+    expect(globalInstructions.length).toBeLessThan(17_500);",
+    ].join("\n");
+    const matcherRelaxDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -181 +181 @@",
+      "-    expect(globalInstructions.length).toBeLessThan(17_000);",
+      "+    expect(globalInstructions.length).toBeLessThanOrEqual(17_000);",
+    ].join("\n");
+    const deletedBoundDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -181 +180 @@",
+      "-    expect(globalInstructions.length).toBeLessThan(17_000);",
+    ].join("\n");
+    const movedBoundDiff = [
+      "+++ b/claude/tests/config.test.js",
+      "@@ -181 +180 @@",
+      "-    expect(globalInstructions.length).toBeLessThan(17_000);",
+      "@@ -220 +220 @@",
+      "+    expect(globalInstructions.length).toBeLessThan(17_000);",
     ].join("\n");
     const floorDropDiff = [
       "+++ b/claude/tests/config.test.js",
@@ -289,6 +347,11 @@ describe("global instructions", () => {
       "+    expect(globalInstructions.length).toBeLessThan(17_000);",
     ].join("\n");
     expect(unlabeledLimitRaises(capRaiseDiff, "Add new rule")).toHaveLength(1);
+    expect(unlabeledLimitRaises(matcherRelaxDiff, "Relax bound")).toHaveLength(1);
+    expect(unlabeledLimitRaises(deletedBoundDiff, "Drop cap")).toEqual([
+      { file: "claude/tests/config.test.js", before: "expect(globalInstructions.length).toBeLessThan(17_000);", after: "(deleted)" },
+    ]);
+    expect(unlabeledLimitRaises(movedBoundDiff, "Reorder tests")).toEqual([]);
     expect(unlabeledLimitRaises(floorDropDiff, "Adjust retry check")).toHaveLength(1);
     expect(unlabeledLimitRaises(capRaiseDiff, "Add new rule\n\nLoosens: raise cap 17,000 -> 17,500")).toEqual([]);
     expect(unlabeledLimitRaises(tightenDiff, "Trim instructions")).toEqual([]);
@@ -299,7 +362,14 @@ describe("global instructions", () => {
       const log = spawnSync("git", ["log", "--format=%B", "origin/main..HEAD"], { cwd: REPO, encoding: "utf8" });
       expect(diff.status).toBe(0);
       expect(log.status).toBe(0);
-      expect(unlabeledLimitRaises(diff.stdout, log.stdout)).toEqual([]);
+      let prBody = "";
+      if (process.env.GITHUB_EVENT_PATH && existsSync(process.env.GITHUB_EVENT_PATH)) {
+        try { prBody = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"))?.pull_request?.body ?? ""; } catch {}
+      }
+      expect(
+        unlabeledLimitRaises(diff.stdout, `${log.stdout}\n${prBody}`),
+        "Add a 'Loosens: ...' line to the commit message and PR body (and user report)",
+      ).toEqual([]);
     }
   });
 

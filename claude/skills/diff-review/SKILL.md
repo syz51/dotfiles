@@ -21,8 +21,9 @@ step yourself, without agents.
   it, read a file as the commit has it: `git show <commit>:<path>`.
 - Read the function around each hunk, not only the hunk. A defect in an unchanged line of
   a changed function is in scope.
-- Read commit messages with `git log --format=%B <target>` (and `gh pr view` when a PR
-  exists) when checking whether a weakened guarantee carries a `Loosens:` line.
+- Read the branch's commit messages with `git log --right-only --format=%B <target>`
+  (and `gh pr view` when a PR exists) when checking whether a weakened guarantee carries
+  a `Loosens:` line.
 
 ## 2. Look from each angle
 
