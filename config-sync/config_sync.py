@@ -97,6 +97,7 @@ def links(repo: Path) -> list:
     gemini = (
         [(gemini_config / name, repo / "gemini" / name) for name in ("GEMINI.md", "SKILLS_CATALOG.md", "hooks.json", "mcp_config.json")]
         + [(gemini_config / "skills" / name, repo / "claude" / "skills" / name) for name in dotfiles_skills]
+        + [(HOME / ".local" / "bin" / name, repo / "gemini" / "bin" / name) for name in ("gnotebook", "gnotebook-monitor")]
         if os.path.lexists(gemini_config)
         else []
     )

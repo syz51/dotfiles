@@ -162,7 +162,11 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
       authProviderType: "google_credentials",
     });
     expect(geminiMd).toContain("`gemini-notebook` MCP server");
+    expect(geminiMd).toContain("~/.local/bin/gnotebook");
+    expect(geminiMd).toContain("~/.local/bin/gnotebook-monitor");
     expect(geminiMd).toContain("~/.config/gemini/docs/gemini-notebook-mcp.md");
+    expect(existsSync(join(REPO, "gemini/bin/gnotebook"))).toBe(true);
+    expect(existsSync(join(REPO, "gemini/bin/gnotebook-monitor"))).toBe(true);
   });
 
   test("documents linked T3 Pro delegation, cross-Mac thread reading, and read-only ~/.config check", () => {

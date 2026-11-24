@@ -590,6 +590,8 @@ class InstallTests(unittest.TestCase):
             (Path.home() / ".gemini/config/skills/headless-browser", Path("/r/claude/skills/headless-browser")),
             (Path.home() / ".gemini/config/skills/ui-climb", Path("/r/claude/skills/ui-climb")),
             (Path.home() / ".gemini/config/skills/work-stages", Path("/r/claude/skills/work-stages")),
+            (Path.home() / ".local/bin/gnotebook", Path("/r/gemini/bin/gnotebook")),
+            (Path.home() / ".local/bin/gnotebook-monitor", Path("/r/gemini/bin/gnotebook-monitor")),
             (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")),
         ])
 
