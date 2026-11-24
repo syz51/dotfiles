@@ -218,11 +218,10 @@ describe("gnotebook-monitor parsers and diffing", () => {
       bunPath: "/Users/test/.bun/bin/bun",
       scriptPath: "/Users/test/.config/gemini/bin/gnotebook-monitor.js",
       stateDir: "/Users/test/.local/state/gnotebook-monitor",
-      intervalSeconds: 43200,
       searchPath: "/Users/test/.cargo/bin:/Users/test/.bun/bin:/usr/bin",
     });
     expect(plist).toContain("<string>com.syz51.gnotebook-monitor</string>");
-    expect(plist).toContain("<integer>43200</integer>");
+    expect(plist).toContain("<integer>604800</integer>");
     expect(plist).toContain("<string>check</string>");
     expect(plist).toContain("<string>--state-dir</string>");
     expect(plist).toContain("<string>/Users/test/.local/state/gnotebook-monitor</string>");
