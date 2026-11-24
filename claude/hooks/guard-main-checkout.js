@@ -12,8 +12,9 @@
 // checkout, the agent runs that one git command with `-c claude.mainCheckout=allow`, which
 // the guard lets through; the block message says so, so agents never hand the command back
 // to the user. Even then it refuses what would lose work another thread may own: a discarding
-// reset --hard, checkout -f or switch -f while tracked files have changes, and stash drop or
-// clear. The user can allow every such command for one repository with
+// reset --hard, checkout -f or switch -f while tracked files have changes, stash clear, and
+// stash drop unless one named `stash@{<n>}` entry already has a direct backup ref to its
+// commit at `refs/stash-backup/<sha>`. The user can allow every such command for one repository with
 // `git config claude.mainCheckout allow`, which the guard refuses to let a session run.
 // This is a guardrail against mistakes, not a security
 // boundary: it follows an alias that `-c` sets on the command, and blocks one it cannot read
@@ -45,6 +46,9 @@ const SAFE_SUBCOMMANDS = {
   bisect: ["log", "view", "visualize", "reset", "terms", "help"],
 };
 const MOVING_RESETS = ["--hard", "--keep", "--merge", "--soft"];
+const STASH_BACKUP_PREFIX = "refs/stash-backup/";
+const STASH_REF = /^(?:refs\/)?stash@\{\d+\}$/;
+const COMMIT_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const FF_MODES = ["--ff", "--no-ff", "--ff-only"];
 // Options that leave a --ff-only merge or pull a fast-forward: output, and turning rebase,
 // autostash and the editor off.
@@ -237,13 +241,65 @@ function discardsChanges(subcommand, args) {
 }
 
 /**
+ * The single named stash entry (`stash@{<n>}` or `refs/stash@{<n>}`) in `git stash drop`, or
+ * undefined when the entry is omitted, not a `stash@{<n>}` ref, repeated, or paired with an
+ * unrecognized option.
+ */
+function stashDropRef(args) {
+  let ref;
+  let afterDash = false;
+  for (const arg of args.slice(1)) {
+    if (!afterDash && arg === "--") {
+      afterDash = true;
+    } else if (!afterDash && (arg === "-q" || arg === "--quiet")) {
+      continue;
+    } else if (!afterDash && arg.startsWith("-")) {
+      return undefined;
+    } else if (ref !== undefined) {
+      return undefined;
+    } else {
+      ref = arg;
+    }
+  }
+  return ref !== undefined && STASH_REF.test(ref) ? ref : undefined;
+}
+
+/**
+ * Why `git -c claude.mainCheckout=allow stash drop|clear ...` in `top` must still not run, or
+ * undefined when dropping one named `stash@{<n>}` whose commit is kept by a direct backup ref at
+ * `refs/stash-backup/<sha>`.
+ */
+function stashLossReason(top, args, dir, git) {
+  if (args[0] === "clear") {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`stash clear\` is never allowed there. `
+      + "Leave other stashes in place, or back up and drop one named `stash@{<n>}` entry at a time.";
+  }
+  const ref = stashDropRef(args);
+  if (ref === undefined) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and a dropped entry has no backup. `
+      + "Name one entry as `stash@{<n>}`, keep its commit first with `git update-ref refs/stash-backup/<sha> <ref>`, "
+      + "then run `git -c claude.mainCheckout=allow stash drop <ref>`.";
+  }
+  const sha = git(dir, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (!sha || !COMMIT_SHA.test(sha)) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`${ref}\` did not resolve to a stash commit to verify against ${STASH_BACKUP_PREFIX}. `
+      + "Check `git stash list`, keep the commit with `git update-ref refs/stash-backup/<sha> <ref>`, then run this command again.";
+  }
+  const backupRef = `${STASH_BACKUP_PREFIX}${sha}`;
+  const backup = git(dir, ["for-each-ref", "--count=1", "--format=%(refname) %(objecttype) %(objectname) %(symref)", backupRef]);
+  if (backup !== `${backupRef} commit ${sha}`) {
+    return `it deletes stashed work in ${top}, a main checkout other threads share, and \`${ref}\` (${sha}) has no backup ref at \`${backupRef}\`. `
+      + `Keep it recoverable first with \`git update-ref ${backupRef} ${ref}\`, then run this command again.`;
+  }
+  return undefined;
+}
+
+/**
  * Why a change the user asked for in the shared checkout `top` must still not run, or undefined:
  * it would lose work that may be another thread's.
  */
 function lossReason(top, subcommand, args, dir, git) {
-  if (subcommand === "stash" && ["drop", "clear"].includes(args[0]))
-    return `it deletes stashed work in ${top}, a main checkout other threads share, and a dropped entry has no backup. `
-      + "Leave the stash in place: keeping an entry costs nothing.";
+  if (subcommand === "stash" && ["drop", "clear"].includes(args[0])) return stashLossReason(top, args, dir, git);
   if (!discardsChanges(subcommand, args) || noTrackedChanges(dir, git)) return undefined;
   return `it would discard changes to tracked files in ${top}, a main checkout other threads share, and they may be another thread's work. `
     + "Set them aside first with `git -c claude.mainCheckout=allow stash push -m <why>`, which keeps them recoverable, then run the command again.";
