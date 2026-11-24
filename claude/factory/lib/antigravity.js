@@ -55,11 +55,11 @@ function readJsonlRecords(file) {
   return { records, malformed };
 }
 
-function unwrapUserRequest(text) {
+export function unwrapUserRequest(text) {
   if (typeof text !== "string") return "";
-  const inner = /<user_request>\s*([\s\S]*?)\s*<\/user_request>/i.exec(text);
+  const inner = /<user_request>\s*([\s\S]*?)\s*<\/user_request>/.exec(text);
   if (inner) return inner[1].trim();
-  const outer = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i.exec(text);
+  const outer = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/.exec(text);
   if (outer) return outer[1].trim();
   return text.trim();
 }
@@ -68,7 +68,14 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
   const sessions = [];
   for (const { id, file, mtimeMs } of antigravityTranscriptFiles(roots)) {
     if (mtimeMs < since) continue;
-    const { records, malformed } = readJsonlRecords(file);
+    let parsed;
+    try {
+      parsed = readJsonlRecords(file);
+    } catch (error) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    const { records, malformed } = parsed;
     if (!records.length) continue;
     const { startedAt, endedAt } = timestamps(records.map((r) => ({ timestamp: r.created_at })));
     const endMs = Date.parse(endedAt);
@@ -118,6 +125,7 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       origin: prompts.length ? "person" : null,
       prompts,
       hostPrompts: 0,
+      inheritedPrompts: [],
       model: topKey(priced.models),
       models: priced.models,
       efforts: priced.efforts,
@@ -127,6 +135,8 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       estimatedCostUSD: priced.estimatedCostUSD,
       costSource: "estimated",
       unpriced: priced.unpriced,
+      linesAdded: null,
+      linesRemoved: null,
       assistantMessages: requests.length,
       prLinks: [],
       toolCalls: [],
@@ -134,7 +144,7 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       apiErrors: {},
       interrupts: 0,
       compactions: 0,
-      malformed,
+      malformedLines: malformed,
     });
   }
   return sessions;

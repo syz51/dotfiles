@@ -146,4 +146,11 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("`desktop` MCP server");
     expect(geminiMd).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
   });
+
+  test("configures official gemini-notebook remote MCP with ADC and no hardcoded headers", () => {
+    expect(mcpConfig.mcpServers["gemini-notebook"]).toEqual({
+      serverUrl: "https://notebook.googleapis.com/mcp",
+      authProviderType: "google_credentials",
+    });
+  });
 });
