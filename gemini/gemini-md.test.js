@@ -75,13 +75,20 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("diff-review");
   });
 
-  test("warns against invoke_subagent run_command timeouts and stages diffs for read_file-only review", () => {
-    expect(geminiMd).not.toContain('use `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, strictly read-only)');
-    expect(geminiMd).toContain("Do not rely on `invoke_subagent` running `git diff` or other `run_command` calls");
-    expect(geminiMd).toContain("temporary file inside the active workspace");
-    expect(geminiMd).toContain("`research` subagent using `read_file` only");
-    expect(geminiMd).toContain("`invoke_subagent` `run_command` calls time out in T3 Antigravity threads");
-    expect(geminiMd).toContain("use `delegate_task` or `~/.local/bin/agy-run`");
+  test("routes full-access invoke_subagent reviews to self with git diff and keeps restricted-session fallback", () => {
+    expect(geminiMd).toContain(
+      'launch `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, strictly read-only)',
+    );
+    expect(geminiMd).toContain("read `~/.gemini/config/skills/diff-review/SKILL.md`");
+    expect(geminiMd).toContain("git -C <worktree> diff origin/<base>...<SHA>");
+    expect(geminiMd).toContain("do not duplicate the diff or skill text into the parent prompt");
+    expect(geminiMd).toContain("Keep subagent prompts lean");
+    expect(geminiMd).toContain("restricted sessions without skip-permissions");
+    expect(geminiMd).toContain("`read_file`-only `research` subagent");
+    expect(geminiMd).toContain("`delegate_task` / `~/.local/bin/agy-run`");
+    expect(geminiMd).not.toContain(
+      "Do not rely on `invoke_subagent` running `git diff` or other `run_command` calls",
+    );
   });
 
   test("preserves user tone and translation preferences", () => {
