@@ -36,6 +36,7 @@ beforeEach(() => {
   setEnv({
     CLAUDE_CONFIG_DIR: join(scratch, "config"),
     CODEX_HOME: join(scratch, "codex"),
+    AGY_BRAIN_ROOT: join(scratch, "agy-brain"),
     CLAUDE_FACTORY_STATE: join(scratch, "state"),
     CLAUDE_FACTORY_GH: FAKE_GH,
     FAKE_GH_DATA: join(scratch, "gh.json"),
@@ -523,16 +524,34 @@ describe("outputs", () => {
     write([{ transcript: session("2026-11-03T10:00:00Z") }, { transcript: session("2026-10-30T10:00:00Z") }]);
     const json = await report("--no-gh");
     expect(Object.keys(json).sort()).toEqual(["current", "excluded", "filters", "generatedAt", "notes", "previous", "previousWindow", "projects", "prs", "topSessions", "window"]);
-    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "harness", "interrupts", "modelMix", "origin", "prompts", "prs", "pushes", "reviews", "sessions", "subagents", "toolErrors"]);
+    expect(Object.keys(json.current).sort()).toEqual(["apiErrors", "compactions", "corrections", "cost", "harness", "interrupts", "modelMix", "origin", "prompts", "prs", "pushes", "reviews", "sessions", "skills", "subagents", "toolErrors"]);
     expect(json.filters).toEqual({ project: null, includeAutomation: false, gh: false });
     expect(json.projects[0]).toMatchObject({ project: "-Users-test-project", current: { sessions: 1 }, previous: { sessions: 1 } });
     const reports = join(scratch, "state", "reports");
     expect(readJson(join(reports, "metrics-2026-11-08.json"))).toEqual(json);
     const markdown = readFileSync(join(reports, "metrics-2026-11-08.md"), "utf8");
-    for (const heading of ["## Headline", "## Cost", "### Costliest sessions", "## Effort and quality", "## Code reviews", "## Subagents and models", "## Projects", "## Pull requests", "## Notes"])
+    for (const heading of ["## Headline", "## Cost", "### Costliest sessions", "## Effort and quality", "## Code reviews", "## Dotfiles skills", "## Subagents and models", "## Projects", "## Pull requests", "## Notes"])
       expect(markdown).toContain(heading);
     expect(markdown).toContain("| Sessions | 1 | 1 | 0 |");
     expect(markdown).toContain("Correction rate (heuristic)");
+  });
+
+  test("counts dotfiles skill loads and post-load corrections in JSON and Markdown", async () => {
+    const t = new Transcript({ start: at("2026-11-03T10:00:00Z") })
+      .prompt("Check the page")
+      .tool("Skill", { skill: "headless-browser" }, "ok", { use: free })
+      .tool("Agent", { subagent_type: "reviewer", prompt: "origin/main...abc" }, "[]", { use: free })
+      .prompt("no, capture dark mode too")
+      .text("done", { use: free });
+    write([{ transcript: t }]);
+    const { current } = await report("--no-gh");
+    const byName = Object.fromEntries(current.skills.map((row) => [row.name, row]));
+    expect(byName["headless-browser"]).toMatchObject({ loads: 1, toolCalls: 1, preloads: 0, reads: 0, sessions: 1, corrections: { sessions: 1, withCorrection: 1, rate: 1 } });
+    expect(byName["diff-review"]).toMatchObject({ loads: 1, toolCalls: 0, preloads: 1, reads: 0, sessions: 1, corrections: { sessions: 1, withCorrection: 1, rate: 1 } });
+    expect(byName["cheat-sheets"]).toMatchObject({ loads: 0, sessions: 0 });
+    const markdown = readFileSync(join(scratch, "state", "reports", "metrics-2026-11-08.md"), "utf8");
+    expect(markdown).toContain("| headless-browser | 1 | 0 | 1 | 0 | 0 | 1 | 1/1 (100.0%) |");
+    expect(markdown).toContain("| diff-review | 1 | 0 | 0 | 1 | 0 | 1 | 1/1 (100.0%) |");
   });
 
   test("prints the Markdown path; --out and a non-default window change the file", async () => {

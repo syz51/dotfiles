@@ -22,7 +22,15 @@ const fs = require("fs");
 const [command] = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (command === "metrics") console.log(JSON.stringify({ current: { sessions: 4, origin: { agent: { sessions: 1 } }, cost: { totalUSD: 12.5 },
-  prs: { merged: 2, costPerMergedUSD: 3, spendPerMergedUSD: 6.25 }, corrections: { rate: 0.1 }, toolErrors: { main: { rate: 0.02 } }, apiErrors: { 429: 3 } } }));
+  prs: { merged: 2, costPerMergedUSD: 3, spendPerMergedUSD: 6.25 }, corrections: { rate: 0.1 }, toolErrors: { main: { rate: 0.02 } }, apiErrors: { 429: 3 },
+  skills: [
+    { name: "cheat-sheets", loads: 0, toolCalls: 0, preloads: 0, reads: 0, sessions: 0, corrections: { sessions: 0, withCorrection: 0, rate: null } },
+    { name: "diff-review", loads: 3, toolCalls: 0, preloads: 2, reads: 1, sessions: 3, corrections: { sessions: 2, withCorrection: 0, rate: 0 } },
+    { name: "full-stop", loads: 1, toolCalls: 1, preloads: 0, reads: 0, sessions: 1, corrections: { sessions: 1, withCorrection: 1, rate: 1 } },
+    { name: "headless-browser", loads: 2, toolCalls: 2, preloads: 0, reads: 0, sessions: 2, corrections: { sessions: 2, withCorrection: 0, rate: 0 } },
+    { name: "ui-climb", loads: 0, toolCalls: 0, preloads: 0, reads: 0, sessions: 0, corrections: { sessions: 0, withCorrection: 0, rate: null } },
+    { name: "work-stages", loads: 1, toolCalls: 1, preloads: 0, reads: 0, sessions: 1, corrections: { sessions: 1, withCorrection: 0, rate: 0 } },
+  ] }, previous: { skills: [] } }));
 if (command === "audit") console.log(JSON.stringify({ findings: [
   { id: "a", severity: "high", title: "Unsandboxed review", accepted: false },
   { id: "b", severity: "low", title: "Low thing", accepted: true },
@@ -33,9 +41,14 @@ if (command === "board") console.log(JSON.stringify({ collectedAt: "2026-11-09T1
   feedback: [{ id: "board-feedback-4", title: "Leases expire mid-review", body: "x", status: "open" }] }));
 if (command === "evolve") console.log(JSON.stringify({ collectedAt: "2026-11-09T13:30:00.000Z", days: 7, legacy: 2, errors: [],
   totals: { items: 3, reports: 5, untriaged: 1, routedOpen: 1, fixed: 1, recurrences: 1, declinedWithReports: 0 },
-  setups: [{ id: "board", title: "Work board (agent-board)", items: 3, reports: 5, sources: { agent: 2, capture: 1, signal: 0 },
-    untriaged: [{ id: "board-feedback-9", ageHours: 3 }], routedOpen: [{ id: "board-feedback-7", task: "agent-board-12", status: "doing", ageDays: 4 }],
-    fixed: 1, recurrences: 1, declinedWithReports: [] }] }));
+  setups: [
+    { id: "board", title: "Work board (agent-board)", items: 3, reports: 5, sources: { agent: 2, capture: 1, signal: 0 },
+      untriaged: [{ id: "board-feedback-9", ageHours: 3 }], routedOpen: [{ id: "board-feedback-7", task: "agent-board-12", status: "doing", ageDays: 4 }],
+      fixed: 1, recurrences: 1, declinedWithReports: [] },
+    { id: "headless-browser", title: "Headless browser skill", items: 1, reports: 2, sources: { agent: 1, capture: 0, signal: 0 },
+      untriaged: [], routedOpen: [{ id: "board-feedback-11", task: "dotfiles-19", status: "open", ageDays: 1 }],
+      fixed: 0, recurrences: 0, declinedWithReports: [] },
+  ] }));
 if (command === "review") console.log(JSON.stringify({ days: 7, costUSD: 3.5, repos: [
   { board: "dotfiles", repo: "github.com/o/dotfiles", base: "a".repeat(40), head: "b".repeat(40), commits: 12, recipe: "high effort → 8 inline angles", reviewCostUSD: 2.5, verifyCostUSD: 1, error: null,
     confirmed: [{ title: "Fix the lock race", location: "lib/lock.js:9", task: "dotfiles-9" }], rejected: [{ summary: "Unused import", location: "a.js:1", reason: "Used on line 40." }] },
@@ -116,6 +129,7 @@ describe("runWeekly", () => {
     expect(summary).toContain("## evolve: ok (exit 0");
     expect(summary).toContain("- Feedback in the last 7 days: 3 items, 5 reports; untriaged 1; routed and open 1; fixed 1; recurrences 1; declined but reported again 0\n"
       + "- board (Work board (agent-board)): 3 items, 5 reports (agent 2, capture 1, signal 0); untriaged 1: board-feedback-9 3 h; routed and open 1: agent-board-12 doing 4 d; fixed 1; recurrences 1\n"
+      + "- headless-browser (Headless browser skill): 1 items, 2 reports (agent 1, capture 0, signal 0); routed and open 1: dotfiles-19 open 1 d\n"
       + "- Tasks without a feedback record (filed before the server kept them): 2");
     expect(summary.indexOf("## board:")).toBeLessThan(summary.indexOf("## evolve:"));
     // The review of main: per repository its range, cost, filed proposals and rejected findings with reasons.
@@ -125,7 +139,39 @@ describe("runWeekly", () => {
       + "- Rejected: Unused import (a.js:1). Used on line 40.\n"
       + "- github.com/o/agent-board: no commits on main in 7 days\n"
       + "- Total cost $3.50");
+    // Per-skill summary combining metrics loads, evolve feedback and dotfiles commits.
+    expect(summary).toContain("## Dotfiles skills (last 7 days)");
+    expect(summary).toContain("- diff-review: 3 loads (2 preloads, 1 read) in 3 sessions (0/2 with correction); 0 feedback reports (setup: instructions); ");
+    expect(summary).toContain("- full-stop: 1 load (1 Skill) in 1 session (1/1 with correction); 0 feedback reports; ");
+    expect(summary).toContain("- headless-browser: 2 loads (2 Skill) in 2 sessions (0/2 with correction); 2 feedback reports (1 item, 1 open); ");
+    expect(summary).toContain("- cheat-sheets: 0 loads; 0 feedback reports; ");
     expect(existsSync(join(scratch, "state", "weekly.lock"))).toBe(false);
+  });
+
+  test("the skills section reports commits from the dotfiles repo and degrades cleanly when git fails", async () => {
+    const repo = join(scratch, "repo");
+    mkdirSync(join(repo, "claude", "skills", "work-stages"), { recursive: true });
+    const git = (args) => Bun.spawnSync(["git", ...args], {
+      cwd: repo,
+      env: { ...process.env, GIT_AUTHOR_NAME: "T", GIT_AUTHOR_EMAIL: "t@e.st", GIT_COMMITTER_NAME: "T", GIT_COMMITTER_EMAIL: "t@e.st" },
+    });
+    expect(git(["init", "-q", "-b", "main"]).exitCode).toBe(0);
+    writeFileSync(join(repo, "claude", "skills", "work-stages", "SKILL.md"), "v1\n");
+    expect(git(["add", "."]).exitCode).toBe(0);
+    expect(git(["commit", "-q", "-m", "touch work-stages"]).exitCode).toBe(0);
+    const hash = git(["rev-parse", "--short", "HEAD"]).stdout.toString().trim();
+
+    setEnv({ CLAUDE_FACTORY_DOTFILES_REPO: repo });
+    expect(await runWeekly({ pr: false })).toBe(0);
+    let summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain(`- work-stages: 1 load (1 Skill) in 1 session (0/1 with correction); 0 feedback reports; 1 commit (${hash})`);
+    expect(summary).toContain("- cheat-sheets: 0 loads; 0 feedback reports; 0 commits");
+
+    setEnv({ CLAUDE_FACTORY_DOTFILES_REPO: join(scratch, "missing-repo") });
+    expect(await runWeekly({ pr: false })).toBe(0);
+    summary = readFileSync(JSON.parse(readFileSync(join(scratch, "state", "weekly-last.json"), "utf8")).summary, "utf8");
+    expect(summary).toContain("- work-stages: 1 load (1 Skill) in 1 session (0/1 with correction); 0 feedback reports; commits n/a");
+    expect(summary).toContain("- Failed: git log claude/skills");
   });
 
   test("the summary reports the week's billing, or why it could not", async () => {
