@@ -8,10 +8,10 @@
  *              guard-asks | auto-merge | stale-base | open-items | deck-view
  *
  * Hot-path command guards (guard-git-push, guard-runtimes, guard-main-checkout,
- * guard-pr-merge, auto-merge) execute in-process via their exported functions so a single
- * Bun invocation handles all PreToolUse command guards instead of spawning nested Bun VMs.
- * Low-frequency hooks (guard-asks, stale-base, open-items, deck-view) still delegate via
- * spawnSync to share the exact same Claude Code hook scripts.
+ * guard-pr-merge, guard-asks, auto-merge) execute in-process via their exported functions so a
+ * single Bun invocation handles all PreToolUse guards instead of spawning nested Bun VMs.
+ * Low-frequency hooks (stale-base, open-items, deck-view) still delegate via spawnSync to share
+ * the exact same Claude Code hook scripts.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
@@ -21,6 +21,11 @@ import {
   createsPullRequest,
   report as autoMergeReport,
 } from "../../claude/hooks/auto-merge.js";
+import {
+  askViolation,
+  findBoardAskViolation,
+  loadAskPolicy,
+} from "../../claude/hooks/guard-asks.js";
 import { findViolation as findGitPushViolation } from "../../claude/hooks/guard-git-push.js";
 import { findMainCheckoutViolation } from "../../claude/hooks/guard-main-checkout.js";
 import {
@@ -106,12 +111,52 @@ function normalizeForPrefilter(command) {
   return command.replace(/\\\r?\n/g, "").replace(/["'\\]/g, "");
 }
 
+const DIRECT_ASK_TOOLS = new Set(["mcp_board_ask_user", "mcp__board__ask_user", "ask_user"]);
+
+/**
+ * Extracts the board `ask_user` argument object from an Antigravity PreToolUse payload.
+ * Returns the argument object when the tool call invokes board `ask_user` (either lazily via
+ * `call_mcp_tool` with `ServerName === "board"` and `ToolName === "ask_user"`, or eagerly via
+ * `mcp_board_ask_user`), or `null` when the tool call is not an MCP `ask_user` call.
+ */
+export function extractAskUserInput(agyInput) {
+  const toolName = agyInput?.toolCall?.name ?? "";
+  const args = agyInput?.toolCall?.args ?? {};
+  if (toolName === "call_mcp_tool") {
+    const serverName = args.ServerName ?? args.serverName;
+    const mcpToolName = args.ToolName ?? args.toolName;
+    if (serverName !== "board" || mcpToolName !== "ask_user") {
+      return null;
+    }
+    const rawArgs = args.Arguments !== undefined ? args.Arguments : args.arguments;
+    if (typeof rawArgs === "string") {
+      try {
+        const parsed = JSON.parse(rawArgs);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+    return rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? rawArgs : {};
+  }
+  if (DIRECT_ASK_TOOLS.has(toolName)) {
+    return args && typeof args === "object" && !Array.isArray(args) ? args : {};
+  }
+  return null;
+}
+
 export function translateInput(event, hookName, agyInput) {
   const cwd = typeof agyInput?.cwd === "string" && agyInput.cwd ? agyInput.cwd : process.cwd();
   if (event === "pre-tool-use") {
-    const args = agyInput?.toolCall?.args ?? {};
     if (hookName === "guard-asks") {
-      return { cwd, tool_name: agyInput?.toolCall?.name ?? "ask_user", tool_input: args };
+      const toolName = agyInput?.toolCall?.name ?? "";
+      const command = extractCommand(agyInput);
+      if (toolName === "run_command" || toolName === "Bash" || (!toolName && command)) {
+        return { cwd, tool_name: "Bash", tool_input: { command } };
+      }
+      const askInput = extractAskUserInput(agyInput);
+      if (askInput === null) return null;
+      return { cwd, tool_name: "mcp__board__ask_user", tool_input: askInput };
     }
     return { cwd, tool_name: "Bash", tool_input: { command: extractCommand(agyInput) } };
   }
@@ -219,11 +264,28 @@ function runInProcessPreToolUse(hookName, command, cwd, runners = {}) {
   return null;
 }
 
+function runInProcessGuardAsks(agyInput, command, cwd, runners = {}) {
+  const toolName = agyInput?.toolCall?.name ?? "";
+  if (toolName === "run_command" || toolName === "Bash" || (!toolName && command)) {
+    if (!command) return { decision: "allow" };
+    const violation = findBoardAskViolation(command, cwd, runners.askPolicy);
+    if (violation) return { decision: "deny", reason: `Blocked by the guard-asks hook: ${violation}` };
+    return { decision: "allow" };
+  }
+  const askInput = extractAskUserInput(agyInput);
+  if (askInput === null) return { decision: "allow" };
+  const policy = runners.askPolicy ?? loadAskPolicy();
+  const violation = askViolation(askInput, policy);
+  if (violation) return { decision: "deny", reason: `Blocked by the guard-asks hook: ${violation}` };
+  return { decision: "allow" };
+}
+
 const IN_PROCESS_PRE = new Set([
   "guard-git-push",
   "guard-runtimes",
   "guard-main-checkout",
   "guard-pr-merge",
+  "guard-asks",
 ]);
 
 function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin) {
@@ -232,6 +294,9 @@ function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin) {
     return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
   }
   const claudeInput = translateInput(event, hookName, agyInput);
+  if (claudeInput === null) {
+    return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
+  }
   if (event === "post-tool-use" && hookName === "auto-merge" && !claudeInput.tool_response.stdout) {
     return {};
   }
@@ -273,6 +338,11 @@ export function runAdaptedHook(
       // (especially fail-closed guard-pr-merge).
       try {
         if (useInProcess && IN_PROCESS_PRE.has(hookName)) {
+          if (hookName === "guard-asks") {
+            const res = runInProcessGuardAsks(agyInput, command, cwd, runners);
+            if (res && res.decision === "deny") return res;
+            continue;
+          }
           if (!command) continue;
           const res = runInProcessPreToolUse(hookName, command, cwd, runners);
           if (res && res.decision === "deny") return res;
