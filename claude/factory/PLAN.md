@@ -724,3 +724,10 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-12: New `full-stop` skill (dotfiles-479), adopted from t3dotgg/tstack. It holds a PR
   as a draft for the owner's merge. ui-climb's hand-over PR now uses that hold, and its
   calibration ask options are short labels (dotfiles-434). The registry has 32 setups.
+- 2026-11-25: Dotfiles-owned skill measurement (dotfiles-537). `metrics` now counts loads
+  of the six dotfiles-owned skills (`setups.toml` `claude/skills/*` entries) across Claude
+  Code `Skill` tool calls (main and subagents), agent preloads (`claude/agents/*.md`), and
+  Antigravity/direct reads of installed `SKILL.md` files, plus post-load heuristic
+  corrections in person-run sessions. The weekly summary adds a `## Dotfiles skills`
+  section with one line per skill combining `metrics` loads, `evolve` feedback counts, and
+  dotfiles commits touching `claude/skills/<name>/` in the 7-day window.

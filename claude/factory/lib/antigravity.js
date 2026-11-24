@@ -64,6 +64,16 @@ export function unwrapUserRequest(text) {
   return text.trim();
 }
 
+// Antigravity stores each tool argument value as a JSON-encoded string inside args.
+function parseAntigravityArg(value) {
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
 export function loadAntigravitySessions({ since = -Infinity, until = Infinity, roots = antigravityBrainRoots() } = {}) {
   const sessions = [];
   for (const { id, file, mtimeMs } of antigravityTranscriptFiles(roots)) {
@@ -85,25 +95,36 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
 
     const prompts = [];
     const requests = [];
+    const toolCalls = [];
     for (const r of records) {
       if (r.type === "USER_INPUT" && r.source === "USER_EXPLICIT") {
         const text = unwrapUserRequest(r.content);
         if (text) prompts.push({ at: r.created_at ?? null, text, source: "user" });
-      } else if (r.type === "PLANNER_RESPONSE" && r.model) {
-        const model = String(r.model);
-        const effortMatch = /-(low|medium|high|xhigh)$/.exec(model);
-        requests.push({
-          model,
-          effort: effortMatch ? effortMatch[1] : null,
-          usage: {
-            input: Number(r.input_tokens ?? 0),
-            output: Number(r.output_tokens ?? 0),
-            cacheRead: Number(r.cache_read_tokens ?? 0),
-            cacheWrite: 0,
-            cacheWrite5m: 0,
-            cacheWrite1h: 0,
-          },
-        });
+      } else if (r.type === "PLANNER_RESPONSE") {
+        if (r.model) {
+          const model = String(r.model);
+          const effortMatch = /-(low|medium|high|xhigh)$/.exec(model);
+          requests.push({
+            model,
+            effort: effortMatch ? effortMatch[1] : null,
+            usage: {
+              input: Number(r.input_tokens ?? 0),
+              output: Number(r.output_tokens ?? 0),
+              cacheRead: Number(r.cache_read_tokens ?? 0),
+              cacheWrite: 0,
+              cacheWrite5m: 0,
+              cacheWrite1h: 0,
+            },
+          });
+        }
+        if (Array.isArray(r.tool_calls)) {
+          for (const tc of r.tool_calls) {
+            if (!tc || typeof tc.name !== "string") continue;
+            const rawArgs = tc.args && typeof tc.args === "object" && !Array.isArray(tc.args) ? tc.args : {};
+            const input = Object.fromEntries(Object.entries(rawArgs).map(([key, value]) => [key, parseAntigravityArg(value)]));
+            toolCalls.push({ id: null, name: tc.name, input, at: r.created_at ?? null, ok: null, output: "" });
+          }
+        }
       }
     }
 
@@ -139,7 +160,7 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       linesRemoved: null,
       assistantMessages: requests.length,
       prLinks: [],
-      toolCalls: [],
+      toolCalls,
       subagents: [],
       apiErrors: {},
       interrupts: 0,
