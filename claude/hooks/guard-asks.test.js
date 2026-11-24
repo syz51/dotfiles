@@ -9,14 +9,11 @@ const POLICY = JSON.parse(readFileSync(join(import.meta.dir, "ask-policy.json"),
 const verdict = (input, policy = POLICY) => askViolation(input, policy);
 
 describe("the policy file", () => {
-  test("names the same reasons as the Autonomy section and asking reference, and only-me for actions", () => {
+  test("names the same reasons as the Autonomy section, and only-me for actions", () => {
     const autonomy = readFileSync(join(import.meta.dir, "..", "CLAUDE.md"), "utf8").match(/\n## Autonomy\n((?:(?!\n## )[\s\S])*)/)[1];
-    const asking = readFileSync(join(import.meta.dir, "..", "reference", "asking.md"), "utf8");
-    const notify = asking.match(/- Notify me[^\n]*\n((?: {2}- [^\n]*\n)+)/)[1];
+    const notify = autonomy.match(/- Notify me[^\n]*\n((?: {2}- [^\n]*\n)+)/)[1];
     const listed = [...notify.matchAll(/^ {2}- ([a-z-]+): /gm)].map((match) => match[1]);
     expect(Object.keys(POLICY.reasons)).toEqual(listed);
-    const pointer = autonomy.match(/the seven allowed reasons \(([^)]+)\)/)[1];
-    expect([...pointer.matchAll(/`([a-z-]+)`/g)].map((match) => match[1])).toEqual(listed);
     expect(listed).toContain("only-me");
     expect(POLICY.action_reasons).toEqual(["only-me"]);
     const never = autonomy.match(/- These are never reasons to ask[^\n]*\n((?: {2}- [^\n]*\n)+)/)[1];
