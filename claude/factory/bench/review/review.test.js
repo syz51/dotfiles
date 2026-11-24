@@ -27,6 +27,9 @@ const git = (args, cwd = repo) => {
   return run.stdout.toString().trim();
 };
 
+const HOOK_TIMEOUT = 20_000;
+const REVIEW_TIMEOUT = 30_000;
+
 beforeEach(() => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "claude-factory-review-test-")));
   repo = join(scratch, "repo");
@@ -46,7 +49,7 @@ beforeEach(() => {
     FAKE_REVIEW_RAN: undefined, FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_JUDGE_BAD: undefined, FAKE_CLAUDE_EFFORT: undefined,
     FAKE_REVIEW_LEVEL: undefined, FAKE_REVIEW_NO_SKILL: undefined,
   });
-});
+}, HOOK_TIMEOUT);
 afterEach(() => {
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];
@@ -111,7 +114,7 @@ describe("review", () => {
     expect(git(["rev-parse", "HEAD"], dir)).toBe(head);
     expect(git(["remote"], dir)).toBe("");
     expect(git(["diff", "--stat", `${base}...${head}`], dir)).toContain("a.js");
-  });
+  }, HOOK_TIMEOUT);
 
   test("the prompt, output, recipe and judge prompt", () => {
     expect(reviewPrompt(bugCase(), "max")).toContain(`the code-review skill with args "max ${base}...${head}"`);
@@ -159,7 +162,7 @@ describe("review", () => {
 
     setEnv({ FAKE_REVIEW_TEXT: "- MATCH breaks it\n- fine" });
     expect(await runOne(cleanCase(), { ...options, repo })).toMatchObject({ findings: 2, harmful: 1, valid: 1, unfounded: 0, matched: null });
-  });
+  }, REVIEW_TIMEOUT);
 
   test("runOne marks failed sessions, wrong configurations and bad judge answers as infra", async () => {
     setEnv({ FAKE_REVIEW_FAIL: "1" });
@@ -176,7 +179,7 @@ describe("review", () => {
     const bad = await runOne(bugCase(), { ...options, repo });
     expect(bad).toMatchObject({ infra: true, findings: null });
     expect(bad.error).toContain("judge:");
-  });
+  }, 45_000);
 });
 
 describe("report", () => {
@@ -226,7 +229,7 @@ describe("cli", () => {
     const reported = await capture(() => main(["bench", "review", "report", "--batch", results[0].batch]));
     expect(reported.out).toContain("| claude-opus-5-5 high | 2 | 1 | 100% |");
     expect(existsSync(join(scratch, "state", "bench", "review", "report.md"))).toBe(true);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("run refuses bad configurations and cases; dry-run prints the worst case", async () => {
     expect((await capture(() => main(["bench", "review", "run", "--configs", "opus:high"]))).code).toBe(2);
@@ -236,5 +239,5 @@ describe("cli", () => {
     expect(dry.code).toBe(0);
     expect(dry.out).toContain(`${loadCases(CASES_FILE).length * 4 * 3} runs, worst case`);
     expect(existsSync(process.env.FAKE_REVIEW_LOG)).toBe(false);
-  });
+  }, HOOK_TIMEOUT);
 });

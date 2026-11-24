@@ -48,8 +48,11 @@ export const clip = (text, max = 400) => {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 };
 
+// Disable background auto-maintenance/gc so detached `git maintenance run --auto`
+// spawned by `git fetch` cannot race with `gitState(clone)` (removing maintenance.lock
+// mid-walk or mutating .git while the proposer runs).
 export const git = async (cwd, args, { allowFailure = false } = {}) => {
-  const result = await runProcess(["git", ...args], { cwd, env: process.env, timeout: 300_000 });
+  const result = await runProcess(["git", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args], { cwd, env: process.env, timeout: 300_000 });
   if (result.code !== 0 && !allowFailure) throw new Error(`git ${args.join(" ")} failed (${result.code}): ${result.stderr.trim() || result.stdout.trim()}`);
   return result;
 };

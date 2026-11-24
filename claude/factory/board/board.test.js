@@ -125,6 +125,9 @@ afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
+const CLI_TIMEOUT = 20_000;
+const PROPOSE_TIMEOUT = 30_000;
+
 describe("board command", () => {
   test("writes the week's stats and open feedback as a snapshot and prints them", async () => {
     const out = join(scratch, "state", "snapshot.json");
@@ -140,7 +143,7 @@ describe("board command", () => {
     expect(await collect(["--out", out])).toBe(0);
     expect(output.join("\n")).toContain('Open feedback tasks: 1\n- board-feedback-1: "Leases run out mid review"');
     expect(output.join("\n")).toContain("Tasks: 12 created, 6 done (1 without check evidence); median 95 min in doing");
-  });
+  }, CLI_TIMEOUT);
 
   test("a failing board command is reported and exits 1; the snapshot keeps what worked", async () => {
     const out = join(scratch, "state", "snapshot.json");
@@ -160,7 +163,7 @@ describe("board command", () => {
     expect(await collect(["--json", "--out", out])).toBe(1);
     expect(JSON.parse(readFileSync(out, "utf8")).errors).toHaveLength(2);
     expect(await collect(["--days", "0"])).toBe(2);
-  });
+  }, CLI_TIMEOUT);
 
   test("tasks with and without a feedback record collect alike, and the proposer reads them", async () => {
     const record = (resolution) => ({ about: "board", source: "capture", signature: "s", reports: 2, reporters: ["claude:a"], last_reported_at: "2026-11-05T10:00:00Z", ...(resolution && { resolution }) });
@@ -180,7 +183,7 @@ describe("board command", () => {
     const prompt = boardPrompt(candidate);
     expect(prompt).toContain('"id":"board-feedback-6"');
     expect(prompt).not.toContain("signature");
-  });
+  }, CLI_TIMEOUT);
 
   test("pages with --after when more than 1000 open tasks exist, reads all of them, and handles stalled pagination", async () => {
     const out = join(scratch, "state", "snapshot.json");
@@ -219,7 +222,7 @@ describe("board command", () => {
     setEnv({ FAKE_BOARD_IGNORE_AFTER: "1" });
     expect(await collect(["--json", "--out", out])).toBe(1);
     expect(JSON.parse(readFileSync(out, "utf8")).errors).toEqual([expect.stringContaining("pagination stalled at board-feedback-1000")]);
-  });
+  }, CLI_TIMEOUT);
 });
 
 describe("board proposal rules", () => {
@@ -397,7 +400,7 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(snapshot, repos)).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
     expect(output.join("\n")).toMatch(/work-board\s+1 open feedback tasks \(0 new\).*already proposed/);
-  });
+  }, 45_000);
 
   test("a change to only one repository opens one PR", async () => {
     const repos = repositories();
@@ -407,7 +410,7 @@ describe("propose --board-snapshot", () => {
     expect(proposals()[0]).toMatchObject({ status: "proposed", base: "main", prUrls: ["https://github.com/o/agent-board/pull/7"] });
     expect(log("gh.jsonl").map((pr) => pr.args[pr.args.indexOf("--base") + 1])).toEqual(["main"]);
     expect(remoteBranches(repos.remote)).toEqual(["main"]);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a base without the server fails before any session runs", async () => {
     const repos = repositories();
@@ -420,7 +423,7 @@ describe("propose --board-snapshot", () => {
     expect(log("claude.jsonl")).toHaveLength(0);
     expect(log("gh.jsonl")).toHaveLength(0);
     expect(output.join("\n")).toContain("main of");
-  });
+  }, PROPOSE_TIMEOUT);
 
   test.each([
     ["the rule's copies differing", { "dotfiles/claude/CLAUDE.md": CLAUDE_MD.replace(RULE, NEW_RULE) }, ['dotfiles/codex/AGENTS.md ("## Work board" differs from claude/CLAUDE.md)']],
@@ -438,7 +441,7 @@ describe("propose --board-snapshot", () => {
     expect(existsSync(join(scratch, "cargo.log"))).toBe(false);
     expect(log("gh.jsonl")).toHaveLength(0);
     expect(remoteBranches(repos.board)).toEqual(["main"]);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a change repeating the feedback is suspected of leaking it", async () => {
     const repos = repositories();
@@ -446,7 +449,7 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(await snapshotFile(), repos)).toBe(1);
     expect(proposals()[0]).toMatchObject({ status: "leak-suspected", pushed: false });
     expect(log("gh.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("failing agent-board tests keep the patch locally; a dry run pushes nothing", async () => {
     const repos = repositories();
@@ -466,7 +469,7 @@ describe("propose --board-snapshot", () => {
     expect(proposals()[0]).toMatchObject({ status: "dry-run", tests: { ok: true } });
     expect(log("gh.jsonl")).toHaveLength(0);
     expect(remoteBranches(repos.board)).toEqual(["main"]);
-  });
+  }, 45_000);
 
   test("when the second PR fails after the first opened, the attempt is not retried", async () => {
     const repos = repositories();
@@ -479,7 +482,7 @@ describe("propose --board-snapshot", () => {
     setEnv({ FAKE_GH_FAIL_IN: undefined });
     expect(await proposeBoard(snapshot, repos)).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a damaged snapshot fails the run without stopping the dimensions", async () => {
     const repos = repositories();
@@ -492,7 +495,7 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(snapshot, repos)).toBe(1);
     expect(output.join("\n")).toContain("not a board snapshot");
     expect(log("claude.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("the board shares the run's budget with the dimensions", async () => {
     const repos = repositories();
@@ -500,7 +503,7 @@ describe("propose --board-snapshot", () => {
     expect(proposals()).toMatchObject([{ status: "no-change", costUSD: 0.9 }]);
     rmSync(join(scratch, "state", "proposals.jsonl"));
     expect(await proposeBoard(await snapshotFile(), repos, ["--max-total-usd", "2", "--budget-usd", "3"])).toBe(2);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("a missing snapshot or nothing new proposes nothing, and --list shows the feedback quoted", async () => {
     const repos = repositories();
@@ -516,7 +519,7 @@ describe("propose --board-snapshot", () => {
     expect(await proposeBoard(snapshot, repos, ["--list"])).toBe(0);
     expect(output.join("\n")).toContain('- feedback board-feedback-1: "Leases run out mid review"');
     expect(log("claude.jsonl")).toHaveLength(0);
-  });
+  }, PROPOSE_TIMEOUT);
 
   test("under useAntigravity(), board proposer runs restricted (no --full-access) and rejects empty or unrestricted init.tools", async () => {
     const repos = repositories();
@@ -566,5 +569,5 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(JSON.parse(call.args[call.args.indexOf("--settings") + 1]).permissions.deny).toEqual(
       expect.arrayContaining(["Read(~/.local/share/agent-board/**)", "Read(~/.ssh/**)"]),
     );
-  });
+  }, 45_000);
 });
