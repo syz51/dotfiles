@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
-import { boardBin, call as boardCall, FEEDBACK_BOARD } from "../board/cli.js";
+import { boardBin, call as boardCall, FEEDBACK_BOARD, listTasks } from "../board/cli.js";
 import { judge } from "../lib/claude.js";
 import { antigravityBrainRoots, antigravityTranscriptFiles, antigravityTurns } from "../lib/antigravity.js";
 import { codexSessionsRoot, rolloutThreads } from "../lib/codex.js";
@@ -38,8 +38,7 @@ const ERROR_LINE = 160;
 // unresolved ones, newest first up to this many, so the cached prompt stays small.
 const MATCH_WINDOW = 7 * 24 * HOUR;
 const MATCH_ITEMS = 200;
-// Statuses of an unresolved item that still takes reports; a resolved one is done.
-const OPEN_STATUSES = ["open", "doing", "blocked", "review"];
+const CLOSED = new Set(["done", "dropped"]);
 // Duplicate and routing links followed at most, as the board does.
 const LINK_DEPTH = 8;
 
@@ -155,10 +154,11 @@ export function filedItems(records, since) {
 
 // The board's unresolved feedback items, by id. Resolved items are done whether or not
 // they still take reports, so those come from capture's own records.
-async function unresolvedItems() {
-  const lists = await Promise.all(OPEN_STATUSES.map((status) => boardCall(["ls", "--board", FEEDBACK_BOARD, "--status", status, "--json", "--limit", "1000"])));
+export async function unresolvedItems() {
+  const tasks = await listTasks(["--board", FEEDBACK_BOARD, "--open"]);
   const items = new Map();
-  for (const task of lists.flat()) {
+  for (const task of tasks) {
+    if (CLOSED.has(task?.status)) continue;
     if (typeof task?.id !== "string" || typeof task.title !== "string" || typeof task.feedback?.about !== "string")
       throw new Error(`board ls --board ${FEEDBACK_BOARD}: expected tasks with id, title and feedback.about`);
     items.set(task.id, { id: task.id, about: task.feedback.about, title: task.title, at: task.feedback.last_reported_at ?? task.created_at });

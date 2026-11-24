@@ -6,7 +6,7 @@
 // A failed `board` call is reported and makes the command exit 1; the report then holds
 // what did work.
 import { parseArgs } from "node:util";
-import { call, FEEDBACK_BOARD } from "../board/cli.js";
+import { call, FEEDBACK_BOARD, listTasks } from "../board/cli.js";
 import { clip } from "../lib/proposal.js";
 import { loadSetups } from "../setups/cli.js";
 
@@ -22,7 +22,6 @@ that kept getting reports.
 
 const CLOSED = new Set(["done", "dropped"]);
 const SOURCES = ["agent", "capture", "signal"];
-const LIST_LIMIT = 1000;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 // Triage runs within minutes; an item older than this without a resolution was missed.
@@ -146,12 +145,11 @@ export async function collect({ days }) {
   }
   let tasks;
   try {
-    tasks = checkTasks(await call(["ls", "--board", FEEDBACK_BOARD, "--json", "--limit", String(LIST_LIMIT)]));
+    tasks = checkTasks(await listTasks(["--board", FEEDBACK_BOARD]));
   } catch (error) {
     result.errors.push(error.message);
     return result;
   }
-  if (tasks.length >= LIST_LIMIT) result.errors.push(`board ls: ${tasks.length} tasks on ${FEEDBACK_BOARD}, the most one call returns, so items may be missing`);
   const routed = new Set(tasks.map((task) => task.feedback?.resolution).filter((resolution) => resolution?.kind === "routed" && resolution.task).map((resolution) => resolution.task));
   const ownerStates = await owners(routed, result.errors);
   return { ...result, ...report(tasks, ownerStates, { days, setups }) };

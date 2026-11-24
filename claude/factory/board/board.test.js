@@ -6,7 +6,7 @@ import { dirname, join, relative } from "node:path";
 import { runSuite } from "../lib/proposal.js";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { run as propose } from "../scoring/propose.js";
-import { run as collect } from "./cli.js";
+import { listTasks, run as collect } from "./cli.js";
 import { boardCandidate, boardPrompt, boardSignals, defaultsOnly, readSnapshot } from "./proposal.js";
 
 const FAKE_CLAUDE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
@@ -45,15 +45,30 @@ const FEEDBACK = [
   { id: "board-feedback-2", title: "Fixed already", body: "", status: "done", created_at: "2026-11-04T10:00:00Z" },
 ];
 
-// A fake `board`: answers stats and ls from FAKE_BOARD_STATS and FAKE_BOARD_LS (JSON), or
-// fails a command named in FAKE_BOARD_FAIL as the installed CLI does for an unknown one.
+// A fake `board`: answers stats and ls from FAKE_BOARD_STATS and FAKE_BOARD_LS(_FILE)
+// (JSON), honors --open, --after and --limit on ls, or fails a command named in
+// FAKE_BOARD_FAIL as the installed CLI does for an unknown one.
 function fakeBoard() {
   return script(join(scratch, "board"), `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_BOARD_LOG, JSON.stringify(args) + "\\n");
 if (args[0] === process.env.FAKE_BOARD_FAIL) { console.error("error: unrecognized subcommand '" + args[0] + "'"); process.exit(2); }
-console.log(args[0] === "stats" ? process.env.FAKE_BOARD_STATS : process.env.FAKE_BOARD_LS);
+if (args[0] === "stats") { console.log(process.env.FAKE_BOARD_STATS); process.exit(0); }
+const raw = process.env.FAKE_BOARD_LS_FILE ? readFileSync(process.env.FAKE_BOARD_LS_FILE, "utf8") : process.env.FAKE_BOARD_LS;
+let parsed;
+try { parsed = JSON.parse(raw); } catch { console.log(raw); process.exit(0); }
+if (!Array.isArray(parsed)) { console.log(raw); process.exit(0); }
+const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+let list = parsed;
+if (args.includes("--open")) list = list.filter((task) => task?.status !== "done" && task?.status !== "dropped");
+const after = opt("--after");
+if (after && !process.env.FAKE_BOARD_IGNORE_AFTER) {
+  const index = list.findIndex((task) => task?.id === after);
+  list = index >= 0 ? list.slice(index + 1) : [];
+}
+const limit = Number(opt("--limit") ?? "1000");
+console.log(JSON.stringify(list.slice(0, limit)));
 `);
 }
 
@@ -77,6 +92,8 @@ beforeEach(() => {
     FAKE_BOARD_LOG: join(scratch, "board.jsonl"),
     FAKE_BOARD_STATS: JSON.stringify(STATS),
     FAKE_BOARD_LS: JSON.stringify(FEEDBACK),
+    FAKE_BOARD_LS_FILE: undefined,
+    FAKE_BOARD_IGNORE_AFTER: undefined,
     FAKE_BOARD_FAIL: undefined,
     FAKE_CARGO_FAIL: undefined,
     FAKE_CLAUDE_MODE: "script",
@@ -113,7 +130,7 @@ describe("board command", () => {
     const out = join(scratch, "state", "snapshot.json");
     expect(await collect(["--days", "7", "--json", "--out", out])).toBe(0);
     // The two calls run together, so their order varies.
-    expect(log("board.jsonl").sort()).toEqual([["ls", "--board", "board-feedback", "--json", "--limit", "1000"], ["stats", "--days", "7", "--json"]]);
+    expect(log("board.jsonl").sort()).toEqual([["ls", "--board", "board-feedback", "--open", "--json", "--limit", "1000"], ["stats", "--days", "7", "--json"]]);
     const snapshot = JSON.parse(readFileSync(out, "utf8"));
     expect(snapshot).toMatchObject({ days: 7, stats: STATS, errors: [] });
     // Closed feedback is left out.
@@ -165,11 +182,43 @@ describe("board command", () => {
     expect(prompt).not.toContain("signature");
   });
 
-  test("a full page of feedback is reported, since open tasks may be missing from it", async () => {
+  test("pages with --after when more than 1000 open tasks exist, reads all of them, and handles stalled pagination", async () => {
     const out = join(scratch, "state", "snapshot.json");
-    setEnv({ FAKE_BOARD_LS: JSON.stringify(Array.from({ length: 1000 }, (_, i) => ({ ...FEEDBACK[1], id: `board-feedback-${i}` }))) });
+    const lsFile = join(scratch, "tasks.json");
+    const open = Array.from({ length: 1050 }, (_, i) => ({ ...FEEDBACK[0], id: `board-feedback-${i + 1}`, title: `Open ${i + 1}` }));
+    const closed = Array.from({ length: 10 }, (_, i) => ({ ...FEEDBACK[1], id: `board-feedback-done-${i + 1}` }));
+    writeFileSync(lsFile, JSON.stringify([...closed, ...open]));
+    setEnv({ FAKE_BOARD_LS_FILE: lsFile });
+    expect(await collect(["--json", "--out", out])).toBe(0);
+    const snapshot = JSON.parse(readFileSync(out, "utf8"));
+    expect(snapshot.errors).toEqual([]);
+    expect(snapshot.feedback).toHaveLength(1050);
+    expect([snapshot.feedback[0].id, snapshot.feedback.at(-1).id]).toEqual(["board-feedback-1", "board-feedback-1050"]);
+    expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([
+      ["ls", "--board", "board-feedback", "--open", "--json", "--limit", "1000"],
+      ["ls", "--board", "board-feedback", "--open", "--after", "board-feedback-1000", "--json", "--limit", "1000"],
+    ]);
+
+    // An exact page-size multiple asks for the next page, gets [], and succeeds.
+    writeFileSync(lsFile, JSON.stringify(open.slice(0, 1000)));
+    expect(await collect(["--json", "--out", out])).toBe(0);
+    expect(JSON.parse(readFileSync(out, "utf8")).feedback).toHaveLength(1000);
+
+    // Deduplicates repeated ids across pages without losing subsequent tasks.
+    const dupes = [
+      { id: "t-1", title: "one", status: "open" },
+      { id: "t-2", title: "two", status: "open" },
+      { id: "t-1", title: "one", status: "open" },
+      { id: "t-3", title: "three", status: "open" },
+    ];
+    writeFileSync(lsFile, JSON.stringify(dupes));
+    expect((await listTasks(["--board", "board-feedback"], { limit: 2 })).map((t) => t.id)).toEqual(["t-1", "t-2", "t-3"]);
+
+    // A server that ignores --after fails instead of looping forever.
+    writeFileSync(lsFile, JSON.stringify(open.slice(0, 1000)));
+    setEnv({ FAKE_BOARD_IGNORE_AFTER: "1" });
     expect(await collect(["--json", "--out", out])).toBe(1);
-    expect(JSON.parse(readFileSync(out, "utf8")).errors).toEqual([expect.stringContaining("1000 tasks on board-feedback, the most one call returns")]);
+    expect(JSON.parse(readFileSync(out, "utf8")).errors).toEqual([expect.stringContaining("pagination stalled at board-feedback-1000")]);
   });
 });
 

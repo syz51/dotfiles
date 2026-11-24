@@ -25,7 +25,8 @@ export const boardBin = () => process.env.CLAUDE_FACTORY_BOARD || join(homedir()
 export const FEEDBACK_BOARD = "board-feedback";
 const CLOSED = new Set(["done", "dropped"]);
 // The most tasks the server returns at once.
-const LIST_LIMIT = 1000;
+export const LIST_LIMIT = 1000;
+const MAX_PAGES = 100;
 const STAT_FIELDS = ["days", "tasks_created", "tasks_done", "claims_refused", "tasks_taken_stale", "lease_conflicts", "asks_created", "asks_answered", "done_without_check_evidence"];
 
 // One board call's JSON, or an error naming the call.
@@ -46,6 +47,43 @@ export async function call(args, { what = `board ${args.join(" ")}` } = {}) {
   }
 }
 
+// Lists every task matching `args` (flags for `board ls`), paging with `--after` until a
+// page holds fewer than `limit` tasks. Rejects a repeated cursor or page cap so a server
+// that ignores `--after` cannot loop forever.
+export async function listTasks(args, { limit = LIST_LIMIT, maxPages = MAX_PAGES } = {}) {
+  const all = [];
+  const seen = new Set();
+  const cursors = new Set();
+  let after = null;
+  for (let pageNumber = 0; pageNumber < maxPages; pageNumber++) {
+    const page = await call([
+      "ls",
+      ...args,
+      ...(after ? ["--after", after] : []),
+      "--json",
+      "--limit",
+      String(limit),
+    ]);
+    if (!Array.isArray(page)) throw new Error(`board ls ${args.join(" ")}: expected a list of tasks`);
+    let added = 0;
+    for (const task of page) {
+      if (typeof task?.id === "string") {
+        if (seen.has(task.id)) continue;
+        seen.add(task.id);
+      }
+      all.push(task);
+      added += 1;
+    }
+    if (page.length < limit) return all;
+    const last = page.at(-1)?.id;
+    if (typeof last !== "string" || !last) throw new Error(`board ls ${args.join(" ")}: page ${pageNumber + 1} ended without a task id to continue from`);
+    if (added === 0 || cursors.has(last)) throw new Error(`board ls ${args.join(" ")}: pagination stalled at ${last}`);
+    cursors.add(last);
+    after = last;
+  }
+  throw new Error(`board ls ${args.join(" ")}: exceeded ${maxPages} pages (${all.length} tasks)`);
+}
+
 function checkStats(stats) {
   const bad = STAT_FIELDS.filter((field) => typeof stats?.[field] !== "number");
   if (bad.length) throw new Error(`board stats: missing or non-numeric ${bad.join(", ")}`);
@@ -55,8 +93,6 @@ function checkStats(stats) {
 function checkFeedback(tasks) {
   if (!Array.isArray(tasks) || tasks.some((task) => typeof task?.id !== "string" || typeof task.title !== "string" || typeof task.status !== "string"))
     throw new Error("board ls: expected a list of tasks with id, title and status");
-  // The server lists closed tasks too, in no promised order: a full page may hide open ones.
-  if (tasks.length >= LIST_LIMIT) throw new Error(`board ls: ${tasks.length} tasks on ${FEEDBACK_BOARD}, the most one call returns, so open feedback may be missing; close or drop old feedback`);
   return tasks.filter((task) => !CLOSED.has(task.status))
     .map(({ id, title, body, status, created_at, updated_at }) => ({ id, title, body: typeof body === "string" ? body : "", status, created_at, updated_at }));
 }
@@ -65,7 +101,7 @@ export async function collect({ days }) {
   const snapshot = { collectedAt: new Date().toISOString(), days, stats: null, feedback: null, errors: [] };
   const [stats, feedback] = await Promise.allSettled([
     call(["stats", "--days", String(days), "--json"]).then(checkStats),
-    call(["ls", "--board", FEEDBACK_BOARD, "--json", "--limit", String(LIST_LIMIT)]).then(checkFeedback),
+    listTasks(["--board", FEEDBACK_BOARD, "--open"]).then(checkFeedback),
   ]);
   if (stats.status === "fulfilled") snapshot.stats = stats.value;
   else snapshot.errors.push(stats.reason.message);

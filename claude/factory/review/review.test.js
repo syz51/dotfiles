@@ -6,7 +6,7 @@ import { main } from "../cli.js";
 import { readJsonl } from "../lib/state.js";
 import {
   AGENT, CONFIG_FILE, DIFF_REVIEW_SKILL, diffReviewInstructions, isEmptyReview,
-  loadConfig, prepare, proposalBody, remoteUrl, reviewPrompt, reviewRepo, summaryLines,
+  loadConfig, openTitles, prepare, proposalBody, remoteUrl, reviewPrompt, reviewRepo, summaryLines,
   verifyPrompt, verifySchema,
 } from "./cli.js";
 
@@ -60,7 +60,20 @@ const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_BOARD_LOG, JSON.stringify(args) + "\\n");
 if (args[0] === "boards") console.log(JSON.stringify([
   { slug: "dotfiles", repos: ["github.com/o/dotfiles"] }, { slug: "agent-board", repos: ["github.com/o/agent-board"] }, { slug: "empty", repos: [] }]));
-if (args[0] === "ls") console.log(JSON.stringify([{ id: "dotfiles-1", title: "Existing task", status: "open" }, { id: "dotfiles-2", title: "Finished task", status: "done" }]));
+if (args[0] === "ls") {
+  const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  let list = process.env.FAKE_BOARD_LS_FILE
+    ? JSON.parse(fs.readFileSync(process.env.FAKE_BOARD_LS_FILE, "utf8"))
+    : [{ id: "dotfiles-1", title: "Existing task", status: "open" }, { id: "dotfiles-2", title: "Finished task", status: "done" }];
+  if (args.includes("--open")) list = list.filter((task) => task.status !== "done" && task.status !== "dropped");
+  const after = opt("--after");
+  if (after) {
+    const index = list.findIndex((task) => task.id === after);
+    list = index >= 0 ? list.slice(index + 1) : [];
+  }
+  const limit = Number(opt("--limit") ?? "1000");
+  console.log(JSON.stringify(list.slice(0, limit)));
+}
 if (args[0] === "add") {
   if (process.env.FAKE_BOARD_ADD_FAIL === "1") { console.error("board unreachable"); process.exit(1); }
   const count = fs.readFileSync(process.env.FAKE_BOARD_LOG, "utf8").trim().split("\\n").filter((line) => line.startsWith('["add"')).length;
@@ -108,7 +121,7 @@ beforeEach(() => {
   setEnv({
     CLAUDE_FACTORY_BIN: FAKE, CLAUDE_FACTORY_AGY_BIN: undefined, CLAUDE_FACTORY_PROVIDER: undefined,
     CLAUDE_FACTORY_STATE: join(scratch, "state"), FAKE_CLAUDE_MODE: "script", FAKE_CLAUDE_SCRIPT: SCRIPT,
-    CLAUDE_FACTORY_BOARD: fakeBoard(), FAKE_BOARD_LOG: join(scratch, "board.jsonl"), CLAUDE_FACTORY_REVIEW_REMOTE: remotes,
+    CLAUDE_FACTORY_BOARD: fakeBoard(), FAKE_BOARD_LOG: join(scratch, "board.jsonl"), FAKE_BOARD_LS_FILE: undefined, CLAUDE_FACTORY_REVIEW_REMOTE: remotes,
     FAKE_REVIEW_LOG: join(scratch, "sessions.jsonl"), FAKE_REVIEW_TEXT: DEFAULT_REVIEW_JSON,
     FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_EMPTY: undefined, FAKE_VERIFY_NONE: undefined, FAKE_BOARD_ADD_FAIL: undefined,
   });
@@ -231,6 +244,34 @@ describe("reviewRepo", () => {
     expect(record.error).toBeNull();
     expect([record.confirmed, record.rejected, record.verifyCostUSD]).toEqual([[], [], 0]);
     expect(sessions().map((s) => s.kind)).toEqual(["review"]);
+  });
+
+  test("openTitles and reviewRepo read every non-closed title across pages without a 200-title cap", async () => {
+    const lsFile = join(scratch, "tasks.json");
+    const statuses = ["open", "doing", "blocked", "review"];
+    const tasks = [
+      ...Array.from({ length: 1050 }, (_, i) => ({ id: `dotfiles-${i + 1}`, title: `Open task ${i + 1}`, status: statuses[i % statuses.length] })),
+      ...Array.from({ length: 50 }, (_, i) => ({ id: `dotfiles-closed-${i + 1}`, title: `Closed task ${i + 1}`, status: i % 2 === 0 ? "done" : "dropped" })),
+    ];
+    writeFileSync(lsFile, JSON.stringify(tasks));
+    setEnv({ FAKE_BOARD_LS_FILE: lsFile });
+
+    const titles = await openTitles("dotfiles");
+    expect(titles).toHaveLength(1050);
+    expect([titles[0], titles[200], titles[1049]]).toEqual(["Open task 1", "Open task 201", "Open task 1050"]);
+    expect(titles.some((title) => title.startsWith("Closed task"))).toBe(false);
+    expect(boardCalls().filter(([command]) => command === "ls")).toEqual([
+      ["ls", "--board", "dotfiles", "--open", "--fields", "id,title,status", "--json", "--limit", "1000"],
+      ["ls", "--board", "dotfiles", "--open", "--fields", "id,title,status", "--after", "dotfiles-1000", "--json", "--limit", "1000"],
+    ]);
+
+    const record = await reviewRepo(target, config(), { now: NOW, file: false });
+    expect(record.error).toBeNull();
+    const verify = sessions().find((session) => session.kind === "verify");
+    expect(verify.stdin).toContain("- Open task 1\n");
+    expect(verify.stdin).toContain("- Open task 201\n");
+    expect(verify.stdin).toContain("- Open task 1050");
+    expect(verify.stdin).not.toContain("Closed task");
   });
 
   test("a dry run verifies but files nothing", async () => {
