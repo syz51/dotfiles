@@ -38,6 +38,10 @@ const MERGEABLE_NOW = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 const ENABLE_AUTO_MERGE = `mutation($id: ID!, $method: PullRequestMergeMethod!) {
   enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: $method}) { pullRequest { autoMergeRequest { enabledAt } } } }`;
 const PR_URL = /^https:\/\/([^/\s]+)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/;
+const INLINE_PR_URL = /https:\/\/[^/\s"'<>]+\/[^/\s"'<>]+\/[^/\s"'<>]+\/pull\/\d+(?![/\w-])/g;
+const MCP_CREATE_TOOLS = new Set(["mcp__t3-code__pull_request_create", "mcp_t3-code_pull_request_create"]);
+const STRUCTURED_URL_KEYS = ["url", "html_url", "prUrl", "pullRequestUrl", "pull_request_url"];
+const STRUCTURED_CONTAINER_KEYS = ["structuredContent", "pullRequest", "pull_request", "pr", "data", "result"];
 
 /** Whether `command` runs `gh pr create` (or its alias `gh pr new`) anywhere shell.js can see. */
 export function createsPullRequest(command, cwd) {
@@ -126,14 +130,63 @@ function autoMerge(url, query) {
   return `${url}: auto-merge is on (${method[2]}); GitHub merges it once ${view.baseRefName}'s requirements pass. If it falls BEHIND, run \`gh pr update-branch ${url}\`.`;
 }
 
-/**
- * The report for a Bash call that ran `command` from `cwd` and printed `stdout`, or undefined
- * when it created no pull request. `run(args, timeoutMs)` runs gh and returns { code, stdout,
- * stderr }; it throws when gh cannot run or times out.
- */
-export function report(command, cwd, stdout, run, { budgetMs = BUDGET_MS } = {}) {
-  if (!createsPullRequest(command, cwd)) return undefined;
-  const urls = pullRequestUrls(stdout);
+/** Extracts distinct pull request URLs from an MCP `pull_request_create` response or plain text. */
+export function extractMcpPullRequestUrls(toolResponse) {
+  const urls = new Set();
+  const seen = new Set();
+  const addIfPrUrl = (value) => {
+    if (typeof value !== "string") return;
+    const trimmed = value.trim();
+    if (PR_URL.test(trimmed)) urls.add(trimmed);
+  };
+  const visitText = (text) => {
+    if (typeof text !== "string" || !text.includes("/pull/")) return;
+    const trimmed = text.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        visit(JSON.parse(trimmed));
+        return;
+      } catch {
+        // Fall through to plain-text URL extraction when not valid JSON.
+      }
+    }
+    const lineUrls = pullRequestUrls(text);
+    if (lineUrls.length > 0) {
+      for (const u of lineUrls) urls.add(u);
+      return;
+    }
+    for (const match of text.matchAll(INLINE_PR_URL)) {
+      if (PR_URL.test(match[0])) urls.add(match[0]);
+    }
+  };
+  const visit = (value) => {
+    if (value === null || value === undefined) return;
+    if (typeof value === "string") {
+      visitText(value);
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+      return;
+    }
+    if (value.isError === true) return;
+    for (const key of STRUCTURED_URL_KEYS) addIfPrUrl(value[key]);
+    for (const key of STRUCTURED_CONTAINER_KEYS) {
+      if (value[key] !== undefined) visit(value[key]);
+    }
+    if (Array.isArray(value.content)) visit(value.content);
+    if (typeof value.stdout === "string") visitText(value.stdout);
+    if (typeof value.text === "string") visitText(value.text);
+  };
+  visit(toolResponse);
+  return [...urls];
+}
+
+/** Runs auto-merge for each PR URL in `urls` and returns the formatted hook report, or undefined. */
+export function reportUrls(urls, run, { budgetMs = BUDGET_MS } = {}) {
   if (urls.length === 0) return undefined;
   const query = makeQuery(run, Date.now() + budgetMs);
   const lines = urls.map((url) => {
@@ -147,16 +200,68 @@ export function report(command, cwd, stdout, run, { budgetMs = BUDGET_MS } = {})
   return `auto-merge hook:\n${lines.join("\n")}`;
 }
 
+/**
+ * The report for a Bash call that ran `command` from `cwd` and printed `stdout`, or undefined
+ * when it created no pull request. `run(args, timeoutMs)` runs gh and returns { code, stdout,
+ * stderr }; it throws when gh cannot run or times out.
+ */
+export function report(command, cwd, stdout, run, { budgetMs = BUDGET_MS } = {}) {
+  if (!createsPullRequest(command, cwd)) return undefined;
+  return reportUrls(pullRequestUrls(stdout), run, { budgetMs });
+}
+
+/**
+ * The report for a T3 MCP `pull_request_create` call with `toolInput` and `toolResponse` from
+ * `cwd`, or undefined when skipped (draft, private, tool error, or no PR URL). Falls back to
+ * `gh pr view --json url -q .url` in `cwd` when the tool output omits the URL.
+ */
+export function reportMcpCreate(toolInput, toolResponse, cwd, run, { budgetMs = BUDGET_MS } = {}) {
+  if (toolInput?.draft === true || toolInput?.private === true) return undefined;
+  if (toolResponse && typeof toolResponse === "object" && toolResponse.isError === true) return undefined;
+  const deadline = Date.now() + budgetMs;
+  let urls = extractMcpPullRequestUrls(toolResponse);
+  if (urls.length === 0) {
+    if (typeof toolInput?.environmentId === "string" && toolInput.environmentId.trim() !== "") {
+      return undefined;
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) {
+      return "auto-merge hook:\nauto-merge failed: gh ran out of time to read the created pull request URL. Turn it on yourself as ~/.claude/reference/merge.md says, and report the failure.";
+    }
+    let result;
+    try {
+      result = run(["pr", "view", "--json", "url", "-q", ".url"], Math.min(CALL_TIMEOUT_MS, left));
+    } catch (error) {
+      return `auto-merge hook:\nauto-merge failed: gh could not read the created pull request URL (${error.message}). Turn it on yourself as ~/.claude/reference/merge.md says, and report the failure.`;
+    }
+    if (result.code !== 0) {
+      return `auto-merge hook:\nauto-merge failed: gh could not read the created pull request URL (${firstLine(result.stderr)}). Turn it on yourself as ~/.claude/reference/merge.md says, and report the failure.`;
+    }
+    urls = extractMcpPullRequestUrls(result.stdout);
+  }
+  if (urls.length === 0) return undefined;
+  return reportUrls(urls, run, { budgetMs: Math.max(0, deadline - Date.now()) });
+}
+
 if (import.meta.main) {
   let text;
   try {
     const input = JSON.parse(readFileSync(0, "utf8"));
-    const command = input?.tool_input?.command;
-    const stdout = input?.tool_response?.stdout;
-    // A cheap prefilter: the command names gh and the output holds a pull request URL.
-    if (typeof command === "string" && typeof stdout === "string" && /gh/i.test(command) && stdout.includes("/pull/")) {
-      const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
-      text = report(command, cwd, stdout, (args, timeout) => runGh(cwd, args, timeout));
+    const cwd = typeof input.cwd === "string" ? input.cwd : process.cwd();
+    if (MCP_CREATE_TOOLS.has(input?.tool_name)) {
+      text = reportMcpCreate(
+        input?.tool_input ?? {},
+        input?.tool_response,
+        cwd,
+        (args, timeout) => runGh(cwd, args, timeout),
+      );
+    } else {
+      const command = input?.tool_input?.command;
+      const stdout = input?.tool_response?.stdout;
+      // A cheap prefilter: the command names gh and the output holds a pull request URL.
+      if (typeof command === "string" && typeof stdout === "string" && /gh/i.test(command) && stdout.includes("/pull/")) {
+        text = report(command, cwd, stdout, (args, timeout) => runGh(cwd, args, timeout));
+      }
     }
   } catch (error) {
     text = `auto-merge hook failed (${error.message}), so auto-merge may be off. Turn it on yourself as ~/.claude/reference/merge.md says, and report the failure.`;
