@@ -549,12 +549,16 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(sync.main(["install", "--dry-run"], run=Runner()), 0)
         self.assertEqual(plistlib.loads(out.getvalue().encode())["Label"], "com.syz51.config-sync")
 
-    def links(self, *, lexists, which):
+    def links(self, *, lexists, which, gemini=False):
+        def fake_lexists(path):
+            if path == Path.home() / ".gemini" / "config":
+                return gemini
+            return lexists
         with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), \
-                mock.patch.object(sync.os.path, "lexists", return_value=lexists) as exists, \
+                mock.patch.object(sync.os.path, "lexists", side_effect=fake_lexists) as exists, \
                 mock.patch.object(sync.shutil, "which", return_value=which):
             pairs = sync.links(Path("/r"))
-        exists.assert_called_once_with(Path.home() / ".claude")
+        exists.assert_any_call(Path.home() / ".claude")
         return pairs
 
     def test_the_default_links_cover_claude_and_codex(self):
@@ -572,6 +576,22 @@ class InstallTests(unittest.TestCase):
     def test_an_existing_claude_home_is_checked_without_the_command(self):
         # A moved or updating install must not hide a ~/.claude that became a copy.
         self.assertEqual(self.links(lexists=True, which=None)[0], (Path.home() / ".claude", Path("/r/claude")))
+
+    def test_an_existing_gemini_config_checks_gemini_links(self):
+        pairs = self.links(lexists=False, which=None, gemini=True)
+        self.assertEqual(pairs, [
+            (Path.home() / ".gemini/config/GEMINI.md", Path("/r/gemini/GEMINI.md")),
+            (Path.home() / ".gemini/config/SKILLS_CATALOG.md", Path("/r/gemini/SKILLS_CATALOG.md")),
+            (Path.home() / ".gemini/config/hooks.json", Path("/r/gemini/hooks.json")),
+            (Path.home() / ".gemini/config/mcp_config.json", Path("/r/gemini/mcp_config.json")),
+            (Path.home() / ".gemini/config/skills/cheat-sheets", Path("/r/claude/skills/cheat-sheets")),
+            (Path.home() / ".gemini/config/skills/diff-review", Path("/r/claude/skills/diff-review")),
+            (Path.home() / ".gemini/config/skills/full-stop", Path("/r/claude/skills/full-stop")),
+            (Path.home() / ".gemini/config/skills/headless-browser", Path("/r/claude/skills/headless-browser")),
+            (Path.home() / ".gemini/config/skills/ui-climb", Path("/r/claude/skills/ui-climb")),
+            (Path.home() / ".gemini/config/skills/work-stages", Path("/r/claude/skills/work-stages")),
+            (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")),
+        ])
 
 
 if __name__ == "__main__":

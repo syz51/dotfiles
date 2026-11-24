@@ -5,7 +5,7 @@
 // transcripts, runs the offline suites, and pushes a branch with a draft PR for the user
 // to review. With --board-snapshot, the work board's stats and feedback are one more
 // source (../board/proposal.js), under the same budgets.
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -27,7 +27,7 @@ scored sessions, as a draft PR.
   --days N          window of scored sessions (default 30)
   --threshold N     distinct failing sessions a dimension needs (default 3)
   --dimension ID    only this dimension (repeatable)
-  --model MODEL     proposer model (default claude-opus-5-5)
+  --model MODEL     proposer model (default gemini-4-neon)
   --effort LEVEL    proposer effort (default high)
   --budget-usd N    budget of each proposer session (default 3)
   --max-total-usd N stop starting sessions that could take this run past N (default 10);
@@ -47,11 +47,11 @@ const EVIDENCE_ITEMS = 25;
 
 export const proposalsFile = () => statePath("proposals.jsonl");
 
-// Whether a repository path may change in a proposal: the global instructions, the rules
-// they point at in claude/reference, their Codex copy (whose Work board section must stay
-// identical) and the agent definitions. Tests are
-// code the suite would run, so a person updates them.
-export const allowedPath = (path) => path === "claude/CLAUDE.md" || path === "codex/AGENTS.md" || /^claude\/(agents|reference)\/[^/]+\.md$/.test(path);
+// Whether a repository path may change in a proposal: the global instructions
+// (gemini/GEMINI.md and claude/CLAUDE.md), the rules claude/CLAUDE.md points at in
+// claude/reference, their Codex copy (whose Work board section must stay identical) and
+// the agent definitions. Tests are code the suite would run, so a person updates them.
+export const allowedPath = (path) => path === "gemini/GEMINI.md" || path === "claude/CLAUDE.md" || path === "codex/AGENTS.md" || /^claude\/(agents|reference)\/[^/]+\.md$/.test(path);
 
 // Failing sessions per dimension, from the latest record of each session: the latest
 // judged record for judge dimensions, the latest record for detectors. Only records of
@@ -97,30 +97,35 @@ export function alreadyProposed(proposals, dimension, sessionIds, now) {
 // The failures whose evidence the proposer sees.
 const shownFailures = (group) => group.failures.slice(0, EVIDENCE_ITEMS);
 
-export function proposerPrompt({ group, instructions }) {
+export function proposerPrompt({ group, instructions, geminiInstructions = null }) {
   const { dimension } = group;
-  const text = section(instructions, dimension.section) ?? "(missing)";
+  const sections = [];
+  if (geminiInstructions !== null) {
+    const geminiText = section(geminiInstructions, dimension.section) ?? "(missing)";
+    sections.push(`The section of gemini/GEMINI.md it tests, "## ${dimension.section}":\n<section file="gemini/GEMINI.md">\n${geminiText}\n</section>`);
+  }
+  if (instructions !== null && instructions !== undefined) {
+    const text = section(instructions, dimension.section) ?? "(missing)";
+    sections.push(`The section of claude/CLAUDE.md it tests, "## ${dimension.section}":\n<section>\n${text}\n</section>`);
+  }
   const evidence = shownFailures(group).map((failure) =>
     `- session ${failure.sessionId} (${failure.project ?? "?"}):\n${failure.evidence.map((line) => `  - ${line}`).join("\n")}`);
-  return `You maintain the Claude Code agent configuration in this repository: the global instructions claude/CLAUDE.md (installed as ~/.claude/CLAUDE.md), the subagent definitions claude/agents/*.md, and the offline tests in claude/tests that pin them.
+  return `You maintain the coding agent configuration in this repository: the Antigravity/Gemini 4 Neon global instructions gemini/GEMINI.md (installed as ~/.gemini/GEMINI.md), the Claude Code global instructions claude/CLAUDE.md (installed as ~/.claude/CLAUDE.md), the subagent definitions claude/agents/*.md, and the offline tests in claude/tests that pin them.
 
 A scoring tool found the same failure in ${group.failures.length} distinct real sessions:
 
 Dimension: ${dimension.id} (${dimension.kind === "detector" ? "deterministic detector" : "LLM judge"})
 What it checks: ${dimension.question ?? dimension.description}
 
-The section of claude/CLAUDE.md it tests, "## ${dimension.section}":
-<section>
-${text}
-</section>
+${sections.join("\n\n")}
 
 Evidence (the judge's or detector's words, not raw transcripts; it may be wrong):
 ${evidence.join("\n")}${group.failures.length > EVIDENCE_ITEMS ? `\n- … and ${group.failures.length - EVIDENCE_ITEMS} more sessions` : ""}
 
 Your task:
-1. Read claude/CLAUDE.md, the files in claude/reference that it points at (rules that few turns need, with the same force), the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
-2. Otherwise make the smallest change that fixes that cause. Prefer clarifying, replacing or deleting existing text over adding a new rule; keep the file's concise style and do not repeat rules.
-3. Edit only claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
+1. Read gemini/GEMINI.md, claude/CLAUDE.md, the files in claude/reference that claude/CLAUDE.md points at (rules that few turns need, with the same force), the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
+2. Otherwise make the smallest change that fixes that cause. Prefer clarifying, replacing or deleting existing text over adding a new rule; keep each file's concise style and do not repeat rules.
+3. Edit only gemini/GEMINI.md, claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
 4. The repository is public. Write the change in general terms: never copy the evidence, commands, paths, URLs or project names into it. A change that repeats the evidence verbatim is rejected.
 
 Reply with a short paragraph on the cause and the change, then a last line "TITLE: <imperative summary under 70 characters>". The paragraph stays private for the reviewer; the title becomes the public commit message and pull request title, so it must not quote the evidence either.`;
@@ -137,7 +142,7 @@ function evidenceMarkdown(group) {
 // explanation, which may echo the evidence, stays in the local evidence file.
 function prBody({ group, tests, evidenceName }) {
   const lines = [
-    `Repeated \`${group.dimension.id}\` failures (${group.dimension.kind}) in ${group.failures.length} scored sessions, against the "${group.dimension.section}" section of \`claude/CLAUDE.md\`.`,
+    `Repeated \`${group.dimension.id}\` failures (${group.dimension.kind}) in ${group.failures.length} scored sessions, against the "${group.dimension.section}" section of \`gemini/GEMINI.md\` / \`claude/CLAUDE.md\`.`,
     "",
     "## Evidence",
     `The evidence and the proposer's explanation quote private transcripts, so they stay in the factory state folder as \`proposals/${evidenceName}\`. Sessions:`,
@@ -158,7 +163,7 @@ function parseOptions(argv) {
       days: { type: "string", default: "30" },
       threshold: { type: "string", default: "3" },
       dimension: { type: "string", multiple: true, default: [] },
-      model: { type: "string", default: "claude-opus-5-5" },
+      model: { type: "string", default: "gemini-4-neon" },
       effort: { type: "string", default: "high" },
       "budget-usd": { type: "string", default: "3" },
       "max-total-usd": { type: "string", default: "10" },
@@ -229,14 +234,17 @@ async function attempt(group, options, record) {
   const clone = mkdtempSync(join(tmpdir(), "claude-factory-proposal-"));
   try {
     await cloneRepository(options.repo, clone, branch);
-    const instructions = readFileSync(join(clone, "claude", "CLAUDE.md"), "utf8");
+    const claudePath = join(clone, "claude", "CLAUDE.md");
+    const geminiPath = join(clone, "gemini", "GEMINI.md");
+    const instructions = existsSync(claudePath) ? readFileSync(claudePath, "utf8") : null;
+    const geminiInstructions = existsSync(geminiPath) ? readFileSync(geminiPath, "utf8") : null;
     // acceptEdits confines edits to the clone: an edit elsewhere needs a permission
     // prompt, which a print session denies. Credentials stay unread whatever the
     // user's settings allow. Until the stream says what it cost, assume the budget.
     record.costUSD = options.budgetUsd;
     const gitBefore = gitState(clone);
     const task = await runTask({
-      prompt: proposerPrompt({ group, instructions }),
+      prompt: proposerPrompt({ group, instructions, geminiInstructions }),
       cwd: clone,
       model: options.model,
       effort: options.effort,

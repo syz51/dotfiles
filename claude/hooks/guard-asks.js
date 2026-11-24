@@ -1,18 +1,133 @@
-// Claude Code PreToolUse hook for the board's ask_user tool. Enforces the Autonomy rule in
-// ~/.claude/CLAUDE.md: agents notify the user only for a reason that ask-policy.json lists
-// (design, cost, irreversible, outside, only-me, security, intent), and do every other step
-// themselves. An ask must name its reason as `Reason: <name>`; an `action` ask, which hands
-// the user a step, must name one of the policy's action_reasons. Otherwise the hook blocks the
-// ask (exit 2) and its stderr tells the agent what to do instead. The user tunes the reasons
-// in ask-policy.json. The guard fails open: on a crash or an unreadable policy the ask goes
+// PreToolUse hook for board asks (MCP `ask_user` and CLI `board ask`). Enforces the Autonomy rule in
+// ~/.claude/CLAUDE.md and ~/.gemini/config/GEMINI.md: agents notify the user only for a reason that
+// ask-policy.json lists (design, cost, irreversible, outside, only-me, security, intent), and do
+// every other step themselves. An ask must name its reason as `Reason: <name>`; an `action` ask,
+// which hands the user a step, must name one of the policy's action_reasons. Otherwise the hook
+// blocks the ask (exit 2) and its stderr tells the agent what to do instead. The user tunes the
+// reasons in ask-policy.json. The guard fails open: on a crash or an unreadable policy the ask goes
 // through, with the error shown as a non-blocking hook error.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { visitCommands } from "./shell.js";
 
 // `Reason: cost`, `**Reason:** cost`, `reason: "only me"`, `Reason: <design>`: the label, then
 // up to two words, with markup and quotes around them ignored.
 const REASON = /\breason\W{0,4}?[:：][\s*_`"'<(]*([\p{L}\p{N}_-]+(?:[ _-][\p{L}\p{N}_-]+)?)/giu;
 const key = (name) => name.toLowerCase().replace(/[\s_]+/g, "-").replace(/^-+|-+$/g, "");
+
+// `board` global options before the subcommand that take a value argument (`board --help`).
+const BOARD_GLOBAL_VALUE_OPTIONS = new Set(["--agent", "--board"]);
+// `board ask` options that take a value argument (`board ask --help`, plus `--question`).
+const BOARD_ASK_VALUE_OPTIONS = new Set([
+  "--agent",
+  "--board",
+  "--task",
+  "--kind",
+  "--option",
+  "--question",
+  "--set-parallel-tasks",
+  "--set-usage-stop-at",
+  "--set-temporary",
+]);
+
+export function loadAskPolicy(policyPath = process.env.ASK_POLICY ?? join(import.meta.dir, "ask-policy.json")) {
+  return JSON.parse(readFileSync(policyPath, "utf8"));
+}
+
+/**
+ * Returns the index of the `board` subcommand in `words`, or `-1` when `words` is not a
+ * `board` invocation or terminates before a subcommand due to help/version/`--`.
+ */
+function boardSubcommandIndex(words) {
+  if (!Array.isArray(words) || words.length === 0) return -1;
+  if (basename(words[0]).toLowerCase() !== "board") return -1;
+
+  let i = 1;
+  while (i < words.length && words[i].startsWith("-")) {
+    const word = words[i];
+    if (word === "-h" || word === "--help" || word === "-V" || word === "--version" || word === "--") {
+      return -1;
+    }
+    if (word.includes("=")) {
+      i += 1;
+    } else if (BOARD_GLOBAL_VALUE_OPTIONS.has(word)) {
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return i;
+}
+
+/**
+ * Parses a shell command's argv for a `board ask` invocation.
+ * Returns `{ question, kind }` when `words` invokes `board ask`, or `undefined` otherwise
+ * (non-`board` commands, other subcommands like `board asks` or `board help ask`, or help/version flags).
+ */
+export function parseBoardAskCommand(words) {
+  const i = boardSubcommandIndex(words);
+  if (i < 0 || words[i] !== "ask") return undefined;
+
+  let kind = "decision";
+  let questionFlag;
+  const positionals = [];
+  let afterDoubleDash = false;
+
+  for (let j = i + 1; j < words.length; j += 1) {
+    const word = words[j];
+    if (!afterDoubleDash && word === "--") {
+      afterDoubleDash = true;
+      continue;
+    }
+    if (!afterDoubleDash && word.startsWith("-") && word !== "-") {
+      if (word === "-h" || word === "--help" || word === "-V" || word === "--version") return undefined;
+      if (word === "--action") {
+        kind = "action";
+        continue;
+      }
+      const eq = word.indexOf("=");
+      const opt = eq === -1 ? word : word.slice(0, eq);
+      const inlineVal = eq === -1 ? undefined : word.slice(eq + 1);
+      if (BOARD_ASK_VALUE_OPTIONS.has(opt)) {
+        const val = inlineVal !== undefined ? inlineVal : words[++j];
+        if (opt === "--kind" && typeof val === "string") kind = val.toLowerCase();
+        else if (opt === "--question" && typeof val === "string") questionFlag = val;
+      }
+      continue;
+    }
+    positionals.push(word);
+  }
+
+  const question = questionFlag !== undefined ? questionFlag : positionals.join(" ");
+  return { question, kind };
+}
+
+/**
+ * Why a shell command running `board ask` must not reach the user under `policy`, or undefined.
+ */
+export function findBoardAskViolation(command, cwd, policy) {
+  if (typeof command !== "string") return undefined;
+  const unquoted = command.replace(/\\\r?\n/g, "").replace(/["'\\]/g, "");
+  if (!/board/i.test(unquoted)) return undefined;
+  let loaded = policy;
+  return visitCommands(command, cwd, (words, _dir, { appended, opaque }) => {
+    if (opaque) {
+      return "xargs runs a command the guard cannot inspect (`opaque`), so it cannot verify whether it invokes `board ask`.";
+    }
+    const subIdx = boardSubcommandIndex(words);
+    if (subIdx < 0) return undefined;
+    if (appended && subIdx >= words.length) {
+      return "xargs supplies arguments to `board` that the guard cannot check; pass the subcommand and arguments directly.";
+    }
+    if (appended && words[subIdx] === "ask") {
+      return "xargs supplies arguments to `board ask` that the guard cannot check; pass the arguments directly.";
+    }
+    const parsed = parseBoardAskCommand(words);
+    if (!parsed) return undefined;
+    loaded ??= loadAskPolicy();
+    return askViolation(parsed, loaded);
+  });
+}
 
 /** Why `input` (the ask_user tool input) must not reach the user under `policy`, or undefined. */
 export function askViolation(input, policy) {
@@ -38,8 +153,9 @@ export function askViolation(input, policy) {
 
 if (import.meta.main) {
   const input = JSON.parse(readFileSync(0, "utf8"));
-  const policy = JSON.parse(readFileSync(process.env.ASK_POLICY ?? join(import.meta.dir, "ask-policy.json"), "utf8"));
-  const violation = askViolation(input?.tool_input, policy);
+  const violation = input?.tool_name === "Bash"
+    ? findBoardAskViolation(input?.tool_input?.command, typeof input.cwd === "string" ? input.cwd : process.cwd())
+    : askViolation(input?.tool_input, loadAskPolicy());
   if (violation) {
     process.stderr.write(`Blocked by the guard-asks hook: ${violation}\n`);
     process.exit(2);

@@ -248,6 +248,19 @@ Machines: 17
   - G5: On a git timeout the block names the node rule, so the reason does not show that the git check failed. Verdict: confirmed. Evidence: probe P-GITTO prints "Blocked by the guard-runtimes hook: `node server.js` runs node..." on the timed-out run, exit 2. Task: dotfiles-568.
 - Tests: `claude/hooks/guard-runtimes.test.js:283`, `:558` (malformed input gets a non-blocking exit). No git-timeout case.
 
+### deck-view once-only and staleDecks
+
+- Where: `claude/hooks/deck-view.js` (names, staleDecks, main), `claude/bin/deck-view.js` (render, shown.json)
+- States: no shown decks (pass without reading the transcript); shown deck unchanged or not named (pass); shown deck changed and named (block); once only (`stop_hook_active`)
+- Transitions:
+  - `stop_hook_active`, or no readable transcript -> pass, exit 0.
+  - shown.json empty or missing -> pass, exit 0, transcript not read.
+  - a shown deck's sha256 differs from its last render and the transcript names it -> block, exit 2, with the render instruction.
+  - `deck-view <deck>` renders it -> shown.json records the new sha256 -> the next stop passes.
+  - shown.json unreadable -> pass, exit 0, reason on stderr (fails open).
+- Gaps: a deck of the same file name in another folder counts as named. Two simultaneous renders can drop one entry from shown.json. Both by design: the cost is one extra render or one unwatched deck.
+- Tests: `claude/hooks/deck-view.test.js`
+
 ### open-items once-only and unfiledItems
 
 - Where: `claude/hooks/open-items.js:59-86` (openItems), `:89-92` (unfiledItems), `:95-101` (board query), `:110` (active check), `:125` (block exit)
@@ -489,7 +502,8 @@ Machines: 16
   - `claude/CLAUDE.md:86` names the `diff-review` skill for the review effort -> the skill has no effort text. Not enforced; `claude/agents/reviewer.md:5` sets `effort: high`.
 - Gaps:
   - G1 (P9): The pointer at `claude/CLAUDE.md:86` names a skill that sets no effort. Verdict: confirmed. Evidence: `grep -c -i effort claude/skills/diff-review/SKILL.md` prints 0 (exit 1); line 5 of `claude/agents/reviewer.md` is `effort: high`. Task: dotfiles-564.
-- Tests: `claude/tests/config.test.js:87` (expected `effort: "high"`), `:1039` (pins the pointer text)
+  - After the audit, dotfiles-763 removed `effort` from `claude/agents/reviewer.md`. The reviewer runs at the session's effort, and `claude/reference/review.md` names `modelSettings` in `claude/settings.json` as its source. The rule no longer names the skill for the effort.
+- Tests: `claude/tests/config.test.js` (the reviewer policy without `effort`; "reviewer sets no effort"; the test that pins the Review rule text)
 
 ### No-session-env
 

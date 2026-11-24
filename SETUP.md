@@ -303,8 +303,12 @@ guards treat as filled in by the shell, and a command whose name or script holds
 opaque. guard-git-push and guard-pr-merge refuse an opaque command; guard-main-checkout
 refuses one in a main checkout, unless it runs inside a remote script. Forms such as
 `git ls-files | xargs grep foo` and `ls | xargs -n1 basename` are not opaque.
-guard-pr-merge (Claude Code only) enforces the merge rule in `claude/CLAUDE.md`'s Autonomy
-section. Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
+guard-pr-merge (Claude Code and Antigravity) enforces the merge rule in `claude/CLAUDE.md`'s
+and `gemini/GEMINI.md`'s Autonomy section on both `gh pr merge` shell calls and T3 Code's
+`pull_request_merge` MCP tool (`mcp__t3-code__pull_request_merge` / `mcp_t3-code_pull_request_merge`,
+refusing `stack=true`, invalid arguments, drafts, behind/dirty branches, failing/pending/missing
+checks, stale/missing `expectedHeadSha`, and remote `environmentId` calls without explicit
+`repository` and `number`). Before a `gh pr merge` runs, it reads the pull request with `gh pr view` and refuses
 `--admin`, a draft, a branch that is `BEHIND` or `DIRTY`, and a pending or failed check on the
 head commit. A merge that it checks like a direct merge must also pin that head with
 `--match-head-commit <SHA>`, the `headRefOid` read in the same query as the checks, so
@@ -366,8 +370,10 @@ GraphQL call, and its
 `settings.json` timeout of 45 seconds covers the 35 seconds it allows for them. It cannot
 see gh aliases, scripts, an endpoint held wholly in a variable, a query read from a file,
 or curl.
-`claude/hooks/auto-merge.js` (Claude Code only, a PostToolUse hook on Bash) turns on
-auto-merge after a Bash call that ran `gh pr create` succeeds. For each pull request URL
+`claude/hooks/auto-merge.js` (Claude Code and Antigravity, a PostToolUse hook on Bash/`run_command`
+and T3 Code's `pull_request_create` MCP tool) turns on
+auto-merge after a Bash call that ran `gh pr create` or a non-draft, non-private
+`pull_request_create` MCP call succeeds (resolving the PR URL from tool output or `gh pr view --json url -q .url` in `cwd`). For each pull request URL
 the call printed on a line of its own, it turns on auto-merge when the
 repository's owner is in its `OWNERS` list (`syz51`), the repository allows auto-merge,
 the pull request is open, not a draft and has no auto-merge request, and the base branch
@@ -406,7 +412,10 @@ runs that one git command as `git -c claude.mainCheckout=allow <subcommand> ...`
 which the guard lets through; the block message tells agents so, and never to hand the
 command back to the user. Even then the guard refuses what could lose another thread's work:
 `reset --hard`, `checkout -f` and `switch -f` or `--discard-changes` while tracked files have
-changes, and `stash drop` or `stash clear`. For `gh pr checkout` the message gives the same
+changes, `stash clear`, and `stash drop` unless one named `stash@{<n>}` entry already has a
+direct backup ref to its commit at `refs/stash-backup/<sha>` (created first with
+`git update-ref refs/stash-backup/<sha> refs/stash@{<n>}`) and runs on its own without chained
+stash mutations or loops. For `gh pr checkout` the message gives the same
 route through `git fetch` and `git switch`. To allow every such command in one repository, run
 `git config claude.mainCheckout allow` yourself; the guard refuses a `git config`
 command that sets that key. It is a guardrail against mistakes, not a security
@@ -421,13 +430,16 @@ change the branch, as `echo feature | xargs git checkout` can, but not file rest
 opaque command, in a main checkout. It fails
 open when it cannot tell the repository, such as with `--git-dir` or a directory held
 in a variable, and for scripts nested too deeply to parse.
-guard-asks (Claude Code only) checks each board `ask_user` call against
-`claude/hooks/ask-policy.json`, the reasons the Autonomy section of `claude/CLAUDE.md` lets
-agents notify the user for: `design`, `cost`, `irreversible`, `outside`, `only-me`,
-`security` and `intent`. An ask
+guard-asks checks each board `ask_user` call against
+`claude/hooks/ask-policy.json`, the reasons the Autonomy section of `claude/CLAUDE.md` and
+`gemini/GEMINI.md` let agents notify the user for: `design`, `cost`, `irreversible`, `outside`,
+`only-me`, `security` and `intent`. An ask
 must name one as `Reason: <name>`, and an `action` ask, which hands the user a step, must
 name `only-me`. Otherwise the hook refuses the ask and lists what the agent should do
-instead. Edit the JSON file to change the reasons. The `board ask` CLI is not checked.
+instead. Edit the JSON file to change the reasons. Claude Code (`claude/settings.json`) checks
+only the MCP `ask_user` tool (not the `board ask` CLI); Antigravity (`gemini/hooks.json`) checks
+both lazy/eager MCP `ask_user` calls (`call_mcp_tool`, `mcp_board_ask_user`) and `board ask` CLI
+invocations through `run_command`.
 open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
 work board, it blocks the stop once when an item under an open-item heading, such as
 "Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no
@@ -436,6 +448,14 @@ the task or ask that holds it. The board's own Stop reminder fires only after `t
 a release. The hook is a reminder: the next stop passes. Edit
 `claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
 to `false` to turn it off.
+deck-view (Claude Code only) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
+renders a deck with LibreOffice (`soffice`) and `pdftoppm` into one HTML page that shows
+one slide at a time, with Prev and Next buttons and the arrow keys. It prints the page's
+path for the T3 `html_render` tool and records the deck's sha256 in
+`~/.cache/deck-view/shown.json`. When a recorded deck changed since its render and the
+session's transcript names it, the hook blocks the stop once and asks for a new render. A
+deck never rendered is not watched. Link the command on each Mac:
+`ln -s ~/.config/claude/bin/deck-view ~/.local/bin/deck-view`.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and
@@ -464,18 +484,38 @@ speaks when a subagent starts, and at session start or after compaction, when th
 folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
 the guard. Re-measure the forms when a Claude Code update changes the
 guard's messages.
-`claude/settings.json` sets `autoCompactWindow`, the context window that Claude Code
-compacts against. It compacts about 33K below the window, so near 967K for Opus 5.5's 1M
-window, and long threads re-read most of that context on every call. The value applies to
-every session, subagents included, on the Air. It was 300000, which compacts near 267K,
-from 2026-11-06. From 2026-11-08 it is 200000, which compacts near 167K, as a trial. At
-300000, on the Air from 2026-11-06 to part of 2026-11-08, a main-thread call read 150K
-cached tokens on average, 26% of calls carried more than 200K of context, and all calls
-read 1.85B, 4.03B and 4.69B cached tokens a day. Compare at least three full days at
-200000 with that baseline. A lower window lowers reads per call by construction, so judge
-it by total cache-read tokens per day and per board task done, and watch compactions per
-session. Then set the chosen value, update this paragraph and the test and its comment in
-`claude/tests/config.test.js`.
+
+`claude/settings.json` sets `autoCompactWindow` to `200000`, the context window that Claude
+Code compacts against. It compacts about 33K below the window, so near 167K instead of near
+967K for Opus 5.5's 1M window, preventing long threads from re-reading hundreds of thousands
+of tokens on every call. The value applies to every Claude Code session, subagents included,
+on the Air. It was `300000` (compacting near 267K) from 2026-11-06 until 2026-11-08 14:47Z
+(PR #148), then trialed and kept at `200000` after measuring 15 full UTC days (2026-11-09 to
+2026-11-23, archived at `cloud:archive/air-2026-11-24/air-claude-projects-2026-11-24.tar.zst`)
+against the 300K baseline (`2026-11-06` to `2026-11-08 14:47Z`, 2.62 days):
+
+- Cache-read tokens per main-thread call fell 40% (`150K` -> `90K`; `102K` on `11-09`..`10`
+  before the `11-11` instruction trim), and calls above 200K context fell from `26.0%` to `0.0%`.
+- Total cache-read tokens per day fell from `3.55B` main / `4.22B` all per 24h (`1.85B / 2.28B`,
+  `3.31B / 4.03B`, `4.14B / 4.75B`) to `0.47B` main / `0.59B` all (`0.79B / 1.03B` in
+  `11-09`..`13`). Because daily volume also varied, normalized by paginated board tasks done
+  across all 13 boards (`1,040` in the baseline vs `1,654` over `11-09`..`23`), total cache
+  reads per done task fell 50% (`10.6M` -> `5.3M`; `5.7M` over `11-09`..`22` before Antigravity
+  tasks, `6.7M` in `11-09`..`13`, and `19.2M` -> `9.6M` excluding `board-feedback`).
+- Compactions rose from `4.9` to `7.7` per 1K main calls (`0.55` -> `0.17` per session overall,
+  `0.55` -> `0.29` excluding temp folders, `2.35` -> `3.12` per 100+-call session), with median
+  auto trigger `268K` -> `168K` and median compaction duration `69s` -> `60s`. Across 600
+  auto-compactions there were `0` `"Autocompact is thrashing"` system notices, `100%` resumed
+  with follow-up calls (`99.8%` with tool calls), and `0` back-to-back compactions within 5 calls.
+- Holding pricing fixed at Opus 5.5 rates, net main-thread cost per 1K calls fell 14.4%
+  (`$61.42` -> `$52.55`): cache-read savings (`-$11.96`) clearly outweighed higher 1h cache
+  writes (`+$4.41`, including ~37K median first-request write after each compaction).
+
+`200000` stays the floor because values below `200000` turn off background compaction summaries
+and increase compaction cache-write and file re-read overhead for smaller read savings. To
+reverse, change `autoCompactWindow` in `claude/settings.json` (for example `300000`, or
+`233000` to target a ~200K trigger) and update this section and `claude/tests/config.test.js`.
+
 Do not replace an existing tool home without backing up its local data.
 
 Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
@@ -819,7 +859,15 @@ It runs `~/.cargo/bin/board` and does nothing until that is installed. The board
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
 `board` rejects that call's `pre-tool-use` event, which the script reports as a failed hook
-rather than the exit code that would block the call. On each Mac, with a device token created
+rather than the exit code that would block the call. A second `pre-tool-use` entry, with
+matcher `mcp__.*__(delegate_task|t3_thread_launch|create_threads)` and a 10-second timeout,
+lets the board refuse a thread an agent starts through T3 past the device's run limit.
+Never run `board install claude --write` on `~/.claude/settings.json`: the file is tracked
+here, and the command changes it. It once added a direct `board hook` entry beside every
+wrapper entry, so each hook ran twice (dotfiles-520). After a board upgrade, run
+`board install claude --check ~/.claude/settings.json` where board has `--check`, or the
+"work board" tests in `claude/tests/config.test.js`, and add what they name to
+`claude/settings.json` through `board-hook.sh`. On each Mac, with a device token created
 on the server host. The Pro keeps `board` and its token for config-sync's reports, but skips
 the last three lines: it runs no Claude MCP server and no `board watch`, whose coordinators
 would run Claude:
@@ -953,7 +1001,7 @@ display points, so Retina scaling and displays left of or above the main one wor
 
 ## T3 Code thread cleanup
 
-A thread that finishes its work settles itself after a final check, as
+A thread that finishes its work first files the tool and setup problems it met, then settles itself after a final check, as
 `claude/reference/t3-settle.md` says; the Workflow section of `claude/CLAUDE.md` points to it. Board coordinator threads and Agent-tool subagents are
 exempt, and T3 unsettles a thread when new activity arrives. A self-settle starts the
 child cascade below and the 7-day settled-worktree cleanup.
@@ -1286,8 +1334,8 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   worktree's, passed. The session hands a commit's review to one
   `reviewer` agent in the background, in the same checkout, with the commit's SHA in its
   prompt and no `/code-review` call. It answers a follow-up question while the review
-  runs. The review reaches the reply and leaves the checkout, remote and worktrees as
-  they were. After the review, the session records each finding once
+  runs. The reviewer runs at the session's effort. The review reaches the reply and
+  leaves the checkout, remote and worktrees as they were. After the review, the session records each finding once
   through `ReportFindings`, with a category and an outcome. The real owner-check
   finding is `skipped`, because the checkout stays read-only. The guard hooks block a user-authorized leased force push to the branch the
   remote's HEAD names as its default and a bare

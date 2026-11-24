@@ -40,6 +40,15 @@ change = "A PR on dotfiles; bench the model and effort with `factory bench` befo
 verify = ["bun test claude/tests/config.test.js"]
 
 [[setup]]
+id = "gemini"
+title = "Antigravity / Gemini 4 Neon configuration, hooks, MCP and headless runner"
+covers = ["gemini"]
+owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
+channel = "board"
+change = "A PR on dotfiles with tests"
+verify = ["bun test gemini/hooks"]
+
+[[setup]]
 id = "hooks"
 title = "Claude Code and Codex hooks"
 covers = ["claude/hooks", "codex/hooks.json", "codex/trust-hooks.js"]

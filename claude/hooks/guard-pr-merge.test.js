@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyChecks, findMergeViolation, globMatches, parseMerge, runGh, runsOnEveryPullRequest } from "./guard-pr-merge.js";
+import { classifyChecks, findMcpMergeViolation, findMergeViolation, globMatches, parseMerge, runGh, runsOnEveryPullRequest } from "./guard-pr-merge.js";
 
 const HOOK = join(import.meta.dir, "guard-pr-merge.js");
 
@@ -817,6 +817,135 @@ describe("the hook", () => {
     rmSync(join(root, "log"), { force: true });
     expect(bash("gh pr view 12")).toEqual({ code: 0, stdout: "", stderr: "" });
     expect(() => readFileSync(join(root, "log"))).toThrow();
+  });
+
+  test("handles Claude Code mcp__t3-code__pull_request_merge PreToolUse inputs", () => {
+    const mcp = (toolInput, extraEnv) => hook(
+      JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "mcp__t3-code__pull_request_merge", tool_input: toolInput, cwd: root }),
+      extraEnv,
+    );
+    reply({ ...VIEW, isDraft: true });
+    const draft = mcp({ number: 12, repository: "o/r", expectedHeadSha: HEAD });
+    expect(draft.code).toBe(2);
+    expect(draft.stderr).toContain("pull_request_merge: pull request #12 is a draft.");
+
+    reply(VIEW);
+    rmSync(join(root, "log"), { force: true });
+    expect(mcp({ number: 12, repository: "o/r", expectedHeadSha: HEAD, method: "squash" })).toEqual({ code: 0, stdout: "", stderr: "" });
+    expect(readFileSync(join(root, "log"), "utf8")).toContain("pr view 12 --repo o/r --json");
+
+    const missingPin = mcp({ number: 12, repository: "o/r" });
+    expect(missingPin.code).toBe(2);
+    expect(missingPin.stderr).toContain(`expectedHeadSha "${HEAD}"`);
+
+    const ghFailed = mcp({ number: 12, expectedHeadSha: HEAD }, { FAKE_GH_FAIL: "HTTP 502" });
+    expect(ghFailed.code).toBe(2);
+    expect(ghFailed.stderr).toContain("gh could not read the pull request (HTTP 502)");
+  });
+});
+
+describe("T3 MCP pull_request_merge (dotfiles-824)", () => {
+  const mcpVerdict = (toolInput, options = {}, cwd = "/repo") => findMcpMergeViolation(toolInput, cwd, fakeGh(options));
+
+  test("allows a passing direct merge with matching expectedHeadSha, with or without explicit number/repository", () => {
+    const calls = [];
+    expect(mcpVerdict({ number: 12, repository: "o/r", expectedHeadSha: HEAD, method: "squash" }, { calls })).toBeUndefined();
+    expect(calls[0]).toEqual({ dir: "/repo", args: ["pr", "view", "12", "--repo", "o/r", "--json", expect.any(String)] });
+
+    const branchCalls = [];
+    expect(mcpVerdict({ expectedHeadSha: HEAD }, { calls: branchCalls }, "/wt")).toBeUndefined();
+    expect(branchCalls[0]).toEqual({ dir: "/wt", args: ["pr", "view", "--json", expect.any(String)] });
+  });
+
+  test("allows billing-skipped Actions job when CircleCI fallback passed, and refuses without fallback", () => {
+    const rollup = [job("build", 11), context("ci/circleci: build", "SUCCESS")];
+    expect(
+      mcpVerdict(
+        { number: 12, expectedHeadSha: HEAD },
+        { view: { statusCheckRollup: rollup }, graphql: graph([billingRun(11, NOTICE)]) },
+      ),
+    ).toBeUndefined();
+
+    const noFallback = mcpVerdict(
+      { number: 12, expectedHeadSha: HEAD },
+      { view: { statusCheckRollup: [job("build", 11)] }, graphql: graph([billingRun(11)]) },
+    );
+    expect(noFallback).toContain("not started for billing");
+  });
+
+  test("allows auto=true on check-gated bases when not mergeable now, and refuses on ungated or mergeable-now bases", () => {
+    expect(
+      mcpVerdict(
+        { number: 12, auto: true, expectedHeadSha: HEAD },
+        { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } },
+      ),
+    ).toBeUndefined();
+
+    expect(
+      mcpVerdict(
+        { number: 12, auto: true },
+        { rules: [{ type: "required_status_checks" }], view: { mergeStateStatus: "BEHIND", statusCheckRollup: [] }, workflows: WORKFLOWS },
+      ),
+    ).toBeUndefined();
+
+    // Ungated base: auto=true must pass direct-merge checks
+    expect(
+      mcpVerdict(
+        { number: 12, auto: true, expectedHeadSha: HEAD },
+        { view: { mergeStateStatus: "BLOCKED", statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } },
+      ),
+    ).toContain("still running");
+
+    // Mergeable-now (UNSTABLE / CLEAN): auto=true merges immediately, so checks/missing-CI still apply
+    expect(
+      mcpVerdict(
+        { number: 12, auto: true, expectedHeadSha: HEAD },
+        { branch: PROTECTED, view: { mergeStateStatus: "UNSTABLE", statusCheckRollup: [...PASSING, run("Lint", "COMPLETED", "FAILURE")] } },
+      ),
+    ).toContain("checks failed");
+    expect(
+      mcpVerdict(
+        { number: 12, auto: true, expectedHeadSha: HEAD },
+        { branch: PROTECTED, view: { mergeStateStatus: "CLEAN", statusCheckRollup: [] }, ci: { files: { "checks.yml": PR_WORKFLOW } } },
+      ),
+    ).toContain("CI may not have started");
+  });
+
+  test.each([
+    ["a failing check", { number: 12, expectedHeadSha: HEAD }, { view: { statusCheckRollup: [run("Portable tests", "COMPLETED", "FAILURE")] } }, "checks failed"],
+    ["a pending check", { number: 12, expectedHeadSha: HEAD }, { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],
+    ["missing workflow CI", { number: 12, expectedHeadSha: HEAD }, { view: { statusCheckRollup: [] }, ci: { files: { "checks.yml": PR_WORKFLOW } } }, 'no check yet from workflow "Checks"'],
+    ["missing CircleCI check", { number: 12, expectedHeadSha: HEAD }, { view: { statusCheckRollup: PASSING }, ci: { circleci: true } }, "no check yet from CircleCI"],
+    ["a draft PR", { number: 12, expectedHeadSha: HEAD }, { view: { isDraft: true } }, "is a draft"],
+    ["a draft PR with auto=true", { number: 12, auto: true, expectedHeadSha: HEAD }, { branch: PROTECTED, view: { isDraft: true, mergeStateStatus: "BLOCKED" } }, "is a draft"],
+    ["a BEHIND PR on check-gated base", { number: 12, expectedHeadSha: HEAD }, { branch: PROTECTED, view: { mergeStateStatus: "BEHIND" } }, "rerun this merge with auto=true"],
+    ["a DIRTY PR", { number: 12, expectedHeadSha: HEAD }, { view: { mergeStateStatus: "DIRTY" } }, "conflicts with main"],
+    ["a stale expectedHeadSha", { number: 12, expectedHeadSha: "0000000" }, {}, `expectedHeadSha 0000000 is not pull request #12's head commit ${HEAD}`],
+    ["a stale expectedHeadSha with auto=true", { number: 12, auto: true, expectedHeadSha: "0000000" }, { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED" } }, `expectedHeadSha 0000000 is not pull request #12's head commit ${HEAD}`],
+    ["a missing expectedHeadSha on direct merge", { number: 12 }, {}, `passing expectedHeadSha "${HEAD}"`],
+    ["stack=true", { number: 12, expectedHeadSha: HEAD, stack: true }, {}, "stack=true merges multiple pull requests"],
+    ["invalid number", { number: -1, expectedHeadSha: HEAD }, {}, "invalid pull request number"],
+    ["invalid repository flag", { number: 12, repository: "--admin", expectedHeadSha: HEAD }, {}, "invalid repository"],
+    ["invalid auto type", { number: 12, auto: "yes", expectedHeadSha: HEAD }, {}, "invalid auto value"],
+    ["invalid expectedHeadSha type", { number: 12, expectedHeadSha: 123 }, {}, "invalid expectedHeadSha"],
+    ["non-object input", null, {}, "arguments are not an object"],
+    ["invalid environmentId type", { environmentId: { id: "env-remote" }, expectedHeadSha: HEAD }, {}, "invalid environmentId"],
+    ["environmentId without repository and number", { environmentId: "env-remote", expectedHeadSha: HEAD }, {}, "environmentId targets another environment"],
+  ])("refuses %s", (_, toolInput, options, reason) => {
+    const violation = mcpVerdict(toolInput, options);
+    expect(violation).toBeString();
+    expect(violation).toContain(reason);
+  });
+
+  test("allows environmentId when repository and number are both explicit, and allows closed/merged PRs", () => {
+    expect(mcpVerdict({ environmentId: "env-remote", repository: "o/r", number: 12, expectedHeadSha: HEAD })).toBeUndefined();
+    expect(mcpVerdict({ number: 12, expectedHeadSha: HEAD }, { view: { state: "MERGED", statusCheckRollup: [] }, workflows: WORKFLOWS })).toBeUndefined();
+  });
+
+  test("fails closed when gh errors, throws, or runs out of budget", () => {
+    expect(findMcpMergeViolation({ number: 12, expectedHeadSha: HEAD }, "/repo", () => ({ code: 1, stdout: "", stderr: "HTTP 502" }))).toContain("HTTP 502");
+    expect(findMcpMergeViolation({ number: 12, expectedHeadSha: HEAD }, "/repo", () => { throw new Error("ETIMEDOUT"); })).toContain("ETIMEDOUT");
+    expect(findMcpMergeViolation({ number: 12, expectedHeadSha: HEAD }, "/repo", fakeGh(), { budgetMs: 0 })).toContain("ran out of time");
   });
 });
 

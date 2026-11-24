@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { boardBin, call as boardCall, FEEDBACK_BOARD } from "../board/cli.js";
 import { judge } from "../lib/claude.js";
+import { antigravityBrainRoots, antigravityTranscriptFiles, antigravityTurns } from "../lib/antigravity.js";
 import { codexSessionsRoot, rolloutThreads } from "../lib/codex.js";
 import { agentStatus, installAgent, plistPath, plistText, toolPath, uninstallAgent } from "../lib/launchd.js";
 import { acquireLock, appendJsonl, readJson, readJsonl, stateDir, statePath, writeJsonAtomic } from "../lib/state.js";
@@ -53,8 +54,8 @@ const USAGE = `Usage: bun ~/.claude/factory/cli.js friction <run|install|uninsta
     --max-age-hours N    never look further back than this (default 48)
     --min-score N        friction score a turn needs to be judged (default 4)
     --max-turns N        turns to judge per run (default 8)
-    --model MODEL        judge model (default claude-haiku-5-5)
-    --effort LEVEL       judge effort (default medium)
+    --model MODEL        judge model (default gemini-4-neon)
+    --effort LEVEL       judge effort (default low)
     --budget-usd N       budget per judge call (default 0.05)
     --max-total-usd N    stop before judge spending could pass this (default 0.30)
     --dry-run            list the turns that would be judged; call and write nothing
@@ -83,7 +84,7 @@ export const skippedCwd = (cwd, state = stateDir()) => isAutomation(cwd) || (cwd
 // Completed turns of both harnesses that ended in (from, to], with their session. A turn
 // in that window that has not ended is held: holdAt is the earliest such end, before which
 // the cursor stays until the turn ends or goes stale (no activity since staleBefore).
-export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot() }) {
+export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot = projectsRoot(), codexRoot = codexSessionsRoot(), antigravityRoots = antigravityBrainRoots() }) {
   const found = [];
   const skipped = { automation: 0, feedback: 0 };
   let holdAt = Infinity;
@@ -112,6 +113,12 @@ export function completedTurns({ from, to, staleBefore = -Infinity, claudeRoot =
     if (!session) continue;
     if (skippedCwd(session.cwd)) skipped.automation++;
     else for (const turn of session.turns) take("codex", session, turn);
+  }
+  for (const { file, mtimeMs } of antigravityTranscriptFiles(antigravityRoots)) {
+    if (mtimeMs <= from) continue;
+    const session = antigravityTurns(file);
+    if (skippedCwd(session.cwd)) skipped.automation++;
+    else for (const turn of session.turns) take("antigravity", session, turn);
   }
   return { turns: found, skipped, holdAt };
 }
@@ -249,7 +256,7 @@ export const feedbackText = (finding, { harness, sessionId, turn, cwd }) => {
   const where = cwd ? ` in ${cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd}` : "";
   return [
     finding.title, "", ...(finding.detail ? [finding.detail, ""] : []), ...(finding.error ? [`Error: ${finding.error}`, ""] : []),
-    `Captured from ${harness === "codex" ? "Codex" : "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
+    `Captured from ${{ claude: "Claude Code", codex: "Codex", antigravity: "Antigravity" }[harness] ?? "Claude Code"} session ${sessionId}, turn ${turn}${where}.`,
   ].join("\n");
 };
 
@@ -321,8 +328,8 @@ function parseOptions(argv) {
       "max-age-hours": { type: "string", default: "48" },
       "min-score": { type: "string", default: "4" },
       "max-turns": { type: "string", default: "8" },
-      model: { type: "string", default: "claude-haiku-5-5" },
-      effort: { type: "string", default: "medium" },
+      model: { type: "string", default: "gemini-4-neon" },
+      effort: { type: "string", default: "low" },
       "budget-usd": { type: "string", default: "0.05" },
       "max-total-usd": { type: "string", default: "0.30" },
       "dry-run": { type: "boolean", default: false },
@@ -511,7 +518,7 @@ export async function run(argv, context) {
     case "run":
       return runFriction(options, context);
     case "install": {
-      const text = plist({ path: await toolPath({ required: ["claude"], purpose: "friction capture" }) });
+      const text = plist({ path: await toolPath({ required: ["agy-run"], purpose: "friction capture" }) });
       if (options.print) {
         console.log(text);
         return 0;

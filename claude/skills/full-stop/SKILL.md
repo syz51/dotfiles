@@ -69,7 +69,7 @@ tried and the options. When someone else merged or closed it, report that.
 ## Release
 
 When the user says to merge, run `gh pr ready <n>`, then merge it as
-`~/.claude/reference/merge.md` says. `gh pr ready` does not start the auto-merge hook,
+`~/.config/claude/reference/merge.md` says. `gh pr ready` does not start the auto-merge hook,
 so merge it directly once every check has passed.
 
 ## Feedback on this skill

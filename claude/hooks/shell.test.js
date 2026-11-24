@@ -434,3 +434,109 @@ test("gitAlias follows -c aliases and reports those it cannot read", () => {
     expect(gitAlias(settings(...words), "p")).toEqual({ unknown: words.at(-1) === "alias.q=p" ? "alias.p=q" : words[1] });
   }
 });
+
+test("a cd in eval, source or a non-last piped compound command marks the directory uncertain with candidates (dotfiles-306)", () => {
+  const lastMake = (source, cwd = "/repo") => {
+    let found;
+    visitCommands(source, cwd, (words, dir, { dirs }) => {
+      if (words[0] === "make") found = { dir, dirs };
+    });
+    return found;
+  };
+  // eval
+  expect(lastMake("eval cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval 'cd sub'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/repo/sub"] });
+  expect(lastMake("eval -- cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval - cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval \"eval 'cd /other'\"; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval 'cd $X'; make")).toEqual({ dir: undefined, dirs: ["/repo"] });
+  expect(lastMake("eval 'echo hi'; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("eval '(cd /other)'; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("eval 'cd /other' | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("true | eval 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  // source and .
+  expect(lastMake("source /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake(". /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("echo 'cd /other' | source /dev/stdin; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source /dev/stdin < <(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source <(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake(". <(printf 'cd /other\\n'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source =(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source /dev/stdin <<< 'cd /other' | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  // non-last piped or backgrounded compound commands
+  expect(lastMake("while read l; do cd /other; done < f | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("time while read l; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("until false; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("for x in a b; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("if true; then cd /other; fi | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("case a in a) cd /other;; esac | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done |& cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done & make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do cd /other; done | make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("while read l; do echo hi; done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  expect(lastMake("while read l; do (cd /other); done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  // remote piped compound commands stay plain unknown without dirs
+  expect(lastMake("ssh host 'while read l; do cd /other; done | cat; make'")).toEqual({ dir: undefined, dirs: undefined });
+  // compound command as whole command or last part of a pipeline stays tracked as today
+  expect(lastMake("while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("echo a | while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("for x in a; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("if true; then cd /other; fi; make")).toEqual({ dir: "/other", dirs: undefined });
+  expect(lastMake("case a in a) cd /other;; esac; make")).toEqual({ dir: "/other", dirs: undefined });
+  // relative cd and wrappers propagate across candidate dirs; absolute cd and plain cd $X reset
+  expect(lastMake("eval cd /other; cd sub; make")).toEqual({ dir: undefined, dirs: ["/repo/sub", "/other/sub"] });
+  expect(lastMake("eval cd /other; env -C sub make")).toEqual({ dir: undefined, dirs: ["/repo/sub", "/other/sub"] });
+  expect(lastMake("eval cd /other; cd /abs; make")).toEqual({ dir: "/abs", dirs: undefined });
+  expect(lastMake("cd $X; make")).toEqual({ dir: undefined, dirs: undefined });
+  // subshell still isolates uncertain state
+  expect(lastMake("(eval cd /other); make")).toEqual({ dir: "/repo", dirs: undefined });
+});
+
+test("( and ) inside ${...} do not open or close subshells or substitutions (dotfiles-308)", () => {
+  const { commands: parsed } = parseScript("(echo ${x/)/y}; cd /tmp)");
+  expect(parsed.map(({ argv, opens, closes, next }) => [argv, opens, closes, next])).toEqual([
+    [["echo", "${x/)/y}"], 1, 0, ";"],
+    [["cd", "/tmp"], 0, 1, undefined],
+  ]);
+  expect(commands("(echo ${line#*)}; cd /tmp); make")).toEqual([["echo ${line#*)}", "/repo"], ["make", "/repo"]]);
+  expect(commands("(cd /tmp; echo ${x/(/y}); make")).toEqual([["echo ${x/(/y}", "/tmp"], ["make", "/repo"]]);
+  // nested ${...}, quotes and escaped } inside ${...}
+  expect(commands("(echo ${a:-${b/)/c}}; cd /tmp); make")).toEqual([["echo ${a:-${b/)/c}}", "/repo"], ["make", "/repo"]]);
+  expect(commands("(echo ${x/\\})/y}; cd /tmp); make")).toEqual([["echo ${x/\\})/y}", "/repo"], ["make", "/repo"]]);
+  expect(commands("(echo ${a:-'x}y)'}; cd /tmp); make")).toEqual([["echo ${a:-'x}y)'}", "/repo"], ["make", "/repo"]]);
+  expect(commands("(echo ${a:-$'x\\'}y)'}; cd /tmp); make")).toEqual([["echo ${a:-$'x\\'}y)'}", "/repo"], ["make", "/repo"]]);
+  expect(commands('(echo "${a:-"x)y}"}"; cd /tmp); make')).toEqual([['echo ${a:-"x)y}"}', "/repo"], ["make", "/repo"]]);
+  // inside double-quoted "${...}", single quotes and $' are literal (POSIX/zsh) and do not swallow } or $(...)
+  expect(commands('echo "${x:-\'}"; make')).toEqual([["echo ${x:-'}", "/repo"], ["make", "/repo"]]);
+  expect(commands('echo "${x:-$\'}"; make')).toEqual([["echo ${x:-$'}", "/repo"], ["make", "/repo"]]);
+  expect(commands('echo "${x:-\'$(make q)\'}"')).toEqual([["make q", "/repo"], ["echo ${x:-'$(make q)'}", "/repo"]]);
+  // substitutions inside ${...} and ${...}/backticks/nested double quotes inside $(...) are still visited
+  expect(commands("echo ${x:-$(make a)}")).toEqual([["make a", "/repo"], ["echo ${x:-$(make a)}", "/repo"]]);
+  expect(commands('echo "${x:-$(make b)}"')).toEqual([["make b", "/repo"], ["echo ${x:-$(make b)}", "/repo"]]);
+  expect(commands("echo ${x:-`make c`}")).toEqual([["make c", "/repo"], ["echo ${x:-`make c`}", "/repo"]]);
+  expect(commands("echo $(echo ${x/)/y}; make d)")).toEqual([["echo ${x/)/y}", "/repo"], ["make d", "/repo"], ["echo $(echo ${x/)/y}; make d)", "/repo"]]);
+  expect(commands("echo $(echo `echo ')'`; make e)")).toEqual([["echo )", "/repo"], ["echo `echo ')'`", "/repo"], ["make e", "/repo"], ["echo $(echo `echo ')'`; make e)", "/repo"]]);
+  expect(commands('echo $(echo "${x:-"a)b"}"; make f)')).toEqual([['echo ${x:-"a)b"}', "/repo"], ["make f", "/repo"], ['echo $(echo "${x:-"a)b"}"; make f)', "/repo"]]);
+  expect(commands('echo $(echo "$(echo ")")"; make g)')).toEqual([["echo )", "/repo"], ["echo $(echo \")\")", "/repo"], ["make g", "/repo"], ['echo $(echo "$(echo ")")"; make g)', "/repo"]]);
+});
+
+test("ANSI-C $'...' handles \\' and \\\\ escapes without breaking later commands or quoting backticks (dotfiles-308)", () => {
+  const { commands: parsed } = parseScript("echo $'a\\'b'; git push");
+  expect(parsed.map(({ argv, next }) => [argv, next])).toEqual([
+    [["echo", "a'b"], ";"],
+    [["git", "push"], undefined],
+  ]);
+  expect(commands("echo $'\\''; make")).toEqual([["echo '", "/repo"], ["make", "/repo"]]);
+  expect(commands("echo $'a\\\\'; make")).toEqual([["echo a\\", "/repo"], ["make", "/repo"]]);
+  expect(commands("echo $'a\\\\\\'b'; make")).toEqual([["echo a\\'b", "/repo"], ["make", "/repo"]]);
+  // backticks and $(...) after \' inside $'...' stay quoted text (board-feedback-1219)
+  const quoted = parseScript("board add --body $'...T3 Code\\'s ... `gh pr merge` ... \\`gh pr merge\\` ... $(make)...'");
+  expect(quoted.commands).toHaveLength(1);
+  expect(quoted.commands[0].substitutions).toEqual([]);
+  // $'...' inside $(...) does not close the substitution early, and decoded quotes reach sh -c / eval
+  expect(commands("echo $(echo $'a\\')'; make)")).toEqual([["echo a')", "/repo"], ["make", "/repo"], ["echo $(echo $'a\\')'; make)", "/repo"]]);
+  expect(commands("sh -c $'echo \\'\"\\'; make'").map(([cmd]) => cmd)).toContain("make");
+  expect(commands("sh -c $'echo \\' #\\'; make'").map(([cmd]) => cmd)).toContain("make");
+  expect(commands("sh -c $'echo \\'${\\'; make'").map(([cmd]) => cmd)).toContain("make");
+  expect(commands("eval $'cd /other\\nmake'")).toContainEqual(["make", "/other"]);
+});

@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "board": {
+      "command": "/bin/sh",
+      "args": ["-c", "exec \"$HOME/.cargo/bin/board\" mcp"]
+    },
+    "desktop": {
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "exec \"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/marketplace/computer-use/server/desktop.js\""
+      ]
+    },
+    "gemini-notebook": {
+      "serverUrl": "https://notebook.googleapis.com/mcp",
+      "authProviderType": "google_credentials"
+    }
+  }
+}

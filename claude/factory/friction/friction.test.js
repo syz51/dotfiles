@@ -264,7 +264,7 @@ describe("friction run", () => {
     // turn that filed feedback, the automation session or the running Codex turn.
     expect(judged).toHaveLength(2);
     for (const call of judged) {
-      expect(call.args).toEqual(expect.arrayContaining(["--model", "claude-haiku-5-5", "--max-budget-usd", "0.05", "--tools", "", "--no-session-persistence"]));
+      expect(call.args).toEqual(expect.arrayContaining(["--model", "gemini-4-neon", "--effort", "low", "--max-budget-usd", "0.05", "--tools", "", "--no-session-persistence"]));
       expect(call.system).toContain("`storage`: Shared storage");
       expect(call.system).not.toContain(roots.person.sessionId);
     }
@@ -581,6 +581,7 @@ describe("judge answer", () => {
     expect(() => checkFindings({ findings: [{ about: "board", activity: "napping", title: "t" }] }, ids)).toThrow("unknown activity");
     expect(() => checkFindings({}, ids)).toThrow("no findings list");
     expect(feedbackText({ title: "T", detail: "", error: "" }, { harness: "codex", sessionId: "s", turn: 3 })).toBe("T\n\nCaptured from Codex session s, turn 3.");
+    expect(feedbackText({ title: "T", detail: "", error: "" }, { harness: "antigravity", sessionId: "s", turn: 3 })).toBe("T\n\nCaptured from Antigravity session s, turn 3.");
     expect(feedbackText({ title: "T", detail: "", error: "" }, { harness: "claude", sessionId: "s", turn: 3, cwd: join(homedir(), "Developer", "app") }))
       .toBe("T\n\nCaptured from Claude Code session s, turn 3 in ~/Developer/app.");
     expect(judgeSchema([{ id: "board" }]).properties.findings.items.properties.about.enum).toEqual(["board"]);
@@ -605,7 +606,7 @@ describe("LaunchAgent", () => {
     const launchctl = script(join(scratch, "launchctl"), `#!/bin/sh\necho "$@" >> "${join(scratch, "launchctl.log")}"\n[ "$1" = bootout ] && exit 3\nexit 0\n`);
     const tools = join(scratch, "tools");
     mkdirSync(tools);
-    script(join(tools, "claude"), "#!/bin/sh\n");
+    script(join(tools, "agy-run"), "#!/bin/sh\n");
     setEnv({ CLAUDE_FACTORY_LAUNCH_AGENTS: agents, CLAUDE_FACTORY_LAUNCHCTL: launchctl, PATH: `${tools}:/usr/bin:/bin` });
     expect(await run(["install"])).toBe(0);
     const file = join(agents, `${LABEL}.plist`);
@@ -616,12 +617,15 @@ describe("LaunchAgent", () => {
     expect(await run(["uninstall"])).toBe(0);
     expect(existsSync(file)).toBe(false);
     setEnv({ PATH: "/usr/bin:/bin" });
-    await expect(run(["install"])).rejects.toThrow("claude is not on PATH");
+    await expect(run(["install"])).rejects.toThrow("agy-run is not on PATH");
   });
 
   test("usage errors exit 2; --help prints the usage", async () => {
     expect(await run(["--help"])).toBe(0);
-    expect(console.log.mock.calls.flat().join("\n")).toContain("Usage: bun ~/.claude/factory/cli.js friction");
+    const help = console.log.mock.calls.flat().join("\n");
+    expect(help).toContain("Usage: bun ~/.claude/factory/cli.js friction");
+    expect(help).toContain("judge model (default gemini-4-neon)");
+    expect(help).toContain("judge effort (default low)");
     expect(await run(["run", "--help"])).toBe(0);
     expect(await run([])).toBe(2);
     expect(await run(["nope"])).toBe(2);

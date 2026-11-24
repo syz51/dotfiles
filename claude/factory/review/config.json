@@ -2,9 +2,9 @@
   "boards": ["dotfiles", "agent-board"],
   "days": 7,
   "branch": "main",
-  "model": "claude-opus-5-5",
+  "model": "gemini-4-neon",
   "level": "high",
-  "verifyModel": "claude-opus-5-5",
+  "verifyModel": "gemini-4-neon",
   "verifyEffort": "high",
   "reviewBudgetUsd": 5,
   "verifyBudgetUsd": 2

@@ -40,6 +40,7 @@ function repository() {
   git(source, "init", "--quiet", "-b", "main");
   put(source, {
     ".gitignore": ".env.*\n",
+    "gemini/GEMINI.md": "# Rules\n\n## Workflow\n\n- Stay in scope (Gemini).\n\n## Delegation\n\n- Delegate rarely.\n",
     "claude/CLAUDE.md": "# Rules\n\n## Workflow\n\n- Stay in scope.\n\n## Delegation\n\n- Delegate rarely.\n",
     "claude/agents/worker.md": "# Worker\n\nDo the task.\n",
     "claude/settings.json": "{}\n",
@@ -140,9 +141,9 @@ describe("proposal rules", () => {
   // codex/AGENTS.md carries the same Work board section, which a test keeps identical, so a
   // proposal for that section must be able to change both copies.
   test("only the global instructions, their Codex copy and agent definitions may change: text, never code", () => {
-    for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md", "claude/reference/storage.md"]) expect(allowedPath(path), path).toBe(true);
+    for (const path of ["gemini/GEMINI.md", "claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md", "claude/reference/storage.md"]) expect(allowedPath(path), path).toBe(true);
     for (const path of ["claude/reference/x/y.md", "claude/reference/storage.js"]) expect(allowedPath(path), path).toBe(false);
-    for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test", "codex/hooks.json", "codex/trust-hooks.js", "codex/AGENTS.md.bak"])
+    for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "GEMINI.md", "gemini/GEMINI.md.bak", "gemini/hooks.json", "gemini/bin/agy-run", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test", "codex/hooks.json", "codex/trust-hooks.js", "codex/AGENTS.md.bak"])
       expect(allowedPath(path), path).toBe(false);
   });
 
@@ -210,17 +211,18 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW })).toBe(0);
 
     const [proposer] = log("claude.jsonl");
-    expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--permission-mode", "acceptEdits", "--model", "claude-opus-5-5", "--effort", "high", "--max-budget-usd", "3"]));
+    expect(proposer.args).toEqual(expect.arrayContaining(["--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--permission-mode", "acceptEdits", "--model", "gemini-4-neon", "--effort", "high", "--max-budget-usd", "3"]));
     expect(proposer.args).not.toContain("--mcp-config");
     // Reads of credentials, raw transcripts and the state folder are denied, whatever the
     // user's settings allow; an absolute path is written //path.
     const settings = JSON.parse(proposer.args[proposer.args.indexOf("--settings") + 1]);
     expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)", "Read(~/.netrc)", "Read(~/.claude.json)", "Read(~/.docker/config.json)",
       "Read(~/.claude/projects/**)", "Read(~/.codex/**)", `Read(/${join(scratch, "state")}/**)`]));
+    expect(proposer.stdin).toContain("- Stay in scope (Gemini).");
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
     expect(proposer.stdin).toContain("Prefer clarifying, replacing or deleting");
-    expect(proposer.stdin).toContain("Edit only claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md");
+    expect(proposer.stdin).toContain("Edit only gemini/GEMINI.md, claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md");
     expect(existsSync(proposer.cwd)).toBe(false);
 
     expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "main"].sort());
@@ -251,6 +253,19 @@ describe("propose command", () => {
     expect(await run(["--repo", source], { now: NOW + 60_000 })).toBe(0);
     expect(log("claude.jsonl")).toHaveLength(1);
     expect(output.join("\n")).toMatch(/scope-creep\s+3 failing sessions\s+already proposed/);
+  });
+
+  test("proposes edits to gemini/GEMINI.md and prints gemini-4-neon default in --help", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    edits({ "gemini/GEMINI.md": "# Rules\n\n## Workflow\n\n- Stay strictly in the requested scope.\n\n## Delegation\n\n- Delegate rarely.\n" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(0);
+    const [entry] = proposals();
+    expect(entry).toMatchObject({ status: "proposed", paths: ["gemini/GEMINI.md"], pushed: true });
+    expect(git(remote, "show", `${branchName}:gemini/GEMINI.md`)).toContain("Stay strictly in the requested scope.");
+    output.length = 0;
+    expect(await run(["--help"])).toBe(0);
+    expect(output.join("\n")).toContain("proposer model (default gemini-4-neon)");
   });
 
   test("rejects a proposer session that had more than the file tools", async () => {

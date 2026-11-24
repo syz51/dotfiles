@@ -7,7 +7,7 @@ import { readJsonl } from "../lib/state.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import * as transcripts from "../lib/transcripts.js";
 import { DETECTORS } from "./detectors.js";
-import { GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
+import { GEMINI_INSTRUCTIONS, GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
 import { isCorrection } from "../metrics/corrections.js";
 import { failureGroups } from "./propose.js";
 import * as score from "./score.js";
@@ -28,7 +28,7 @@ const setEnv = (values) => {
 
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "claude-factory-score-"));
-  setEnv({ CLAUDE_CONFIG_DIR: join(scratch, "config"), CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_BIN: FAKE, FAKE_CLAUDE_LOG: join(scratch, "calls.jsonl"), FAKE_CLAUDE_MODE: "structured", FAKE_CLAUDE_COST: "0.05" });
+  setEnv({ CLAUDE_CONFIG_DIR: join(scratch, "config"), AGY_BRAIN_ROOT: join(scratch, "no-agy"), CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_BIN: FAKE, FAKE_CLAUDE_LOG: join(scratch, "calls.jsonl"), FAKE_CLAUDE_MODE: "structured", FAKE_CLAUDE_COST: "0.05" });
   output = [];
   spyOn(console, "log").mockImplementation((...args) => output.push(args.join(" ")));
   spyOn(console, "error").mockImplementation((...args) => output.push(args.join(" ")));
@@ -56,12 +56,14 @@ const scores = () => readJsonl(join(scratch, "state", "scores.jsonl"));
 const write = (sessions) => writeProjects(sessions.map((transcript) => ({ transcript })), join(scratch, "config", "projects"));
 
 describe("rubric", () => {
-  test("every dimension names a section of claude/CLAUDE.md, and detectors match the code", () => {
+  test("every dimension names a section of claude/CLAUDE.md and gemini/GEMINI.md, and detectors match the code", () => {
     const instructions = readFileSync(GLOBAL_INSTRUCTIONS, "utf8");
+    const geminiInstructions = readFileSync(GEMINI_INSTRUCTIONS, "utf8");
     const ids = RUBRIC.dimensions.map((dimension) => dimension.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const dimension of RUBRIC.dimensions) {
       expect(section(instructions, dimension.section), dimension.id).toBeTruthy();
+      expect(section(geminiInstructions, dimension.section), `gemini:${dimension.id}`).toBeTruthy();
       expect(["detector", "judge"]).toContain(dimension.kind);
       expect(dimension.description.length).toBeGreaterThan(10);
       if (dimension.kind === "judge") expect(dimension.question.length).toBeGreaterThan(40);
@@ -76,6 +78,12 @@ describe("rubric", () => {
     const PROMPTS = { 4: "c818fa55373efbea", 5: "c818fa55373efbea", 6: "fca60587ba85bd81", 7: "e1e4cb1eb271d652", 8: "e1e4cb1eb271d652", 9: "fbc7fe0d2f1dd7be", 10: "397a5f7f1dc20e9a", 11: "397a5f7f1dc20e9a", 12: "397a5f7f1dc20e9a", 13: "397a5f7f1dc20e9a", 14: "397a5f7f1dc20e9a" };
     const parts = score.judgeParts({ digest: "DIGEST", globalInstructions: "GLOBAL", projectFiles: [{ file: "CLAUDE.md", text: "PROJECT" }] });
     expect(createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16)).toBe(PROMPTS[RUBRIC.version]);
+    const agyParts = score.judgeParts({ digest: "DIGEST", globalInstructions: "GLOBAL", projectFiles: [], harness: "antigravity" });
+    expect(agyParts.system).toContain("You audit one Antigravity session");
+    expect(agyParts.system).toContain("Global instructions (~/.gemini/GEMINI.md;");
+    expect(agyParts.system).toContain('(GEMINI.md section "Working preferences")');
+    expect(agyParts.system).toContain("Instructions in a prompt override GEMINI.md where they conflict.");
+    expect(agyParts.prompt).toContain("(no project AGENTS.md or CLAUDE.md found)");
   });
 });
 
@@ -145,6 +153,10 @@ describe("eligibility and priority", () => {
     writeFileSync(join(cwd, "CLAUDE.md"), "pkg rules");
     expect(projectInstructions(cwd, home).map((file) => file.text)).toEqual(["repo rules", "pkg rules"]);
     expect(projectInstructions(join(home, "gone"), home)).toEqual([]);
+    // Antigravity loads GEMINI.md and AGENTS.md (preferring AGENTS.md over CLAUDE.md in the same dir).
+    writeFileSync(join(home, "repo", "AGENTS.md"), "repo agents");
+    writeFileSync(join(cwd, "GEMINI.md"), "pkg gemini");
+    expect(projectInstructions(cwd, home, "antigravity").map((file) => file.text)).toEqual(["repo agents", "pkg gemini", "pkg rules"]);
   });
 });
 
@@ -193,11 +205,11 @@ describe("score command", () => {
     // The judge cannot read the reference files the instructions point at, so it gets their rules.
     expect(systemOf(call)).toContain(`<reference file="~/.claude/reference/merge.md">\n${readFileSync(join(REFERENCE_DIR, "merge.md"), "utf8").trimEnd()}\n</reference>`);
     expect(call.stdin).toContain("(no project CLAUDE.md found)");
-    expect(call.args).toEqual(expect.arrayContaining(["--model", "claude-opus-5-5", "--effort", "medium", "--max-budget-usd", "0.8"]));
+    expect(call.args).toEqual(expect.arrayContaining(["--model", "gemini-4-neon", "--effort", "low", "--max-budget-usd", "0.8"]));
     const records = scores();
     expect(records).toHaveLength(3);
     const judged = records.find((record) => record.sessionId === corrected.sessionId);
-    expect(judged).toMatchObject({ rubricVersion: RUBRIC.version, model: "claude-opus-5-5", effort: "medium", costUSD: 0.05, error: null, corrections: [] });
+    expect(judged).toMatchObject({ rubricVersion: RUBRIC.version, model: "gemini-4-neon", effort: "low", costUSD: 0.05, error: null, corrections: [] });
     expect(judged.transcriptSha).toMatch(/^[0-9a-f]{64}$/);
     expect(judged.detectors["package-runner"].verdict).toBe("fail");
     expect(Object.keys(judged.dimensions).sort()).toEqual(judgeDimensions().map((dimension) => dimension.id).sort());
@@ -493,10 +505,60 @@ describe("score command", () => {
     expect(await run(["--session", "zzz"]).catch((error) => error.message)).toContain("matches 0 sessions");
   });
 
+  test("Antigravity sessions are graded against gemini/GEMINI.md without claude/reference", async () => {
+    const agyGlobal = score.loadGlobalInstructions("antigravity");
+    const claudeGlobal = score.loadGlobalInstructions("claude");
+    expect(agyGlobal.file).toBe(GEMINI_INSTRUCTIONS);
+    expect(agyGlobal.text).toBe(readFileSync(GEMINI_INSTRUCTIONS, "utf8").trimEnd());
+    expect(agyGlobal.text).not.toContain('<reference file="~/.claude/reference/');
+    expect(claudeGlobal.file).toBe(GLOBAL_INSTRUCTIONS);
+    expect(claudeGlobal.text).toContain('<reference file="~/.claude/reference/merge.md">');
+
+    const brainRoot = join(scratch, "agy-brain");
+    const convId = "agy-session-0001";
+    const logDir = join(brainRoot, convId, ".system_generated", "logs");
+    mkdirSync(logDir, { recursive: true });
+    const records = [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00.000Z", content: "<USER_REQUEST>\n<user_request>\nFix the factory scorer\n</user_request>\n</USER_REQUEST>" },
+      { type: "SYSTEM_MESSAGE", source: "SYSTEM_SDK", created_at: "2026-11-01T10:00:01.000Z", content: "The following system message was injected by a SessionStart hook:\n<board board=\"dotfiles\">ready</board>" },
+      { type: "SYSTEM_MESSAGE", source: "SYSTEM_SDK", created_at: "2026-11-01T10:00:02.000Z", content: "The following system message was injected by a PreInvocation hook:\nignored reminder mentioning hook" },
+      { type: "PLANNER_RESPONSE", source: "MODEL", created_at: "2026-11-01T10:01:00.000Z", model: "gemini-4-neon-high", input_tokens: 100, output_tokens: 50, cache_read_tokens: 0, tool_calls: [
+        { name: "edit_file", args: { Target: "x".repeat(400), Replacement: "y".repeat(400), Path: "/repo/score.js" } },
+        { name: "run_command", args: { CommandLine: "bun test" } },
+      ] },
+      { type: "GENERIC", source: "MODEL", created_at: "2026-11-01T10:01:02.000Z", content: "Made 1 replacement in /repo/score.js" },
+      { type: "GENERIC", source: "MODEL", created_at: "2026-11-01T10:01:05.000Z", content: "Command exited with code 0.\n10 pass" },
+      { type: "PLANNER_RESPONSE", source: "MODEL", created_at: "2026-11-01T10:02:00.000Z", model: "gemini-4-neon-high", input_tokens: 100, output_tokens: 40, cache_read_tokens: 0, content: "Updated score.js and verified tests." },
+    ];
+    writeFileSync(join(logDir, "transcript.jsonl"), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    setEnv({ AGY_BRAIN_ROOT: brainRoot });
+    judgeAnswer(answer());
+    expect(await run(["--sample", "1", "--days", "3650"])).toBe(0);
+    const [call] = calls();
+    expect(systemOf(call)).toContain("You audit one Antigravity session");
+    expect(systemOf(call)).toContain("Global instructions (~/.gemini/GEMINI.md;");
+    expect(systemOf(call)).toContain(readFileSync(GEMINI_INSTRUCTIONS, "utf8").trim());
+    expect(systemOf(call)).not.toContain('<reference file="~/.claude/reference/');
+    expect(call.stdin).toContain(`# Session ${convId}`);
+    expect(call.stdin).toMatch(/\[P1\] PROMPT \(user, [^)]*\):\nFix the factory scorer\n/);
+    expect(call.stdin).not.toContain("<user_request>");
+    expect(call.stdin).toContain('[hook SessionStart, 2026-11-01 10:00Z] <board board="dotfiles">ready</board>');
+    expect(call.stdin).not.toContain("ignored reminder mentioning hook");
+    expect(call.stdin).toContain("[T1] edit_file (ok) /repo/score.js (-400/+400 chars) → Made 1 replacement in /repo/score.js");
+    expect(call.stdin).toContain("[T2] run_command (ok) bun test → Command exited with code 0. ⏎ 10 pass");
+    expect(call.stdin).toContain("Updated score.js and verified tests.");
+    const [judged] = scores();
+    expect(judged.sessionId).toBe(convId);
+    expect(judged.instructions.global).toEqual(score.instructionsRevision(GEMINI_INSTRUCTIONS, readFileSync(GEMINI_INSTRUCTIONS, "utf8")));
+  });
+
   test("rejects bad options and prints help", async () => {
     expect(await run(["--sample", "x"])).toBe(2);
     expect(await run(["--bogus"])).toBe(2);
     expect(await run(["--help"])).toBe(0);
-    expect(output.join("\n")).toContain("--max-total-usd");
+    const text = output.join("\n");
+    expect(text).toContain("--max-total-usd");
+    expect(text).toContain("judge model (default gemini-4-neon)");
+    expect(text).toContain("judge effort (default low)");
   });
 });

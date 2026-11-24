@@ -1,19 +1,19 @@
 ---
 name: ui-climb
-description: Hill-climb a web UI's design to a pass bar with the factory's `ui` command, a Claude judge council that scores screenshots blind against main and reference products. Covers the climb configuration, calibration, rounds that fix the judges' findings, `score:` notes, the report, the PR and the owner's merge decision. Use when a task asks to climb, score or redesign a web UI's look against a bar, or names a `ui-climb.json`.
+description: Hill-climb a web UI's design to a pass bar with the factory's `ui` command, a Gemini 4 Neon judge council that scores screenshots blind against main and reference products. Covers the climb configuration, calibration, rounds that fix the judges' findings, `score:` notes, the report, the PR and the owner's merge decision. Use when a task asks to climb, score or redesign a web UI's look against a bar, or names a `ui-climb.json`.
 ---
 
 # UI climb
 
 A climb improves a web UI in rounds. Each round the factory's `ui` command checks the
-committed candidate with deterministic gates, then a council of Claude judges scores
+committed candidate with deterministic gates, then a council of Gemini 4 Neon judges scores
 screenshots of it beside main and reference products, unlabeled and shuffled, against
 a fixed rubric. You fix what they report, commit and run the next round, until a round
 passes, the climb plateaus or the budget is spent. The owner decides whether the result
 merges.
 
 ```sh
-UI="bun ~/.claude/factory/cli.js ui"   # every subcommand takes --config PATH (default ui-climb.json)
+UI="bun ~/.config/claude/factory/cli.js ui"   # every subcommand takes --config PATH (default ui-climb.json)
 $UI capture     # screenshots of the working tree, main and the references, page checks; no judges
 $UI calibrate   # can the judges tell main from a degraded control, and how noisy are they
 $UI round       # gates, then judges, on HEAD; exit 0 pass, 1 fail, 2 error, 3 budget spent, 4 provisional pass
@@ -49,8 +49,8 @@ relative to its folder. Start from:
     { "id": "peer", "title": "A product people admire for this kind of screen", "url": "https://example.com/public-page", "views": ["desktop-light"], "steps": [{ "wait": 1500 }] }
   ],
   "judges": [
-    { "model": "claude-haiku-5-5", "effort": "high", "samples": 2 },
-    { "model": "claude-opus-5-5", "effort": "high", "samples": 2 }
+    { "model": "gemini-4-neon", "effort": "low", "samples": 2 },
+    { "model": "gemini-4-neon", "effort": "high", "samples": 2 }
   ],
   "pass": { "min": 8, "gain": 0.5, "references": 0.25 },
   "budgetUsd": { "call": 3, "round": 15, "run": 120 },
@@ -82,11 +82,9 @@ relative to its folder. Start from:
   that every judge passes without every reference is a **provisional pass** (exit 4), not
   a pass on the bar. `"pass": { "allReferences": false }` lets such a round pass; set it
   only on the owner's word.
-- The council is a Haiku judge first and one Opus judge second, as in the template. Use
-  only Opus, Haiku or Fable 5.2 models. Haiku is the regression pre-check and Opus is the bar
-  judge. Haiku runs first, cheaply, and only checks that the candidate does not score
-  under main by more than `pass.regression` (default 2) times Haiku's noise; a round it
-  fails stops before Opus. Opus alone applies `pass.min`, `pass.gain` and
+- The council is a Gemini 4 Neon (`low` effort) regression pre-check first and a Gemini 4 Neon (`high` effort) bar judge second, as in the template. The pre-check runs first, cheaply, and only checks that the candidate does not score
+  under main by more than `pass.regression` (default 2) times its noise; a round it
+  fails stops before the bar judge. The bar judge alone applies `pass.min`, `pass.gain` and
   `pass.references`. In general every judge before the last is a pre-check and the last
   applies the bar. Until a round has heard from every judge, rounds run them all, so you
   learn whether they agree.
@@ -99,7 +97,7 @@ relative to its folder. Start from:
   Views are `<viewport>-<light|dark>`; viewports default to `desktop` 1280×800 and
   `phone` 390×844.
 - The run is tied to the configuration, what the judges are asked (the factory's rubric
-  and prompts) and the owner's declined patterns in `~/.claude/frontend-avoid.md`.
+  and prompts) and the owner's declined patterns in `~/.config/claude/frontend-avoid.md`.
   Changing any of them needs `--new-run`, which captures main and calibrates again;
   scores across runs do not compare. When a round refuses because the factory changed
   under the run, start a new run and say why in a note.
@@ -115,9 +113,9 @@ most categories, or whose scores vary by more than a point between calls. Then t
 judge cannot steer the climb: use a stronger model or effort, or better screens, and
 calibrate again. Rounds refuse to run without a passing calibration.
 
-Each judge is calibrated on its own, Haiku too: its noise sets its pre-check floor
+Each judge is calibrated on its own, the low-effort pre-check too: its noise sets its pre-check floor
 (`pass.regression` times it, or main's spread over the run's rounds when larger). Only
-the bar judge, Opus, gets a bar reach check, since Haiku never applies the bar.
+the high-effort bar judge gets a bar reach check, since the pre-check never applies the bar.
 
 On the climb's first calibration, read the bar judge's row of the table first. A reference
 whose score in its References column is more than a point under its Main column is far
@@ -217,9 +215,11 @@ Hand over the champion, never a later round that scored lower.
 2. Unless the last round already ran every judge on that design, run
    `$UI round --all-judges` on the commit you hand over, so the owner sees every judge's
    score. Record its `score:` line.
-3. `$UI report --out <file>` writes one self-contained HTML file. Publish it as a private
-   Artifact: load that tool with ToolSearch `select:Artifact`. Attach the file's path only
-   when ToolSearch cannot load it.
+3. `$UI report --out <file>` writes one self-contained HTML file. In Antigravity / T3 Code,
+   render it inline with `html_preview` and `html_render` (or attach the file path when it
+   exceeds the inline limit). In Claude Code, publish it as a private Artifact:
+   load that tool with ToolSearch `select:Artifact`, attaching the file's path only when
+   ToolSearch cannot load it.
 4. Push the branch and open a PR with the climb's commits, held as a draft as the
    `full-stop` skill says, so nothing merges it before the owner answers. Its body names the champion
    round and has the last `score:` line, the rounds table from `$UI status`, what changed and why, the conflicts left

@@ -299,8 +299,8 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("vp install")).toContain("pnpm when no lockfile names one");
   expect(verdict("vp install")).toContain("`bun install`");
   expect(verdict("vp dlx create-vite")).toContain("through `vp dlx`");
-  expect(verdict("codex exec hi")).toContain("only a Claude plan");
-  expect(verdict("codex exec hi")).toContain("with Claude instead");
+  expect(verdict("codex exec hi")).toContain("no Codex subscription");
+  expect(verdict("codex exec hi")).toContain("Gemini 4 Neon");
   expect(verdict("codex exec hi")).not.toContain("bun");
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
 });

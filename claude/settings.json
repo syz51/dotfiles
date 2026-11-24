@@ -48,6 +48,26 @@
         ]
       },
       {
+        "matcher": "mcp__.*__(delegate_task|t3_thread_launch|create_threads)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh \"$HOME/.claude/hooks/board-hook.sh\" pre-tool-use claude",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__t3-code__pull_request_merge$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/guard-pr-merge.js\"",
+            "timeout": 45
+          }
+        ]
+      },
+      {
         "matcher": "^mcp__board__ask_user$",
         "hooks": [
           {
@@ -76,6 +96,16 @@
             "type": "command",
             "command": "\"$HOME/.atuin/bin/atuin\" hook claude-code"
           },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/auto-merge.js\"",
+            "timeout": 60
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__t3-code__pull_request_create$",
+        "hooks": [
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/auto-merge.js\"",
@@ -202,6 +232,11 @@
           {
             "type": "command",
             "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/open-items.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/deck-view.js\"",
             "timeout": 10
           }
         ]

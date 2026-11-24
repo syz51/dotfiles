@@ -1,5 +1,7 @@
 // Offline checks of the Claude Code configuration kept in this repository. They read
 // only tracked files, so they run in CI; tests/live.test.js covers the installed setup.
+// One exception, skipped in CI: the "work board" suite compares the tracked hooks with what
+// the installed `board` prints, so a board upgrade that adds a hook fails here (dotfiles-520).
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -81,10 +83,12 @@ const COMPUTER_USE = "mcp__plugin_computer-use_desktop";
 const POLICY = {
   explorer: { model: "haiku", effort: "xhigh", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED] },
   worker: { model: "inherit", effort: "high", disallowedTools: ["Agent", ...CONNECTORS, ...UNUSED] },
-  // worker and reviewer run on the session's model, Opus or Fable, at high (dotfiles-502).
+  // worker runs on the session's model, Opus or Fable, at high (dotfiles-502). reviewer
+  // runs on it too, and sets no effort: an agent without one takes the session's effort, so
+  // a review runs at the effort settings.json configures for the model (dotfiles-763).
   // The Review rule's reviewer has its recipe preloaded (dotfiles-446).
   // solver (Opus at xhigh) was folded into worker: 7 calls in a week (dotfiles-457).
-  reviewer: { model: "inherit", effort: "high", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
+  reviewer: { model: "inherit", disallowedTools: ["Write", "Edit", "NotebookEdit", "Agent", ...CONNECTORS, COMPUTER_USE, ...UNUSED], skills: "diff-review" },
 };
 const agentFiles = readdirSync(join(CLAUDE, "agents")).filter((name) => name.endsWith(".md"));
 
@@ -96,7 +100,7 @@ describe("agents", () => {
 
   test.each(Object.entries(POLICY))("%s frontmatter matches the policy", (name, policy) => {
     const { meta, body } = frontmatter(`claude/agents/${name}.md`);
-    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", "effort", "model", "name", ...(policy.skills ? ["skills"] : [])]);
+    expect(Object.keys(meta).sort()).toEqual(["description", "disallowedTools", ...(policy.effort ? ["effort"] : []), "model", "name", ...(policy.skills ? ["skills"] : [])]);
     expect(meta.skills).toBe(policy.skills);
     expect(meta.name).toBe(name);
     expect(meta.model).toBe(policy.model);
@@ -117,6 +121,17 @@ describe("agents", () => {
 
   test("worker runs at the configured Opus effort, so an Opus session's parallel track loses none", () => {
     expect(POLICY.worker.effort).toBe(configuredEffort("claude-opus-5-5"));
+  });
+
+  // A reviewer with `effort: high` ran at high from a Fable 5.2 session, whose configured
+  // effort is medium. Session records show that an agent without `effort` runs at its
+  // session's effort, and that the Agent tool's `effort` input beats the frontmatter
+  // (dotfiles-763).
+  test("reviewer sets no effort, and the review reference names the effort settings.json configures for each model", () => {
+    expect(frontmatter("claude/agents/reviewer.md").meta.effort).toBeUndefined();
+    const [, opus, fable] = referenceRules("review").match(/sets for the model \(`(\w+)` on Opus 5\.5, `(\w+)` on Fable 5\.2\)/);
+    expect(opus).toBe(configuredEffort("claude-opus-5-5"));
+    expect(fable).toBe(configuredEffort("claude-fable-5-2"));
   });
 
   test("the worker owns its whole track, stays within its assigned files and verifies hard problems", () => {
@@ -195,7 +210,7 @@ describe("global instructions", () => {
       /external writes/,
       /read-only/,
       /The `reviewer` agent is the only review process/,
-      /it reviews on the session.s model at `high` effort/,
+      /it reviews as its `diff-review` skill says, on the session.s model and effort\./,
     ])
       expect(globalInstructions).toMatch(concept);
   });
@@ -280,7 +295,10 @@ describe("settings", () => {
     expect(seen).toContain("claude/hooks/shell.js");
   });
 
-  // A 200K window is a trial from 2026-11-08; SETUP.md gives the reason and the baseline.
+  // Kept at 200K after the 2026-11-09..23 trial (dotfiles-313): vs 300K, main-thread cache reads
+  // fell 150K -> 90K/call (-40%), total cache reads per done task fell 10.6M -> 5.3M (-50%),
+  // net Opus-5.5-equivalent cost fell 14.4%/1K calls, and 600 auto-compactions had 0 thrash
+  // notices and 100% resumption; <200K disables background compaction summaries. See SETUP.md.
   // A per-model autoCompactWindow (which /autocompact saves) would override it unseen.
   test("conversations compact against a 200K window, not the 1M one", () => {
     expect(settings.autoCompactWindow).toBe(200000);
@@ -312,11 +330,13 @@ describe("settings", () => {
     const events = Object.entries(settings.hooks).filter(([, groups]) => groups.some((group) => group.hooks.some((hook) => hook.command === command)));
     expect(events.map(([event]) => event)).toEqual(["PostToolUse"]);
     const groups = settings.hooks.PostToolUse.filter((group) => group.hooks.some((hook) => hook.command === command));
-    expect(groups.map((group) => group.matcher)).toEqual(["^Bash$"]);
-    expect(AUTO_MERGE_BUDGET_MS + 10000).toBeLessThanOrEqual(groups[0].hooks.find((hook) => hook.command === command).timeout * 1000);
+    expect(groups.map((group) => group.matcher)).toEqual(["^Bash$", "^mcp__t3-code__pull_request_create$"]);
+    for (const group of groups) {
+      expect(AUTO_MERGE_BUDGET_MS + 10000).toBeLessThanOrEqual(group.hooks.find((hook) => hook.command === command).timeout * 1000);
+    }
     expect(tracked("claude/hooks/auto-merge.js")).toBe(true);
     const guard = Object.entries(settings.hooks).flatMap(([event, list]) => list.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/guard-pr-merge.js"))).map((group) => [event, group.matcher]));
-    expect(guard).toEqual([["PreToolUse", "^Bash$"]]);
+    expect(guard).toEqual([["PreToolUse", "^Bash$"], ["PreToolUse", "^mcp__t3-code__pull_request_merge$"]]);
     // The hook's own output says what it did, so the instructions no longer repeat it (dotfiles-513).
     expect(section("Autonomy")).not.toContain("auto-merge hook");
     expect(referenceRules("merge")).toContain("- After a Bash call runs `gh pr create`, the auto-merge hook turns on auto-merge for each pull request it printed, with a merge commit, else squash, else rebase, as the repository allows.");
@@ -382,9 +402,12 @@ describe("settings", () => {
   // call is capped at the budget left, so all of them end within BUDGET_MS; the rest of the
   // hook timeout covers bun's start and the parse.
   test("the pr-merge guard's timeout covers its gh calls", () => {
-    const hook = handlers.find((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    const mergeHooks = handlers.filter((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    expect(mergeHooks).toHaveLength(2);
     expect(CALL_TIMEOUT_MS).toBeLessThanOrEqual(BUDGET_MS);
-    expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
+    for (const hook of mergeHooks) {
+      expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
+    }
   });
 
   test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {
@@ -416,6 +439,12 @@ describe("settings", () => {
     expect(config.enabled).toBe(true);
     for (const source of [...config.headings, ...config.exempt]) expect(() => new RegExp(source, "i")).not.toThrow();
     expect(config.headings.some((source) => new RegExp(source, "i").test("Limits"))).toBe(true);
+  });
+
+  // The user asked to see each slide deck edit without asking (2026-11-19).
+  test("claude/settings.json runs the deck-view check at Stop", () => {
+    const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
+    expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/deck-view.js"')).toHaveLength(1);
   });
 });
 
@@ -483,30 +512,66 @@ describe("work board", () => {
     Stop: "stop", SessionEnd: "session-end",
   };
 
+  // The threads an agent starts through T3: board refuses one past the device's run limit.
+  // Its timeout covers T3 listing the device's threads (agent-board hook/launch.rs).
+  const LAUNCH = "mcp__.*__(delegate_task|t3_thread_launch|create_threads)";
+
+  // A second entry for an event and matcher runs board twice: each session then gets the
+  // board state twice in its first prompt, and every reminder twice (agent-board-524).
   test.each([
-    ["claude/settings.json", "claude", "$HOME/.claude/hooks", CLAUDE_EVENTS],
-    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", CODEX_EVENTS],
-  ])("%s runs exactly one board hook per event, through the tracked script", (path, runtime, dir, events) => {
+    ["claude/settings.json", "claude", "$HOME/.claude/hooks", [...Object.entries(CLAUDE_EVENTS), ["PreToolUse", "pre-tool-use"]]],
+    ["codex/hooks.json", "codex", "$HOME/.config/claude/hooks", Object.entries(CODEX_EVENTS)],
+  ])("%s runs exactly one board hook per event and matcher, through the tracked script", (path, runtime, dir, events) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
     const pairs = (list) => list.map((pair) => pair.join(" ")).sort();
-    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(Object.entries(events)));
-    for (const { hook, match } of found) {
+    expect(pairs(found.map(({ event, match }) => [event, match?.[1]]))).toEqual(pairs(events));
+    const keys = found.map(({ event, matcher }) => `${event} ${matcher ?? ""}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const { matcher, hook, match } of found) {
       expect(match?.[2]).toBe(runtime);
       expect(hook.command).toStartWith(`/bin/sh "${dir}/board-hook.sh" `);
-      expect(hook.timeout).toBeLessThanOrEqual(5);
+      expect(hook.timeout).toBeLessThanOrEqual(matcher === LAUNCH ? 10 : 5);
     }
     expect(tracked("claude/hooks/board-hook.sh")).toBe(true);
+  });
+
+  // `board install <runtime>` prints the hooks the installed board needs and writes nothing.
+  // A hook it adds must be added here through the wrapper: `board install claude --write`
+  // on this tracked file left it changed and ran every hook twice (dotfiles-520). Skipped
+  // where board is not installed, as in CI.
+  // The binary board-hook.sh runs, not another `board` on PATH. A failure after a board upgrade
+  // means the upgrade changed a hook: make the same change in the tracked file.
+  const BOARD = join(process.env.HOME ?? "", ".cargo/bin/board");
+  test.skipIf(!existsSync(BOARD)).each([
+    ["claude/settings.json", "claude"],
+    ["codex/hooks.json", "codex"],
+  ])("%s holds the events, matchers and timeouts that board install %s prints", (path, runtime) => {
+    const printed = spawnSync(BOARD, ["install", runtime], { encoding: "utf8", timeout: 10_000 });
+    expect(printed.status, printed.stderr || String(printed.error)).toBe(0);
+    // The hooks are the first JSON block: comment lines starting with # separate the blocks.
+    const block = printed.stdout.split(/^#.*$/m).find((part) => part.trim());
+    // No matcher and "*" both match every value.
+    const rows = (hooks) => boardHooks(hooks).map(({ event, matcher, hook }) => `${event} ${matcher === "*" ? "" : matcher ?? ""} ${hook.timeout}`).sort();
+    expect(rows(JSON.parse(read(path)).hooks)).toEqual(rows(JSON.parse(block).hooks));
   });
 
   // Matchers as `board install` writes them. board marks each shell call's start, so
   // PostToolUse (or PostToolUseFailure, as a failing command may still change files) can
   // record the files it changed.
   test.each([
-    ["claude/settings.json", { PostToolUse: "*", SessionStart: "startup|resume|clear|compact", PreToolUse: "Bash", PostToolUseFailure: "Bash" }],
-    ["codex/hooks.json", { SessionStart: "startup|resume|clear|compact|fork", PreToolUse: "Bash" }],
+    ["claude/settings.json", { PostToolUse: ["*"], SessionStart: ["startup|resume|clear|compact"], PreToolUse: ["Bash", LAUNCH], PostToolUseFailure: ["Bash"] }],
+    ["codex/hooks.json", { SessionStart: ["startup|resume|clear|compact|fork"], PreToolUse: ["Bash"] }],
   ])("%s gives the board hooks the matchers board install writes", (path, matchers) => {
     const found = boardHooks(JSON.parse(read(path)).hooks);
-    for (const [event, matcher] of Object.entries(matchers)) expect(found.find((entry) => entry.event === event)?.matcher, event).toBe(matcher);
+    // Every entry of the event, in order: a second copy under another spelling of a matcher
+    // (`^Bash$`) would run board twice, and a changed launch matcher would end the launch limit.
+    for (const [event, expected] of Object.entries(matchers)) expect(found.filter((entry) => entry.event === event).map((entry) => entry.matcher), event).toEqual(expected);
+  });
+
+  test("claude/settings.json gives the launch-limit hook the timeout board install writes", () => {
+    const launch = boardHooks(JSON.parse(read("claude/settings.json")).hooks).filter((entry) => entry.matcher === LAUNCH);
+    expect(launch.map((entry) => [entry.event, entry.hook.timeout])).toEqual([["PreToolUse", 10]]);
+    for (const tool of ["mcp__t3-code__delegate_task", "mcp__t3-code__t3_thread_launch", "mcp__t3-code__create_threads"]) expect(new RegExp(LAUNCH).test(tool), tool).toBe(true);
   });
 
   function withHome(body) {
@@ -611,16 +676,19 @@ describe("work board", () => {
     expect(rule).toContain("- Before `task_done`, and before ending a turn, file each remaining step, follow-up and suggestion, checking first for a task that covers it (add a note there instead): your task's remaining scope as a sub-task (parent: your task);");
     expect(rule).toContain("work you find outside it as a proposal (`auto=false`, a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L) on the board of the work's repository, or on this one when that repository has none, with the task you found it in as parent or named in the body;");
     expect(rule).toContain("my decision or action as a task with `auto=false`, set `blocked` only once its `ask_user` is accepted. Your task stays open until every acceptance check passes. Where another section names the place for something, such as storage problems, it goes there.");
-    expect(rule).toMatch(/When filing fails, report the item in the reply instead\. Don't ask me before filing/);
-    expect(rule).toMatch(/A handoff's `next` holds only the first action on your claimed task/);
+    expect(rule).toMatch(/When filing fails, report the item instead\. Don't ask before filing/);
+    expect(rule).toMatch(/A handoff's `next` holds only your claimed task's first action/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
   });
 
   // A report listed five items under "What still depends on you"; one had a task id, and
   // the other four had no task or ask until the user asked whether all was tracked
   // (dotfiles-427). An id on each open item makes an unfiled one visible in the report.
+  // A verdict judge cut "Chinese-language scholarship in general" from guwen-8, a part of an
+  // agent's plan for the owner's topic. Nobody filed it; the survey said "No action: the
+  // decision on guwen-8 cut" it, and the owner met a decision they never made (dotfiles-785).
   test("each open item of a reply names the task or ask that holds it", () => {
-    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names the task or ask that holds it. An item without an id is not filed: file it, or state why it needs no work. When filing fails, report the item in the reply instead. Don't ask me before filing. A handoff's `next` holds only the first action on your claimed task.\n";
+    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names its task or ask. File an item with no id, or state why it needs no work; an agent's cut or verdict is no reason and not my decision. When filing fails, report the item instead. Don't ask before filing. A handoff's `next` holds only your claimed task's first action.\n";
     expect(section("Work board")).toContain(rule);
     expect(globalInstructions).not.toContain("Name what you filed in your reply");
   });
@@ -742,7 +810,10 @@ describe("feedback rule", () => {
     expect(rule).toContain("report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <activity> '<what happened>'` where the tool is missing, then continue with a workaround");
     // The board's activities, which have no verify.
     expect(rule).toContain("(`explore`, `research`, `design`, `plan`, `build`, `review`, `operate` or `other`)");
-    expect(rule).toContain("Report it in your reply instead when filing fails; delegated children report it to their parent, which files it.");
+    expect(rule).toContain("Report it in your reply instead when filing fails; subagents report it to their parent, which files it.");
+    // Agents counted a problem they worked around as solved and reported it only when asked
+    // (research-factory-610).
+    expect(rule).toContain("then continue with a workaround; a problem you got past still needs its report.");
     expect(rule).toMatch(/an id from `~\/\.config\/setups\.toml`, `other` when unsure/);
     expect(rule).toMatch(/triage routes it to the setup's owner, so don't follow it up/);
     expect(rule).toMatch(/not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture/);
@@ -760,6 +831,24 @@ describe("feedback rule", () => {
 });
 
 describe("T3 self-settle", () => {
+  // Five masters threads closed their tasks on 19 November 2026 and filed the research
+  // follow-ups but no tool problem, until the owner asked each one (research-factory-610).
+  test("before the final check, the session's tool and setup problems are filed", () => {
+    const rules = referenceRules("t3-settle").split("\n");
+    const index = rules.findIndex((line) => line.startsWith("- Before the final check, go back over the session and file what you met but did not report."));
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(index).toBeLessThan(rules.findIndex((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work")));
+    for (const part of [
+      "Report with the `feedback` tool each problem that a tool, hook, instruction or setup gave you, also one you worked around;",
+      "File a proposal under the Work board section only for a tool or command that does not exist yet:",
+      "Before a proposal, search the board and add a note to a task that covers it instead.",
+      "One item goes to one of the two, never both.",
+      "Name each id in the report, and say so when you met none.",
+      // Subagents share the parent's board identity (Work board section).
+      "An Agent-tool subagent files nothing: it reports these items to its parent.",
+    ]) expect(rules[index]).toContain(part);
+  });
+
   test("finished threads settle themselves after a final check; coordinators and subagents never do", () => {
     const rule = referenceRules("t3-settle").split("\n").find((line) => line.startsWith("- In a T3 thread, end the turn that finishes your work"));
     expect(rule).toBeDefined();
@@ -851,7 +940,7 @@ describe("full stop", () => {
     expect(body).toContain("turn auto-merge off with `gh pr merge <n> --disable-auto`, then make it a draft with `gh pr ready <n> --undo`");
     expect(body).toContain("When GitHub refuses a draft, open it without `--draft`, then at once run `gh pr merge <n> --disable-auto`");
     expect(body).toContain("Never run `gh pr ready`, merge, turn on auto-merge, push to the default branch, or ask another agent to do one of these, until the user releases it.");
-    expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.claude/reference/merge.md` says.");
+    expect(body).toContain("When the user says to merge, run `gh pr ready <n>`, then merge it as `~/.config/claude/reference/merge.md` says.");
     expect(read("claude/hooks/auto-merge.js")).toContain("if (view.isDraft) return");
     expect(read("claude/hooks/guard-pr-merge.js")).toContain("if (view.isDraft) return");
   });
@@ -1038,14 +1127,14 @@ describe("rules the live suites test", () => {
   // A wrapper agent only called /code-review, which forks the real reviewer itself at the
   // level's effort, and its relay dropped the findings' category fields (dotfiles-386). A
   // skill's own background fork waits in an SDK session, so the session starts the agent.
-  test("Review runs once in the background reviewer agent, on the session's model at high, pinned to the commit", () => {
+  test("Review runs once in the background reviewer agent, on the session's model at its effort, pinned to the commit", () => {
     const review = `${section("Review")}${referenceRules("review")}`;
     expect(review).toMatch(/^\n- The `reviewer` agent is the only review process\./);
-    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews on the session's model at `high` effort as its `diff-review` skill says/);
+    expect(review).toMatch(/run it once on the final diff before pushing or reporting done; it reviews as its `diff-review` skill says, on the session's model and effort\./);
     expect(review).toMatch(/Don't run a second review, `\/code-review`, `\/simplify`, or `\/security-review` unless I ask/);
     expect(review).toMatch(/Run the review in the background, so this thread stays free to answer me/);
     expect(review).toMatch(/commit the final diff, then start the `reviewer` agent with the Agent tool and `run_in_background: true`, with only the commit's range as its prompt, such as `origin\/main\.\.\.<SHA>`/);
-    expect(review).toMatch(/It works in this checkout on the session's model at its own effort, so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
+    expect(review).toMatch(/It works in this checkout on the session's model at the session's effort, by default the one `modelSettings` in `settings\.json` sets for the model \(`high` on Opus 5\.5, `medium` on Fable 5\.2\), so give it no worktree, model or effort, and don't run it through another agent or a skill call/);
     expect(review).toMatch(/It returns its findings as JSON, each with a category/);
     expect(review).toMatch(/While it runs, answer my messages and continue work that leaves that diff alone, but don't push or report done until its findings are handled/);
     expect(review).toMatch(/Cancel and restart it only when the diff changes while it still runs\. After it returns, fixes get the affected checks, never another review\./);
@@ -1236,13 +1325,11 @@ describe("lean prompt", () => {
   });
 
   // board task dotfiles-270: Haiku never gave the bar, so Opus never scored a candidate.
-  test("the ui-climb skill makes Haiku the regression pre-check and Opus the bar judge", () => {
+  test("the ui-climb skill makes Gemini 4 Neon (low) the regression pre-check and Gemini 4 Neon (high) the bar judge", () => {
     const skill = read("claude/skills/ui-climb/SKILL.md").replace(/\s+/g, " ");
-    expect(skill).toContain("Haiku is the regression pre-check and Opus is the bar judge");
-    expect(skill).toContain("does not score under main by more than `pass.regression` (default 2) times Haiku's noise; a round it fails stops before Opus");
-    expect(skill).toContain("Opus alone applies `pass.min`, `pass.gain` and `pass.references`");
-    expect(skill).not.toContain("Haiku must pass a round before the Opus judge scores it");
-    expect(skill).not.toContain("Haiku gates the Opus judge");
+    expect(skill).toContain("Gemini 4 Neon (`low` effort) regression pre-check first and a Gemini 4 Neon (`high` effort) bar judge second");
+    expect(skill).toContain("does not score under main by more than `pass.regression` (default 2) times its noise; a round it fails stops before the bar judge");
+    expect(skill).toContain("The bar judge alone applies `pass.min`, `pass.gain` and `pass.references`");
   });
 
   // board task dotfiles-272: a climb kept every round and handed over a branch worse than an earlier round.
