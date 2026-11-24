@@ -484,6 +484,97 @@ describe("hook process", () => {
   test("allows commands outside a repository", () => {
     expect(run("git switch feature", root)).toEqual({ code: 0, stderr: "" });
   });
+
+  test("blocks git reset --hard after cd into main checkout via eval, source, or piped loop (dotfiles-306)", () => {
+    expect(run(`eval cd ${main}; git reset --hard HEAD~1`, linked).code).toBe(2);
+    expect(run(`eval cd ${main}; git reset --hard HEAD~1`, root).code).toBe(2);
+    expect(run(`source /dev/stdin <<< 'cd ${main}'; git reset --hard HEAD~1`, linked).code).toBe(2);
+    expect(run(`while read l; do cd ${linked}; done <<< a | cat; git reset --hard HEAD~1`, main).code).toBe(2);
+    expect(run(`eval cd ${linked}; git reset --hard HEAD~1`, root)).toEqual({ code: 0, stderr: "" });
+  });
+});
+
+describe("cd in eval, source, or a non-last piped compound command (dotfiles-306)", () => {
+  test.each([
+    // eval cd into main from a non-main directory, or out of main
+    ["eval cd /main; git reset --hard HEAD~1", "/linked"],
+    ["eval cd /main; git reset --hard HEAD~1", "/not-a-repo"],
+    ["eval 'cd /main && true'; git switch feature", "/linked"],
+    ["eval -- cd /main; git reset --hard HEAD~1", "/linked"],
+    ["eval - cd /main; git reset --hard HEAD~1", "/linked"],
+    ["eval \"eval 'cd /main'\"; git reset --hard HEAD~1", "/linked"],
+    ["eval cd /linked; git reset --hard HEAD~1", "/main"],
+    ["eval 'cd $X'; git reset --hard HEAD~1", "/main"],
+    ["eval cd /main; gh pr merge 12", "/linked"],
+    ["eval cd /main; sh -c 'git reset --hard HEAD~1'", "/linked"],
+    ["eval cd /main; cd sub; git reset --hard HEAD~1", "/linked"],
+    ["eval cd /main; git -C sub reset --hard HEAD~1", "/linked"],
+    ["eval cd /main; echo 'git switch x' | xargs sudo", "/linked"],
+    ["cd $X; eval cd $Y; git -C /main switch feature", "/linked"],
+    // source / . with inline script
+    ["source /dev/stdin <<< 'cd /main'; git reset --hard HEAD~1", "/linked"],
+    [". /dev/stdin <<< 'cd /main'; git reset --hard HEAD~1", "/linked"],
+    ["echo 'cd /main' | source /dev/stdin; git reset --hard HEAD~1", "/linked"],
+    ["source /dev/stdin < <(echo 'cd /main'); git reset --hard HEAD~1", "/linked"],
+    ["source <(echo 'cd /main'); git reset --hard HEAD~1", "/linked"],
+    [". <(printf 'cd /main\\n'); git reset --hard HEAD~1", "/linked"],
+    ["source /dev/stdin <<< 'cd /linked'; git reset --hard HEAD~1", "/main"],
+    // non-last piped compound commands (while, until, for, if, case) in both directions
+    ["while read l; do cd /linked; done < f | cat; git reset --hard HEAD~1", "/main"],
+    ["time while read l; do cd /linked; done | cat; git reset --hard HEAD~1", "/main"],
+    ["while read l; do cd /main; done < f | cat; git reset --hard HEAD~1", "/linked"],
+    ["until false; do cd /linked; done | cat; git reset --hard HEAD~1", "/main"],
+    ["for x in a b; do cd /linked; done | cat; git reset --hard HEAD~1", "/main"],
+    ["for x in a b; do cd /main; done | cat; git reset --hard HEAD~1", "/linked"],
+    ["if true; then cd /linked; fi | cat; git reset --hard HEAD~1", "/main"],
+    ["if true; then cd /main; fi | cat; git reset --hard HEAD~1", "/linked"],
+    ["case a in a) cd /linked;; esac | cat; git reset --hard HEAD~1", "/main"],
+    ["case a in a) cd /main;; esac | cat; git reset --hard HEAD~1", "/linked"],
+    ["while read l; do cd $X; done | cat; git reset --hard HEAD~1", "/main"],
+    ["while read l; do cd /linked; done | git reset --hard HEAD~1", "/main"],
+    ["while read l; do cd /linked; done & git reset --hard HEAD~1", "/main"],
+    // compound command as whole command or last part of a pipeline still tracks cd into main
+    ["while read l; do cd /main; done; git reset --hard HEAD~1", "/linked"],
+    ["echo a | while read l; do cd /main; done; git reset --hard HEAD~1", "/linked"],
+    ["for x in a; do cd /main; done; git reset --hard HEAD~1", "/linked"],
+    ["if true; then cd /main; fi; git reset --hard HEAD~1", "/linked"],
+    ["case a in a) cd /main;; esac; git reset --hard HEAD~1", "/linked"],
+  ])("blocks %s (from %s)", (...row) => {
+    expect(verdict(...row)).toContain("a main checkout other threads share");
+  });
+
+  test.each([
+    // uncertain dir when neither candidate is a main checkout
+    ["eval cd /other; git reset --hard HEAD~1", "/linked"],
+    ["eval cd /linked; git switch feature", "/not-a-repo"],
+    ["eval 'cd $X'; git reset --hard HEAD~1", "/linked"],
+    ["eval cd /other; echo 'git switch x' | xargs sudo", "/linked"],
+    ["cd $X; eval cd $Y; git switch feature", "/linked"],
+    ["source /dev/stdin <<< 'cd /other'; git reset --hard HEAD~1", "/linked"],
+    ["source <(echo 'cd /other'); git reset --hard HEAD~1", "/linked"],
+    ["while read l; do cd /other; done < f | cat; git reset --hard HEAD~1", "/linked"],
+    ["for x in a b; do cd /other; done | cat; git reset --hard HEAD~1", "/linked"],
+    ["if true; then cd /other; fi | cat; git reset --hard HEAD~1", "/linked"],
+    ["case a in a) cd /other;; esac | cat; git reset --hard HEAD~1", "/linked"],
+    // plain unknown dir keeps today's verdict
+    ["cd $X; git reset --hard HEAD~1", "/main"],
+    ["cd \"$DIR\" && git switch feature", "/main"],
+    // compound command as whole command or last part of a pipeline tracks cd out of main as today
+    ["while read l; do cd /linked; done; git reset --hard HEAD~1", "/main"],
+    ["echo a | while read l; do cd /linked; done; git reset --hard HEAD~1", "/main"],
+    ["for x in a; do cd /linked; done; git reset --hard HEAD~1", "/main"],
+    ["if true; then cd /linked; fi; git reset --hard HEAD~1", "/main"],
+    ["case a in a) cd /linked;; esac; git reset --hard HEAD~1", "/main"],
+    // eval/source in a subshell or non-last pipeline part cannot move outer commands
+    ["(eval cd /main); git reset --hard HEAD~1", "/linked"],
+    ["eval cd /main | cat; git reset --hard HEAD~1", "/linked"],
+    ["source /dev/stdin <<< 'cd /main' | cat; git reset --hard HEAD~1", "/linked"],
+    // explicit -C /linked or later absolute cd /linked overrides uncertainty
+    ["eval cd /main; git -C /linked reset --hard HEAD~1", "/linked"],
+    ["eval cd /main; cd /linked; git reset --hard HEAD~1", "/linked"],
+  ])("allows %s (from %s)", (...row) => {
+    expect(verdict(...row)).toBeUndefined();
+  });
 });
 
 describe("commands xargs supplies or extends (dotfiles-338)", () => {
