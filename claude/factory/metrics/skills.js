@@ -126,16 +126,18 @@ export function sessionSkillLoads(session, { skills = dotfilesSkills(), preloads
       const name = installedSkillFromPath(filePath, known);
       if (name) loads.push({ skill: name, kind: "read", at: call.at ?? null });
     }
-    if (["Agent", "Task"].includes(call.name) && call.ok !== false) {
+    if (["Agent", "Task"].includes(call.name)) {
       const agentType = call.input?.subagent_type;
       const preloaded = typeof agentType === "string" ? preloads.get(agentType) : null;
       if (preloaded?.length) {
-        if (call.id) {
-          const agent = subagents.find((candidate) => candidate.toolUseId === call.id);
-          if (agent) matched.add(agent);
+        let paired = call.id ? subagents.find((candidate) => candidate.toolUseId === call.id) : null;
+        if (!paired && call.ok !== false)
+          paired = subagents.find((candidate) => !matched.has(candidate) && !candidate.toolUseId && candidate.agentType === agentType) ?? null;
+        if (paired) matched.add(paired);
+        if (call.ok !== false) {
+          for (const skill of preloaded)
+            if (known.has(skill)) loads.push({ skill, kind: "preload", at: call.at ?? null });
         }
-        for (const skill of preloaded)
-          if (known.has(skill)) loads.push({ skill, kind: "preload", at: call.at ?? null });
       }
     }
   }
@@ -181,7 +183,7 @@ export function skillStats(entries, { skills = dotfilesSkills() } = {}) {
       if (!bySkill.has(load.skill)) bySkill.set(load.skill, []);
       bySkill.get(load.skill).push(load);
     }
-    const followUps = entry.session.origin === "agent" ? null : (entry.prompts ?? []).slice(1);
+    const followUps = entry.session.origin === "person" ? (entry.prompts ?? []).slice(1) : null;
     for (const [name, events] of bySkill) {
       const row = rows.get(name);
       row.loads += events.length;
@@ -199,7 +201,7 @@ export function skillStats(entries, { skills = dotfilesSkills() } = {}) {
           if (!isCorrection(prompt.text)) return false;
           if (earliest === null) return true;
           const promptMs = Date.parse(prompt.at ?? "");
-          return !Number.isFinite(promptMs) || promptMs >= earliest;
+          return !Number.isFinite(promptMs) || promptMs > earliest;
         });
         if (corrected) row.corrections.withCorrection += 1;
       }
@@ -336,13 +338,15 @@ export function weeklySkillLines(report) {
 
     let feedbackText;
     if (!row.feedback) feedbackText = "feedback n/a";
-    else if (row.feedback.items === 0 && row.feedback.reports === 0) feedbackText = "0 feedback reports";
     else {
-      const details = [plural(row.feedback.items, "item")];
+      const details = [];
+      if (row.feedback.items) details.push(plural(row.feedback.items, "item"));
       if (row.feedback.fixed) details.push(`${row.feedback.fixed} fixed`);
       if (row.feedback.routedOpen) details.push(`${row.feedback.routedOpen} open`);
       if (row.feedback.untriaged) details.push(`${row.feedback.untriaged} untriaged`);
-      feedbackText = `${plural(row.feedback.reports, "feedback report")} (${details.join(", ")})`;
+      feedbackText = details.length
+        ? `${plural(row.feedback.reports, "feedback report")} (${details.join(", ")})`
+        : "0 feedback reports";
     }
     if (row.setupId && row.setupId !== row.name) feedbackText += ` (setup: ${row.setupId})`;
 

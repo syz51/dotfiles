@@ -5,7 +5,9 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { isAutomation, priceRequests, timestamps, topKey } from "./transcripts.js";
+import { excerpt, isAgentBrief, isAutomation, priceRequests, timestamps, topKey } from "./transcripts.js";
+
+const TOOL_ERROR = /Command exited with code [1-9]|Encountered error in tool execution/i;
 
 export function antigravityBrainRoots(env = process.env) {
   if (env.AGY_BRAIN_ROOT) return [env.AGY_BRAIN_ROOT];
@@ -96,11 +98,14 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
     const prompts = [];
     const requests = [];
     const toolCalls = [];
+    let pendingCalls = [];
     for (const r of records) {
       if (r.type === "USER_INPUT" && r.source === "USER_EXPLICIT") {
+        pendingCalls = [];
         const text = unwrapUserRequest(r.content);
         if (text) prompts.push({ at: r.created_at ?? null, text, source: "user" });
       } else if (r.type === "PLANNER_RESPONSE") {
+        pendingCalls = [];
         if (r.model) {
           const model = String(r.model);
           const effortMatch = /-(low|medium|high|xhigh)$/.exec(model);
@@ -122,9 +127,15 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
             if (!tc || typeof tc.name !== "string") continue;
             const rawArgs = tc.args && typeof tc.args === "object" && !Array.isArray(tc.args) ? tc.args : {};
             const input = Object.fromEntries(Object.entries(rawArgs).map(([key, value]) => [key, parseAntigravityArg(value)]));
-            toolCalls.push({ id: null, name: tc.name, input, at: r.created_at ?? null, ok: null, output: "" });
+            const call = { id: null, name: tc.name, input, at: r.created_at ?? null, ok: null, output: "" };
+            toolCalls.push(call);
+            pendingCalls.push(call);
           }
         }
+      } else if (r.type === "GENERIC" && typeof r.content === "string" && pendingCalls.length) {
+        const call = pendingCalls.shift();
+        call.ok = !TOOL_ERROR.test(r.content);
+        call.output = excerpt(r.content);
       }
     }
 
@@ -143,7 +154,7 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
       endedAt,
       durationMs,
       automation: isAutomation(cwd),
-      origin: prompts.length ? "person" : null,
+      origin: prompts.length ? (isAgentBrief(prompts[0].text) ? "agent" : "person") : null,
       prompts,
       hostPrompts: 0,
       inheritedPrompts: [],
@@ -200,7 +211,7 @@ export function antigravityTurns(file) {
       turn.events.push({ text: r.content });
       turn.complete = true;
     } else if (r.type === "GENERIC" && typeof r.content === "string") {
-      const isError = /Command exited with code [1-9]|Encountered error in tool execution/i.test(r.content);
+      const isError = TOOL_ERROR.test(r.content);
       if (isError) {
         const call = { name: "tool", input: {}, output: r.content.slice(0, 800), isError: true };
         turn.calls.push(call);

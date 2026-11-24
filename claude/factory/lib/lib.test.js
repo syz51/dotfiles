@@ -239,7 +239,7 @@ describe("transcripts", () => {
     }
   });
 
-  test("loadAntigravitySessions extracts PLANNER_RESPONSE tool calls with parsed JSON args", () => {
+  test("loadAntigravitySessions extracts PLANNER_RESPONSE tool calls, pairs GENERIC results and classifies agent briefs", () => {
     const brain = join(scratch, "brain");
     const logs = join(brain, "conv-a", ".system_generated", "logs");
     mkdirSync(logs, { recursive: true });
@@ -252,18 +252,40 @@ describe("transcripts", () => {
         input_tokens: 100,
         output_tokens: 20,
         cache_read_tokens: 0,
-        tool_calls: [{ name: "read_file", args: { Path: "\"/Users/u/.gemini/config/skills/diff-review/SKILL.md\"", StartLine: "1" } }],
+        tool_calls: [
+          { name: "read_file", args: { Path: "\"/Users/u/.gemini/config/skills/diff-review/SKILL.md\"", StartLine: "1" } },
+          { name: "read_file", args: { Path: "\"/Users/u/missing.md\"" } },
+        ],
       },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Showing lines 1-70 of 70" },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Encountered error in tool execution: file does not exist" },
     ].map((r) => JSON.stringify(r)).join("\n") + "\n");
-    const [session] = loadAntigravitySessions({ roots: [brain] });
-    expect(session.toolCalls).toEqual([{
-      id: null,
-      name: "read_file",
-      input: { Path: "/Users/u/.gemini/config/skills/diff-review/SKILL.md", StartLine: 1 },
-      at: "2026-11-24T10:00:05Z",
-      ok: null,
-      output: "",
-    }]);
+    const agentLogs = join(brain, "conv-b", ".system_generated", "logs");
+    mkdirSync(agentLogs, { recursive: true });
+    writeFileSync(join(agentLogs, "transcript.jsonl"), [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-24T10:05:00Z", content: "<user_request>Delegated task: fix it</user_request>" },
+    ].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const byId = Object.fromEntries(loadAntigravitySessions({ roots: [brain] }).map((s) => [s.id, s]));
+    expect(byId["conv-a"].origin).toBe("person");
+    expect(byId["conv-b"].origin).toBe("agent");
+    expect(byId["conv-a"].toolCalls).toEqual([
+      {
+        id: null,
+        name: "read_file",
+        input: { Path: "/Users/u/.gemini/config/skills/diff-review/SKILL.md", StartLine: 1 },
+        at: "2026-11-24T10:00:05Z",
+        ok: true,
+        output: "Showing lines 1-70 of 70",
+      },
+      {
+        id: null,
+        name: "read_file",
+        input: { Path: "/Users/u/missing.md" },
+        at: "2026-11-24T10:00:05Z",
+        ok: false,
+        output: "Encountered error in tool execution: file does not exist",
+      },
+    ]);
   });
 
   test("a fork counts only its own records and names its parent", () => {

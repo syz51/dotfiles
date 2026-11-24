@@ -95,15 +95,25 @@ describe("transcript loads and post-load corrections", () => {
     const firstReviewerId = main.records.findLast((r) => r.type === "assistant").message.content[0].id;
     main
       .tool("Agent", { subagent_type: "reviewer", prompt: "origin/main...def" }, "[]")
-      .tool("Agent", { subagent_type: "reviewer", prompt: "HEAD" }, "refused", { isError: true })
+      .tool("Agent", { subagent_type: "reviewer", prompt: "HEAD" }, "refused", { isError: true });
+    const refusedReviewerId = main.records.findLast((r) => r.type === "assistant").message.content[0].id;
+    main
       .prompt("no, you forgot the edge case")
       .text("fixed");
     const reviewerSub = new Transcript({ sessionId: main.sessionId, start: start + 15_000 })
       .prompt("origin/main...abc")
       .text("[]");
-    // Unmatched reviewer subagent (no toolUseId) + worker subagent calling headless-browser.
-    const orphanReviewer = new Transcript({ sessionId: main.sessionId, start: start + 20_000 })
+    // Unmarked reviewer subagent (omitted toolUseId): pairs with the second reviewer Agent call, not double-counted.
+    const unmarkedReviewer = new Transcript({ sessionId: main.sessionId, start: start + 20_000 })
+      .prompt("origin/main...def")
+      .text("[]");
+    // Extra reviewer subagent with no Agent call in main: counts as a third preload.
+    const orphanReviewer = new Transcript({ sessionId: main.sessionId, start: start + 22_000 })
       .prompt("origin/main...xyz")
+      .text("[]");
+    // Subagent left behind by the refused reviewer Agent call: must NOT count.
+    const refusedReviewerSub = new Transcript({ sessionId: main.sessionId, start: start + 23_000 })
+      .prompt("HEAD")
       .text("[]");
     const workerSub = new Transcript({ sessionId: main.sessionId, start: start + 25_000 })
       .prompt("capture")
@@ -130,7 +140,9 @@ describe("transcript loads and post-load corrections", () => {
         transcript: main,
         subagents: [
           { id: "agent-r1", meta: { agentType: "reviewer", toolUseId: firstReviewerId }, transcript: reviewerSub },
-          { id: "agent-r2", meta: { agentType: "reviewer" }, transcript: orphanReviewer },
+          { id: "agent-r2", meta: { agentType: "reviewer" }, transcript: unmarkedReviewer },
+          { id: "agent-r3", meta: { agentType: "reviewer" }, transcript: orphanReviewer },
+          { id: "agent-r4", meta: { agentType: "reviewer", toolUseId: refusedReviewerId }, transcript: refusedReviewerSub },
           { id: "agent-w1", meta: { agentType: "worker", toolUseId: "toolu_99" }, transcript: workerSub },
         ],
       },
@@ -138,12 +150,15 @@ describe("transcript loads and post-load corrections", () => {
       { transcript: delegated },
     ], join(scratch, "projects"));
 
-    // Antigravity session reading installed diff-review SKILL.md and repo source ui-climb SKILL.md.
+    // Antigravity sessions:
+    // 1. Person session with a same-second correcting prompt triggering diff-review read (must NOT count as post-load correction),
+    //    a repo source read (ignored), a successful cheat-sheets read, and a failed full-stop read (ok: false, ignored).
     const brain = join(scratch, "brain");
-    const convDir = join(brain, "conv-1", ".system_generated", "logs");
-    mkdirSync(convDir, { recursive: true });
-    writeFileSync(join(convDir, "transcript.jsonl"), [
+    const conv1 = join(brain, "conv-1", ".system_generated", "logs");
+    mkdirSync(conv1, { recursive: true });
+    writeFileSync(join(conv1, "transcript.jsonl"), [
       { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-20T11:00:00Z", content: "<user_request>Review diff</user_request>" },
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-20T11:00:05Z", content: "no, read diff-review first" },
       {
         type: "PLANNER_RESPONSE",
         created_at: "2026-11-20T11:00:05Z",
@@ -155,9 +170,51 @@ describe("transcript loads and post-load corrections", () => {
           { name: "read_file", args: { Path: JSON.stringify("/Users/u/.gemini/config/skills/diff-review/SKILL.md") } },
           { name: "read_file", args: { Path: JSON.stringify("/Users/u/.t3/worktrees/.config/task-1/claude/skills/ui-climb/SKILL.md") } },
           { name: "read_file", args: { Path: JSON.stringify("/Users/u/.t3/userdata/providers/antigravity/abc/config/skills/cheat-sheets/SKILL.md") } },
+          { name: "read_file", args: { Path: JSON.stringify("/Users/u/.gemini/config/skills/full-stop/SKILL.md") } },
         ],
       },
+      { type: "GENERIC", created_at: "2026-11-20T11:00:06Z", content: "Showing lines 1-70 of 70" },
+      { type: "GENERIC", created_at: "2026-11-20T11:00:06Z", content: "Showing lines 1-10 of 10" },
+      { type: "GENERIC", created_at: "2026-11-20T11:00:06Z", content: "Showing lines 1-49 of 49" },
+      { type: "GENERIC", created_at: "2026-11-20T11:00:06Z", content: "Encountered error in tool execution: file does not exist" },
       { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-20T11:01:00Z", content: "thanks, looks good" },
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    // 2. Zero-prompt Antigravity subagent session (origin: null) reading diff-review:
+    //    counts in loads and sessions, NOT in person corrections.sessions.
+    const conv2 = join(brain, "conv-2", ".system_generated", "logs");
+    mkdirSync(conv2, { recursive: true });
+    writeFileSync(join(conv2, "transcript.jsonl"), [
+      { type: "SYSTEM_MESSAGE", created_at: "2026-11-20T11:05:00Z", content: "Read diff-review" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-20T11:05:01Z",
+        model: "gemini-4-neon-high",
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 0,
+        tool_calls: [{ name: "read_file", args: { Path: JSON.stringify("/Users/u/.gemini/config/skills/diff-review/SKILL.md") } }],
+      },
+      { type: "GENERIC", created_at: "2026-11-20T11:05:02Z", content: "Showing lines 1-70 of 70" },
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+
+    // 3. Agent-delegated Antigravity session (origin: "agent") reading work-stages:
+    //    counts in loads and sessions, NOT in person corrections.sessions.
+    const conv3 = join(brain, "conv-3", ".system_generated", "logs");
+    mkdirSync(conv3, { recursive: true });
+    writeFileSync(join(conv3, "transcript.jsonl"), [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-20T11:10:00Z", content: "<user_request>Act as the worker subagent</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-20T11:10:01Z",
+        model: "gemini-4-neon-high",
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_tokens: 0,
+        tool_calls: [{ name: "read_file", args: { Path: JSON.stringify("/Users/u/.gemini/config/skills/work-stages/SKILL.md") } }],
+      },
+      { type: "GENERIC", created_at: "2026-11-20T11:10:02Z", content: "Showing lines 1-42 of 42" },
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-20T11:11:00Z", content: "no, redo that" },
     ].map((record) => JSON.stringify(record)).join("\n") + "\n");
 
     const skills = dotfilesSkills();
@@ -171,17 +228,18 @@ describe("transcript loads and post-load corrections", () => {
     const stats = skillStats(entries, { skills });
     const byName = Object.fromEntries(stats.map((row) => [row.name, row]));
 
-    // diff-review: 3 preloads in main (r1 deduped, unmatched toolu_6, orphan r2) + 1 read in Antigravity.
+    // diff-review: 3 preloads in main (r1 deduped by toolUseId, r2 deduped without toolUseId, orphan r3; refused r4 ignored)
+    // + 2 reads in Antigravity (conv1 person with same-second prompt -> 0 correction, conv2 origin:null -> excluded from corrections.sessions).
     expect(byName["diff-review"]).toMatchObject({
-      loads: 4, toolCalls: 0, preloads: 3, reads: 1, sessions: 2,
+      loads: 5, toolCalls: 0, preloads: 3, reads: 2, sessions: 3,
       corrections: { sessions: 2, withCorrection: 1, rate: 0.5 },
     });
-    // work-stages: 1 in main (person, corrected after load) + 1 in delegated (agent, excluded from corrections).
+    // work-stages: 1 in main (person, corrected after load) + 1 in Claude delegated + 1 in Antigravity delegated (both origin:"agent").
     expect(byName["work-stages"]).toMatchObject({
-      loads: 2, toolCalls: 2, preloads: 0, reads: 0, sessions: 2,
+      loads: 3, toolCalls: 2, preloads: 0, reads: 1, sessions: 3,
       corrections: { sessions: 1, withCorrection: 1, rate: 1 },
     });
-    // full-stop: 1 in main (person, corrected after load).
+    // full-stop: 1 in main (person, corrected after load); failed Antigravity read ignored.
     expect(byName["full-stop"]).toMatchObject({
       loads: 1, toolCalls: 1, preloads: 0, reads: 0, sessions: 1,
       corrections: { sessions: 1, withCorrection: 1, rate: 1 },
@@ -262,6 +320,8 @@ describe("git commits and weekly report synthesis", () => {
         { id: "ui-climb", items: 2, reports: 3, untriaged: [], routedOpen: [{ id: "f1" }], fixed: 1, recurrences: 0 },
         { id: "skills:ui-climb", items: 1, reports: 1, untriaged: [{ id: "f2" }], routedOpen: [], fixed: 0, recurrences: 0 },
         { id: "headless-browser", items: 1, reports: 1, untriaged: [], routedOpen: [], fixed: 0, recurrences: 0 },
+        // Older item with no new reports this week, but its routed owner task finished in the window.
+        { id: "work-stages", items: 0, reports: 0, untriaged: [], routedOpen: [], fixed: 1, recurrences: 0 },
       ],
     };
     expect(skillFeedback(evolve, { name: "ui-climb" })).toEqual({ items: 3, reports: 4, untriaged: 1, routedOpen: 1, fixed: 1, recurrences: 0 });
@@ -289,7 +349,7 @@ describe("git commits and weekly report synthesis", () => {
       "- full-stop: 0 loads; 0 feedback reports; 4 commits (aaa1111, bbb2222, ccc3333, … +1)",
       "- headless-browser: 2 loads (2 Skill) in 2 sessions; 1 feedback report (1 item); 0 commits",
       "- ui-climb: 0 loads; 4 feedback reports (3 items, 1 fixed, 1 open, 1 untriaged); 0 commits",
-      "- work-stages: 0 loads; 0 feedback reports; 0 commits",
+      "- work-stages: 0 loads; 0 feedback reports (1 fixed); 0 commits",
     ]);
 
     const degraded = weeklySkillLines(weeklySkillReport({ metrics: null, evolve: null, commits: null, commitsError: "git log failed", skills: skills.slice(0, 1) }));
