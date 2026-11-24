@@ -28,7 +28,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const LABEL = "com.syz51.gnotebook-monitor";
-export const DEFAULT_INTERVAL_SECONDS = 43_200; // 12 hours
+export const DEFAULT_INTERVAL_SECONDS = 604_800; // weekly (7 days)
 export const FETCH_TIMEOUT_MS = 20_000;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MiB safety cap
 export const BOARD_SLUG = "dotfiles";

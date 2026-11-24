@@ -131,7 +131,7 @@ gnotebook-monitor check
 # Inspect current baseline snapshot and LaunchAgent state
 gnotebook-monitor status
 
-# Install/uninstall the 12-hour macOS LaunchAgent (com.syz51.gnotebook-monitor)
+# Install/uninstall the weekly macOS LaunchAgent (com.syz51.gnotebook-monitor)
 gnotebook-monitor install
 gnotebook-monitor uninstall
 ```
