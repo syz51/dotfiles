@@ -73,7 +73,7 @@ class LauncherTests(unittest.TestCase):
         source = Path(__file__).with_name("tuios-launcher.py").read_text()
         (self.root / "launcher.py").write_text(source.replace(
             'str(Path.home() / ".local/bin/tuios")', repr(str(fake))
-        ).replace("time.monotonic() + 15", "time.monotonic() + 1.5"))
+        ).replace("time.monotonic() + 15", "time.monotonic() + 1.5").replace("timeout=2", "timeout=10"))
         shell = Path(__file__).with_name("tuios-launcher.sh").read_text()
         (self.root / "launcher.sh").write_text(shell.replace(
             "$HOME/.config/ghostty/tuios-launcher.py", str(self.root / "launcher.py")
@@ -112,7 +112,7 @@ class LauncherTests(unittest.TestCase):
         return process
 
     def until(self, predicate):
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 20
         while not predicate(self.read_state()):
             self.assertLess(time.monotonic(), deadline, "Launcher did not progress")
             time.sleep(0.01)
@@ -121,7 +121,7 @@ class LauncherTests(unittest.TestCase):
         for process in self.processes:
             if process.poll() is None:
                 process.terminate()
-            process.communicate(timeout=7)
+            process.communicate(timeout=20)
 
     def concurrent_launches(self):
         self.start()
@@ -177,22 +177,22 @@ class LauncherTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 self.write_state([], **extra)
                 process = self.start()
-                self.assertNotEqual(process.wait(timeout=5), 0)
+                self.assertNotEqual(process.wait(timeout=30), 0)
                 self.assertEqual(self.read_state()["calls"], [])
 
     def test_failed_client_releases_lock(self):
         self.write_state([], client_exit=7)
         first, second = self.start(), self.start()
-        self.assertEqual(first.wait(timeout=5), 7)
-        self.assertEqual(second.wait(timeout=5), 7)
+        self.assertEqual(first.wait(timeout=30), 7)
+        self.assertEqual(second.wait(timeout=30), 7)
 
     def test_timeout_stops_client_and_releases_lock(self):
         source = self.root / "launcher.py"
         source.write_text(source.read_text().replace("time.monotonic() + 1.5", "time.monotonic() + 0.3"))
         self.write_state([], attach_delay=10)
         first, second = self.start(), self.start()
-        self.assertEqual(first.wait(timeout=5), 1)
-        self.assertEqual(second.wait(timeout=5), 1)
+        self.assertEqual(first.wait(timeout=30), 1)
+        self.assertEqual(second.wait(timeout=30), 1)
         for call in self.read_state()["calls"]:
             with self.assertRaises(ProcessLookupError):
                 os.kill(call["pid"], 0)

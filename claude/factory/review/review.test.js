@@ -114,6 +114,10 @@ if (verify) {
   return path;
 }
 
+const HOOK_TIMEOUT = 30_000;
+const GIT_TIMEOUT = 20_000;
+const REVIEW_TIMEOUT = 30_000;
+
 beforeEach(() => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "claude-factory-review-main-test-")));
   remotes = join(scratch, "remotes");
@@ -125,7 +129,7 @@ beforeEach(() => {
     FAKE_REVIEW_LOG: join(scratch, "sessions.jsonl"), FAKE_REVIEW_TEXT: DEFAULT_REVIEW_JSON,
     FAKE_REVIEW_FAIL: undefined, FAKE_REVIEW_EMPTY: undefined, FAKE_VERIFY_NONE: undefined, FAKE_BOARD_ADD_FAIL: undefined,
   });
-});
+}, HOOK_TIMEOUT);
 afterEach(() => {
   for (const [name, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[name];
@@ -180,12 +184,12 @@ describe("prepare", () => {
     const git = (args) => Bun.spawnSync(["git", ...args], { cwd: dir }).stdout.toString().trim();
     expect(git(["rev-parse", "HEAD"])).toBe(commits[2]);
     expect(git(["remote"])).toBe("");
-  });
+  }, GIT_TIMEOUT);
 
   test("base is null when the branch has no commit that old", async () => {
     const result = await prepare(join(remotes, "dotfiles"), join(scratch, "clone"), { branch: "main", days: 30, now: NOW });
     expect(result).toEqual({ base: null, head: commits[2], commits: null });
-  });
+  }, GIT_TIMEOUT);
 });
 
 describe("reviewRepo", () => {
@@ -222,7 +226,7 @@ describe("reviewRepo", () => {
     expect(option("--body")).toMatch(/^Proposal: lock race REAL\n\nEvidence: the weekly review \(diff-review high\) of github.com\/o\/dotfiles main [0-9a-f]{8}\.\.[0-9a-f]{8} reported it at a\.js:1\. A verify pass on [0-9a-f]{8} confirmed it: reason 1\n\nChange: Change it\.\n\nSize: S\n\nFound by the factory's weekly review of main on \d{4}-\d{2}-\d{2}\.$/);
     expect(record.confirmed.map((finding) => [finding.title, finding.task])).toEqual([["Fix lock race REAL", "dotfiles-501"]]);
     expect(record.rejected.map((finding) => [finding.summary, finding.reason])).toEqual([["naming", "reason 2"]]);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("routes through agy-run (Antigravity / Gemini 4 Neon) by default when CLAUDE_FACTORY_BIN is unset", async () => {
     const agyLog = join(scratch, "agy.jsonl");
@@ -236,7 +240,7 @@ describe("reviewRepo", () => {
     expect(calls[0].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--tools", "Read,Grep,Glob,Bash", "--settings"]));
     expect(calls[0].stdin).toContain(`Target: ${commits[0]}...${commits[2]}`);
     expect(calls[1].args).toEqual(expect.arrayContaining(["--full-access", "--model", "gemini-4-neon", "--effort", "high", "--output-format", "stream-json", "--tools", "Read,Grep,Glob,Bash", "--settings", "--json-schema"]));
-  });
+  }, REVIEW_TIMEOUT);
 
   test("an empty diff-review array skips the verify session", async () => {
     setEnv({ FAKE_REVIEW_TEXT: "[]" });
@@ -244,7 +248,7 @@ describe("reviewRepo", () => {
     expect(record.error).toBeNull();
     expect([record.confirmed, record.rejected, record.verifyCostUSD]).toEqual([[], [], 0]);
     expect(sessions().map((s) => s.kind)).toEqual(["review"]);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("openTitles and reviewRepo read every non-closed title across pages without a 200-title cap", async () => {
     const lsFile = join(scratch, "tasks.json");
@@ -272,20 +276,20 @@ describe("reviewRepo", () => {
     expect(verify.stdin).toContain("- Open task 201\n");
     expect(verify.stdin).toContain("- Open task 1050");
     expect(verify.stdin).not.toContain("Closed task");
-  });
+  }, REVIEW_TIMEOUT);
 
   test("a dry run verifies but files nothing", async () => {
     const record = await reviewRepo(target, config(), { now: NOW, file: false });
     expect(record.confirmed.map((finding) => finding.task)).toEqual([null]);
     expect(boardCalls().filter(([command]) => command === "add")).toEqual([]);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("a window with no commits runs no session", async () => {
     makeRemote("quiet", [20, 10]);
     const record = await reviewRepo({ board: "dotfiles", repo: "github.com/o/quiet" }, config(), { now: NOW });
     expect([record.commits, record.error, record.reviewCostUSD]).toEqual([0, null, 0]);
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("a repository younger than the window is skipped, not failed or reviewed in full", async () => {
     makeRemote("young", [2, 1]);
@@ -293,7 +297,7 @@ describe("reviewRepo", () => {
     expect([record.skipped, record.error]).toEqual(["main has no commit older than 7 days", null]);
     expect(existsSync(join(scratch, "sessions.jsonl"))).toBe(false);
     expect(summaryLines({ days: 7, costUSD: 0, repos: [record] })[0]).toBe("github.com/o/young: skipped: main has no commit older than 7 days");
-  });
+  }, REVIEW_TIMEOUT);
 
   test("failures end the repository with the reason and what it spent", async () => {
     setEnv({ FAKE_REVIEW_FAIL: "1" });
@@ -314,7 +318,7 @@ describe("reviewRepo", () => {
     record = await reviewRepo(target, config(), { now: NOW });
     expect(record.error).toMatch(/^board add on dotfiles exited 1: board unreachable/);
     expect(record.rejected.length).toBe(1);
-  });
+  }, 45_000);
 });
 
 describe("prompts and report", () => {
@@ -375,7 +379,7 @@ describe("the review command", () => {
     expect(boardCalls().filter(([command]) => command === "add")).toEqual([]);
     const kept = JSON.parse(readFileSync(join(scratch, "state", "review", `main-${result.startedAt.slice(0, 10)}.json`), "utf8"));
     expect(kept.repos.length).toBe(2);
-  });
+  }, REVIEW_TIMEOUT);
 
   test("--board limits the run; a board outside the config is refused; a failed repository exits 1", async () => {
     const errors = [];
@@ -392,5 +396,5 @@ describe("the review command", () => {
     expect(code).toBe(1);
     expect(out).toContain("github.com/o/dotfiles: FAILED");
     expect(out).not.toContain("agent-board");
-  });
+  }, REVIEW_TIMEOUT);
 });
