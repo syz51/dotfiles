@@ -7,6 +7,26 @@ import { changesBranch, findMainCheckoutViolation } from "./guard-main-checkout.
 
 const HOOK = join(import.meta.dir, "guard-main-checkout.js");
 
+// Fake stash commits in /main (anchored to refs/stash@{<n>} so non-stash branches named `stash`
+// never match): stash@{0} is backed up directly; stash@{1} has no backup; stash@{2} has a backup
+// ref pointing at another commit; stash@{3} has a symbolic backup ref; stash@{4} has an annotated
+// tag backup ref; stash@{5} only has a sub-ref under its prefix.
+const STASH_SHAS = {
+  "refs/stash@{0}": "1111111111111111111111111111111111111111",
+  "refs/stash@{1}": "2222222222222222222222222222222222222222",
+  "refs/stash@{2}": "3333333333333333333333333333333333333333",
+  "refs/stash@{3}": "4444444444444444444444444444444444444444",
+  "refs/stash@{4}": "5555555555555555555555555555555555555555",
+  "refs/stash@{5}": "6666666666666666666666666666666666666666",
+};
+const STASH_BACKUPS = {
+  [`refs/stash-backup/${STASH_SHAS["refs/stash@{0}"]}`]: `refs/stash-backup/${STASH_SHAS["refs/stash@{0}"]} commit ${STASH_SHAS["refs/stash@{0}"]}`,
+  [`refs/stash-backup/${STASH_SHAS["refs/stash@{2}"]}`]: `refs/stash-backup/${STASH_SHAS["refs/stash@{2}"]} commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`,
+  [`refs/stash-backup/${STASH_SHAS["refs/stash@{3}"]}`]: `refs/stash-backup/${STASH_SHAS["refs/stash@{3}"]} commit ${STASH_SHAS["refs/stash@{3}"]} refs/stash`,
+  [`refs/stash-backup/${STASH_SHAS["refs/stash@{4}"]}`]: `refs/stash-backup/${STASH_SHAS["refs/stash@{4}"]} tag bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb`,
+  [`refs/stash-backup/${STASH_SHAS["refs/stash@{5}"]}`]: `refs/stash-backup/${STASH_SHAS["refs/stash@{5}"]}/nested commit ${STASH_SHAS["refs/stash@{5}"]}`,
+};
+
 // A fake git: /main is a clean main checkout whose default branch is main, /dirty one with a
 // tracked change, /local one without origin/HEAD, /linked a linked worktree, /allowed a main
 // checkout whose user allowed branch changes, /scratch/repo a main checkout in a temporary
@@ -22,7 +42,18 @@ function fakeGit(dir, args) {
     "/scratch/repo": ["/scratch/repo/.git", "/scratch/repo/.git", "/scratch/repo"],
   };
   if (!repos[dir]) return undefined;
-  if (args[0] === "rev-parse") return repos[dir].join("\n");
+  if (args[0] === "rev-parse") {
+    if (args[1] === "--verify") {
+      if (dir !== "/main" && dir !== "/main/sub") return undefined;
+      const ref = args.at(-1).replace(/\^\{commit\}$/, "");
+      return STASH_SHAS[ref];
+    }
+    return repos[dir].join("\n");
+  }
+  if (args[0] === "for-each-ref") {
+    if (dir !== "/main" && dir !== "/main/sub") return undefined;
+    return STASH_BACKUPS[args.at(-1)];
+  }
   if (args[0] === "config") return dir === "/allowed" ? "Allow" : undefined;
   if (args[0] === "symbolic-ref") return dir === "/local" ? undefined : "origin/main";
   if (args[0] === "status")
@@ -354,11 +385,68 @@ describe("it allows", () => {
   });
 
   test.each([
+    ["git -c claude.mainCheckout=allow stash drop stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop refs/stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop -q stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop --quiet stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{0} -q"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{0} --quiet"],
+    ["git -c claude.mainCheckout=allow stash drop -- stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop -q -- stash@{0}"],
+    ["git -C /main -c claude.mainCheckout=allow stash drop stash@{0}", "/elsewhere"],
+    ["cd /main && git -c claude.mainCheckout=allow stash drop stash@{0}", "/elsewhere"],
+    ["cd /main && git -c claude.mainCheckout=allow stash drop stash@{0} && git stash list", "/elsewhere"],
+    ["git -c alias.sd='stash drop' -c claude.mainCheckout=allow sd stash@{0}"],
+  ])("%s: allows dropping one backed-up stash entry", (...row) => {
+    expect(verdict(...row)).toBeUndefined();
+  });
+
+  test.each([
+    ["git -c claude.mainCheckout=allow stash drop stash@{0} && git -c claude.mainCheckout=allow stash drop stash@{0}", "another `git stash drop`"],
+    ["git -c claude.mainCheckout=allow stash push -m wip && git -c claude.mainCheckout=allow stash drop stash@{0}", "may shift `refs/stash`"],
+    ["git -C /linked stash push -m wip && git -C /main -c claude.mainCheckout=allow stash drop stash@{0}", "may shift `refs/stash`"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{0} && git update-ref -d refs/stash-backup/1111111111111111111111111111111111111111", "may shift `refs/stash`"],
+    ["for i in 0 1; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", "shell loop or function"],
+    ["while true; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", "shell loop or function"],
+    ["repeat 2; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", "shell loop or function"],
+    ["f() { git -c claude.mainCheckout=allow stash drop stash@{0}; }; f; f", "shell loop or function"],
+    ["function f { git -c claude.mainCheckout=allow stash drop stash@{0}; }; f; f", "shell loop or function"],
+  ])("%s: blocks chained stash mutations or loops around a backed-up drop", (command, expected) => {
+    expect(verdict(command)).toContain(expected);
+  });
+
+  test.each([
     ["git -c claude.mainCheckout=allow stash drop"],
+    ["git -c claude.mainCheckout=allow stash drop -q"],
+    ["git -c claude.mainCheckout=allow stash drop --"],
+    ["git -c claude.mainCheckout=allow stash drop 0"],
+    ["git -c claude.mainCheckout=allow stash drop HEAD"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{yesterday}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{0} stash@{1}"],
+    ["git -c claude.mainCheckout=allow stash drop --unknown stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop --qu stash@{0}"],
+    ["git -c claude.mainCheckout=allow stash drop -- stash@{0} -q"],
     ["git -c claude.mainCheckout=allow stash drop stash@{1}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{2}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{3}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{4}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{5}"],
+    ["git -c claude.mainCheckout=allow stash drop stash@{99}"],
     ["git -c claude.mainCheckout=allow stash clear"],
   ])("%s: a change the user asked for still keeps stashed work", (...row) => {
     expect(verdict(...row)).toContain("it deletes stashed work in /main");
+  });
+
+  test("plain stash drop stays refused even when a backup ref exists, and unbacked drop names its backup command", () => {
+    expect(verdict("git stash drop stash@{0}")).toContain("a main checkout other threads share");
+    expect(verdict("git stash clear")).toContain("a main checkout other threads share");
+    expect(verdict("echo 'stash@{0}' | xargs git -c claude.mainCheckout=allow stash drop")).toContain("xargs adds words");
+    const missing = verdict("git -c claude.mainCheckout=allow stash drop stash@{1}");
+    expect(missing).toContain(`git update-ref refs/stash-backup/${STASH_SHAS["refs/stash@{1}"]} refs/stash@{1}`);
+    const bare = verdict("git -c claude.mainCheckout=allow stash drop");
+    expect(bare).toContain("git update-ref refs/stash-backup/<sha> refs/stash@{<n>}");
+    const cleared = verdict("git -c claude.mainCheckout=allow stash clear");
+    expect(cleared).toContain("`stash clear` is never allowed");
   });
 });
 
@@ -494,6 +582,52 @@ describe("hook process", () => {
 
   test("allows commands outside a repository", () => {
     expect(run("git switch feature", root)).toEqual({ code: 0, stderr: "" });
+  });
+
+  test("allows dropping one named stash entry only after backing it up under refs/stash-backup/<sha> (dotfiles-788)", () => {
+    writeFileSync(join(main, "a.txt"), "stashed");
+    git(main, "stash", "push", "-q", "-m", "drop-me");
+    const sha = spawnSync("git", ["rev-parse", "--verify", "stash@{0}^{commit}"], { cwd: main, env: ENV, encoding: "utf8" }).stdout.trim();
+    const backupRef = `refs/stash-backup/${sha}`;
+    try {
+      expect(run("git stash drop stash@{0}", main).code).toBe(2);
+      expect(run("git -c claude.mainCheckout=allow stash drop", main).code).toBe(2);
+      const unbacked = run("git -c claude.mainCheckout=allow stash drop stash@{0}", main);
+      expect(unbacked.code).toBe(2);
+      expect(unbacked.stderr).toContain(`git update-ref ${backupRef} refs/stash@{0}`);
+
+      // A symbolic ref to refs/stash would vanish with the drop, so it does not count.
+      git(main, "symbolic-ref", backupRef, "refs/stash");
+      expect(run("git -c claude.mainCheckout=allow stash drop stash@{0}", main).code).toBe(2);
+      git(main, "symbolic-ref", "-d", backupRef);
+
+      // A direct backup ref lets the named drop through, while plain drop, stash clear, and loops stay refused.
+      git(main, "update-ref", backupRef, "refs/stash@{0}");
+      expect(run("git stash drop stash@{0}", main).code).toBe(2);
+      expect(run("git -c claude.mainCheckout=allow stash clear", main).code).toBe(2);
+      expect(run("for i in 1 2; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", main).code).toBe(2);
+      expect(run("git -c claude.mainCheckout=allow stash drop stash@{0}", main)).toEqual({ code: 0, stderr: "" });
+      expect(run("git -c claude.mainCheckout=allow stash drop -q -- stash@{0}", main)).toEqual({ code: 0, stderr: "" });
+
+      git(main, "stash", "drop", "-q", "stash@{0}");
+      expect(spawnSync("git", ["stash", "list"], { cwd: main, env: ENV, encoding: "utf8" }).stdout.trim()).toBe("");
+      expect(spawnSync("git", ["rev-parse", "--verify", `${backupRef}^{commit}`], { cwd: main, env: ENV, encoding: "utf8" }).stdout.trim()).toBe(sha);
+
+      // With no refs/stash, a branch named `stash` does not satisfy `stash@{0}` resolution.
+      const headSha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: main, env: ENV, encoding: "utf8" }).stdout.trim();
+      git(main, "branch", "stash");
+      git(main, "update-ref", `refs/stash-backup/${headSha}`, "HEAD");
+      try {
+        expect(run("git -c claude.mainCheckout=allow stash drop stash@{0}", main).code).toBe(2);
+      } finally {
+        spawnSync("git", ["branch", "-D", "stash"], { cwd: main, env: ENV });
+        spawnSync("git", ["update-ref", "-d", `refs/stash-backup/${headSha}`], { cwd: main, env: ENV });
+      }
+    } finally {
+      spawnSync("git", ["stash", "clear"], { cwd: main, env: ENV });
+      spawnSync("git", ["update-ref", "-d", backupRef], { cwd: main, env: ENV });
+      writeFileSync(join(main, "a.txt"), "a");
+    }
   });
 
   test("blocks git reset --hard after cd into main checkout via eval, source, or piped loop (dotfiles-306)", () => {
