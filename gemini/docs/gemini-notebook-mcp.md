@@ -83,3 +83,34 @@ curl -sSf -X POST "https://notebook.googleapis.com/mcp" \
 ## 5. Avoiding 7-day refresh token expiry
 
 If the GCP OAuth app is left in **Testing** mode on Google Auth Platform → **Audience**, Google automatically expires refresh tokens after **7 days**. Switching Publishing status to **In production** (no Google verification is required for personal apps under 100 users) and re-running step 3 once produces a long-lived refresh token that persists until revoked or unused for 6+ months.
+
+## 6. `gnotebook` ingestion & sync pipeline CLI
+
+Because the MCP endpoint (`https://notebook.googleapis.com/mcp`) does not expose file uploads (`UploadSource`), client-side deduplication, directory bundling, or rate pacing, use `~/.local/bin/gnotebook` (symlinked to `~/.config/gemini/bin/gnotebook`) for automated pipelines on Air and Pro:
+
+```bash
+# Verify ADC, token refresh, MCP config, and live API reachability
+gnotebook doctor
+
+# Idempotently create/reuse a notebook and ingest mixed sources (PDFs, dirs, URLs, YouTube)
+gnotebook ingest "Riemann Reading" ~/.arxiv-papers/ https://en.wikipedia.org/wiki/Riemann_hypothesis --dry-run
+gnotebook ingest "Riemann Reading" ~/.arxiv-papers/ https://en.wikipedia.org/wiki/Riemann_hypothesis
+
+# Pipe generated Markdown straight from an agent or command
+cat report.md | gnotebook ingest "Weekly Briefings" --stdin --name "2026-W48 Digest"
+
+# Generate and push a work-board briefing ready for an Audio Overview
+gnotebook digest --board dotfiles --notebook "Weekly Briefings" --days 7
+
+# Declarative multi-notebook sync from a manifest JSON
+gnotebook sync ./notebooks-manifest.json
+```
+
+### Design & empirically verified guardrails
+
+- **Direct ADC auth:** Refreshes tokens directly from `~/.config/gcloud/application_default_credentials.json` (no `gcloud` subprocess per request).
+- **Smart transport routing:** Inline `CreateSource` (`<= 900 KB`), simple `uploadType=media` (`<= 5 MiB` binaries), and two-step resumable `UploadSource` (`> 900 KB` Markdown bundles or `5–200 MiB` binaries, omitting `Authorization` on the signed `X-Goog-Upload-URL`).
+- **CJK-aware bundling & secret exclusion:** Directory ingestion wraps code/Markdown in structured TOC bundles (default `150,000` units = Latin words + CJK chars, hard cap `450,000`) and automatically skips `.env*`, keys/certs, credentials, `.git/`, `node_modules/`, and lockfiles.
+- **Strict idempotency:** Tracks ingested `(notebook, key, sha256)` in `0600` `~/.local/share/gnotebook/state.json` and checks live `list_sources` so re-runs never duplicate sources (use `--allow-update` to append a dated version tag `[vYYYY-MM-DD-xxxxxx]` when content changes).
+- **Unreachable-URL fallback:** Non-HTML `.md`/`.txt` URLs and `code: 9` unreachable web pages automatically fall back to local HTTP fetch + Markdown ingestion (`--no-fallback-fetch` disables).
+- **Rate pacing & retries:** Paces writes at `<= 18 RPM` (official cap: `20 RPM`) and honors `429` `RetryInfo.retryDelay` with jitter.
