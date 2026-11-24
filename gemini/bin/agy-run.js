@@ -20,10 +20,17 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { arch, homedir, platform, tmpdir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import {
+  buildAgyPolicy,
+  evaluatePermissionRequest,
+} from "./agy-run-policy.js";
+
+const POLICY_HOOK_SCRIPT = join(dirname(import.meta.path), "agy-run-policy.js");
 
 const DEFAULT_INSTANCE = "antigravity";
 const DEFAULT_MODEL = "gemini-4-neon";
@@ -170,6 +177,32 @@ export function normalizeModel(model) {
   return model;
 }
 
+const shellQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+function installPolicyHook(geminiHome, policyPath, policy) {
+  writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`, { mode: 0o600 });
+  const hookCommand = `${shellQuote(process.execPath)} ${shellQuote(POLICY_HOOK_SCRIPT)} --policy ${shellQuote(policyPath)}`;
+  const hooksConfig = {
+    "agy-run-policy": {
+      PreToolUse: [
+        {
+          matcher: "*",
+          hooks: [
+            {
+              type: "command",
+              command: hookCommand,
+              timeout: 45,
+            },
+          ],
+        },
+      ],
+    },
+  };
+  writeFileSync(join(geminiHome, "config", "hooks.json"), `${JSON.stringify(hooksConfig, null, 2)}\n`, {
+    mode: 0o600,
+  });
+}
+
 export async function runAgyPrompt({
   prompt,
   contentBlocks,
@@ -180,10 +213,30 @@ export async function runAgyPrompt({
   cwd,
   noTools = false,
   fullAccess = false,
+  permissionMode,
+  tools,
+  settings,
+  strictMcp = false,
+  addDirs = [],
   timeoutMs = DEFAULT_TIMEOUT_MS,
   env = process.env,
 }) {
   const startedAt = Date.now();
+  const home = env.HOME || homedir();
+  // Validate restrictions up front (fail closed before spawning or touching profiles).
+  const initialCwd = cwd ? resolve(cwd) : process.cwd();
+  buildAgyPolicy({
+    cwd: initialCwd,
+    home,
+    noTools,
+    fullAccess,
+    permissionMode,
+    tools,
+    settings,
+    strictMcp,
+    addDirs,
+  });
+
   const binary = resolveAgyBinary(env);
   const sourceProfile = resolveT3ProfileDir(env);
   const tempRoot = mkdtempSync(join(tmpdir(), "agy-run-"));
@@ -191,6 +244,23 @@ export async function runAgyPrompt({
   if (!cwd) mkdirSync(workDir, { recursive: true });
 
   const { geminiHome, runtimeTmp } = prepareIsolatedProfile(sourceProfile, tempRoot);
+  const policyPath = join(tempRoot, "policy.json");
+  const policy = buildAgyPolicy({
+    cwd: workDir,
+    home,
+    noTools,
+    fullAccess,
+    permissionMode,
+    tools,
+    settings,
+    strictMcp,
+    addDirs,
+    internalDenyPaths: [geminiHome, policyPath],
+  });
+
+  if (policy.enforceHook) {
+    installPolicyHook(geminiHome, policyPath, policy);
+  }
 
   const resolvedModel = normalizeModel(model);
   const resolvedEffort = mapEffort(effort);
@@ -206,15 +276,15 @@ export async function runAgyPrompt({
   let proc;
   let timer;
   try {
-    proc = spawn(
-      binary,
-      ["acp", "--gemini-dir", geminiHome, "--app-data-dir", "antigravity-acp"],
-      {
-        cwd: workDir,
-        env: childEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const acpArgs = ["acp", "--gemini-dir", geminiHome, "--app-data-dir", "antigravity-acp"];
+    for (const extraDir of policy.allowedWriteRoots.slice(1)) {
+      acpArgs.push("--add-dir", extraDir);
+    }
+    proc = spawn(binary, acpArgs, {
+      cwd: workDir,
+      env: childEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
 
     let stderrBuf = "";
     proc.stderr.on("data", (chunk) => {
@@ -242,17 +312,19 @@ export async function runAgyPrompt({
     const handleServerRequest = (msg) => {
       const { id, method, params } = msg;
       if (method === "session/request_permission") {
-        if (noTools) {
+        if (policy.noTools) {
           toolViolation = `Tool permission requested in --no-tools mode: ${JSON.stringify(params?.toolCall?.title || params?.toolCall?.kind || "unknown")}`;
           sendRaw({ jsonrpc: "2.0", id, result: { outcome: { outcome: "cancelled" } } });
           return;
         }
+        const decision = evaluatePermissionRequest(policy, params);
         const options = params?.options || [];
-        const allow =
-          options.find((o) => o.kind === "allow_always") ||
-          options.find((o) => o.kind === "allow_once") ||
-          options[0];
-        if (fullAccess && allow?.optionId) {
+        const allow = policy.restricted
+          ? options.find((o) => o.kind === "allow_once") || options[0]
+          : options.find((o) => o.kind === "allow_always") ||
+            options.find((o) => o.kind === "allow_once") ||
+            options[0];
+        if (decision.allow && allow?.optionId) {
           sendRaw({
             jsonrpc: "2.0",
             id,
@@ -310,10 +382,18 @@ export async function runAgyPrompt({
           const update = msg.params?.update;
           if (!update) continue;
           if (
-            noTools &&
+            policy.noTools &&
             (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
           ) {
             toolViolation = `Model attempted a tool call in --no-tools mode: ${update.title || update.toolCallId || "tool"}`;
+          } else if (
+            policy.restricted &&
+            update.sessionUpdate === "tool_call_update" &&
+            update.status === "completed" &&
+            typeof update.name === "string" &&
+            !policy.allowedAgyTools.includes(update.name)
+          ) {
+            toolViolation = `Disallowed tool completed in restricted mode: ${update.name}`;
           }
           if (
             update.sessionUpdate === "agent_message_chunk" &&
@@ -390,12 +470,36 @@ export async function runAgyPrompt({
         }
       }
 
+      if (policy.permissionMode === "acceptEdits") {
+        const modeOption = configOptions.find(
+          (o) => o.category === "mode" || o.id === "mode",
+        );
+        if (modeOption) {
+          try {
+            await request("session/set_config_option", {
+              sessionId,
+              configId: modeOption.id,
+              value: "accept-edits",
+            });
+          } catch {
+            // Fall back to default mode; PreToolUse hook still enforces confinement.
+          }
+        }
+      }
+
       const blocks = [];
       const preambleParts = [];
-      if (noTools) {
+      if (policy.noTools) {
         preambleParts.push(
           "Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.",
         );
+      } else if (policy.restricted) {
+        const allowedList = policy.allowedAgyTools.join(", ") || "none";
+        const notes = [`Restricted session: only these tools are permitted: ${allowedList}.`];
+        if (policy.confineWrites) {
+          notes.push("File edits and writes are confined to the working directory.");
+        }
+        preambleParts.push(notes.join(" "));
       }
       if (system) {
         preambleParts.push(system);
@@ -451,6 +555,7 @@ export async function runAgyPrompt({
         structured_output: structuredOutput,
         model: resolvedModel,
         effort: resolvedEffort,
+        tools: policy.exposedClaudeTools,
         stop_reason: promptResult?.stopReason || "end_turn",
         duration_ms: Date.now() - startedAt,
         cost_usd: 0,
@@ -554,10 +659,8 @@ if (import.meta.main) {
   }
 
   const noTools = values["no-tools"] || values.tools === "";
-  const fullAccess =
-    values["full-access"] ||
-    values["permission-mode"] === "bypassPermissions" ||
-    values["permission-mode"] === "acceptEdits";
+  const fullAccess = Boolean(values["full-access"]);
+  const permissionMode = values["permission-mode"];
   const resolvedEffort =
     typeof values.model === "string" && /haiku/i.test(values.model)
       ? "low"
@@ -613,6 +716,11 @@ if (import.meta.main) {
       cwd: values.cwd,
       noTools,
       fullAccess,
+      permissionMode,
+      tools: values.tools,
+      settings: values.settings,
+      strictMcp: Boolean(values["strict-mcp-config"]),
+      addDirs: values["add-dir"] || [],
       timeoutMs: values.timeout ? Number(values.timeout) : DEFAULT_TIMEOUT_MS,
     });
 
@@ -624,7 +732,7 @@ if (import.meta.main) {
         subtype: "init",
         session_id: res.session_id,
         model: res.model,
-        tools: [],
+        tools: res.tools,
         mcp_servers: [],
       };
       const assistant = {

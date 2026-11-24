@@ -279,6 +279,58 @@ describe("propose command", () => {
     expect(log("gh.jsonl")).toHaveLength(0);
   });
 
+  test("under useAntigravity(), passes acceptEdits/tools/settings without --full-access and rejects empty or unrestricted init.tools", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    const agyLog = join(scratch, "agy.jsonl");
+    const fakeAgy = join(scratch, "fake-agy-run");
+    writeFileSync(
+      fakeAgy,
+      `#!/usr/bin/env bun
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+const args = process.argv.slice(2);
+const cwd = args[args.indexOf("--cwd") + 1] || process.cwd();
+appendFileSync(${JSON.stringify(agyLog)}, JSON.stringify({ args, cwd }) + "\\n");
+for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {
+  mkdirSync(dirname(join(cwd, path)), { recursive: true });
+  writeFileSync(join(cwd, path), content);
+}
+const tools = JSON.parse(process.env.FAKE_AGY_TOOLS ?? '["Read","Edit","Write"]');
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "agy-1", model: "gemini-4-neon", tools, mcp_servers: [] }));
+console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Clarified.\\nTITLE: Clarify the scope rule" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, duration_ms: 10, result: "Clarified.\\nTITLE: Clarify the scope rule", total_cost_usd: 0, session_id: "agy-1" }));
+`,
+    );
+    chmodSync(fakeAgy, 0o755);
+    edits({ "claude/CLAUDE.md": CLEARER });
+
+    // Synthetic empty tools: [] must be rejected by toolRejection()
+    setEnv({ CLAUDE_FACTORY_BIN: undefined, CLAUDE_FACTORY_PROVIDER: undefined, CLAUDE_FACTORY_AGY_BIN: fakeAgy, FAKE_AGY_TOOLS: "[]" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: [] });
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+    expect(log("gh.jsonl")).toHaveLength(0);
+
+    // Unrestricted tools including Bash must also be rejected
+    rmSync(join(scratch, "state", "proposals.jsonl"));
+    setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Read", "Edit", "Write", "Bash"]) });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Write", "Bash"] });
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+
+    // Compliant restricted agy-run passes and receives acceptEdits + tools + strictMcp + read-deny settings (never --full-access)
+    rmSync(join(scratch, "state", "proposals.jsonl"));
+    setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Read", "Edit", "Write"]) });
+    expect(await run(["--repo", source], { now: NOW })).toBe(0);
+    expect(proposals()[0]).toMatchObject({ status: "proposed", tools: ["Read", "Edit", "Write"] });
+    const [call] = readJsonl(agyLog);
+    expect(call.args).not.toContain("--full-access");
+    expect(call.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config"]));
+    const settings = JSON.parse(call.args[call.args.indexOf("--settings") + 1]);
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", `Read(/${join(scratch, "state")}/**)`]));
+  });
+
   test.each([
     ["a settings file", { "claude/settings.json": '{"permissions":{"allow":["Bash"]}}\n' }, ["claude/settings.json"]],
     ["a test, which the suite would run as code", { "claude/tests/scope.test.js": 'import { test } from "bun:test";\ntest("x", () => {});\n' }, ["claude/tests/scope.test.js"]],

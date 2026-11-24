@@ -517,4 +517,54 @@ describe("propose --board-snapshot", () => {
     expect(output.join("\n")).toContain('- feedback board-feedback-1: "Leases run out mid review"');
     expect(log("claude.jsonl")).toHaveLength(0);
   });
+
+  test("under useAntigravity(), board proposer runs restricted (no --full-access) and rejects empty or unrestricted init.tools", async () => {
+    const repos = repositories();
+    const snapshot = await snapshotFile();
+    const agyLog = join(scratch, "board-agy.jsonl");
+    const fakeAgy = script(
+      join(scratch, "fake-board-agy"),
+      `#!/usr/bin/env bun
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+const args = process.argv.slice(2);
+const cwd = args[args.indexOf("--cwd") + 1] || process.cwd();
+appendFileSync(${JSON.stringify(agyLog)}, JSON.stringify({ args, cwd }) + "\\n");
+for (const [path, content] of Object.entries(JSON.parse(process.env.FAKE_EDITS ?? "{}"))) {
+  mkdirSync(dirname(join(cwd, path)), { recursive: true });
+  writeFileSync(join(cwd, path), content);
+}
+const tools = JSON.parse(process.env.FAKE_AGY_TOOLS ?? '["Read","Edit","Write"]');
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "agy-b1", model: "gemini-4-neon", tools, mcp_servers: [] }));
+console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Renew leases.\\nTITLE: Lengthen the file lease" }] } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false, duration_ms: 10, result: "Renew leases.\\nTITLE: Lengthen the file lease", total_cost_usd: 0, session_id: "agy-b1" }));
+`,
+    );
+    edits({ "agent-board/prompts/coordinator.md": "# Coordinator\n\nWork the ready queue; renew leases.\n" });
+
+    // Empty tools: [] must fail toolRejection()
+    setEnv({ CLAUDE_FACTORY_BIN: undefined, CLAUDE_FACTORY_PROVIDER: undefined, CLAUDE_FACTORY_AGY_BIN: fakeAgy, FAKE_AGY_TOOLS: "[]" });
+    expect(await proposeBoard(snapshot, repos)).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: [] });
+    expect(log("gh.jsonl")).toHaveLength(0);
+
+    // Unrestricted tools (with Bash) must fail toolRejection()
+    rmSync(join(scratch, "state", "proposals.jsonl"));
+    setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Read", "Edit", "Write", "Bash"]) });
+    expect(await proposeBoard(snapshot, repos)).toBe(1);
+    expect(proposals()[0]).toMatchObject({ status: "rejected-tools", tools: ["Read", "Edit", "Write", "Bash"] });
+    expect(log("gh.jsonl")).toHaveLength(0);
+
+    // Restricted tools succeed without --full-access
+    rmSync(join(scratch, "state", "proposals.jsonl"));
+    setEnv({ FAKE_AGY_TOOLS: JSON.stringify(["Read", "Edit", "Write"]) });
+    expect(await proposeBoard(snapshot, repos)).toBe(0);
+    expect(proposals()[0]).toMatchObject({ status: "proposed", tools: ["Read", "Edit", "Write"] });
+    const [call] = readJsonl(agyLog);
+    expect(call.args).not.toContain("--full-access");
+    expect(call.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config"]));
+    expect(JSON.parse(call.args[call.args.indexOf("--settings") + 1]).permissions.deny).toEqual(
+      expect.arrayContaining(["Read(~/.local/share/agent-board/**)", "Read(~/.ssh/**)"]),
+    );
+  });
 });

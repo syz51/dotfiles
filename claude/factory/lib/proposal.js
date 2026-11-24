@@ -162,11 +162,13 @@ export async function cloneRepository(repo, clone, branch) {
 }
 
 // Fail closed if the session had more than the file tools (an MCP server or a built-in
-// that slipped through), whatever it changed. Returns the rejected record, or null.
+// that slipped through) or reported no tools at all (such as a synthetic placeholder
+// hiding unrestricted access), whatever it changed. Returns the rejected record, or null.
 export function toolRejection(task, record) {
   const init = initEvent(task.events);
   record.tools = init?.tools ?? null;
-  if (!init || init.tools.some((tool) => !TOOLS.includes(tool)) || (init.mcp_servers ?? []).length)
+  if (!init || !Array.isArray(init.tools) || !init.tools.length
+    || init.tools.some((tool) => !TOOLS.includes(tool)) || (init.mcp_servers ?? []).length)
     return { ...record, status: "rejected-tools", mcpServers: init?.mcp_servers ?? null };
   return null;
 }
