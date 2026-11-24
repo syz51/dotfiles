@@ -110,22 +110,35 @@ describe("evolve command", () => {
 
   beforeEach(() => {
     scratch = mkdtempSync(join(tmpdir(), "claude-factory-evolve-test-"));
-    // A fake `board`: ls prints FAKE_BOARD_LS; show prints the owner from FAKE_BOARD_OWNERS
-    // and fails for an id it lacks.
+    // A fake `board`: ls prints FAKE_BOARD_LS(_FILE) with --after and --limit paging;
+    // show prints the owner from FAKE_BOARD_OWNERS and fails for an id it lacks.
     const board = join(scratch, "board");
     writeFileSync(board, `#!/usr/bin/env bun
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_BOARD_LOG, JSON.stringify(args) + "\\n");
-if (args[0] === "ls") console.log(process.env.FAKE_BOARD_LS);
-else if (args[0] === "show") {
+if (args[0] === "ls") {
+  const raw = process.env.FAKE_BOARD_LS_FILE ? readFileSync(process.env.FAKE_BOARD_LS_FILE, "utf8") : process.env.FAKE_BOARD_LS;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch { console.log(raw); process.exit(0); }
+  if (!Array.isArray(parsed)) { console.log(raw); process.exit(0); }
+  const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
+  let list = parsed;
+  const after = opt("--after");
+  if (after && !process.env.FAKE_BOARD_IGNORE_AFTER) {
+    const index = list.findIndex((task) => task?.id === after);
+    list = index >= 0 ? list.slice(index + 1) : [];
+  }
+  const limit = Number(opt("--limit") ?? "1000");
+  console.log(JSON.stringify(list.slice(0, limit)));
+} else if (args[0] === "show") {
   const task = JSON.parse(process.env.FAKE_BOARD_OWNERS)[args[1]];
   if (!task) { console.error("error: no such task " + args[1]); process.exit(1); }
   console.log(JSON.stringify({ task: { id: args[1], ...task }, notes: [], evidence: [], blocks: [], children: [], history: [] }));
 } else process.exit(2);
 `);
     chmodSync(board, 0o755);
-    setEnv({ CLAUDE_FACTORY_BOARD: board, FAKE_BOARD_LOG: join(scratch, "board.jsonl"), FAKE_BOARD_LS: JSON.stringify(TASKS), FAKE_BOARD_OWNERS: JSON.stringify(OWNERS) });
+    setEnv({ CLAUDE_FACTORY_BOARD: board, FAKE_BOARD_LOG: join(scratch, "board.jsonl"), FAKE_BOARD_LS: JSON.stringify(TASKS), FAKE_BOARD_LS_FILE: undefined, FAKE_BOARD_IGNORE_AFTER: undefined, FAKE_BOARD_OWNERS: JSON.stringify(OWNERS) });
     output = [];
     spyOn(console, "log").mockImplementation((line) => output.push(String(line)));
     spyOn(console, "error").mockImplementation((line) => output.push(String(line)));
@@ -182,9 +195,35 @@ else if (args[0] === "show") {
     expect(output[0]).toContain("Usage: bun ~/.claude/factory/cli.js evolve");
   });
 
-  test("a full page is reported, since items may be missing from it", async () => {
-    setEnv({ FAKE_BOARD_LS: JSON.stringify(Array.from({ length: 1000 }, (_, i) => item(`g${i}`, { status: "done" }))) });
+  test("pages with --after when more than 1000 tasks exist and counts items on every page", async () => {
+    const lsFile = join(scratch, "tasks.json");
+    const recent = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const old = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString();
+    const mk = (id, { status = "done", at = old, resolution } = {}) => ({
+      id, title: `item ${id}`, status, created_at: at,
+      feedback: { about: "board", source: "agent", signature: `sig-${id}`, reports: 1, reporters: ["claude:a"], last_reported_at: at, ...(resolution && { resolution }) },
+    });
+    const many = [
+      ...Array.from({ length: 1000 }, (_, i) => mk(`g${i + 1}`, { at: i === 0 ? recent : old })),
+      ...Array.from({ length: 49 }, (_, i) => mk(`g${1001 + i}`, { at: recent })),
+      mk("g1050", { at: recent, resolution: { kind: "routed", at: recent, by: "t3:triage", task: "agent-board-12" } }),
+    ];
+    writeFileSync(lsFile, JSON.stringify(many));
+    setEnv({ FAKE_BOARD_LS_FILE: lsFile });
+    expect(await run(["--json"])).toBe(0);
+    const result = JSON.parse(output[0]);
+    expect(result.errors).toEqual([]);
+    // 1 active item on page 1 + 50 active items on page 2, including the routed item on page 2.
+    expect(result.totals).toMatchObject({ items: 51, reports: 51, routedOpen: 1 });
+    expect(calls().filter((args) => args[0] === "ls")).toEqual([
+      ["ls", "--board", "board-feedback", "--json", "--limit", "1000"],
+      ["ls", "--board", "board-feedback", "--after", "g1000", "--json", "--limit", "1000"],
+    ]);
+
+    // Stalled pagination is reported and exits 1.
+    output.length = 0;
+    setEnv({ FAKE_BOARD_IGNORE_AFTER: "1" });
     expect(await run(["--json"])).toBe(1);
-    expect(JSON.parse(output[0]).errors).toEqual([expect.stringContaining("1000 tasks on board-feedback, the most one call returns")]);
+    expect(JSON.parse(output[0]).errors).toEqual([expect.stringContaining("pagination stalled at g1000")]);
   });
 });
