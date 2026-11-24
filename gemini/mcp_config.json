@@ -10,6 +10,10 @@
         "-c",
         "exec \"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/marketplace/computer-use/server/desktop.js\""
       ]
+    },
+    "gemini-notebook": {
+      "serverUrl": "https://notebook.googleapis.com/mcp",
+      "authProviderType": "google_credentials"
     }
   }
 }
