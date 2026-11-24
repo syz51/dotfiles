@@ -155,4 +155,13 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("`gemini-notebook` MCP server");
     expect(geminiMd).toContain("~/.config/gemini/docs/gemini-notebook-mcp.md");
   });
+
+  test("documents linked T3 Pro delegation, cross-Mac thread reading, and read-only ~/.config check", () => {
+    expect(geminiMd).toContain("`t3_environment_links`");
+    expect(geminiMd).toContain("`delegate_task`");
+    expect(geminiMd).toContain("`t3_thread_read`");
+    expect(geminiMd).toContain("`git -C ~/.config log -1`");
+    expect(geminiMd).not.toContain("`vps-247`");
+    expect(geminiMd).not.toMatch(/`ssh [\w.-]+[\s`]/);
+  });
 });
