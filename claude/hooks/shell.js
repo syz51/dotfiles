@@ -188,6 +188,10 @@ export function parseScript(source) {
         pattern = undefined;
       }
     } else if (destination === "input") current.inputs.push(word);
+    else if (destination === "stdin") {
+      const inline = processSubScript(word);
+      if (inline !== undefined) current.inputs.push(inline);
+    }
     destination = "argv";
     word = undefined;
   };
@@ -331,7 +335,7 @@ export function parseScript(source) {
         }
         heredocs.push({ delimiter, stripTabs, inputs: current.inputs, substitutions: quoted ? undefined : current.substitutions });
       } else {
-        destination = operator === "<<<" ? "input" : "drop";
+        destination = operator === "<<<" ? "input" : operator === "<" ? "stdin" : "drop";
       }
     } else {
       word = (word ?? "") + c;
@@ -672,14 +676,14 @@ function findScripts(words, dir, dirs) {
   return scripts;
 }
 
-/** Text printed by a `<(…)` or `=(…)` process substitution passed to `source` or `.`. */
-function processSubScript(word) {
-  if (!/^[<=]\(.*\)$/s.test(word)) return undefined;
+/** Text printed by a `<(…)` or `=(…)` process substitution passed to `source`, `.` or `< <(…)`. */
+function processSubScript(word, depth = 0) {
+  if (depth > MAX_DEPTH || !/^[<=]\(.*\)$/s.test(word)) return undefined;
   const parts = [];
   for (const { argv, inputs } of parseScript(word.slice(2, -1)).commands) {
     parts.push(...inputs);
     const { words } = program(argv, undefined);
-    const text = words.length > 0 ? printed(words) : undefined;
+    const text = words.length > 0 ? printed(words, depth + 1) : undefined;
     if (text !== undefined) parts.push(text);
   }
   return parts.length > 0 ? parts.join("\n") : undefined;
@@ -767,7 +771,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       else if (Object.hasOwn(COMPOUND_OPEN, word)) {
         compounds.push({ close: COMPOUND_OPEN[word], before: snapshot(), subshellDepth: subshells.length });
       }
-      if (!SHELL_KEYWORDS.has(word)) break;
+      if (word !== "time" && !SHELL_KEYWORDS.has(word)) break;
     }
     if (command.argv[0] === "}" && braces.length > 0 && braces.at(-1).subshellDepth === subshells.length) {
       const before = braces.pop();
@@ -775,7 +779,7 @@ function inspect(source, state, visit, depth, tooDeep) {
     } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
       && compounds.at(-1)?.close === command.argv[0] && compounds.at(-1).subshellDepth === subshells.length) {
       const entry = compounds.pop();
-      if (["|", "|&", "&"].includes(command.next) && state.cdCount > entry.before.cdCount) {
+      if (!here && ["|", "|&", "&"].includes(command.next) && state.cdCount > entry.before.cdCount) {
         markUncertain(entry.before, [...state.cdTargets.slice(entry.before.cdLen), ...candidatesOf(state.dir, state.dirs)]);
       }
     }
@@ -817,7 +821,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       ];
       if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => ({ script, dir, dirs, remote: here })));
       if (name === "eval") {
-        const evalWords = words[1] === "--" ? words.slice(2) : words.slice(1);
+        const evalWords = words[1] === "--" || words[1] === "-" ? words.slice(2) : words.slice(1);
         scripts.push({ script: evalWords.join(" "), dir, dirs, remote: here, sameShell: lastInShell });
       }
       const sourced = sourceTarget(words);
@@ -871,15 +875,20 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
         if (background || index < pipeline.length - 1) continue;
-        state.cdCount += 1;
         // A directory on another host is unknown here, whatever path it names.
-        if (name === "popd" || here) {
+        if (here) {
           state.dir = undefined;
           state.dirs = undefined;
         } else {
-          const arg = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
-          ({ dir: state.dir, dirs: state.dirs } = moveDir(before, beforeDirs, arg, here));
-          state.cdTargets.push(...candidatesOf(state.dir, state.dirs));
+          state.cdCount += 1;
+          if (name === "popd") {
+            state.dir = undefined;
+            state.dirs = undefined;
+          } else {
+            const arg = words.slice(1).find((word) => !/^-[LPe@]+$/.test(word));
+            ({ dir: state.dir, dirs: state.dirs } = moveDir(before, beforeDirs, arg, false));
+            state.cdTargets.push(...candidatesOf(state.dir, state.dirs));
+          }
         }
       } else if (words.length > 0) {
         const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, ...(dirs !== undefined && { dirs }) });

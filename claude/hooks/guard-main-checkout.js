@@ -313,26 +313,39 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
     // When a cd inside eval, source or a non-last piped compound command left the directory
     // uncertain, judge every known candidate directory and refuse if any is a main checkout.
     const candidates = dirs !== undefined ? (dirs.length > 0 ? dirs : [undefined]) : [dir];
-    for (const candidate of candidates) {
-      let reason;
-      if (opaque) {
+    if (opaque) {
+      for (const candidate of candidates) {
         // xargs runs a command the guard cannot see; in a main checkout it may change the branch.
         const top = candidate === undefined ? undefined : sharedMainCheckout(candidate, git, tempRoots);
-        if (top !== undefined) reason = `xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
-      } else if (name === "git") reason = gitCommand(words, candidate, git, tempRoots, appended);
-      else if (name === "gh" && candidate !== undefined) {
-        // gh reads options anywhere, and one before the subcommand may take the next word as its
-        // value, so with such an option any checkout or merge word counts.
-        const { path: [group, subcommand], other } = ghSubcommands(words, 2);
-        // xargs may add the subcommand itself.
-        const hidden = appended && (group === undefined || (group === "pr" && subcommand === undefined) || other !== undefined);
-        const merges = hidden || (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
-        const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
-          || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
-        const top = merges || checksOut ? sharedMainCheckout(candidate, git, tempRoots) : undefined;
-        if (top !== undefined) reason = merges ? mergeReason(top) : blockReason(top, "", GH_ROUTE);
+        if (top !== undefined) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
       }
-      if (reason) return `\`${words.join(" ")}\`: ${reason}`;
+      return undefined;
+    }
+    if (name === "git") {
+      const seen = new Set();
+      for (const candidate of candidates) {
+        const resolved = gitGlobalOptions(words, candidate).dir;
+        if (seen.has(resolved)) continue;
+        seen.add(resolved);
+        const reason = gitCommand(words, candidate, git, tempRoots, appended);
+        if (reason) return `\`${words.join(" ")}\`: ${reason}`;
+      }
+      return undefined;
+    }
+    if (name === "gh") {
+      // gh reads options anywhere, and one before the subcommand may take the next word as its
+      // value, so with such an option any checkout or merge word counts.
+      const { path: [group, subcommand], other } = ghSubcommands(words, 2);
+      // xargs may add the subcommand itself.
+      const hidden = appended && (group === undefined || (group === "pr" && subcommand === undefined) || other !== undefined);
+      const merges = hidden || (group === "pr" && subcommand === "merge") || (other !== undefined && words.includes("pr") && words.includes("merge"));
+      const checksOut = (group === "pr" && ["checkout", "co"].includes(subcommand))
+        || (other !== undefined && words.includes("pr") && (words.includes("checkout") || words.includes("co")));
+      if (!merges && !checksOut) return undefined;
+      for (const candidate of candidates) {
+        const top = candidate === undefined ? undefined : sharedMainCheckout(candidate, git, tempRoots);
+        if (top !== undefined) return `\`${words.join(" ")}\`: ${merges ? mergeReason(top) : blockReason(top, "", GH_ROUTE)}`;
+      }
     }
     return undefined;
   });

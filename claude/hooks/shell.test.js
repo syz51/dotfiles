@@ -447,6 +447,7 @@ test("a cd in eval, source or a non-last piped compound command marks the direct
   expect(lastMake("eval cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("eval 'cd sub'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/repo/sub"] });
   expect(lastMake("eval -- cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("eval - cd /other; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("eval \"eval 'cd /other'\"; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("eval 'cd $X'; make")).toEqual({ dir: undefined, dirs: ["/repo"] });
   expect(lastMake("eval 'echo hi'; make")).toEqual({ dir: "/repo", dirs: undefined });
@@ -457,12 +458,14 @@ test("a cd in eval, source or a non-last piped compound command marks the direct
   expect(lastMake("source /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake(". /dev/stdin <<< 'cd /other'; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("echo 'cd /other' | source /dev/stdin; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("source /dev/stdin < <(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("source <(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake(". <(printf 'cd /other\\n'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("source =(echo 'cd /other'); make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("source /dev/stdin <<< 'cd /other' | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
   // non-last piped or backgrounded compound commands
   expect(lastMake("while read l; do cd /other; done < f | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
+  expect(lastMake("time while read l; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("until false; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("for x in a b; do cd /other; done | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("if true; then cd /other; fi | cat; make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
@@ -472,6 +475,8 @@ test("a cd in eval, source or a non-last piped compound command marks the direct
   expect(lastMake("while read l; do cd /other; done | make")).toEqual({ dir: undefined, dirs: ["/repo", "/other"] });
   expect(lastMake("while read l; do echo hi; done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
   expect(lastMake("while read l; do (cd /other); done | cat; make")).toEqual({ dir: "/repo", dirs: undefined });
+  // remote piped compound commands stay plain unknown without dirs
+  expect(lastMake("ssh host 'while read l; do cd /other; done | cat; make'")).toEqual({ dir: undefined, dirs: undefined });
   // compound command as whole command or last part of a pipeline stays tracked as today
   expect(lastMake("while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
   expect(lastMake("echo a | while read l; do cd /other; done; make")).toEqual({ dir: "/other", dirs: undefined });
