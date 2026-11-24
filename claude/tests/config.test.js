@@ -327,11 +327,13 @@ describe("settings", () => {
     const events = Object.entries(settings.hooks).filter(([, groups]) => groups.some((group) => group.hooks.some((hook) => hook.command === command)));
     expect(events.map(([event]) => event)).toEqual(["PostToolUse"]);
     const groups = settings.hooks.PostToolUse.filter((group) => group.hooks.some((hook) => hook.command === command));
-    expect(groups.map((group) => group.matcher)).toEqual(["^Bash$"]);
-    expect(AUTO_MERGE_BUDGET_MS + 10000).toBeLessThanOrEqual(groups[0].hooks.find((hook) => hook.command === command).timeout * 1000);
+    expect(groups.map((group) => group.matcher)).toEqual(["^Bash$", "^mcp__t3-code__pull_request_create$"]);
+    for (const group of groups) {
+      expect(AUTO_MERGE_BUDGET_MS + 10000).toBeLessThanOrEqual(group.hooks.find((hook) => hook.command === command).timeout * 1000);
+    }
     expect(tracked("claude/hooks/auto-merge.js")).toBe(true);
     const guard = Object.entries(settings.hooks).flatMap(([event, list]) => list.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/guard-pr-merge.js"))).map((group) => [event, group.matcher]));
-    expect(guard).toEqual([["PreToolUse", "^Bash$"]]);
+    expect(guard).toEqual([["PreToolUse", "^Bash$"], ["PreToolUse", "^mcp__t3-code__pull_request_merge$"]]);
     // The hook's own output says what it did, so the instructions no longer repeat it (dotfiles-513).
     expect(section("Autonomy")).not.toContain("auto-merge hook");
     expect(referenceRules("merge")).toContain("- After a Bash call runs `gh pr create`, the auto-merge hook turns on auto-merge for each pull request it printed, with a merge commit, else squash, else rebase, as the repository allows.");
@@ -397,9 +399,12 @@ describe("settings", () => {
   // call is capped at the budget left, so all of them end within BUDGET_MS; the rest of the
   // hook timeout covers bun's start and the parse.
   test("the pr-merge guard's timeout covers its gh calls", () => {
-    const hook = handlers.find((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    const mergeHooks = handlers.filter((handler) => handler.command.includes("hooks/guard-pr-merge.js"));
+    expect(mergeHooks).toHaveLength(2);
     expect(CALL_TIMEOUT_MS).toBeLessThanOrEqual(BUDGET_MS);
-    expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
+    for (const hook of mergeHooks) {
+      expect(BUDGET_MS + 10000).toBeLessThanOrEqual(hook.timeout * 1000);
+    }
   });
 
   test("claude/settings.json runs the ask gate on the board's ask_user tool and nothing else", () => {

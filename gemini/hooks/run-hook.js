@@ -20,6 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   createsPullRequest,
   report as autoMergeReport,
+  reportMcpCreate as autoMergeMcpReport,
 } from "../../claude/hooks/auto-merge.js";
 import {
   askViolation,
@@ -29,6 +30,7 @@ import {
 import { findViolation as findGitPushViolation } from "../../claude/hooks/guard-git-push.js";
 import { findMainCheckoutViolation } from "../../claude/hooks/guard-main-checkout.js";
 import {
+  findMcpMergeViolation,
   findMergeViolation,
   runGh,
 } from "../../claude/hooks/guard-pr-merge.js";
@@ -112,6 +114,41 @@ function normalizeForPrefilter(command) {
 }
 
 const DIRECT_ASK_TOOLS = new Set(["mcp_board_ask_user", "mcp__board__ask_user", "ask_user"]);
+const DIRECT_PR_MERGE_TOOLS = new Set(["mcp_t3-code_pull_request_merge", "mcp__t3-code__pull_request_merge"]);
+const DIRECT_PR_CREATE_TOOLS = new Set(["mcp_t3-code_pull_request_create", "mcp__t3-code__pull_request_create"]);
+
+function unwrapMcpArgs(rawArgs, { failClosed = false } = {}) {
+  if (rawArgs === undefined) return {};
+  if (typeof rawArgs === "string") {
+    try {
+      const parsed = JSON.parse(rawArgs);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      return failClosed ? false : {};
+    } catch {
+      return failClosed ? false : {};
+    }
+  }
+  if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) return rawArgs;
+  return failClosed ? false : {};
+}
+
+function extractMcpToolInput(agyInput, server, tool, directTools, { failClosed = false } = {}) {
+  const toolName = agyInput?.toolCall?.name ?? "";
+  const args = agyInput?.toolCall?.args;
+  if (toolName === "call_mcp_tool") {
+    const serverName = args?.ServerName ?? args?.serverName;
+    const mcpToolName = args?.ToolName ?? args?.toolName;
+    if (serverName !== server || mcpToolName !== tool) {
+      return null;
+    }
+    const rawArgs = args?.Arguments !== undefined ? args.Arguments : args?.arguments;
+    return unwrapMcpArgs(rawArgs, { failClosed });
+  }
+  if (directTools.has(toolName)) {
+    return unwrapMcpArgs(args, { failClosed });
+  }
+  return null;
+}
 
 /**
  * Extracts the board `ask_user` argument object from an Antigravity PreToolUse payload.
@@ -120,29 +157,28 @@ const DIRECT_ASK_TOOLS = new Set(["mcp_board_ask_user", "mcp__board__ask_user", 
  * `mcp_board_ask_user`), or `null` when the tool call is not an MCP `ask_user` call.
  */
 export function extractAskUserInput(agyInput) {
-  const toolName = agyInput?.toolCall?.name ?? "";
-  const args = agyInput?.toolCall?.args ?? {};
-  if (toolName === "call_mcp_tool") {
-    const serverName = args.ServerName ?? args.serverName;
-    const mcpToolName = args.ToolName ?? args.toolName;
-    if (serverName !== "board" || mcpToolName !== "ask_user") {
-      return null;
-    }
-    const rawArgs = args.Arguments !== undefined ? args.Arguments : args.arguments;
-    if (typeof rawArgs === "string") {
-      try {
-        const parsed = JSON.parse(rawArgs);
-        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-      } catch {
-        return {};
-      }
-    }
-    return rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs) ? rawArgs : {};
-  }
-  if (DIRECT_ASK_TOOLS.has(toolName)) {
-    return args && typeof args === "object" && !Array.isArray(args) ? args : {};
-  }
-  return null;
+  return extractMcpToolInput(agyInput, "board", "ask_user", DIRECT_ASK_TOOLS);
+}
+
+/**
+ * Extracts the T3 `pull_request_merge` argument object from an Antigravity PreToolUse payload.
+ * Returns `null` when the tool call is not an MCP `pull_request_merge` call, or `false` when a
+ * matching call has malformed non-object arguments so the fail-closed merge guard refuses it.
+ */
+export function extractMcpPrMergeInput(agyInput) {
+  return extractMcpToolInput(agyInput, "t3-code", "pull_request_merge", DIRECT_PR_MERGE_TOOLS, { failClosed: true });
+}
+
+/**
+ * Extracts the T3 `pull_request_create` argument object from an Antigravity PostToolUse payload,
+ * or `null` when the tool call is not an MCP `pull_request_create` call.
+ */
+export function extractMcpPrCreateInput(agyInput) {
+  return extractMcpToolInput(agyInput, "t3-code", "pull_request_create", DIRECT_PR_CREATE_TOOLS);
+}
+
+function extractToolResponse(agyInput) {
+  return agyInput?.toolResponse ?? agyInput?.toolResult ?? agyInput?.result ?? agyInput?.output;
 }
 
 export function translateInput(event, hookName, agyInput) {
@@ -158,9 +194,26 @@ export function translateInput(event, hookName, agyInput) {
       if (askInput === null) return null;
       return { cwd, tool_name: "mcp__board__ask_user", tool_input: askInput };
     }
+    if (hookName === "guard-pr-merge") {
+      const mcpMergeInput = extractMcpPrMergeInput(agyInput);
+      if (mcpMergeInput !== null) {
+        return { cwd, tool_name: "mcp__t3-code__pull_request_merge", tool_input: mcpMergeInput };
+      }
+    }
     return { cwd, tool_name: "Bash", tool_input: { command: extractCommand(agyInput) } };
   }
   if (event === "post-tool-use") {
+    if (hookName === "auto-merge") {
+      const mcpCreateInput = extractMcpPrCreateInput(agyInput);
+      if (mcpCreateInput !== null) {
+        return {
+          cwd,
+          tool_name: "mcp__t3-code__pull_request_create",
+          tool_input: mcpCreateInput,
+          tool_response: extractToolResponse(agyInput) ?? {},
+        };
+      }
+    }
     const command = extractCommand(agyInput);
     const stdout =
       hookName === "auto-merge" && !agyInput?.error && command && createsPullRequest(command, cwd)
@@ -248,20 +301,27 @@ function runInProcessPreToolUse(hookName, command, cwd, runners = {}) {
     }
     return { decision: "allow" };
   }
-  if (hookName === "guard-pr-merge") {
-    // Fail closed if the merge guard throws, matching claude/hooks/guard-pr-merge.js.
-    let violation;
-    try {
+  return null;
+}
+
+function runInProcessGuardPrMerge(agyInput, command, cwd, runners = {}) {
+  // Fail closed if the merge guard throws, matching claude/hooks/guard-pr-merge.js.
+  const mcpMergeInput = extractMcpPrMergeInput(agyInput);
+  let violation;
+  try {
+    if (mcpMergeInput !== null) {
+      violation = findMcpMergeViolation(mcpMergeInput, cwd, runners.gh ?? runGh);
+    } else if (command) {
+      const unquoted = normalizeForPrefilter(command);
       if (/merge|gh|[$`*?[{]/i.test(unquoted)) {
         violation = findMergeViolation(command, cwd, runners.gh ?? runGh);
       }
-    } catch (error) {
-      violation = `the guard failed (${error.message}), so it cannot check this command.`;
     }
-    if (violation) return { decision: "deny", reason: `Blocked by the guard-pr-merge hook: ${violation}` };
-    return { decision: "allow" };
+  } catch (error) {
+    violation = `the guard failed (${error.message}), so it cannot check this command.`;
   }
-  return null;
+  if (violation) return { decision: "deny", reason: `Blocked by the guard-pr-merge hook: ${violation}` };
+  return { decision: "allow" };
 }
 
 function runInProcessGuardAsks(agyInput, command, cwd, runners = {}) {
@@ -297,7 +357,12 @@ function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin) {
   if (claudeInput === null) {
     return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
   }
-  if (event === "post-tool-use" && hookName === "auto-merge" && !claudeInput.tool_response.stdout) {
+  if (
+    event === "post-tool-use" &&
+    hookName === "auto-merge" &&
+    claudeInput.tool_name === "Bash" &&
+    !claudeInput.tool_response?.stdout
+  ) {
     return {};
   }
   const run = spawnSync(bunBin, [scriptPath], {
@@ -343,6 +408,11 @@ export function runAdaptedHook(
             if (res && res.decision === "deny") return res;
             continue;
           }
+          if (hookName === "guard-pr-merge") {
+            const res = runInProcessGuardPrMerge(agyInput, command, cwd, runners);
+            if (res && res.decision === "deny") return res;
+            continue;
+          }
           if (!command) continue;
           const res = runInProcessPreToolUse(hookName, command, cwd, runners);
           if (res && res.decision === "deny") return res;
@@ -366,6 +436,21 @@ export function runAdaptedHook(
   if (event === "post-tool-use") {
     for (const hookName of hookNames) {
       if (hookName === "auto-merge" && useInProcess) {
+        const mcpCreateInput = extractMcpPrCreateInput(agyInput);
+        if (mcpCreateInput !== null) {
+          try {
+            const text = autoMergeMcpReport(
+              mcpCreateInput,
+              extractToolResponse(agyInput),
+              cwd,
+              (args, timeout) => (runners.gh ?? runGh)(cwd, args, timeout),
+            );
+            if (text) process.stderr.write(`${text}\n`);
+          } catch (err) {
+            process.stderr.write(`auto-merge hook failed (${err.message})\n`);
+          }
+          continue;
+        }
         const command = extractCommand(agyInput);
         if (!command || !/gh/i.test(command) || !createsPullRequest(command, cwd)) {
           continue;
@@ -409,20 +494,38 @@ export function runAdaptedHook(
 
 if (import.meta.main) {
   const [event, hookSpec] = process.argv.slice(2);
+  const failClosed =
+    event === "pre-tool-use" &&
+    String(hookSpec ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .includes("guard-pr-merge");
   let agyInput = {};
   try {
     const raw = readFileSync(0, "utf8").trim();
-    if (raw) agyInput = JSON.parse(raw);
-  } catch {
-    agyInput = {};
-  }
-  try {
+    if (!raw) {
+      if (failClosed) throw new Error("stdin hook payload is empty");
+    } else {
+      const parsed = JSON.parse(raw);
+      if (failClosed && (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))) {
+        throw new Error("stdin hook payload is not a JSON object");
+      }
+      agyInput = parsed;
+    }
     const out = runAdaptedHook(event, hookSpec, agyInput);
     process.stdout.write(`${JSON.stringify(out)}\n`);
   } catch (err) {
-    // Fail open on adapter crash, matching Claude Code guard semantics
-    const fallback = event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
-    process.stderr.write(`run-hook adapter error (${hookSpec}): ${err.message}\n`);
-    process.stdout.write(`${JSON.stringify(fallback)}\n`);
+    if (failClosed) {
+      const deny = {
+        decision: "deny",
+        reason: `Blocked by the guard-pr-merge hook: the guard failed (${err.message}), so it cannot check this command.`,
+      };
+      process.stdout.write(`${JSON.stringify(deny)}\n`);
+    } else {
+      // Fail open on adapter crash, matching Claude Code guard semantics
+      const fallback = event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
+      process.stderr.write(`run-hook adapter error (${hookSpec}): ${err.message}\n`);
+      process.stdout.write(`${JSON.stringify(fallback)}\n`);
+    }
   }
 }
