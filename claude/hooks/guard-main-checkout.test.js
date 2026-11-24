@@ -145,6 +145,13 @@ describe("in a main checkout it blocks", () => {
     ["(cd /main; x=$(git stash)) | cat", "/linked"],
     // a case pattern's ) does not end the subshell
     ["(cd /main; case a in a) ;; esac; git reset --hard HEAD~1)", "/linked"],
+    // ( and ) inside ${...} do not end or open subshells, and \' inside $'...' stays quoted (dotfiles-308)
+    ["(echo ${line#*)}; cd /linked); git reset --hard HEAD~1"],
+    ["(cd /linked; echo ${x/(/y}); git reset --hard HEAD~1"],
+    ["echo $'\\''; git reset --hard HEAD~1"],
+    ["echo $'a\\\\'; git reset --hard HEAD~1"],
+    ["echo ${x:-$(git reset --hard HEAD~1)}"],
+    ["eval $'echo \\'\"\\'; git reset --hard HEAD~1'"],
     // a cd inside ( ) leaves the commands after the subshell in the main checkout
     ["(cd /tmp); git switch feature"],
     ["noglob git switch feature"],
@@ -280,6 +287,10 @@ describe("it allows", () => {
     // text, not a git command
     ["echo git switch feature"],
     ["grep -r 'git reset --hard' ."],
+    // backticks after \' inside $'...' stay quoted text, not command substitutions (dotfiles-308 / board-feedback-1219)
+    ["board add --body $'...T3 Code\\'s ... `gh pr merge`...'"],
+    ["board add --body $'...T3 Code\\'s ... \\`gh pr merge\\`...'"],
+    ["echo $'a\\' $(git reset --hard HEAD~1)'"],
     // nested past what the parser follows: the guard fails open
     [`${"eval ".repeat(12)}git switch feature`],
   ])("%s", (...row) => {
