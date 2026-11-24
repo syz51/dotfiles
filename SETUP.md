@@ -1078,6 +1078,35 @@ uv run --no-project --python 3.11 python -B ~/.config/t3code/settle_children.py
 uv run --no-project --python 3.11 python -B ~/.config/t3code/prune_branches.py --dry-run
 ```
 
+### Daily Dependabot PR sweep
+
+`t3code/dependabot_sweep.py` inspects open `app/dependabot` pull requests across all
+non-archived `syz51` repositories, skips archived repos and drafts, parses version bumps
+(including major bumps inside grouped PRs and Cargo `0.x` minor bumps), summarizes CI
+checks, and classifies each PR into an action bucket (`ready_to_merge`, `update_branch`,
+`conflicting`, `failing_checks`, `major_bump`, `pending_checks`, `no_ci`, `blocked`,
+`skip_draft`, `needs_review`). It never mutates GitHub state.
+
+A T3 scheduled task in the `.config` project runs daily at 10:30 local time (staggered
+after the 09:30 VPS review and 10:00 fork sync) with `freshSession: true` and this prompt:
+
+```text
+Run the routine in ~/.config/t3code/dependabot-sweep.prompt.md exactly as written.
+```
+
+Each run plans, merges clean green non-major PRs pinned to the checked head commit
+(skipping PRs owned by an open board task with extra manual checks), updates `BEHIND`
+branches (enabling auto-merge where supported), requests `@dependabot rebase` once on
+conflicts, inspects failures and major bumps to file board proposals (without duplicates),
+verifies the remaining queue, and settles its own thread when nothing failed and no
+unboarded repo needs user action. `~/.local/state/t3-dependabot-sweep/sweep.jsonl` logs
+one line per plan and verify call. Run the planner by hand to preview what the next run
+would do:
+
+```sh
+uv run --no-project --python 3.13 python -B ~/.config/t3code/dependabot_sweep.py
+```
+
 ## Rust build size
 
 Every agent worktree of a Rust repository builds its own `target/` folder. A test build
