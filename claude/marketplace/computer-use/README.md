@@ -85,3 +85,24 @@ The `grep` skips a build still in progress, which ends in `.tmp`.
 The server cannot act while the screen is locked: loginwindow is then frontmost and no
 approved app is under the pointer. The server does not unlock the Mac and does not change
 lock, screensaver or power settings.
+
+## Live Stop and Esc checks
+
+`server/live-check.js` is the only route for scripted Stop and Esc checks. Never trip Stop
+or Esc through a live session's own plugin server: that writes `~/.local/state/desktop-mcp/user-stopped`
+and forces an approval dialog on every session until the user allows one.
+
+Run it from an app that holds the macOS Screen Recording and Accessibility grants while
+the screen is unlocked:
+
+```sh
+bun claude/marketplace/computer-use/server/live-check.js
+# or target a specific non-dialog app (and optional screenshot coordinates):
+bun claude/marketplace/computer-use/server/live-check.js --app Helium
+```
+
+The script starts its own `bun server/desktop.js` over stdio with `DESKTOP_MCP_STATE` set
+to a temporary folder, runs `request_access`, a `click`, a scripted Stop button click and
+a scripted unmarked Esc from a separate probe process (`server/live-check-probe.swift`),
+removes the temporary folder, and fails if the real `~/.local/state/desktop-mcp` folder
+changed in any way.
