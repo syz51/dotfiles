@@ -6,6 +6,7 @@
 // start and prompt hooks added shows as [hook <event>, <time>]. Over the size limit
 // it keeps prompts and host notices first, then other events from the start and the
 // end, and says what it left out.
+import { unwrapUserRequest } from "../lib/antigravity.js";
 import { INTERRUPT, isHostPrompt, readRecords, textOf } from "../lib/transcripts.js";
 
 export const DIGEST_CHARS = 60_000;
@@ -50,6 +51,12 @@ export function compactInput(name, input = {}) {
     Grep: () => `${input.pattern}${input.path ? ` in ${input.path}` : ""}${input.glob ? ` (${input.glob})` : ""}`,
     Skill: () => [input.skill, input.args].filter(Boolean).join(" "),
     Agent: () => `${input.subagent_type ?? "general-purpose"}${input.model ? `/${input.model}` : ""}: ${input.description ?? ""}${input.isolation ? ` [${input.isolation}]` : ""}${input.run_in_background ? " [background]" : ""}`,
+    run_command: () => input.CommandLine,
+    read_file: () => input.Path + (input.StartLine ? ` @${input.StartLine}` : ""),
+    write_file: () => `${input.Path} (${String(input.Content ?? "").length} chars)`,
+    edit_file: () => `${input.Path} (-${String(input.Target ?? "").length}/+${String(input.Replacement ?? "").length} chars)`,
+    write_to_file: () => `${input.TargetFile} (${String(input.CodeContent ?? "").length} chars)`,
+    replace_file_content: () => `${input.TargetFile} (-${String(input.TargetContent ?? "").length}/+${String(input.ReplacementContent ?? "").length} chars)`,
   }[name === "Task" ? "Agent" : name];
   const value = pick?.();
   return head(flat(typeof value === "string" ? value : JSON.stringify(input)), INPUT_CHARS);
@@ -126,6 +133,54 @@ function collectEvents(session, records) {
   return { events, final: final ? { label: final.label, text: final.raw } : null };
 }
 
+// Antigravity transcript records (USER_INPUT, PLANNER_RESPONSE, GENERIC, SYSTEM_MESSAGE)
+// as the same labeled digest events used for Claude Code sessions. GENERIC records carry
+// tool results in the order the preceding PLANNER_RESPONSE listed its tool_calls.
+const AGY_HOOK_INJECTION = /injected by a (SessionStart|UserPromptSubmit) hook:/i;
+const AGY_TOOL_ERROR = /Command exited with code [1-9]|Encountered error in tool execution/i;
+
+function collectAntigravityEvents(records) {
+  const events = [];
+  const pendingTools = [];
+  const counters = { prompt: 0, assistant: 0, tool: 0 };
+  const label = (kind) => `${{ prompt: "P", assistant: "A", tool: "T" }[kind]}${++counters[kind]}`;
+  for (const record of records) {
+    if (record.type === "USER_INPUT" && record.source === "USER_EXPLICIT") {
+      const text = unwrapUserRequest(record.content);
+      if (text) events.push(promptEvent(label("prompt"), { at: record.created_at ?? null, text, source: "user" }));
+    } else if (record.type === "PLANNER_RESPONSE") {
+      if (typeof record.content === "string" && record.content.trim())
+        events.push({ kind: "assistant", label: label("assistant"), raw: record.content });
+      for (const call of Array.isArray(record.tool_calls) ? record.tool_calls : []) {
+        const name = call?.name ?? "tool";
+        const event = { kind: "tool", label: label("tool"), name, input: compactInput(name, call?.args ?? {}), status: "no result", output: "" };
+        events.push(event);
+        pendingTools.push(event);
+      }
+    } else if (record.type === "GENERIC" && typeof record.content === "string" && pendingTools.length) {
+      const tool = pendingTools.shift();
+      tool.status = AGY_TOOL_ERROR.test(record.content) ? "ERROR" : "ok";
+      tool.output = record.content.trim() ? ` → ${ends(flat(record.content.trim()), OUTPUT_CHARS)}` : "";
+    } else if (record.type === "SYSTEM_MESSAGE" && typeof record.content === "string") {
+      const match = AGY_HOOK_INJECTION.exec(record.content);
+      if (match) {
+        const body = record.content.slice(match.index + match[0].length).trim();
+        if (body) events.push({ kind: "hook", text: `[hook ${match[1]}, ${time(record.created_at)}] ${head(flat(body), HOOK_CHARS)}` });
+      }
+    }
+  }
+  const final = events.findLast((event) => event.kind === "assistant");
+  for (const event of events) {
+    if (event.kind === "assistant")
+      event.text = event === final
+        ? `[${event.label}] ASSISTANT: (final message, shown in full below)`
+        : `[${event.label}] ASSISTANT: ${ends(event.raw, TEXT_CHARS)}`;
+    else if (event.kind === "tool")
+      event.text = `[${event.label}] ${event.name} (${event.status}) ${event.input}${event.output}`;
+  }
+  return { events, final: final ? { label: final.label, text: final.raw } : null };
+}
+
 function header(session) {
   const count = (map) => Object.entries(map).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([key, n]) => `${key} x${n}`).join(", ") || "none";
   const toolErrors = session.toolCalls.filter((call) => call.ok === false).length;
@@ -199,9 +254,9 @@ function render(events, kept, start = 0, end = events.length) {
 // carries on the task they set.
 export function buildDigest(session, { records = readRecords(session.file).records, maxChars = DIGEST_CHARS } = {}) {
   const own = records.filter((record) => !record.forkedFrom);
-  const collected = collectEvents(session, own);
+  const collected = session.harness === "antigravity" ? collectAntigravityEvents(own) : collectEvents(session, own);
   const { final } = collected;
-  const inherited = session.inheritedPrompts.map((prompt, index) => promptEvent(`I${index + 1}`, prompt));
+  const inherited = (session.inheritedPrompts ?? []).map((prompt, index) => promptEvent(`I${index + 1}`, prompt));
   // Inherited prompts first, so the bounding below treats them as the earliest prompts.
   const events = [...inherited, ...collected.events];
   const parent = records.find((record) => record.forkedFrom)?.forkedFrom.sessionId;

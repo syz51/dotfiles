@@ -253,7 +253,7 @@ describe("LaunchAgent", () => {
     // The tools a run needs, as stand-ins, so the test does not depend on this machine.
     const tools = join(scratch, "tools");
     mkdirSync(tools);
-    for (const tool of ["claude", "git", "gh", "uv"]) {
+    for (const tool of ["agy-run", "git", "gh", "uv"]) {
       writeFileSync(join(tools, tool), "#!/bin/sh\n");
       chmodSync(join(tools, tool), 0o755);
     }
@@ -273,6 +273,10 @@ describe("LaunchAgent", () => {
     expect(readFileSync(log, "utf8")).toMatch(new RegExp(`bootout gui/\\d+/${LABEL}\\nbootstrap gui/\\d+ ${file.replace(/[.]/g, "\\.")}`));
     expect(await run(["uninstall"])).toBe(0);
     expect(existsSync(file)).toBe(false);
+    // Missing agy-run fails install rather than requiring claude.
+    rmSync(join(tools, "agy-run"));
+    setEnv({ PATH: `${tools}:/usr/bin:/bin` });
+    await expect(run(["install"])).rejects.toThrow("agy-run is not on PATH");
   });
 
   test("usage errors exit 2", async () => {
