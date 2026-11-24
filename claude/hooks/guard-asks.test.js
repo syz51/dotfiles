@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { askViolation } from "./guard-asks.js";
+import { askViolation, findBoardAskViolation, parseBoardAskCommand } from "./guard-asks.js";
 
 const HOOK = join(import.meta.dir, "guard-asks.js");
 const POLICY = JSON.parse(readFileSync(join(import.meta.dir, "ask-policy.json"), "utf8"));
@@ -90,5 +90,79 @@ describe("as a hook", () => {
     const result = run({ question: "no reason" }, { ASK_POLICY: "/nonexistent/ask-policy.json" });
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(/ENOENT|no such file/i);
+  });
+
+  test("checks Bash `board ask` commands when invoked with tool_name Bash", () => {
+    const blocked = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", cwd: "/tmp", tool_input: { command: 'board ask "No reason here"' } }),
+      encoding: "utf8",
+    });
+    expect(blocked.status).toBe(2);
+    expect(blocked.stderr).toMatch(/^Blocked by the guard-asks hook: the ask names no reason/);
+
+    const allowed = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", cwd: "/tmp", tool_input: { command: 'board ask "Reason: design. Pick A or B?"' } }),
+      encoding: "utf8",
+    });
+    expect(allowed.status).toBe(0);
+    expect(allowed.stderr).toBe("");
+  });
+});
+
+describe("board ask CLI parsing", () => {
+  test("parses flags and positional question accurately", () => {
+    expect(parseBoardAskCommand(["board", "ask", "Reason: design. Pick A?"])).toEqual({
+      question: "Reason: design. Pick A?",
+      kind: "decision",
+    });
+    expect(parseBoardAskCommand([
+      "/Users/me/.cargo/bin/board",
+      "--agent",
+      "t3:11a1",
+      "--register",
+      "ask",
+      "--board",
+      "dotfiles",
+      "--task",
+      "dotfiles-822",
+      "--kind",
+      "action",
+      "--option",
+      "Done",
+      "--",
+      "Reason: only-me. Unlock screen",
+    ])).toEqual({
+      question: "Reason: only-me. Unlock screen",
+      kind: "action",
+    });
+    expect(parseBoardAskCommand(["board", "ask", "--kind=action", "--question=Reason: only-me. Approve"])).toEqual({
+      question: "Reason: only-me. Approve",
+      kind: "action",
+    });
+    expect(parseBoardAskCommand(["board", "ask", "Reason: design. Merge?", "--action"])).toEqual({
+      question: "Reason: design. Merge?",
+      kind: "action",
+    });
+  });
+
+  test("ignores non-ask commands, board asks, and help invocations", () => {
+    expect(parseBoardAskCommand(["echo", "board", "ask", "no reason"])).toBeUndefined();
+    expect(parseBoardAskCommand(["board", "asks", "--status", "open"])).toBeUndefined();
+    expect(parseBoardAskCommand(["board", "help", "ask"])).toBeUndefined();
+    expect(parseBoardAskCommand(["board", "--help"])).toBeUndefined();
+    expect(parseBoardAskCommand(["board", "ask", "--help"])).toBeUndefined();
+    expect(parseBoardAskCommand(["board", "ask", "-h"])).toBeUndefined();
+  });
+
+  test("findBoardAskViolation checks board ask inside shell pipelines, wrappers, and chains", () => {
+    expect(findBoardAskViolation('board ask "Should I pick A?"', "/tmp", POLICY)).toMatch(/names no reason/);
+    expect(findBoardAskViolation('board ask --option "Reason: design" "Should I pick A?"', "/tmp", POLICY)).toMatch(/names no reason/);
+    expect(findBoardAskViolation('board ask --kind action "Reason: design. Merge PR"', "/tmp", POLICY)).toMatch(/an action ask hands the user a step/);
+    expect(findBoardAskViolation('board status && sh -c \'board ask "No reason"\'', "/tmp", POLICY)).toMatch(/names no reason/);
+    expect(findBoardAskViolation('board ask --kind action "Reason: only-me. Unlock screen"', "/tmp", POLICY)).toBeUndefined();
+    expect(findBoardAskViolation("board ask --help", "/tmp", POLICY)).toBeUndefined();
+    expect(findBoardAskViolation("board asks --status all", "/tmp", POLICY)).toBeUndefined();
+    expect(findBoardAskViolation('echo "board ask no reason"', "/tmp", POLICY)).toBeUndefined();
+    expect(findBoardAskViolation('git commit -m "wire board ask CLI"', "/tmp", POLICY)).toBeUndefined();
   });
 });
