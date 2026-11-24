@@ -785,7 +785,7 @@ describe("storage rule", () => {
     expect(rule).toContain("`t3_thread_read`");
     expect(rule).toContain("`git -C ~/.config log -1`");
     expect(rule).toContain("~/.ssh/config.d/");
-    expect(rule).not.toMatch(/`ssh [\w.-]+`/);
+    expect(rule).not.toMatch(/`ssh [\w.-]+[\s`]/);
     expect(rule).not.toMatch(/\.ts\.net\b/);
   });
 

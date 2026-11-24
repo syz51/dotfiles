@@ -162,6 +162,6 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("`t3_thread_read`");
     expect(geminiMd).toContain("`git -C ~/.config log -1`");
     expect(geminiMd).not.toContain("`vps-247`");
-    expect(geminiMd).not.toMatch(/`ssh [\w.-]+`/);
+    expect(geminiMd).not.toMatch(/`ssh [\w.-]+[\s`]/);
   });
 });
