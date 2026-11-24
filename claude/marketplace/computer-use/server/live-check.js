@@ -152,23 +152,35 @@ function isFinderQuery(query) {
   return q === "finder" || q === FINDER;
 }
 
+function orderedDisplays(sceneInfo) {
+  const list = Array.isArray(sceneInfo?.displays) && sceneInfo.displays.length > 0
+    ? sceneInfo.displays
+    : sceneInfo?.mainDisplay
+      ? [{ index: 0, main: true, ...sceneInfo.mainDisplay }]
+      : [];
+  // Main display first, then secondary displays in index order.
+  return [...list].sort((a, b) => Number(b.main === true) - Number(a.main === true) || (a.index ?? 0) - (b.index ?? 0));
+}
+
+function expandRect(rect, margin) {
+  return { x: rect.x - margin, y: rect.y - margin, width: rect.width + margin * 2, height: rect.height + margin * 2 };
+}
+
 /**
- * Picks a safe, unobstructed global display point on `mainDisplay` belonging to
- * `appName`, avoiding the bottom-right stop panel zone. Returns null when no
- * unobstructed point is visible yet (caller may call open_app and retry).
+ * Picks a safe, unobstructed global display point belonging to `appName` across
+ * active displays (main first), avoiding `excludeRect` (the live stop panel) or
+ * a conservative bottom-right fallback zone when no live panel bounds are known.
  */
-export function pickTargetPoint(sceneInfo, appName) {
-  const display = sceneInfo?.mainDisplay;
-  if (!display) return null;
+export function pickTargetPoint(sceneInfo, appName, { excludeRect } = {}) {
+  const displays = orderedDisplays(sceneInfo);
+  if (displays.length === 0) return null;
   const windows = sceneInfo.windows ?? [];
   const dockLevel = sceneInfo.dockLevel;
-  const panelZone = {
-    x: display.x + display.width - 450,
-    y: display.y + display.height - 120,
-    width: 450,
-    height: 120,
-  };
-  const inPanelZone = (x, y) => containsPoint(panelZone, x, y);
+  const mainDisplay = displays.find((d) => d.main) ?? displays[0];
+  const excluded = excludeRect
+    ? expandRect(excludeRect, 8)
+    : { x: mainDisplay.x + mainDisplay.width - 450, y: mainDisplay.y + mainDisplay.height - 120, width: 450, height: 120 };
+  const inExcluded = (x, y) => containsPoint(excluded, x, y);
 
   // Mirrors desktop.js chooseApp's front-to-back window traversal.
   const topWindowAt = (x, y) => {
@@ -179,64 +191,66 @@ export function pickTargetPoint(sceneInfo, appName) {
         continue;
       }
       if (!win.app) return win;
-      if (win.app.bundleId === DOCK && win.layer === dockLevel && covers(win.bounds, display)) continue;
+      if (win.app.bundleId === DOCK && win.layer === dockLevel && displays.some((d) => covers(win.bounds, d))) continue;
       return win;
     }
     return null;
   };
 
-  // 1. Prefer an unobstructed point on an ordinary window of the target app.
-  for (const win of windows) {
-    if (win.alpha === 0 || win.layer !== 0 || !matchesApp(win.app, appName)) continue;
-    const x1 = Math.max(display.x + 8, win.bounds.x);
-    const y1 = Math.max(display.y + 30, win.bounds.y);
-    const x2 = Math.min(display.x + display.width - 8, win.bounds.x + win.bounds.width);
-    const y2 = Math.min(display.y + display.height - 8, win.bounds.y + win.bounds.height);
-    if (x2 - x1 < 40 || y2 - y1 < 30) continue;
+  // 1. Prefer an unobstructed point on an ordinary window of the target app on any display.
+  for (const display of displays) {
+    for (const win of windows) {
+      if (win.alpha === 0 || win.layer !== 0 || !matchesApp(win.app, appName)) continue;
+      const x1 = Math.max(display.x + 8, win.bounds.x);
+      const y1 = Math.max(display.y + 30, win.bounds.y);
+      const x2 = Math.min(display.x + display.width - 8, win.bounds.x + win.bounds.width);
+      const y2 = Math.min(display.y + display.height - 8, win.bounds.y + win.bounds.height);
+      if (x2 - x1 < 40 || y2 - y1 < 30) continue;
 
-    const candidates = [];
-    // Harmless titlebar area first (avoiding left traffic-light buttons).
-    if (x2 - x1 >= 160) {
-      candidates.push({ x: Math.min(x1 + 140, (x1 + x2) / 2), y: y1 + 14 });
-    }
-    for (const fy of [0.25, 0.5, 0.75]) {
-      for (const fx of [0.25, 0.5, 0.75]) {
-        candidates.push({ x: x1 + (x2 - x1) * fx, y: y1 + (y2 - y1) * fy });
+      const candidates = [];
+      // Harmless titlebar area first (avoiding left traffic-light buttons).
+      if (x2 - x1 >= 160) {
+        candidates.push({ x: Math.min(x1 + 140, (x1 + x2) / 2), y: y1 + 14 });
       }
-    }
-    for (const pt of candidates) {
-      if (inPanelZone(pt.x, pt.y)) continue;
-      if (topWindowAt(pt.x, pt.y) === win) return { x: pt.x, y: pt.y, kind: "window" };
+      for (const fy of [0.25, 0.5, 0.75]) {
+        for (const fx of [0.25, 0.5, 0.75]) {
+          candidates.push({ x: x1 + (x2 - x1) * fx, y: y1 + (y2 - y1) * fy });
+        }
+      }
+      for (const pt of candidates) {
+        if (inExcluded(pt.x, pt.y)) continue;
+        if (topWindowAt(pt.x, pt.y) === win) return { x: pt.x, y: pt.y, kind: "window", display };
+      }
     }
   }
 
-  // 2. For Finder, bare desktop or blank menu bar (when Finder is frontmost).
+  // 2. For Finder, bare desktop or blank menu bar (when Finder is frontmost) on the main display.
   if (isFinderQuery(appName)) {
-    const x1 = display.x + Math.min(90, display.width * 0.1);
-    const x2 = display.x + display.width - Math.min(90, display.width * 0.1);
-    const y1 = display.y + Math.min(60, display.height * 0.1);
-    const y2 = display.y + display.height - Math.min(130, display.height * 0.2);
+    const x1 = mainDisplay.x + Math.min(90, mainDisplay.width * 0.1);
+    const x2 = mainDisplay.x + mainDisplay.width - Math.min(90, mainDisplay.width * 0.1);
+    const y1 = mainDisplay.y + Math.min(60, mainDisplay.height * 0.1);
+    const y2 = mainDisplay.y + mainDisplay.height - Math.min(130, mainDisplay.height * 0.2);
     if (x2 > x1 && y2 > y1) {
       for (const fy of [0.2, 0.5, 0.8]) {
         for (const fx of [0.2, 0.5, 0.8]) {
           const x = x1 + (x2 - x1) * fx;
           const y = y1 + (y2 - y1) * fy;
-          if (inPanelZone(x, y)) continue;
-          if (topWindowAt(x, y) === null) return { x, y, kind: "desktop" };
+          if (inExcluded(x, y)) continue;
+          if (topWindowAt(x, y) === null) return { x, y, kind: "desktop", display: mainDisplay };
         }
       }
     }
 
     if (matchesApp(sceneInfo.frontmost, FINDER) || matchesApp(sceneInfo.frontmost, "Finder")) {
       const menubar = windows.find((win) => win.alpha > 0 && win.windowServer && win.name === "Menubar"
-        && win.bounds.x < display.x + display.width && win.bounds.x + win.bounds.width > display.x);
+        && win.bounds.x < mainDisplay.x + mainDisplay.width && win.bounds.x + win.bounds.width > mainDisplay.x);
       if (menubar) {
         const y = menubar.bounds.y + Math.min(12, menubar.bounds.height / 2);
-        const minMenuX = display.width >= 1000 ? display.x + 360 : display.x + display.width * 0.35;
+        const minMenuX = mainDisplay.width >= 1000 ? mainDisplay.x + 360 : mainDisplay.x + mainDisplay.width * 0.35;
         for (const frac of [0.45, 0.55, 0.38, 0.62]) {
-          const x = display.x + display.width * frac;
-          if (x < minMenuX || x >= display.x + display.width - 80) continue;
-          if (topWindowAt(x, y) === menubar) return { x, y, kind: "menubar" };
+          const x = mainDisplay.x + mainDisplay.width * frac;
+          if (x < minMenuX || x >= mainDisplay.x + mainDisplay.width - 80) continue;
+          if (topWindowAt(x, y) === menubar) return { x, y, kind: "menubar", display: mainDisplay };
         }
       }
     }
@@ -247,7 +261,7 @@ export function pickTargetPoint(sceneInfo, appName) {
 
 /**
  * Chooses a default non-dialog, non-sensitive app for an unattended live check:
- * prefers an already-visible ordinary window on the main display (excluding Finder,
+ * prefers an already-visible ordinary window on any active display (excluding Finder,
  * which may require a dialog), otherwise falls back to Calculator.
  */
 export function pickDefaultApp(sceneInfo) {
@@ -281,19 +295,50 @@ export function parseScreenshotSize(text) {
   return { width: Number(match[1]), height: Number(match[2]) };
 }
 
-/** Finds the live desktop-helper overlay child PID spawned by `serverPid`. */
-export function findOverlayPid(serverPid) {
+function listProcesses() {
   const result = spawnSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
-  if (result.status !== 0) return null;
+  if (result.status !== 0) return [];
+  const entries = [];
   for (const line of result.stdout.split("\n")) {
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
     if (!match) continue;
-    const pid = Number(match[1]);
-    const ppid = Number(match[2]);
-    const cmd = match[3];
-    if (ppid === serverPid && /desktop-helper-[0-9a-f]+/.test(cmd) && /\boverlay\b/.test(cmd)) {
-      return pid;
+    entries.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
+  }
+  return entries;
+}
+
+/** Finds the live desktop-helper overlay child PID spawned by `serverPid`. */
+export function findOverlayPid(serverPid) {
+  for (const proc of listProcesses()) {
+    if (proc.ppid === serverPid && /desktop-helper-[0-9a-f]+/.test(proc.command) && /\boverlay\b/.test(proc.command)) {
+      return proc.pid;
     }
+  }
+  return null;
+}
+
+/**
+ * Checks whether another real computer-use session currently holds a lock or has
+ * a live stop panel running. Posting global unmarked Esc while another session's
+ * panel is open would stop that session and write the real user-stopped record.
+ */
+export function findActiveRealSession(realDirs, processes = listProcesses()) {
+  const byPid = new Map(processes.map((proc) => [proc.pid, proc]));
+  for (const dir of realDirs) {
+    const lockPath = join(dir, "session.json");
+    if (!existsSync(lockPath)) continue;
+    try {
+      const pid = JSON.parse(readFileSync(lockPath, "utf8"))?.pid;
+      if (Number.isInteger(pid) && byPid.get(pid)?.command.includes("desktop.js")) {
+        return `Another computer-use session (pid ${pid}) holds ${lockPath}. Release it before running live-check.js.`;
+      }
+    } catch {
+      // ignore corrupt or vanished lock files
+    }
+  }
+  const runningOverlay = processes.find((proc) => /desktop-helper-[0-9a-f]+/.test(proc.command) && /\boverlay\b/.test(proc.command));
+  if (runningOverlay) {
+    return `A desktop-helper stop panel (pid ${runningOverlay.pid}, parent ${runningOverlay.ppid}) is already running; global Esc would trip it. End that session before running live-check.js.`;
   }
   return null;
 }
@@ -322,6 +367,7 @@ export function compileProbe(tempDir, source = PROBE_SOURCE) {
   };
   return {
     permissions: () => run(["permissions"]),
+    appInfo: (query) => run(["app-info", query]),
     sceneInfo: () => run(["scene-info"]),
     findPanel: (pid) => run(["find-panel", String(pid)]),
     clickUnmarked: (x, y) => run(["click-unmarked", String(x), String(y)]),
@@ -346,6 +392,9 @@ export function createMcpClient({ command, args, env, timeoutMs = 25_000 }) {
       entry.reject(error);
     }
   };
+
+  // Swallow async EPIPE if the child exits while a write or end is in flight.
+  child.stdin.on("error", () => {});
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
@@ -416,34 +465,35 @@ export function createMcpClient({ command, args, env, timeoutMs = 25_000 }) {
     return { error: result.isError === true, text, result };
   }
 
-  async function close() {
+  async function close({ force = false } = {}) {
     if (exited) return exitInfo;
-    try {
-      child.stdin.end();
-    } catch {
-      // ignore broken pipe on shutdown
-    }
-    const graceful = await Promise.race([
-      exitPromise.then(() => true),
-      new Promise((r) => setTimeout(() => r(false), 3_000)),
-    ]);
-    if (!graceful && !exited) {
-      try { child.kill("SIGTERM"); } catch {}
-      const termed = await Promise.race([
-        exitPromise.then(() => true),
-        new Promise((r) => setTimeout(() => r(false), 1_000)),
-      ]);
-      if (!termed && !exited) {
-        try { child.kill("SIGKILL"); } catch {}
-        await exitPromise;
+    if (!force) {
+      try {
+        child.stdin.end();
+      } catch {
+        // ignore broken pipe on shutdown
       }
+      const graceful = await Promise.race([
+        exitPromise.then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 3_000)),
+      ]);
+      if (graceful || exited) return exitInfo;
+    }
+    try { child.kill("SIGTERM"); } catch {}
+    const termed = await Promise.race([
+      exitPromise.then(() => true),
+      new Promise((r) => setTimeout(() => r(false), 1_000)),
+    ]);
+    if (!termed && !exited) {
+      try { child.kill("SIGKILL"); } catch {}
+      await exitPromise;
     }
     return exitInfo;
   }
 
   function killNow() {
     if (!exited) {
-      try { child.kill("SIGTERM"); } catch {}
+      try { child.kill("SIGKILL"); } catch {}
     }
   }
 
@@ -460,6 +510,13 @@ async function pollUntil(fn, { timeoutMs, intervalMs = 50, sleep, label }) {
   }
 }
 
+function assertAllowedApp(appInfo, label) {
+  const sensitive = sensitiveReason(appInfo);
+  if (sensitive) throw new Error(`Cannot run unattended live check against ${label}: ${sensitive}.`);
+  const needsDialog = dialogReason(appInfo);
+  if (needsDialog) throw new Error(`Cannot run unattended live check against ${label}: it always needs a dialog (${needsDialog}).`);
+}
+
 /**
  * Runs the full isolated live check: request_access, click, scripted Stop,
  * scripted Esc, cleanup, and strict before/after check of the real state folder.
@@ -473,20 +530,17 @@ export async function runLiveCheck({
   serverCommand = [process.execPath, DESKTOP_SERVER],
   createProbe = (tempDir) => compileProbe(tempDir),
   findOverlay = findOverlayPid,
+  checkActiveSession = findActiveRealSession,
   isAlive = defaultIsAlive,
   realDirs = realStateDirs(env),
   sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
   overlaySettleMs = 150,
   tempRoot = tmpdir(),
 } = {}) {
-  const checkAllowedApp = (target) => {
-    const candidate = { name: target, bundleId: target };
-    const sensitive = sensitiveReason(candidate);
-    if (sensitive) throw new Error(`Cannot run unattended live check against ${target}: ${sensitive}.`);
-    const needsDialog = dialogReason(candidate);
-    if (needsDialog) throw new Error(`Cannot run unattended live check against ${target}: it always needs a dialog (${needsDialog}).`);
-  };
-  if (app !== undefined) checkAllowedApp(app);
+  if (app !== undefined) assertAllowedApp({ name: app, bundleId: app }, app);
+
+  const activeSession = checkActiveSession(realDirs);
+  if (activeSession) throw new Error(activeSession);
 
   const beforeSnapshots = new Map(realDirs.map((dir) => [dir, snapshotDir(dir)]));
   const tempDir = mkdtempSync(join(tempRoot, "desktop-mcp-live-"));
@@ -499,14 +553,24 @@ export async function runLiveCheck({
   let client;
   let primaryError;
   let report;
+  let interrupting = false;
   const onSignal = (signal) => {
-    client?.killNow();
-    rmSync(tempDir, { recursive: true, force: true });
-    process.stderr.write(`live-check interrupted by ${signal}\n`);
-    process.exit(130);
+    if (interrupting) {
+      client?.killNow();
+      rmSync(tempDir, { recursive: true, force: true });
+      process.exit(130);
+    }
+    interrupting = true;
+    process.stderr.write(`live-check interrupted by ${signal}; stopping server...\n`);
+    Promise.resolve(client?.close({ force: true }))
+      .catch(() => {})
+      .finally(() => {
+        rmSync(tempDir, { recursive: true, force: true });
+        process.exit(130);
+      });
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
 
   try {
     const probe = await createProbe(tempDir);
@@ -524,7 +588,9 @@ export async function runLiveCheck({
     }
 
     const targetApp = app ?? pickDefaultApp(initialScene);
-    checkAllowedApp(targetApp);
+    const resolvedApp = typeof probe.appInfo === "function" ? probe.appInfo(targetApp) : { name: targetApp, bundleId: targetApp };
+    if (!resolvedApp) throw new Error(`App not found: ${targetApp}.`);
+    assertAllowedApp(resolvedApp, resolvedApp.name || targetApp);
 
     const serverEnv = { ...env, DESKTOP_MCP_STATE: tempDir };
     delete serverEnv.DESKTOP_MCP_POLICY;
@@ -578,39 +644,46 @@ export async function runLiveCheck({
       throw new Error(`Expected approvals.log in temp state folder ${tempDir}.`);
     }
 
+    // Wait for the stop panel first so click target selection sees its live bounds.
+    const stopPanel = await waitForPanel("Stop");
+
     // 2. screenshot + click in the approved app.
     let clickPoint;
+    let clickDisplay;
     let targetKind = "explicit";
     if (x !== undefined && y !== undefined) {
-      const shot = await client.callTool("screenshot", { display: 0 });
+      const shot = await client.callTool("screenshot", {});
       if (shot.error) throw new Error(`screenshot failed: ${shot.text}`);
       clickPoint = { x, y };
     } else {
-      let scene = initialScene;
-      let target = pickTargetPoint(scene, targetApp);
+      let scene = probe.sceneInfo();
+      let target = pickTargetPoint(scene, targetApp, { excludeRect: stopPanel.bounds });
       if (!target) {
         const opened = await client.callTool("open_app", { app: targetApp });
         if (opened.error) throw new Error(`open_app(${targetApp}) failed: ${opened.text}`);
-        const found = await pollUntil(() => {
+        target = await pollUntil(() => {
           scene = probe.sceneInfo();
-          return pickTargetPoint(scene, targetApp);
+          return pickTargetPoint(scene, targetApp, { excludeRect: stopPanel.bounds });
         }, { timeoutMs: Math.min(timeoutMs, 5_000), intervalMs: 100, sleep, label: `visible target for ${targetApp}` });
-        target = found;
       }
       targetKind = target.kind;
-      const shot = await client.callTool("screenshot", { display: 0 });
+      clickDisplay = target.display.index;
+      const shotArgs = clickDisplay === undefined ? {} : { display: clickDisplay };
+      const shot = await client.callTool("screenshot", shotArgs);
       if (shot.error) throw new Error(`screenshot failed: ${shot.text}`);
       const shotSize = parseScreenshotSize(shot.text);
-      clickPoint = displayToScreenshot(scene.mainDisplay, shotSize, target);
+      clickPoint = displayToScreenshot(target.display, shotSize, target);
     }
 
-    const clickResult = await client.callTool("click", { x: clickPoint.x, y: clickPoint.y, display: 0 });
+    const clickArgs = clickDisplay === undefined
+      ? { x: clickPoint.x, y: clickPoint.y }
+      : { x: clickPoint.x, y: clickPoint.y, display: clickDisplay };
+    const clickResult = await client.callTool("click", clickArgs);
     if (clickResult.error || !clickResult.text.startsWith("Clicked in ")) {
       throw new Error(`click failed at (${clickPoint.x}, ${clickPoint.y}): ${clickResult.text}`);
     }
 
     // 3. Scripted Stop: click the panel's Stop (Esc) button from the separate probe process.
-    const stopPanel = await waitForPanel("Stop");
     const stopX = stopPanel.bounds.x + stopPanel.bounds.width - 60;
     const stopY = stopPanel.bounds.y + stopPanel.bounds.height / 2;
     probe.clickUnmarked(stopX, stopY);
@@ -620,7 +693,7 @@ export async function runLiveCheck({
       label: "Stop overlay exit",
     });
 
-    const afterStop = await client.callTool("screenshot", { display: 0 });
+    const afterStop = await client.callTool("screenshot", {});
     if (!afterStop.error || !afterStop.text.includes(STOPPED_PREFIX)) {
       throw new Error(`Expected user-stopped error after Stop click, got: ${afterStop.text}`);
     }
@@ -646,7 +719,7 @@ export async function runLiveCheck({
       label: "Esc overlay exit",
     });
 
-    const afterEsc = await client.callTool("screenshot", { display: 0 });
+    const afterEsc = await client.callTool("screenshot", {});
     if (!afterEsc.error || !afterEsc.text.includes(STOPPED_PREFIX)) {
       throw new Error(`Expected user-stopped error after Esc press, got: ${afterEsc.text}`);
     }

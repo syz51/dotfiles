@@ -8,6 +8,7 @@ import {
   DESKTOP_SERVER,
   diffSnapshots,
   displayToScreenshot,
+  findActiveRealSession,
   parseArgs,
   parseScreenshotSize,
   pickDefaultApp,
@@ -18,11 +19,13 @@ import {
   snapshotDir,
 } from "./live-check.js";
 
-const DISPLAY = { x: 0, y: 0, width: 1920, height: 1080, pixelWidth: 1920, pixelHeight: 1080, scale: 1 };
+const DISPLAY = { index: 0, main: true, x: 0, y: 0, width: 1920, height: 1080, pixelWidth: 1920, pixelHeight: 1080, scale: 1 };
+const SIDE_DISPLAY = { index: 1, main: false, x: -1280, y: 0, width: 1280, height: 800, pixelWidth: 2560, pixelHeight: 1600, scale: 2 };
 const FINDER = { name: "Finder", bundleId: "com.apple.finder", pid: 20 };
 const HELIUM = { name: "Helium", bundleId: "net.imput.helium", pid: 82 };
 const DOCK = { name: "Dock", bundleId: "com.apple.dock", pid: 30 };
 const T3 = { name: "T3 Code", bundleId: "com.t3tools.t3code", pid: 90 };
+const FINANCE = { name: "Portfolio", bundleId: "com.example.portfolio", category: "public.app-category.finance", pid: 95 };
 
 const win = (app, bounds, overrides = {}) => ({
   owner: app.name,
@@ -100,20 +103,59 @@ describe("snapshotDir and diffSnapshots", () => {
   });
 });
 
+describe("active real session guard", () => {
+  let root;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "live-check-guard-"));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  test("refuses when a real session holds session.json or an overlay is already running", () => {
+    writeFileSync(join(root, "session.json"), JSON.stringify({ pid: 4321 }));
+    expect(findActiveRealSession([root], [{ pid: 4321, ppid: 1, command: "bun /path/server/desktop.js" }]))
+      .toContain("Another computer-use session (pid 4321)");
+
+    // Stale session.json whose pid is not running desktop.js passes.
+    expect(findActiveRealSession([root], [{ pid: 4321, ppid: 1, command: "sleep 10" }])).toBeNull();
+
+    // A live desktop-helper overlay process is refused even without a lock file.
+    rmSync(join(root, "session.json"));
+    expect(findActiveRealSession([root], [{ pid: 8888, ppid: 4321, command: "/state/desktop-helper-abcdef012345 overlay 4321 /state/stop-4321 Claude" }]))
+      .toContain("stop panel (pid 8888");
+  });
+});
+
 describe("target picking and coordinate mapping", () => {
-  test("picks an unobstructed point on an approved app window and skips covered points", () => {
+  test("picks an unobstructed point on an approved app window and avoids cover and live panel bounds", () => {
     const cover = win(T3, { x: 100, y: 100, width: 300, height: 100 });
     const helium = win(HELIUM, { x: 100, y: 100, width: 800, height: 600 });
-    const pt = pickTargetPoint({ mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [cover, helium] }, "Helium");
+    const pt = pickTargetPoint(
+      { displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [cover, helium] },
+      "Helium",
+      { excludeRect: { x: 400, y: 100, width: 420, height: 44 } },
+    );
     expect(pt).not.toBeNull();
     expect(pt.kind).toBe("window");
-    // Must not land under T3's covering rectangle.
+    expect(pt.display.index).toBe(0);
+    // Must not land under T3's covering rectangle or the live panel exclusion rect.
     expect(pt.x >= 400 || pt.y >= 200).toBe(true);
+    expect(pt.x < 392 || pt.x >= 828 || pt.y < 92 || pt.y >= 152).toBe(true);
+  });
+
+  test("finds a target window on a secondary display", () => {
+    const heliumOnSide = win(HELIUM, { x: -1100, y: 120, width: 700, height: 500 });
+    const pt = pickTargetPoint(
+      { displays: [DISPLAY, SIDE_DISPLAY], mainDisplay: DISPLAY, frontmost: HELIUM, dockLevel: 20, windows: [heliumOnSide] },
+      "Helium",
+    );
+    expect(pt).not.toBeNull();
+    expect(pt.display.index).toBe(1);
+    expect(pt.x).toBeLessThan(0);
   });
 
   test("falls back to bare desktop or blank menu bar for Finder", () => {
     const fullDock = win(DOCK, { x: 0, y: 0, width: 1920, height: 1080 }, { layer: 20 });
-    const bare = pickTargetPoint({ mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [fullDock] }, "Finder");
+    const bare = pickTargetPoint({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [fullDock] }, "Finder");
     expect(bare?.kind).toBe("desktop");
 
     // When a full-screen window covers the desktop, Finder uses the blank menu bar once frontmost.
@@ -128,18 +170,21 @@ describe("target picking and coordinate mapping", () => {
       windowServer: true,
       app: null,
     };
-    expect(pickTargetPoint({ mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [menubar, fullWindow] }, "Finder")).toBeNull();
-    const barPt = pickTargetPoint({ mainDisplay: DISPLAY, frontmost: FINDER, dockLevel: 20, windows: [menubar, fullWindow] }, "Finder");
+    expect(pickTargetPoint({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [menubar, fullWindow] }, "Finder")).toBeNull();
+    const barPt = pickTargetPoint({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: FINDER, dockLevel: 20, windows: [menubar, fullWindow] }, "Finder");
     expect(barPt?.kind).toBe("menubar");
     expect(barPt.y).toBeLessThan(25);
   });
 
-  test("pickDefaultApp prefers a visible non-dialog app (skipping Finder) and falls back to Calculator", () => {
+  test("pickDefaultApp prefers a visible non-dialog, non-sensitive app (skipping Finder and finance category) and falls back to Calculator", () => {
     const t3 = win(T3, { x: 0, y: 25, width: 600, height: 600 });
+    const finance = win(FINANCE, { x: 610, y: 25, width: 400, height: 400 });
     const finder = win(FINDER, { x: 650, y: 25, width: 500, height: 500 });
     const helium = win(HELIUM, { x: 700, y: 100, width: 800, height: 600 });
-    expect(pickDefaultApp({ mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [t3, finder, helium] })).toBe("net.imput.helium");
-    expect(pickDefaultApp({ mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [t3, finder] })).toBe("Calculator");
+    expect(pickDefaultApp({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [t3, finance, finder, helium] }))
+      .toBe("net.imput.helium");
+    expect(pickDefaultApp({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: T3, dockLevel: 20, windows: [t3, finance, finder] }))
+      .toBe("Calculator");
   });
 
   test("maps global display points to screenshot pixels and parses screenshot sizes", () => {
@@ -258,7 +303,13 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
         stateDirRef.dir = tempDir;
         return {
           permissions: () => ({ screenRecording: true, accessibility: true }),
+          appInfo: (query) => {
+            if (query === "Visual Studio Code - Insiders") return { name: query, bundleId: "com.microsoft.VSCodeInsiders" };
+            if (query === "net.imput.helium" || query === "Helium") return HELIUM;
+            return { name: query, bundleId: `com.example.${query.toLowerCase()}` };
+          },
           sceneInfo: () => ({
+            displays: [DISPLAY],
             mainDisplay: DISPLAY,
             frontmost: HELIUM,
             dockLevel: 20,
@@ -291,6 +342,7 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
       serverCommand: [process.execPath, fakeServer],
       createProbe: fake.createProbe,
       findOverlay: fake.findOverlay,
+      checkActiveSession: () => null,
       isAlive: fake.isAlive,
       realDirs: [realDir],
       overlaySettleMs: 0,
@@ -323,6 +375,7 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
       env: { ...process.env, LEAK_REAL_DIR: realDir },
       createProbe: fake.createProbe,
       findOverlay: fake.findOverlay,
+      checkActiveSession: () => null,
       isAlive: fake.isAlive,
       realDirs: [realDir],
       overlaySettleMs: 0,
@@ -333,17 +386,32 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
     expect(existsSync(stateDirRef.dir)).toBe(false);
   });
 
-  test("refuses sensitive and dialog-only apps before starting a server", async () => {
-    await expect(runLiveCheck({ app: "Terminal", realDirs: [realDir], tempRoot: root })).rejects.toThrow("always needs a dialog");
-    await expect(runLiveCheck({ app: "1Password", realDirs: [realDir], tempRoot: root })).rejects.toThrow("Cannot run unattended live check");
+  test("refuses sensitive, dialog-only (by name or resolved bundle id), and active real sessions", async () => {
+    await expect(runLiveCheck({ app: "Terminal", checkActiveSession: () => null, realDirs: [realDir], tempRoot: root }))
+      .rejects.toThrow("always needs a dialog");
+    await expect(runLiveCheck({ app: "1Password", checkActiveSession: () => null, realDirs: [realDir], tempRoot: root }))
+      .rejects.toThrow("Cannot run unattended live check");
+    await expect(runLiveCheck({ checkActiveSession: () => "Another computer-use session (pid 42) holds session.json.", realDirs: [realDir], tempRoot: root }))
+      .rejects.toThrow("Another computer-use session");
+
+    const stateDirRef = { dir: null };
+    const fake = makeFakeProbe(stateDirRef, { pid: null });
+    await expect(runLiveCheck({
+      app: "Visual Studio Code - Insiders",
+      createProbe: fake.createProbe,
+      checkActiveSession: () => null,
+      realDirs: [realDir],
+      tempRoot: root,
+    })).rejects.toThrow("always needs a dialog");
   });
 
   test("refuses to run when macOS grants are missing or screen is locked", async () => {
     await expect(runLiveCheck({
       serverCommand: [process.execPath, fakeServer],
+      checkActiveSession: () => null,
       createProbe: () => ({
         permissions: () => ({ screenRecording: false, accessibility: true }),
-        sceneInfo: () => ({ mainDisplay: DISPLAY, frontmost: FINDER, dockLevel: 20, windows: [] }),
+        sceneInfo: () => ({ displays: [DISPLAY], mainDisplay: DISPLAY, frontmost: FINDER, dockLevel: 20, windows: [] }),
       }),
       realDirs: [realDir],
       tempRoot: root,
@@ -351,22 +419,31 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
 
     await expect(runLiveCheck({
       serverCommand: [process.execPath, fakeServer],
+      checkActiveSession: () => null,
       createProbe: () => ({
         permissions: () => ({ screenRecording: true, accessibility: true }),
-        sceneInfo: () => ({ mainDisplay: DISPLAY, frontmost: { name: "loginwindow", bundleId: "com.apple.loginwindow", pid: 1 }, dockLevel: 20, windows: [] }),
+        sceneInfo: () => ({
+          displays: [DISPLAY],
+          mainDisplay: DISPLAY,
+          frontmost: { name: "loginwindow", bundleId: "com.apple.loginwindow", pid: 1 },
+          dockLevel: 20,
+          windows: [],
+        }),
       }),
       realDirs: [realDir],
       tempRoot: root,
     })).rejects.toThrow("screen is locked");
   });
 
-  test("real desktop.js starts over stdio with DESKTOP_MCP_STATE set to a temp folder", async () => {
+  test("real desktop.js over stdio writes user-stopped to DESKTOP_MCP_STATE and never XDG_STATE_HOME", async () => {
+    const xdgHome = join(root, "xdg-state");
     const isolated = join(root, "isolated-real-desktop");
+    mkdirSync(xdgHome);
     mkdirSync(isolated);
     const client = createMcpClient({
       command: process.execPath,
       args: [DESKTOP_SERVER],
-      env: { ...process.env, DESKTOP_MCP_STATE: isolated },
+      env: { ...process.env, XDG_STATE_HOME: xdgHome, DESKTOP_MCP_STATE: isolated },
       timeoutMs: 10_000,
     });
     try {
@@ -375,14 +452,16 @@ describe("runLiveCheck end-to-end with isolated stdio server", () => {
       client.notify("notifications/initialized");
       const listed = await client.request("tools/list", {});
       expect(listed.tools.map((t) => t.name)).toContain("request_access");
-      // release touches only DESKTOP_MCP_STATE (no Swift compilation needed).
+      // Seeding stop-<pid> in DESKTOP_MCP_STATE makes release() run noticeStop() and write user-stopped.
+      writeFileSync(join(isolated, `stop-${client.pid}`), "");
       const rel = await client.callTool("release", {});
       expect(rel.error).toBe(false);
-      expect(rel.text).toContain("Released:");
+      expect(rel.text).toContain("The user stopped computer use.");
     } finally {
       await client.close();
     }
-    expect(existsSync(join(realDir, "user-stopped"))).toBe(false);
+    expect(existsSync(join(isolated, "user-stopped"))).toBe(true);
+    expect(existsSync(join(xdgHome, "desktop-mcp"))).toBe(false);
   });
 });
 
