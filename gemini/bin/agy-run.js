@@ -28,6 +28,7 @@ import { parseArgs } from "node:util";
 import {
   buildAgyPolicy,
   evaluatePermissionRequest,
+  expandHome,
 } from "./agy-run-policy.js";
 
 const POLICY_HOOK_SCRIPT = join(dirname(import.meta.path), "agy-run-policy.js");
@@ -223,10 +224,11 @@ export async function runAgyPrompt({
 }) {
   const startedAt = Date.now();
   const home = env.HOME || homedir();
+  const callerBase = cwd ? resolve(cwd) : process.cwd();
+  const resolvedAddDirs = (addDirs || []).map((dir) => resolve(callerBase, expandHome(dir, home)));
   // Validate restrictions up front (fail closed before spawning or touching profiles).
-  const initialCwd = cwd ? resolve(cwd) : process.cwd();
   buildAgyPolicy({
-    cwd: initialCwd,
+    cwd: callerBase,
     home,
     noTools,
     fullAccess,
@@ -234,48 +236,49 @@ export async function runAgyPrompt({
     tools,
     settings,
     strictMcp,
-    addDirs,
+    addDirs: resolvedAddDirs,
   });
 
   const binary = resolveAgyBinary(env);
   const sourceProfile = resolveT3ProfileDir(env);
   const tempRoot = mkdtempSync(join(tmpdir(), "agy-run-"));
-  const workDir = cwd ? resolve(cwd) : join(tempRoot, "work");
-  if (!cwd) mkdirSync(workDir, { recursive: true });
-
-  const { geminiHome, runtimeTmp } = prepareIsolatedProfile(sourceProfile, tempRoot);
-  const policyPath = join(tempRoot, "policy.json");
-  const policy = buildAgyPolicy({
-    cwd: workDir,
-    home,
-    noTools,
-    fullAccess,
-    permissionMode,
-    tools,
-    settings,
-    strictMcp,
-    addDirs,
-    internalDenyPaths: [geminiHome, policyPath],
-  });
-
-  if (policy.enforceHook) {
-    installPolicyHook(geminiHome, policyPath, policy);
-  }
-
-  const resolvedModel = normalizeModel(model);
-  const resolvedEffort = mapEffort(effort);
-
-  const childEnv = {
-    ...cleanBaseEnv(env),
-    GEMINI_HOME: geminiHome,
-    AGY_ACP_FORCE_FILE_STORAGE: "1",
-    PYTHONUNBUFFERED: "1",
-    TMPDIR: runtimeTmp,
-  };
 
   let proc;
   let timer;
   try {
+    const workDir = cwd ? resolve(cwd) : join(tempRoot, "work");
+    if (!cwd) mkdirSync(workDir, { recursive: true });
+
+    const { geminiHome, runtimeTmp } = prepareIsolatedProfile(sourceProfile, tempRoot);
+    const policyPath = join(tempRoot, "policy.json");
+    const policy = buildAgyPolicy({
+      cwd: workDir,
+      home,
+      noTools,
+      fullAccess,
+      permissionMode,
+      tools,
+      settings,
+      strictMcp,
+      addDirs: resolvedAddDirs,
+      internalDenyPaths: [geminiHome, policyPath],
+    });
+
+    if (policy.enforceHook) {
+      installPolicyHook(geminiHome, policyPath, policy);
+    }
+
+    const resolvedModel = normalizeModel(model);
+    const resolvedEffort = mapEffort(effort);
+
+    const childEnv = {
+      ...cleanBaseEnv(env),
+      GEMINI_HOME: geminiHome,
+      AGY_ACP_FORCE_FILE_STORAGE: "1",
+      PYTHONUNBUFFERED: "1",
+      TMPDIR: runtimeTmp,
+    };
+
     const acpArgs = ["acp", "--gemini-dir", geminiHome, "--app-data-dir", "antigravity-acp"];
     for (const extraDir of policy.allowedWriteRoots.slice(1)) {
       acpArgs.push("--add-dir", extraDir);
@@ -294,6 +297,7 @@ export async function runAgyPrompt({
 
     let nextId = 1;
     const pending = new Map();
+    const toolCallsById = new Map();
     let collectedText = "";
     let toolViolation = null;
     let sessionId = null;
@@ -317,13 +321,15 @@ export async function runAgyPrompt({
           sendRaw({ jsonrpc: "2.0", id, result: { outcome: { outcome: "cancelled" } } });
           return;
         }
-        const decision = evaluatePermissionRequest(policy, params);
+        const trackedCall = params?.toolCall?.toolCallId
+          ? toolCallsById.get(params.toolCall.toolCallId) ?? null
+          : null;
+        const decision = evaluatePermissionRequest(policy, params, trackedCall);
         const options = params?.options || [];
         const allow = policy.restricted
-          ? options.find((o) => o.kind === "allow_once") || options[0]
+          ? options.find((o) => o.kind === "allow_once")
           : options.find((o) => o.kind === "allow_always") ||
-            options.find((o) => o.kind === "allow_once") ||
-            options[0];
+            options.find((o) => o.kind === "allow_once");
         if (decision.allow && allow?.optionId) {
           sendRaw({
             jsonrpc: "2.0",
@@ -382,6 +388,17 @@ export async function runAgyPrompt({
           const update = msg.params?.update;
           if (!update) continue;
           if (
+            (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
+            update.toolCallId
+          ) {
+            const prev = toolCallsById.get(update.toolCallId) || {};
+            toolCallsById.set(update.toolCallId, {
+              name: typeof update.name === "string" && update.name ? update.name : prev.name,
+              args: update.args ?? update.rawInput ?? prev.args,
+              kind: update.kind ?? prev.kind,
+            });
+          }
+          if (
             policy.noTools &&
             (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
           ) {
@@ -389,11 +406,16 @@ export async function runAgyPrompt({
           } else if (
             policy.restricted &&
             update.sessionUpdate === "tool_call_update" &&
-            update.status === "completed" &&
-            typeof update.name === "string" &&
-            !policy.allowedAgyTools.includes(update.name)
+            update.status === "completed"
           ) {
-            toolViolation = `Disallowed tool completed in restricted mode: ${update.name}`;
+            const resolvedName =
+              (typeof update.name === "string" && update.name) ||
+              (update.toolCallId ? toolCallsById.get(update.toolCallId)?.name : null);
+            if (!resolvedName) {
+              toolViolation = `Unidentified tool completed in restricted mode (toolCallId=${update.toolCallId || "unknown"})`;
+            } else if (!policy.allowedAgyTools.includes(resolvedName)) {
+              toolViolation = `Disallowed tool completed in restricted mode: ${resolvedName}`;
+            }
           }
           if (
             update.sessionUpdate === "agent_message_chunk" &&

@@ -11,7 +11,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const CLAUDE_TO_AGY = {
   Read: ["read_file"],
@@ -73,24 +73,32 @@ export function expandHome(target, home = homedir()) {
 }
 
 /**
- * Resolves symlinks and canonical filesystem casing even when leaf components do not
- * exist yet or when an intermediate/leaf entry is a dangling symlink. Throws on symlink
- * loops or unreadable paths so callers fail closed.
+ * Resolves symlinks and canonical filesystem casing in POSIX traversal order (resolving
+ * each symlink BEFORE collapsing any subsequent `..` segment) even when leaf components
+ * do not exist yet or when an intermediate/leaf entry is a dangling symlink. Throws on
+ * symlink loops or unreadable paths so callers fail closed.
  */
-export function resolveRealPath(absPath) {
-  const normalized = resolve(absPath);
-  try {
-    return realpathSync.native(normalized);
-  } catch (err) {
-    if (err?.code !== "ENOENT" && err?.code !== "ENOTDIR") throw err;
+export function resolveRealPath(rawPath, baseDir = "/") {
+  let cur = "/";
+  let segments;
+  if (isAbsolute(rawPath)) {
+    segments = rawPath.split("/");
+  } else {
+    const resolvedBase = baseDir === "/" ? "/" : resolveRealPath(resolve(baseDir), "/");
+    cur = resolvedBase;
+    segments = rawPath.split("/");
   }
 
-  let segments = normalized.split("/").filter(Boolean);
-  let cur = "/";
   let hops = 0;
 
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      cur = dirname(cur);
+      continue;
+    }
+
     const next = cur === "/" ? `/${seg}` : `${cur}/${seg}`;
     let st;
     try {
@@ -103,7 +111,14 @@ export function resolveRealPath(absPath) {
         } catch (baseErr) {
           if (baseErr?.code !== "ENOENT" && baseErr?.code !== "ENOTDIR") throw baseErr;
         }
-        return resolve(base, ...segments.slice(i));
+        let tailCur = base;
+        for (let j = i; j < segments.length; j++) {
+          const tailSeg = segments[j];
+          if (!tailSeg || tailSeg === ".") continue;
+          if (tailSeg === "..") tailCur = dirname(tailCur);
+          else tailCur = tailCur === "/" ? `/${tailSeg}` : `${tailCur}/${tailSeg}`;
+        }
+        return tailCur;
       }
       throw err;
     }
@@ -111,12 +126,14 @@ export function resolveRealPath(absPath) {
     if (st.isSymbolicLink()) {
       hops += 1;
       if (hops > MAX_SYMLINK_HOPS) {
-        throw new Error(`Too many symlink levels while resolving ${absPath}`);
+        throw new Error(`Too many symlink levels while resolving ${rawPath}`);
       }
       const target = readlinkSync(next);
-      const targetAbs = isAbsolute(target) ? resolve(target) : resolve(cur, target);
-      segments = [...targetAbs.split("/").filter(Boolean), ...segments.slice(i + 1)];
-      cur = "/";
+      const targetSegs = target.split("/");
+      segments = [...targetSegs, ...segments.slice(i + 1)];
+      if (isAbsolute(target)) {
+        cur = "/";
+      }
       i = -1;
       continue;
     }
@@ -138,7 +155,7 @@ export function resolveCandidatePaths(rawPath, { cwd, home = homedir() }) {
   }
   const expanded = expandHome(rawPath, home);
   const lexical = resolve(cwd, expanded);
-  const real = resolveRealPath(lexical);
+  const real = resolveRealPath(expanded, cwd);
   return { lexical, real };
 }
 
@@ -350,12 +367,16 @@ function parseSettings(settingsObj) {
         const match = /^(Read|Edit|Write)\((.+)\)$/.exec(trimmed);
         if (match) {
           const [, kind, pattern] = match;
-          if (!pattern.trim()) {
+          const cleanPattern = pattern.trim();
+          if (!cleanPattern) {
             throw new Error(`Empty path pattern in permissions.deny rule: "${rule}"`);
           }
-          if (kind === "Read") result.denyReadPatterns.push(pattern);
-          else if (kind === "Edit") result.denyEditPatterns.push(pattern);
-          else if (kind === "Write") result.denyWritePatterns.push(pattern);
+          if (/[{}[\]]/.test(cleanPattern) || cleanPattern.startsWith("!")) {
+            throw new Error(`Unsupported glob syntax in permissions.deny rule for agy-run: "${rule}"`);
+          }
+          if (kind === "Read") result.denyReadPatterns.push(cleanPattern);
+          else if (kind === "Edit") result.denyEditPatterns.push(cleanPattern);
+          else if (kind === "Write") result.denyWritePatterns.push(cleanPattern);
           continue;
         }
         throw new Error(`Unsupported permissions.deny rule for agy-run: "${rule}"`);
@@ -579,6 +600,25 @@ function runSettingsPreToolUseHooks(policy, toolName, args, cwd) {
     if (res.status !== 0) {
       return `Settings PreToolUse hook exited ${res.status}: ${(res.stderr || res.stdout || "").trim()}`.trim();
     }
+    const stdout = (res.stdout || "").trim();
+    if (stdout.startsWith("{")) {
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch (err) {
+        return `Settings PreToolUse hook printed invalid JSON: ${err.message}`;
+      }
+      const permDecision = parsed?.hookSpecificOutput?.permissionDecision;
+      if (permDecision === "deny" || permDecision === "ask") {
+        return (parsed?.hookSpecificOutput?.permissionDecisionReason || parsed?.reason || `Blocked by settings PreToolUse hook (${permDecision})`).trim();
+      }
+      if (parsed?.decision === "block" || parsed?.decision === "deny" || parsed?.decision === "ask") {
+        return (parsed?.reason || `Blocked by settings PreToolUse hook (${parsed.decision})`).trim();
+      }
+      if (parsed?.continue === false) {
+        return (parsed?.stopReason || parsed?.reason || "Blocked by settings PreToolUse hook (continue=false)").trim();
+      }
+    }
   }
   return null;
 }
@@ -654,14 +694,16 @@ export function evaluateToolCall(policy, agyInput) {
 
 /**
  * Evaluates an ACP session/request_permission payload as defense-in-depth alongside PreToolUse.
+ * Accepts an optional trackedCall ({ name, args, kind }) correlated by toolCallId from earlier
+ * session/update tool_call events when the ACP permission request omits toolCall.name.
  */
-export function evaluatePermissionRequest(policy, params) {
+export function evaluatePermissionRequest(policy, params, trackedCall = null) {
   if (!policy || policy.noTools || policy.permissionMode === "default") {
     return { allow: false, reason: "Permissions disabled in this mode" };
   }
   const toolCall = params?.toolCall;
-  const toolName = toolCall?.name;
-  const args = toolCall?.rawInput ?? toolCall?.args;
+  const toolName = toolCall?.name ?? trackedCall?.name;
+  const args = toolCall?.rawInput ?? toolCall?.args ?? trackedCall?.args;
   if (policy.restricted) {
     if (typeof toolName === "string" && toolName) {
       const check = evaluateToolCall(policy, { cwd: policy.cwd, toolCall: { name: toolName, args } });

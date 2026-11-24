@@ -108,6 +108,11 @@ process.stdin.on("data", async (chunk) => {
       send({ jsonrpc: "2.0", id: msg.id, result: {} });
     } else if (msg.method === "session/prompt") {
       log.prompts.push(msg.params.prompt);
+      if (Array.isArray(behavior.preUpdates)) {
+        for (const update of behavior.preUpdates) {
+          send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "sess-test-1", update } });
+        }
+      }
       if (Array.isArray(behavior.permissionRequests)) {
         for (const req of behavior.permissionRequests) {
           const resp = await askClient("session/request_permission", req);
@@ -210,6 +215,15 @@ describe("agy-run policy builder and validator", () => {
       buildAgyPolicy({ cwd: work, settings: JSON.stringify({ permissions: { deny: ["Bash(rm -rf *)"] } }) }),
     ).toThrow(/Unsupported permissions\.deny rule/);
     expect(() =>
+      buildAgyPolicy({ cwd: work, settings: JSON.stringify({ permissions: { deny: ["Read(~/.env.{local,prod})"] } }) }),
+    ).toThrow(/Unsupported glob syntax/);
+    expect(() =>
+      buildAgyPolicy({ cwd: work, settings: JSON.stringify({ permissions: { deny: ["Read(~/secrets/[a-z].key)"] } }) }),
+    ).toThrow(/Unsupported glob syntax/);
+    expect(() =>
+      buildAgyPolicy({ cwd: work, settings: JSON.stringify({ permissions: { deny: ["Read(!~/ok.txt)"] } }) }),
+    ).toThrow(/Unsupported glob syntax/);
+    expect(() =>
       buildAgyPolicy({ cwd: work, settings: JSON.stringify({ hooks: { PostToolUse: [] } }) }),
     ).toThrow(/Unsupported settings\.hooks event/);
     expect(() => buildAgyPolicy({ cwd: work, tools: ["Read", "NotATool"] })).toThrow(
@@ -305,9 +319,51 @@ describe("agy-run policy PreToolUse evaluation", () => {
       expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "edit_file", args: { Path: deniedWrite } } }).decision, deniedWrite).toBe("deny");
     }
 
+    // Symlink followed by `..` must resolve symlink before collapsing `..` (POSIX semantics)
+    const sshSub = join(sshDir, "subdir");
+    const outsideDeep = join(outside, "deep");
+    mkdirSync(sshSub, { recursive: true });
+    mkdirSync(outsideDeep, { recursive: true });
+    symlinkSync(sshSub, join(work, "ssh-sub"));
+    symlinkSync(outsideDeep, join(work, "deep-link"));
+    symlinkSync("deep-link/../via-dangling.txt", join(work, "nested-dangling"));
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: { Path: `${work}/ssh-sub/../id_rsa` } } }).decision).toBe("deny");
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: { Path: "ssh-sub/../id_rsa" } } }).decision).toBe("deny");
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_file", args: { Path: `${work}/deep-link/../escaped.txt` } } }).decision).toBe("deny");
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_file", args: { Path: join(work, "nested-dangling") } } }).decision).toBe("deny");
+
     // Missing path arg fails closed
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: {} } }).decision).toBe("deny");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_file", args: {} } }).decision).toBe("deny");
+  });
+
+  test("settings.hooks.PreToolUse honors exit-0 JSON deny/block decisions", () => {
+    const work = join(scratch, "work");
+    mkdirSync(work, { recursive: true });
+    const jsonHook = join(scratch, "json-deny.js");
+    writeFileSync(
+      jsonHook,
+      `const input = JSON.parse(await Bun.stdin.text());
+if ((input.tool_input?.command ?? "").includes("deny-json")) {
+  console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Denied via JSON" } }));
+} else if ((input.tool_input?.command ?? "").includes("block-top")) {
+  console.log(JSON.stringify({ decision: "block", reason: "Blocked top-level" }));
+}
+`,
+    );
+    const policy = buildAgyPolicy({
+      cwd: work,
+      fullAccess: true,
+      tools: ["Bash"],
+      settings: JSON.stringify({
+        hooks: { PreToolUse: [{ hooks: [{ type: "command", command: `"${process.execPath}" "${jsonHook}"` }] }] },
+      }),
+    });
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "echo ok" } } }).decision).toBe("allow");
+    const d1 = evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "deny-json" } } });
+    expect(d1).toEqual({ decision: "deny", reason: "Denied via JSON" });
+    const d2 = evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "block-top" } } });
+    expect(d2).toEqual({ decision: "deny", reason: "Blocked top-level" });
   });
 
   test("executes settings.hooks.PreToolUse command hooks (e.g. benchSettings block-installs)", () => {
@@ -466,7 +522,72 @@ describe("agy-run CLI with fake Antigravity ACP server", () => {
       },
     );
     expect(run.status).toBe(1);
-    expect(run.stderr).toContain("Disallowed tool completed in restricted mode: run_command");
+    // Fails closed when a disallowed tool reports completed via toolCallId (without repeating name on update)
+    const { bin: bin2, profile: profile2 } = createFakeAcpEnv({
+      updates: [
+        { sessionUpdate: "tool_call", toolCallId: "tc-99", name: "run_command", status: "in_progress" },
+        { sessionUpdate: "tool_call_update", toolCallId: "tc-99", status: "completed" },
+      ],
+      reply: "done",
+    });
+    const run2 = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write", "--output-format", "stream-json"],
+      {
+        input: "hi",
+        encoding: "utf8",
+        env: { ...process.env, AGY_RUN_BIN: bin2, AGY_RUN_GEMINI_HOME: profile2 },
+      },
+    );
+    expect(run2.status).toBe(1);
+    expect(run2.stderr).toContain("Disallowed tool completed in restricted mode: run_command");
+  });
+
+  test("correlates toolCallId for session/request_permission without name, refuses allow_always fallback in restricted mode, and resolves relative --add-dir against caller cwd", () => {
+    const extra = join(scratch, "extra-dir");
+    mkdirSync(extra, { recursive: true });
+    const { bin, profile, logFile } = createFakeAcpEnv({
+      preUpdates: [
+        { sessionUpdate: "tool_call", toolCallId: "tc-1", name: "run_command", rawInput: { CommandLine: "git status" }, status: "in_progress" },
+        { sessionUpdate: "tool_call", toolCallId: "tc-2", name: "run_command", rawInput: { CommandLine: "git log" }, status: "in_progress" },
+      ],
+      permissionRequests: [
+        // Standard ACP request_permission without toolCall.name; correlated via toolCallId, approved with allow_once
+        {
+          toolCall: { toolCallId: "tc-1", kind: "execute", rawInput: { CommandLine: "git status" } },
+          options: [{ optionId: "allow_once", kind: "allow_once" }],
+        },
+        // No allow_once option offered (only allow_always): restricted mode must NOT fall back to allow_always
+        {
+          toolCall: { toolCallId: "tc-2", kind: "execute", rawInput: { CommandLine: "git log" } },
+          options: [{ optionId: "allow_always", kind: "allow_always" }],
+        },
+      ],
+      reply: "ok",
+    });
+    const run = spawnSync(
+      process.execPath,
+      [
+        AGY_RUN,
+        "--full-access",
+        "--tools", "Read,Bash",
+        "--add-dir", "./extra-dir",
+        "--output-format", "stream-json",
+      ],
+      {
+        cwd: scratch,
+        input: "check",
+        encoding: "utf8",
+        env: { ...process.env, AGY_RUN_BIN: bin, AGY_RUN_GEMINI_HOME: profile },
+      },
+    );
+    expect(run.status, run.stderr).toBe(0);
+    const log = JSON.parse(readFileSync(logFile, "utf8"));
+    expect(log.args).toContain(extra);
+    expect(log.permissionResponses).toEqual([
+      { tool: null, outcome: { outcome: "selected", optionId: "allow_once" } },
+      { tool: null, outcome: { outcome: "cancelled" } },
+    ]);
   });
 
   test("fails closed before spawning ACP on unsupported settings (e.g. sandbox)", () => {
