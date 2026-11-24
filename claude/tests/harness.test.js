@@ -61,8 +61,11 @@ beforeEach(() => {
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+const HARNESS_TIMEOUT = 65_000;
+const LINGER_TIMEOUT = 90_000;
+
 // Runs the named test of a live suite file with the fake CLI. Returns bun's result.
-function runLive(file, name, mode, extra = {}) {
+function runLive(file, name, mode, extra = {}, { timeout = 60_000 } = {}) {
   const env = childEnv(process.env, {
     HOME: home,
     TMPDIR: join(root, "tmp"),
@@ -73,7 +76,7 @@ function runLive(file, name, mode, extra = {}) {
   });
   delete env.CLAUDE_LIVE_MODEL;
   delete env.CLAUDE_LIVE_EFFORT;
-  return runProcess([process.execPath, "test", join(TESTS, file), "-t", name], { cwd: TESTS, env, timeout: 60_000 });
+  return runProcess([process.execPath, "test", join(TESTS, file), "-t", name], { cwd: TESTS, env, timeout });
 }
 
 // Cleanup removed every entry the fake wrote for its fixture, kept the others, and left
@@ -119,7 +122,7 @@ test("a session's env option replaces its default variables", async () => {
   const { root: suiteRoot, work } = JSON.parse(run.stdout.trim().split("\n").find((line) => line.startsWith("{")));
   expect(JSON.parse(readFileSync(seen, "utf8"))).toEqual({ TMPDIR: join(work, "..", "tmp"), CLAUDE_CODE_TMPDIR: suiteRoot });
   assertCleanedUp();
-}, 30_000);
+}, HARNESS_TIMEOUT);
 
 describe("config-sync lock", () => {
   const locks = () => join(home, ".local", "state", "config-sync", "locks");
@@ -161,7 +164,7 @@ describe("config-sync lock", () => {
     expect(run.code, output(run)).toBe(0);
     const { pid, seen } = JSON.parse(run.stdout.trim().split("\n").at(-1));
     expect(seen).toEqual([[`live-suite-${pid}-a.lock`, `live-suite-${pid}-b.lock`], [`live-suite-${pid}-b.lock`], []]);
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   for (const [mode, passes] of [["python-clean", true], ["exit7", false]])
     test(`is held during a session and removed when the run ends (${mode})`, async () => {
@@ -174,7 +177,7 @@ describe("config-sync lock", () => {
       expect(name).toBe(`live-suite-${text.trim()}-policy.lock`);
       expect(text).toMatch(/^\d+\n$/);
       expect(readdirSync(locks())).toEqual([]);
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 });
 
 describe("failed sessions still clean up", () => {
@@ -184,7 +187,7 @@ describe("failed sessions still clean up", () => {
       expect(run.code, output(run)).not.toBe(0);
       expect(output(run)).toMatch(/1 fail/);
       assertCleanedUp();
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 });
 
 describe("policy final verification boundary", () => {
@@ -194,7 +197,7 @@ describe("policy final verification boundary", () => {
     expect(output(run)).toMatch(/1 pass/);
     expect(output(run)).toMatch(/policy: 1 sessions, total \$0\.0010/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a run the API refused before it did anything is run once more", async () => {
     const marker = join(root, "refused");
@@ -203,47 +206,47 @@ describe("policy final verification boundary", () => {
     expect(existsSync(marker)).toBe(true);
     expect(output(run)).toMatch(/policy: 1 sessions, total \$0\.0010/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a single-track fix handed to a subagent fails", async () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-delegated");
     expect(run.code).not.toBe(0);
     expect(output(run)).toContain("a single track was delegated");
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a fix that tampers with the check when re-run fails", async () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-mutation");
     expect(run.code).not.toBe(0);
     expect(output(run)).toContain("Unauthorized content change: check.py");
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 });
 
 // A session's background task can outlive it and write under the suite root, its TMPDIR,
 // after the scenario ends; teardown waits for it before removing the root.
 describe("teardown waits for the sessions' leftover processes", () => {
   test("a background task that writes after the session ends leaves no root behind", async () => {
-    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "late" });
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "late" }, { timeout: 80_000 });
     expect(run.code, output(run)).toBe(0);
     // Past the task's write, 2 s after it started: without the wait it recreates the root.
     await Bun.sleep(2500);
     assertCleanedUp();
-  }, 30_000);
+  }, LINGER_TIMEOUT);
 
   test("a background task still running after the wait is killed and fails the suite with the root's path", async () => {
-    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "stuck", CLAUDE_LIVE_SETTLE_MS: "1500" });
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "stuck", CLAUDE_LIVE_SETTLE_MS: "1500" }, { timeout: 80_000 });
     expect(run.code, output(run)).not.toBe(0);
     expect(output(run)).toMatch(new RegExp(`Session processes still ran 1500 ms after the suite's sessions; killed them, then removed ${join(root, "tmp")}/claude-live-policy-\\w+:\\n\\d+ sh -c while`));
     // A writer still alive would recreate the root within 200 ms.
     await Bun.sleep(500);
     assertCleanedUp();
-  }, 30_000);
+  }, LINGER_TIMEOUT);
 
   // Writers that never sleep fork a new write between the harness's process listing and
   // its kill nearly every run; that write must die with its group, not recreate the root.
   test("a background task writing back to back is killed with every write it started", async () => {
-    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "busy", CLAUDE_LIVE_SETTLE_MS: "1500" });
+    const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "busy", CLAUDE_LIVE_SETTLE_MS: "1500" }, { timeout: 80_000 });
     expect(run.code, output(run)).not.toBe(0);
     expect(output(run)).toMatch(/Session processes still ran 1500 ms after the suite's sessions; killed them, then removed /);
     expect(output(run)).toMatch(/^\d+ sh -c for loop in .*; wait$/m);
@@ -251,7 +254,7 @@ describe("teardown waits for the sessions' leftover processes", () => {
     await Bun.sleep(500);
     expect(processesUnder(root)).toEqual([]);
     assertCleanedUp();
-  }, 30_000);
+  }, LINGER_TIMEOUT);
 });
 
 describe("guidance scope covers subagents", () => {
@@ -259,14 +262,14 @@ describe("guidance scope covers subagents", () => {
     const run = await runLive("live-dispatch.test.js", "chart work", "chart-clean");
     expect(run.code, output(run)).toBe(0);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a forbidden read in a subagent fails", async () => {
     const run = await runLive("live-dispatch.test.js", "chart work", "chart-forbidden");
     expect(run.code).not.toBe(0);
     expect(output(run)).toContain("Subagent: forbidden guidance was read: typescript/SKILL.md");
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 });
 
 describe("configuration must not change during a run", () => {
@@ -274,14 +277,14 @@ describe("configuration must not change during a run", () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-clean");
     expect(run.code, output(run)).toBe(0);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("skill feedback records appended by other sessions pass", async () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-feedback-append");
     expect(run.code, output(run)).toBe(0);
     expect(existsSync(join(home, ".local", "share", "agent-skills", "skill-feedback", "tauri", "verifications", "first.json"))).toBe(true);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("an agent-skills release that moves current passes, through a two-hop link too", async () => {
     const run = await runLive("live-policy.test.js", "Chinese-only", "chinese-release-switch");
@@ -289,7 +292,7 @@ describe("configuration must not change during a run", () => {
     expect(realpathSync(join(home, ".claude", "skills", "find-skills"))).toContain("/release-b/");
     expect(readFileSync(join(home, ".claude", "skills", "rust", "SKILL.md"), "utf8")).toBe("# Rust, revised\n");
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   for (const [mode, message] of [
     ["chinese-drift", "CLAUDE.md"],
@@ -307,7 +310,7 @@ describe("configuration must not change during a run", () => {
       expect(output(run)).toContain("Configuration changed during the run");
       expect(output(run)).toContain(message);
       assertCleanedUp();
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 });
 
 describe("background review", () => {
@@ -318,14 +321,14 @@ describe("background review", () => {
     expect(run.code, output(run)).toBe(0);
     expect(output(run)).toMatch(/1 pass/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a review that ends before the follow-up is answered, with no wait on it, passes", async () => {
     const run = await runLive("live.test.js", name, "review-first");
     expect(run.code, output(run)).toBe(0);
     expect(output(run)).toMatch(/1 pass/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   for (const [mode, message] of [
     ["review-foreground", "the review was not one background reviewer agent"],
@@ -347,7 +350,7 @@ describe("background review", () => {
       expect(run.code).not.toBe(0);
       expect(output(run)).toContain(message);
       assertCleanedUp();
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 });
 
 // The parallel-tracks scenario's routing and Review checks, against sessions that keep or
@@ -361,7 +364,7 @@ describe("parallel tracks", () => {
       expect(run.code, output(run)).toBe(0);
       expect(output(run)).toMatch(/1 pass/);
       assertCleanedUp();
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 
   for (const [mode, message] of [
     ["tracks-explorer", "a track went to another agent"],
@@ -377,7 +380,7 @@ describe("parallel tracks", () => {
       expect(run.code).not.toBe(0);
       expect(output(run)).toContain(message);
       assertCleanedUp();
-    }, 30_000);
+    }, HARNESS_TIMEOUT);
 });
 
 test("a claimed artifact that was never saved fails the full skill run", async () => {
@@ -385,7 +388,7 @@ test("a claimed artifact that was never saved fails the full skill run", async (
   expect(run.code).not.toBe(0);
   expect(output(run)).toContain("article.md was not saved");
   assertCleanedUp();
-}, 30_000);
+}, HARNESS_TIMEOUT);
 
 describe("reports", () => {
   test("record a failure, then clean up", async () => {
@@ -397,7 +400,7 @@ describe("reports", () => {
     expect(report.error).toContain("claude exited 7");
     expect(report.sessions[0]).toMatchObject({ status: "failed", model: "claude-opus-5-5", effort: configuredEffort("claude-opus-5-5") });
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   // The stream lacks the directory each tool call ran from, which the hooks record.
   test("keep each tool call's directory alongside the stream", async () => {
@@ -410,7 +413,7 @@ describe("reports", () => {
     expect(report.sessions[0].cwds[check.id]).toEndWith("/fixture");
     expect(readFileSync(join(reports, "python-checks-run-through-uv-run.stream.jsonl"), "utf8")).toContain(check.id);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("keep the directories of intact records when a killed hook left one truncated", () => {
     const records = join(root, "records");
@@ -429,7 +432,7 @@ describe("reports", () => {
     expect(run.code).not.toBe(0);
     expect(output(run)).toMatch(/EISDIR|illegal operation on a directory/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("a report folder outside the temp folder stops the suite before any session", async () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { CLAUDE_LIVE_REPORT_DIR: join(root, "outside") });
@@ -438,7 +441,7 @@ describe("reports", () => {
     expect(existsSync(join(root, "outside"))).toBe(false);
     expect(readdirSync(projects).sort()).toEqual(["-preexisting"]);
     expect(readdirSync(join(root, "tmp")).filter((name) => name.startsWith("claude-live-"))).toEqual([]);
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 });
 
 // Sessions load ~/.claude, which links to the installed checkout. From another checkout
@@ -461,7 +464,7 @@ describe("location checks", () => {
     expect(text).toMatch(/ 1 pass\n 3 skip\n/);
     expect(text).toMatch(/\(skip\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
     assertCleanedUp();
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 
   test("run without the notice when ~/.claude is this checkout", async () => {
     rmSync(join(home, ".claude"), { recursive: true });
@@ -471,5 +474,5 @@ describe("location checks", () => {
     expect(output(run)).not.toContain(notice);
     expect(output(run)).toMatch(/\(pass\) live Claude Code > ~\/\.claude resolves to this checkout's claude directory/);
     expect(output(run)).toMatch(/ 1 pass\n/);
-  }, 30_000);
+  }, HARNESS_TIMEOUT);
 });

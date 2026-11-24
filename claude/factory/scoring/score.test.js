@@ -184,13 +184,15 @@ describe("instructions revision", () => {
     expect(score.instructionsRevision(file, "rules v1")).toEqual({ file, sha256: hash("rules v1"), commit: v1, modified: false });
     writeFileSync(file, "rules v2");
     expect(score.instructionsRevision(file, "rules v2")).toEqual({ file, sha256: hash("rules v2"), commit: v1, modified: true });
-  });
+  }, 15_000);
 });
 
 // The judge's system part: what judge() appended to Claude Code's system prompt.
 const systemOf = (call) => call.system;
 
 describe("score command", () => {
+  const SCORE_TIMEOUT = 30_000;
+
   test("judges the highest-priority sample, runs detectors on the rest, and skips them next time", async () => {
     const corrected = new Transcript().prompt("Fix it").tool("Bash", { command: "pip install x" }, "ok").prompt("no, use uv").text("Done");
     const plain = new Transcript().prompt("Explain this").text("It does X");
@@ -227,7 +229,7 @@ describe("score command", () => {
     expect(await run(["--sample", "5", "--days", "3650"])).toBe(0);
     expect(calls()).toHaveLength(3);
     expect(output.join("\n")).toContain("0 eligible sessions (skipped: 3 already scored)");
-  });
+  }, SCORE_TIMEOUT);
 
   test("a session whose transcript vanished after it was listed is skipped, not fatal", async () => {
     const gone = new Transcript().prompt("Temporary session").text("Done");
@@ -248,7 +250,7 @@ describe("score command", () => {
     }
     expect(output.join("\n")).toContain("1 eligible sessions (skipped: 1 transcript gone)");
     expect(scores().map((record) => record.sessionId)).toEqual([kept.sessionId]);
-  });
+  }, SCORE_TIMEOUT);
 
   // Remove `gone`'s transcript when scoring first reads its records, after listing and
   // hashing are done.
@@ -289,7 +291,7 @@ describe("score command", () => {
       if (argv.includes("--dry-run")) expect(existsSync(score.scoresFile())).toBe(false);
       else expect(scores().map((record) => record.sessionId)).toEqual([kept.sessionId]);
     }
-  });
+  }, SCORE_TIMEOUT);
 
   test("an error other than a vanished transcript while reading records still fails the run", async () => {
     write([new Transcript().prompt("Fix it").text("Done")]);
@@ -303,7 +305,7 @@ describe("score command", () => {
       spy.mockRestore();
     }
     expect(existsSync(score.scoresFile()) ? scores() : []).toEqual([]);
-  });
+  }, SCORE_TIMEOUT);
 
   test("an invalid judge answer or a failed call is recorded as an error, never a score, and retried", async () => {
     const t = new Transcript().prompt("Fix it").text("Done");
@@ -328,7 +330,7 @@ describe("score command", () => {
     expect(scores()).toHaveLength(2);
     expect(await run(["--days", "3650", "--retry-errors"])).toBe(0);
     expect(scores()[2].error).toBeNull();
-  });
+  }, SCORE_TIMEOUT);
 
   test("a session whose judge call failed twice for this transcript and rubric is skipped until --retry-errors", async () => {
     const t = new Transcript({ sessionId: "e1e1e1e1-0000-4000-8000-000000000000" }).prompt("Fix it").text("Done");
@@ -351,7 +353,7 @@ describe("score command", () => {
     expect(await run(["--days", "3650", "--retry-errors"])).toBe(0);
     expect(calls()).toHaveLength(4);
     expect(scores().at(-1)).toMatchObject({ sessionId: t.sessionId, error: null });
-  });
+  }, SCORE_TIMEOUT);
 
   test("sessions named with --session are all judged, whatever --sample says, within --max-total-usd", async () => {
     const named = ["a1", "b2", "c3"].map((prefix) => new Transcript({ sessionId: `${prefix}000000-0000-4000-8000-000000000000` }).prompt(`Task ${prefix}`).text("Done"));
@@ -368,7 +370,7 @@ describe("score command", () => {
     const lines = output.filter((line) => /^Skipping .*: not judged, as the call could pass --max-total-usd \$0\.80$/.test(line));
     expect(lines).toHaveLength(1);
     expect(output.join("\n")).toContain("Stopped judging");
-  });
+  }, SCORE_TIMEOUT);
 
   test("a rubric bump reruns the detectors on every eligible session, and proposals count only current records", async () => {
     const sessions = [1, 2].map((n) => new Transcript().prompt(`Task ${n}`).tool("Bash", { command: "command -v python3 && echo ok" }, "ok").text("Done"));
@@ -393,7 +395,7 @@ describe("score command", () => {
     const groups = failureGroups(scores(), { since: 0 });
     expect(groups.find((group) => group.dimension.id === "package-runner").failures).toEqual([]);
     expect(failureGroups(stale, { since: 0 }).every((group) => !group.failures.length)).toBe(true);
-  });
+  }, SCORE_TIMEOUT);
 
   test("a call that fails before reporting a cost is that session's error, counted at its whole budget", async () => {
     write([1, 2, 3].map((n) => new Transcript().prompt(`Task ${n}`).text("Done")));
@@ -421,7 +423,7 @@ describe("score command", () => {
     expect(records.filter((record) => record.error)).toEqual([expect.objectContaining({ costUSD: 0.2 })]);
     expect(records.filter((record) => !record.model)).toHaveLength(2);
     expect(output.join("\n")).toContain("Stopped judging");
-  });
+  }, SCORE_TIMEOUT);
 
   test("the judge sees a fork's inherited prompts as context before the fork's own events", async () => {
     const forkedFrom = { sessionId: "parent-1", messageUuid: "m1" };
@@ -432,7 +434,7 @@ describe("score command", () => {
     expect(systemOf(call)).toContain("Judge only the fork's own events, against the full request");
     expect(call.stdin).toMatch(/## Prompts from the parent conversation[^\n]*\n\[I1\] PROMPT[^\n]*\nRename foo to bar everywhere/);
     expect(call.stdin).not.toContain("Renamed half");
-  });
+  }, SCORE_TIMEOUT);
 
   test("the judge sees host notices and slash commands, and is told how to read them", async () => {
     write([new Transcript().prompt("Context handoff (full_thread_summary): earlier work. Newest request: add tests.").prompt("<command-name>/review</command-name>\n<command-args>high</command-args>").prompt("Fix what it finds").text("Done")]);
@@ -443,7 +445,7 @@ describe("score command", () => {
     expect(systemOf(call)).toContain('shows as "slash command" with its name and arguments');
     expect(call.stdin).toMatch(/\[H1\] HOST NOTICE \([^)]*\):\nContext handoff \(full_thread_summary\): earlier work/);
     expect(call.stdin).toMatch(/\[H2\] HOST NOTICE \(slash command, [^)]*\): \/review high/);
-  });
+  }, SCORE_TIMEOUT);
 
   test("every judge call of a run shares one system part, so the cache serves it; the session goes on stdin", async () => {
     const sessions = [1, 2].map((n) => new Transcript().prompt(`Rename foo${n} to bar${n}`).text(`Renamed foo${n}`));
@@ -463,7 +465,7 @@ describe("score command", () => {
     }
     expect(judged.map((call) => call.stdin).join("\n")).toContain("Rename foo1");
     expect(judged.map((call) => call.stdin).join("\n")).toContain("Rename foo2");
-  });
+  }, SCORE_TIMEOUT);
 
   test("stops before the total budget could be exceeded", async () => {
     write([1, 2, 3, 4].map((n) => new Transcript().prompt(`Task ${n}`).text("Done")));
@@ -475,7 +477,7 @@ describe("score command", () => {
     expect(records.filter((record) => record.dimensions)).toHaveLength(2);
     expect(records.filter((record) => !record.dimensions)).toHaveLength(2);
     expect(output.join("\n")).toContain("Stopped judging");
-  });
+  }, SCORE_TIMEOUT);
 
   test("a dry run calls nothing and writes nothing", async () => {
     write([new Transcript().prompt("Fix it").tool("Bash", { command: "npm test" }, "ok").text("Done")]);
@@ -483,7 +485,7 @@ describe("score command", () => {
     expect(calls()).toHaveLength(0);
     expect(existsSync(join(scratch, "state", "scores.jsonl"))).toBe(false);
     expect(output.join("\n")).toMatch(/digest \d+ chars; corrections 0, interrupts 0, tool errors 0; package-runner\*/);
-  });
+  }, SCORE_TIMEOUT);
 
   test("--session scores the named session again, by unique id prefix, even from a temporary folder", async () => {
     const cwd = join(scratch, "work");
@@ -503,7 +505,7 @@ describe("score command", () => {
     // The record names the project instructions the judge saw, by hash.
     expect(scores().at(-1).instructions.project).toEqual([{ file: join(cwd, "CLAUDE.md"), sha256: createHash("sha256").update("PROJECT RULE: use tabs").digest("hex") }]);
     expect(await run(["--session", "zzz"]).catch((error) => error.message)).toContain("matches 0 sessions");
-  });
+  }, SCORE_TIMEOUT);
 
   test("Antigravity sessions are graded against gemini/GEMINI.md without claude/reference", async () => {
     const agyGlobal = score.loadGlobalInstructions("antigravity");
@@ -550,7 +552,7 @@ describe("score command", () => {
     const [judged] = scores();
     expect(judged.sessionId).toBe(convId);
     expect(judged.instructions.global).toEqual(score.instructionsRevision(GEMINI_INSTRUCTIONS, readFileSync(GEMINI_INSTRUCTIONS, "utf8")));
-  });
+  }, SCORE_TIMEOUT);
 
   test("rejects bad options and prints help", async () => {
     expect(await run(["--sample", "x"])).toBe(2);

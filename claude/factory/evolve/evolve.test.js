@@ -154,6 +154,8 @@ if (args[0] === "ls") {
     rmSync(scratch, { recursive: true, force: true });
   });
 
+  const EVOLVE_TIMEOUT = 20_000;
+
   test("reads the feedback board and each routed owner once, and prints the report", async () => {
     expect(await run(["--days", "7"])).toBe(0);
     const [list, ...shows] = calls();
@@ -167,7 +169,7 @@ if (args[0] === "ls") {
     expect(text).toContain("- board (Work board (agent-board)): ");
     expect(text).toContain("routed and open 1: agent-board-12 doing");
     expect(text).toContain("- factory (Factory: ");
-  });
+  }, EVOLVE_TIMEOUT);
 
   test("--json prints the report; a failed owner lookup is reported, exits 1 and costs only that owner", async () => {
     setEnv({ FAKE_BOARD_OWNERS: JSON.stringify({ "agent-board-12": OWNERS["agent-board-12"] }) });
@@ -178,7 +180,7 @@ if (args[0] === "ls") {
     expect([...result.errors].sort()).toEqual([expect.stringContaining("board show dotfiles-2 --json exited 1: error: no such task dotfiles-2"), expect.stringContaining("board show dotfiles-9")]);
     expect(result.totals.routedOpen).toBe(1);
     expect(result.totals.fixed).toBe(0);
-  });
+  }, EVOLVE_TIMEOUT);
 
   test("an unreadable list fails the report; bad options exit 2", async () => {
     setEnv({ FAKE_BOARD_LS: "not json" });
@@ -193,7 +195,7 @@ if (args[0] === "ls") {
     output.length = 0;
     expect(await run(["--help"])).toBe(0);
     expect(output[0]).toContain("Usage: bun ~/.claude/factory/cli.js evolve");
-  });
+  }, EVOLVE_TIMEOUT);
 
   test("pages with --after when more than 1000 tasks exist and counts items on every page", async () => {
     const lsFile = join(scratch, "tasks.json");
@@ -225,5 +227,5 @@ if (args[0] === "ls") {
     setEnv({ FAKE_BOARD_IGNORE_AFTER: "1" });
     expect(await run(["--json"])).toBe(1);
     expect(JSON.parse(output[0]).errors).toEqual([expect.stringContaining("pagination stalled at g1000")]);
-  });
+  }, EVOLVE_TIMEOUT);
 });

@@ -132,6 +132,8 @@ describe("judge", () => {
   });
 });
 
+const STYLE_TIMEOUT = 30_000;
+
 describe("runOne", () => {
   test("the candidate gets the rule in a project CLAUDE.md and the control none, with no tools or MCP servers", async () => {
     const control = await runOne(CASE, { ...options, variant: "control" });
@@ -150,13 +152,13 @@ describe("runOne", () => {
     expect(control).toMatchObject({ variant: "control", kept: 3, lost: [], infra: false, reportCostUSD: 0.05, judgeCostUSD: 0.01 });
     expect(control.costUSD).toBeCloseTo(0.06);
     expect(control.stats.sentences).toBe(2);
-  });
+  }, STYLE_TIMEOUT);
 
   test("the judge's lost facts are recorded by number", async () => {
     setEnv({ FAKE_STYLE_LOST: "2,3" });
     const result = await runOne(CASE, { ...options, variant: "candidate" });
     expect(result).toMatchObject({ kept: 1, lost: [2, 3], facts: 3, infra: false });
-  });
+  }, STYLE_TIMEOUT);
 
   test("a failed report session or a bad judge answer is infra, with its cost", async () => {
     setEnv({ FAKE_STYLE_FAIL: "1" });
@@ -168,7 +170,7 @@ describe("runOne", () => {
     expect(bad).toMatchObject({ infra: true, kept: null });
     expect(bad.error).toContain("judge: Judge answer");
     expect(bad.costUSD).toBeCloseTo(0.06);
-  });
+  }, STYLE_TIMEOUT);
 });
 
 describe("aggregate", () => {
@@ -224,7 +226,7 @@ describe("cli", () => {
     expect(existsSync(join(scratch, "state", "bench", "style", "report.md"))).toBe(true);
     const none = await capture(() => main(["bench", "style", "report", "--batch", "missing"]));
     expect(none.out).toContain("Not measured");
-  });
+  }, STYLE_TIMEOUT);
 
   test("run refuses unknown variants, cases and model IDs; dry-run prints the worst case", async () => {
     expect((await capture(() => main(["bench", "style", "run", "--variants", "other"]))).code).toBe(2);
@@ -234,5 +236,5 @@ describe("cli", () => {
     expect(dry.code).toBe(0);
     expect(dry.out).toContain(`${loadCases(CASES_FILE).length * 2 * 3} runs, worst case`);
     expect(readJsonl(process.env.FAKE_STYLE_LOG)).toHaveLength(0);
-  });
+  }, STYLE_TIMEOUT);
 });

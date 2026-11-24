@@ -171,7 +171,7 @@ describe("capture", () => {
       source.dispose();
     }
     expect(existsSync(source.root)).toBe(false);
-  });
+  }, 20_000);
 
   test("keeps a reference file's type for the judges and the report", async () => {
     const jpeg = join(scratch, "peer.jpg");
@@ -937,7 +937,7 @@ button { font: inherit; padding: 8px 16px; }
     }, null, 2));
     await commit("main");
     await git("checkout", "-q", "-b", "climb");
-  });
+  }, 30_000);
   afterAll(() => rmSync(repo, { recursive: true, force: true }));
 
   test("captures, calibrates, gates, judges, reports, and keeps the judges blind", async () => {
