@@ -593,7 +593,13 @@ describe("Antigravity hook adapter", () => {
                 ? { entries: Object.entries(ci.files).map(([name, text]) => ({ name, type: "blob", object: { text, isTruncated: false } })) }
                 : null,
               baseWorkflows: null,
-              circleci: ci.circleci ? { oid: "c1" } : null,
+              circleci: ci.circleci === false || ci.circleci === null || ci.circleci === undefined
+                ? null
+                : typeof ci.circleci === "string"
+                  ? { text: ci.circleci, isTruncated: false }
+                  : typeof ci.circleci === "object"
+                    ? ci.circleci
+                    : { text: "version: 2.1\nworkflows:\n  build:\n    jobs: [test]\n", isTruncated: false },
             },
           },
         });
@@ -646,6 +652,17 @@ describe("Antigravity hook adapter", () => {
     const missingCircle = callMerge({ number: 12, expectedHeadSha: HEAD }, { ci: { circleci: true } });
     expect(missingCircle.decision).toBe("deny");
     expect(missingCircle.reason).toContain("CircleCI");
+
+    // Opt-in fallback CircleCI config (all workflows gated off by default) -> allow
+    const optInCircle = callMerge(
+      { number: 12, expectedHeadSha: HEAD },
+      {
+        ci: {
+          circleci: "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  github-fallback:\n    when: << pipeline.parameters.run-fallback >>\n    jobs: [test]\n",
+        },
+      },
+    );
+    expect(optInCircle).toEqual({ decision: "allow" });
 
     // Billing-skipped Actions job with passing CircleCI fallback -> allow
     const skippedJob = run("build", "COMPLETED", "FAILURE", {

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyChecks, findMcpMergeViolation, findMergeViolation, globMatches, parseMerge, runGh, runsOnEveryPullRequest } from "./guard-pr-merge.js";
+import { circleciRunsOnPullRequests, classifyChecks, findMcpMergeViolation, findMergeViolation, globMatches, parseMerge, runGh, runsOnEveryPullRequest } from "./guard-pr-merge.js";
 
 const HOOK = join(import.meta.dir, "guard-pr-merge.js");
 
@@ -29,12 +29,32 @@ const graph = (runs, slug = "github-actions") => ({ data: { repository: { object
 
 // The answer to the guard's GraphQL query for the CI configuration: `files` and `baseFiles` map
 // each name in .github/workflows at the head commit and on the base branch to its text (an
-// object: the entry itself), and `circleci` says whether .circleci/config.yml exists.
+// object: the entry itself), and `circleci` is false/null, true (an ungated config), YAML text,
+// or the GraphQL blob object itself.
+const CIRCLECI_DEFAULT = "version: 2.1\nworkflows:\n  build:\n    jobs: [test]\n";
+const CIRCLECI_FALLBACK = [
+  "version: 2.1",
+  "parameters:",
+  "  run-fallback:",
+  "    type: boolean",
+  "    default: false",
+  "workflows:",
+  "  github-fallback:",
+  "    when: << pipeline.parameters.run-fallback >>",
+  "    jobs: [ci-check]",
+  "",
+].join("\n");
+const circleCiBlob = (circleci) => {
+  if (circleci === false || circleci === null || circleci === undefined) return null;
+  if (circleci === true) return { text: CIRCLECI_DEFAULT, isTruncated: false };
+  if (typeof circleci === "string") return { text: circleci, isTruncated: false };
+  return circleci;
+};
 const tree = (files) => (Object.keys(files).length === 0 ? null : { entries: Object.entries(files).map(([name, text]) =>
   (typeof text === "object" ? { name, ...text } : { name, type: "blob", object: { text, isTruncated: false } })) });
 const ciFiles = ({ files = {}, baseFiles = {}, circleci = false, head = HEAD } = {}) => ({ data: { repository: {
   head: head === null ? null : { oid: head }, workflows: tree(files), baseWorkflows: tree(baseFiles),
-  circleci: circleci ? { oid: "c1" } : null } } });
+  circleci: circleCiBlob(circleci) } } });
 const isCiQuery = (args) => args.some((arg) => arg.startsWith("query=") && arg.includes("workflows: object"));
 const PR_WORKFLOW = "name: Checks\non: [push, pull_request]\njobs: {}\n";
 
@@ -608,6 +628,84 @@ describe("CI that runs on every pull request", () => {
     expect(merge({ view: { statusCheckRollup: [context("ci/circleci: build", "SUCCESS")] }, ci: { circleci: true } })).toBeUndefined();
     const app = run("build", "COMPLETED", "SUCCESS", { workflowName: "", detailsUrl: "https://app.circleci.com/pipelines/gh/o/r/1/workflows/w/jobs/1" });
     expect(merge({ view: { statusCheckRollup: [app] }, ci: { circleci: true } })).toBeUndefined();
+    // even if .circleci/config.yml is truncated, a passing CircleCI check already satisfies the guard
+    expect(merge({ view: { statusCheckRollup: [context("ci/circleci: build", "SUCCESS")] }, ci: { circleci: { text: "", isTruncated: true } } })).toBeUndefined();
+  });
+
+  // On-demand fallback configs like syz51/email-agent gate every workflow off by default (board-feedback-1237).
+  describe("CircleCI opt-in fallback evaluation", () => {
+    test.each([
+      ["absent blob", null, false],
+      ["email-agent on-demand fallback", CIRCLECI_FALLBACK, false],
+      ["no spaces inside parameter brackets", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  fb:\n    when: <<pipeline.parameters.run-fallback>>\n    jobs: [test]\n", false],
+      ["literal when: false", "version: 2.1\nworkflows:\n  off:\n    when: false\n    jobs: [test]\n", false],
+      ["when: and with a false term and a dynamic branch term", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  fb:\n    when:\n      and:\n        - << pipeline.parameters.run-fallback >>\n        - equal: [main, << pipeline.git.branch >>]\n    jobs: [test]\n", false],
+      ["when: equal false against string default", "version: 2.1\nparameters:\n  mode:\n    type: string\n    default: off\nworkflows:\n  fb:\n    when:\n      equal: [fallback, << pipeline.parameters.mode >>]\n    jobs: [test]\n", false],
+      ["when: equal false against enum default", "version: 2.1\nparameters:\n  mode:\n    type: enum\n    enum: [off, fallback]\n    default: off\nworkflows:\n  fb:\n    when:\n      equal: [fallback, << pipeline.parameters.mode >>]\n    jobs: [test]\n", false],
+      ["when: equal false against integer default", "version: 2.1\nparameters:\n  level:\n    type: integer\n    default: 0\nworkflows:\n  fb:\n    when:\n      equal: [1, << pipeline.parameters.level >>]\n    jobs: [test]\n", false],
+      ["when: or of false terms", "version: 2.1\nparameters:\n  a:\n    type: boolean\n    default: false\nworkflows:\n  fb:\n    when:\n      or:\n        - false\n        - << pipeline.parameters.a >>\n    jobs: [test]\n", false],
+      ["when: not true", "version: 2.1\nparameters:\n  skip:\n    type: boolean\n    default: true\nworkflows:\n  fb:\n    when:\n      not: << pipeline.parameters.skip >>\n    jobs: [test]\n", false],
+      ["unless: true", "version: 2.1\nparameters:\n  skip:\n    type: boolean\n    default: true\nworkflows:\n  fb:\n    unless: << pipeline.parameters.skip >>\n    jobs: [test]\n", false],
+      ["unless: not default-false parameter", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  fb:\n    unless:\n      not: << pipeline.parameters.run-fallback >>\n    jobs: [test]\n", false],
+      ["workflows.version ignored alongside gated workflows", "version: 2.1\nparameters:\n  a:\n    type: boolean\n    default: false\nworkflows:\n  version: 2\n  fb1:\n    when: << pipeline.parameters.a >>\n    jobs: [a]\n  fb2:\n    when: false\n    jobs: [b]\n", false],
+      // normal / active configs must continue expecting CircleCI
+      ["ungated workflow", CIRCLECI_DEFAULT, true],
+      ["default-true parameter", "version: 2.1\nparameters:\n  run-ci:\n    type: boolean\n    default: true\nworkflows:\n  ci:\n    when: << pipeline.parameters.run-ci >>\n    jobs: [test]\n", true],
+      ["mixed gated and ungated workflows", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  fallback:\n    when: << pipeline.parameters.run-fallback >>\n    jobs: [a]\n  always:\n    jobs: [b]\n", true],
+      ["when: equal true", "version: 2.1\nparameters:\n  mode:\n    type: string\n    default: ci\nworkflows:\n  ci:\n    when:\n      equal: [ci, << pipeline.parameters.mode >>]\n    jobs: [test]\n", true],
+      ["when: or with dynamic term", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  ci:\n    when:\n      or:\n        - << pipeline.parameters.run-fallback >>\n        - equal: [main, << pipeline.git.branch >>]\n    jobs: [test]\n", true],
+      ["unless: false", "version: 2.1\nworkflows:\n  ci:\n    unless: false\n    jobs: [test]\n", true],
+      // fail-closed cases
+      ["truncated blob", { text: CIRCLECI_FALLBACK, isTruncated: true }, true],
+      ["binary / null text blob", { text: null, isTruncated: false }, true],
+      ["non-blob object without text", { oid: "c1" }, true],
+      ["invalid YAML", "workflows: [\n", true],
+      ["non-mapping YAML", "- workflows\n", true],
+      ["legacy v2.0 config without workflows", "version: 2\njobs:\n  build:\n    docker: [{ image: cimg/base:stable }]\n", true],
+      ["empty workflows with version only", "version: 2.1\nworkflows:\n  version: 2\n", true],
+      ["undeclared parameter", "version: 2.1\nworkflows:\n  fb:\n    when: << pipeline.parameters.missing >>\n    jobs: [test]\n", true],
+      ["parameter without default", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\nworkflows:\n  fb:\n    when: << pipeline.parameters.run-fallback >>\n    jobs: [test]\n", true],
+      ["parameter default type mismatch", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: 'false'\nworkflows:\n  fb:\n    when: << pipeline.parameters.run-fallback >>\n    jobs: [test]\n", true],
+      ["string parameter in boolean when position", "version: 2.1\nparameters:\n  empty:\n    type: string\n    default: ''\nworkflows:\n  fb:\n    when: << pipeline.parameters.empty >>\n    jobs: [test]\n", true],
+      ["unknown when operator (matches)", "version: 2.1\nworkflows:\n  fb:\n    when:\n      matches:\n        pattern: '^release$'\n        value: << pipeline.git.branch >>\n    jobs: [test]\n", true],
+      ["both when and unless present", "version: 2.1\nworkflows:\n  fb:\n    when: false\n    unless: true\n    jobs: [test]\n", true],
+      ["non-mapping parameters", "version: 2.1\nparameters: [bad]\nworkflows:\n  fb:\n    when: false\n    jobs: [test]\n", true],
+      ["empty file", "", true],
+      ["when nesting exceeding depth limit", `version: 2.1\nworkflows:\n  fb:\n    when: ${"{ not: ".repeat(22)}false${" }".repeat(22)}\n    jobs: [test]\n`, true],
+    ])("%s -> expects CircleCI: %p", (_, input, expected) => {
+      const blob = input === null ? null : typeof input === "string" ? { text: input, isTruncated: false } : input;
+      expect(circleciRunsOnPullRequests(blob)).toBe(expected);
+    });
+
+    test("allows merge when CircleCI only has an opt-in fallback workflow and Actions checks pass", () => {
+      const calls = [];
+      expect(verdict(pinned("gh pr merge 12"), {
+        view: { statusCheckRollup: [CHECKS] },
+        ci: { files: { "checks.yml": PR_WORKFLOW }, circleci: CIRCLECI_FALLBACK },
+        calls,
+      })).toBeUndefined();
+      const ciQuery = calls[1].args.find((arg) => arg.startsWith("query="));
+      expect(ciQuery).toContain("circleci: object(expression: $circleci) { ... on Blob { text isTruncated } }");
+      // MCP pull_request_merge shares the same logic
+      expect(findMcpMergeViolation(
+        { number: 12, expectedHeadSha: HEAD },
+        "/repo",
+        fakeGh({ view: { statusCheckRollup: [CHECKS] }, ci: { files: { "checks.yml": PR_WORKFLOW }, circleci: CIRCLECI_FALLBACK } }),
+      )).toBeUndefined();
+    });
+
+    test.each([
+      ["normal ungated workflow", CIRCLECI_DEFAULT],
+      ["default-true parameter", "version: 2.1\nparameters:\n  run-ci:\n    type: boolean\n    default: true\nworkflows:\n  ci:\n    when: << pipeline.parameters.run-ci >>\n    jobs: [test]\n"],
+      ["mixed gated and ungated workflows", "version: 2.1\nparameters:\n  run-fallback:\n    type: boolean\n    default: false\nworkflows:\n  fallback:\n    when: << pipeline.parameters.run-fallback >>\n    jobs: [a]\n  always:\n    jobs: [b]\n"],
+      ["truncated config", { text: CIRCLECI_FALLBACK, isTruncated: true }],
+      ["empty config file", ""],
+      ["invalid YAML", "workflows: [\n"],
+      ["unknown when expression", "version: 2.1\nworkflows:\n  ci:\n    when: << pipeline.git.branch >>\n    jobs: [test]\n"],
+    ])("blocks merge until CircleCI reports for %s", (_, circleci) => {
+      expect(merge({ view: { statusCheckRollup: [CHECKS] }, ci: { files: { "checks.yml": PR_WORKFLOW }, circleci } }))
+        .toContain("no check yet from CircleCI");
+    });
   });
 
   test("passes two workflows of the same name once each has a workflow run", () => {
