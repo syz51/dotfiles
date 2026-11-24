@@ -5,7 +5,8 @@
 // failed check, or with no check yet from CI that runs on every pull request: an Actions workflow
 // whose pull_request trigger, at the head commit, or pull_request_target trigger, on the base
 // branch, has no branch, path or type filter, and CircleCI where .circleci/config.yml exists at
-// the head commit; one GraphQL call reads those files. A workflow with a filtered trigger is not
+// the head commit unless every workflow is statically gated off under its default parameters;
+// one GraphQL call reads those files. A workflow with a filtered trigger is not
 // expected, so its check can still arrive after the merge. A workflow that Actions lists as
 // disabled is not expected either. --auto
 // passes when the base branch requires status checks and gh will enable auto-merge rather than
@@ -64,8 +65,8 @@ const FAILED_RUNS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjec
       checkRuns(first: 30, filterBy: {checkType: ALL, conclusions: [FAILURE]}) { nodes {
         databaseId steps(first: 1) { totalCount } annotations(first: 10) { totalCount nodes { path message annotationLevel } } } } } } } } } }`;
 // The CI configuration: each file in .github/workflows, with its text, at the head commit and on
-// the base branch, which pull_request_target runs its workflows from, and whether
-// .circleci/config.yml exists at the head commit. `head` confirms the commit was found.
+// the base branch, which pull_request_target runs its workflows from, and .circleci/config.yml
+// at the head commit with its text. `head` confirms the commit was found.
 const WORKFLOW_DIR = ".github/workflows";
 const CIRCLECI_CONFIG = ".circleci/config.yml";
 const WORKFLOW_FILES = "... on Tree { entries { name type object { ... on Blob { text isTruncated } } } }";
@@ -73,11 +74,13 @@ const CI_FILES_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID
   repository(owner: $owner, name: $name) { head: object(oid: $oid) { oid }
     workflows: object(expression: $workflows) { ${WORKFLOW_FILES} }
     baseWorkflows: object(expression: $baseWorkflows) { ${WORKFLOW_FILES} }
-    circleci: object(expression: $circleci) { oid } } }`;
+    circleci: object(expression: $circleci) { ... on Blob { text isTruncated } } } }`;
 const PR_EVENTS = ["pull_request", "pull_request_target"];
 // CircleCI reports a commit status named ci/circleci: <job>, or, through its GitHub App, check
 // runs that link to its site.
 const CIRCLECI_RUN = /^https:\/\/(?:[\w-]+\.)*circleci\.com\//;
+const CIRCLECI_PARAM = /^<<\s*pipeline\.parameters\.([A-Za-z0-9_-]+)\s*>>$/;
+const MAX_CIRCLECI_WHEN_DEPTH = 20;
 // A workflow with one of these under its pull request trigger may not run on a given pull
 // request; the guard does not evaluate them, so it does not expect a check from it.
 const PR_FILTERS = ["paths", "paths-ignore", "branches", "branches-ignore", "types"];
@@ -313,14 +316,138 @@ function readWorkflows(tree, where) {
   return workflows;
 }
 
+const isPlainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * Maps each declared CircleCI pipeline parameter with a typed default value to that default.
+ * Returns null if `parameters` is present but not a YAML mapping.
+ */
+function circleCiParameterDefaults(parameters) {
+  const defaults = new Map();
+  if (parameters === undefined || parameters === null) return defaults;
+  if (!isPlainObject(parameters)) return null;
+  for (const [name, spec] of Object.entries(parameters)) {
+    if (!isPlainObject(spec) || !Object.hasOwn(spec, "default")) continue;
+    const { type, default: value } = spec;
+    if (type === "boolean" && typeof value === "boolean") defaults.set(name, value);
+    else if (type === "string" && typeof value === "string") defaults.set(name, value);
+    else if (type === "integer" && typeof value === "number" && Number.isInteger(value)) defaults.set(name, value);
+    else if (type === "enum" && typeof value === "string" && Array.isArray(spec.enum) && spec.enum.includes(value)) defaults.set(name, value);
+  }
+  return defaults;
+}
+
+/** Resolves a static scalar or declared `<< pipeline.parameters.<name> >>` reference, else undefined. */
+function resolveCircleCiValue(value, defaults) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const match = CIRCLECI_PARAM.exec(value);
+    if (match) return defaults.has(match[1]) ? defaults.get(match[1]) : undefined;
+    if (value.includes("<<") || value.includes(">>")) return undefined;
+    return value;
+  }
+  return undefined;
+}
+
+/**
+ * Evaluates a CircleCI 2.1 workflow `when`/`unless` logic statement under default pipeline
+ * parameters using three-valued logic: returns true, false, or undefined when indeterminate.
+ */
+function evalCircleCiCondition(expr, defaults, depth = 0) {
+  if (depth > MAX_CIRCLECI_WHEN_DEPTH) return undefined;
+  if (typeof expr === "boolean") return expr;
+  if (typeof expr === "string") {
+    const match = CIRCLECI_PARAM.exec(expr);
+    if (!match) return undefined;
+    const value = defaults.get(match[1]);
+    return typeof value === "boolean" ? value : undefined;
+  }
+  if (!isPlainObject(expr)) return undefined;
+  const keys = Object.keys(expr);
+  if (keys.length !== 1) return undefined;
+  const [key] = keys;
+  const operand = expr[key];
+  if (key === "not") {
+    const value = evalCircleCiCondition(operand, defaults, depth + 1);
+    return value === undefined ? undefined : !value;
+  }
+  if (key === "and") {
+    if (!Array.isArray(operand) || operand.length === 0) return undefined;
+    let hasUnknown = false;
+    for (const item of operand) {
+      const value = evalCircleCiCondition(item, defaults, depth + 1);
+      if (value === false) return false;
+      if (value === undefined) hasUnknown = true;
+    }
+    return hasUnknown ? undefined : true;
+  }
+  if (key === "or") {
+    if (!Array.isArray(operand) || operand.length === 0) return undefined;
+    let hasUnknown = false;
+    for (const item of operand) {
+      const value = evalCircleCiCondition(item, defaults, depth + 1);
+      if (value === true) return true;
+      if (value === undefined) hasUnknown = true;
+    }
+    return hasUnknown ? undefined : false;
+  }
+  if (key === "equal") {
+    if (!Array.isArray(operand) || operand.length < 2) return undefined;
+    let first;
+    let hasUnknown = false;
+    for (const item of operand) {
+      const resolved = resolveCircleCiValue(item, defaults);
+      if (resolved === undefined) hasUnknown = true;
+      else if (first === undefined) first = resolved;
+      else if (resolved !== first) return false;
+    }
+    return hasUnknown ? undefined : true;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a .circleci/config.yml blob (`{ text, isTruncated }`) can run a workflow on ordinary
+ * pull requests under its declared default pipeline parameters. Returns false only when the file
+ * is absent, or when it parses as a YAML mapping with at least one workflow and every workflow is
+ * statically gated off (`when` evaluates to false or `unless` evaluates to true). Fails closed
+ * (returns true) when truncated, unreadable, invalid YAML, legacy v2.0 without `workflows`, or
+ * when any workflow is ungated or indeterminate.
+ */
+export function circleciRunsOnPullRequests(blob) {
+  if (!blob) return false;
+  if (typeof blob.text !== "string" || blob.isTruncated) return true;
+  let config;
+  try {
+    config = Bun.YAML.parse(blob.text);
+  } catch {
+    return true;
+  }
+  if (!isPlainObject(config) || !isPlainObject(config.workflows)) return true;
+  const defaults = circleCiParameterDefaults(config.parameters);
+  if (defaults === null) return true;
+  const workflows = Object.entries(config.workflows).filter(([name, value]) => !(name === "version" && !isPlainObject(value)));
+  if (workflows.length === 0) return true;
+  for (const [, workflow] of workflows) {
+    if (!isPlainObject(workflow)) return true;
+    const hasWhen = Object.hasOwn(workflow, "when");
+    const hasUnless = Object.hasOwn(workflow, "unless");
+    if (hasWhen === hasUnless) return true;
+    if (hasWhen && evalCircleCiCondition(workflow.when, defaults) !== false) return true;
+    if (hasUnless && evalCircleCiCondition(workflow.unless, defaults) !== true) return true;
+  }
+  return false;
+}
+
 /**
  * The CI the head commit `oid` should have a check from, but has none in `rollup`: each Actions
  * workflow that runs on every pull request, from the head commit for pull_request and from base
  * branch `base` for pull_request_target, and CircleCI, when .circleci/config.yml exists at the
- * head commit. A workflow is named by its `name:`, else its path; where several expected
- * workflows share a name, each needs its own workflow run. One GraphQL call reads the files.
- * Only when a workflow is missing, a REST call reads the workflows' states, so one that is
- * disabled in Actions is not expected.
+ * head commit and can run a workflow under its default parameters. A workflow is named by its
+ * `name:`, else its path; where several expected workflows share a name, each needs its own
+ * workflow run. One GraphQL call reads the files. Only when a workflow is missing, a REST call
+ * reads the workflows' states, so one that is disabled in Actions is not expected.
  */
 function missingCi(query, dir, api, repo, owner, name, oid, base, rollup) {
   const answer = query(dir, [...api, "graphql", "-f", `query=${CI_FILES_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`,
@@ -352,7 +479,7 @@ function missingCi(query, dir, api, repo, owner, name, oid, base, rollup) {
   const names = missing.map((workflowName) => `workflow "${workflowName}"`);
   const circleci = (check) => (check.__typename === "StatusContext" && check.context?.startsWith("ci/circleci"))
     || (check.__typename === "CheckRun" && CIRCLECI_RUN.test(check.detailsUrl ?? ""));
-  if (repository.circleci && !rollup.some(circleci)) names.push("CircleCI");
+  if (repository.circleci && !rollup.some(circleci) && circleciRunsOnPullRequests(repository.circleci)) names.push("CircleCI");
   return names;
 }
 

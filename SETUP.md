@@ -334,7 +334,7 @@ check is a failed Actions job. It adds about 0.75 seconds and costs about 12 Gra
 points. It filters by github.com's Actions app, so on another host such jobs stay failed. Once no
 check is pending or failed, the guard expects a check from the CI that runs on every pull
 request. One GraphQL call reads each file in `.github/workflows` at the head commit and on
-the base branch, and whether `.circleci/config.yml` exists at the head commit; `Bun.YAML`
+the base branch, and `.circleci/config.yml` at the head commit; `Bun.YAML`
 parses the workflows. A workflow is expected when its `on:` has `pull_request`, at the head
 commit, or `pull_request_target`, on the base branch that GitHub runs it from, with no
 `paths`, `paths-ignore`, `branches`, `branches-ignore` or `types` filter, in string, list or
@@ -343,8 +343,10 @@ workflow's `name:`, or its path where it has none. Workflows that share a name n
 workflow run each. Only when one is missing does a REST call list the repository's
 workflows, and one that Actions lists as disabled is not expected. With
 `.circleci/config.yml`, it refuses until a `ci/circleci` status context, or a check run
-that links to circleci.com, appears; a configured repository that CircleCI does not build
-stays refused. So a head
+that links to circleci.com, appears, unless every workflow in `workflows:` is statically
+gated off under its declared default pipeline parameters (truncated, unparseable, legacy,
+ungated, or indeterminate configs fail closed and keep expecting CircleCI); a configured
+repository that CircleCI does not build stays refused. So a head
 commit without checks passes where no workflow runs on pull requests, such as
 dispatch-, push-, schedule- or tag-only workflows, and a fast third-party status no longer
 lets a merge pass before the Actions runs appear. A workflow with a filtered pull request

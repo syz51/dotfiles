@@ -60,7 +60,7 @@
 
 ### Merging pull requests
 
-- The `guard-pr-merge` hook refuses `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed (except `--auto` where the base branch requires checks). It also waits for each always-on `pull_request`/`pull_request_target` workflow and CircleCI (where `.circleci/config.yml` exists), passing only when no CI is configured.
+- The `guard-pr-merge` hook refuses `gh pr merge` with `--admin`, on a draft, or before every check on the head commit has passed (except `--auto` where the base branch requires checks). It also waits for each always-on `pull_request`/`pull_request_target` workflow and CircleCI (where `.circleci/config.yml` exists unless every workflow is statically gated off by default), passing only when no CI is configured.
 - Pin every direct merge to the checked head commit: `gh pr merge <number> --match-head-commit <SHA>` (GitHub rejects if a newer commit was pushed). An `--auto` merge where the base branch requires checks needs no pin.
 - Before acting on a PR watch notice, compare its commit with `gh pr view <number> --json headRefOid,state` (notices can be for an old head or an already-merged PR).
 - When a PR is `BEHIND` a base branch that requires checks, run `gh pr update-branch`, then as a separate command `gh pr merge --auto` with a merge-method flag, and watch with `watch_pull_request`. Auto-merge can lag a minute or two after checks pass; if the PR still sits `CLEAN`, merge directly.
