@@ -5,8 +5,10 @@
 #
 # The list is by file kind, never by repository: no repository skips review. Globs match
 # paths relative to the repository root (Bun.Glob syntax). A file on the list is
-# generated or binary, so a diff review has nothing to read in it. Tune the list here at
-# any time. A change applies to sessions scored afterwards; to rescore past sessions,
+# generated or binary, so a diff review has nothing to read in it. Widening this list
+# needs the user's approval through `ask_user` and a `Loosens:` line in the commit
+# message and PR body. A change applies to sessions scored afterwards; to rescore past
+# sessions,
 # bump the version in rubric.json. The repository is public, so name only paths, never
 # hosts, logins or private contents.
 

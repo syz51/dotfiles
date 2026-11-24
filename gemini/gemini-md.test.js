@@ -114,6 +114,9 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     for (const reason of reasons) {
       expect(geminiMd).toContain(`- \`${reason}\`:`);
     }
+    expect(geminiMd).toContain(
+      "Put any change that loosens a guard, cap, budget, threshold, or allowlist in the commit message and PR body under `Loosens:` and in your report to the user.",
+    );
   });
 
   test("lists all 12 global skills matching SKILLS_CATALOG.md and keeps frontend-avoid unconditional", () => {

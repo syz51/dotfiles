@@ -21,6 +21,9 @@ step yourself, without agents.
   it, read a file as the commit has it: `git show <commit>:<path>`.
 - Read the function around each hunk, not only the hunk. A defect in an unchanged line of
   a changed function is in scope.
+- Read the branch's commit messages with `git log --right-only --format=%B <target>`
+  (and `gh pr view` when a PR exists) when checking whether a weakened guarantee carries
+  a `Loosens:` line.
 
 ## 2. Look from each angle
 
@@ -31,8 +34,12 @@ can name. Keep a candidate you only half believe; drop one with no nameable fail
    wrong: an inverted or wrong condition, off-by-one, a missing `await`, a null or empty
    value, a falsy zero, the wrong variable, a swallowed error, an unescaped pattern.
 2. **Removed behavior.** For each line the diff deletes or replaces, name what it
-   guaranteed: a guard, an error path, a validation, a test of a real case. Find where
-   the new code gives the same guarantee. A guarantee with no new home is a candidate.
+   guaranteed: a guard, an error path, a validation, a cap or limit, an allowlist, or a
+   test of a real case. A raised limit, cap, budget or threshold, a widened allowlist, or
+   a deleted or relaxed assertion is a weakened guarantee. Find where the new code gives
+   the same guarantee. A weakened guarantee with no new home is a candidate; report it as
+   a finding unless the PR body (or a commit message in the range when no PR exists yet)
+   has a `Loosens:` line for it.
 3. **Callers and callees.** Search for the callers of each changed function, command,
    option, file format and text that other code matches. Check each against the change:
    a new precondition, a changed return shape or wording, a new error, a changed order.
