@@ -1372,6 +1372,18 @@ describe("rules the live suites test", () => {
     expect(section("Delegation")).toMatch(/Don't use subagents to verify your own work beyond the Review section's `reviewer` agent/);
   });
 
+  // T3's orchestration guidance forbids background Agents and points background runs at
+  // delegate_task, which contradicted review.md; T3 restarts also cancelled running reviewers
+  // and sessions tried to pass the reviewer's id to t3_background_wait (board-feedback-757,
+  // dotfiles-791). Keep the reviewer as the one sanctioned background Agent exception, note
+  // how its result arrives, and resume a restart-cancelled reviewer before starting another.
+  test("Review reconciles the background reviewer with T3's no-background-Agent guidance", () => {
+    const review = referenceRules("review");
+    expect(review).toContain('The `reviewer` is the one sanctioned exception to T3\'s "never a background Agent" guidance.');
+    expect(review).toContain("Its result arrives as a task notification; `t3_background_wait` does not take its id.");
+    expect(review).toContain("When a T3 restart note lists the reviewer as cancelled, resume it with `SendMessage` to its id; do not start a new review unless resuming fails.");
+  });
+
   // The reviewer does the whole review itself from one skill: read-only, the diff pinned
   // to the commit, and findings in the shape ReportFindings and factory metrics take.
   test("the diff-review skill gives the reviewer its recipe and its findings' shape", () => {
