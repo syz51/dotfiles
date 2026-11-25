@@ -1,0 +1,13 @@
+# User-wide Kache configuration, loaded from ~/.config/kache/config.toml
+# (SETUP.md, "Rust build size").
+
+[cache]
+# Record miss causes so `kache explain` works without re-running a build.
+explain_miss = true
+# Keep Blaze routing off until Kache supports Blaze v2's CLI and Blaze v2
+# ships a self-contained toolchain installer.
+blaze = false
+# Work around kache-engine v2.3.1 leaking an exclusive `.cargo-lock` FD in the
+# daemon when background target seeding or sharing runs alongside Cargo.
+seed_new_targets = false
+auto_share_target_files = false
