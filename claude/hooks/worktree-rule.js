@@ -26,12 +26,14 @@ export function claudeWorktree(path) {
 export function rule(worktree, { entered = false } = {}) {
   const lines = [
     `Worktree isolation: Claude Code refuses each Bash command that it cannot verify stays in ${worktree}. No setting turns this off. It refuses these forms, though the simplest case of one sometimes passes; write around them, and never hide a refused command in a script:`,
-    "- git, gitleaks or the word git inside a loop, `$(…)` or heredoc, or next to a `$variable` or `$?`. Run git with literal arguments, alone or joined to plain commands with && or |.",
+    "- The text `git` anywhere in the command — even inside a file, URL or repo name (`guard-git-push.js`, `github.com`, `gitleaks`) — inside a loop, `$(…)`, heredoc, `<(…)`, `sh -c` or `xargs … git`, next to a `$variable`, `$?`, shell glob or `VAR=$x` prefix (`PATH=$PATH:…`, `GIT_TRACE=$v`), or after `cd` to a `$variable` or `$(…)` path. Backticks count as `$(…)` and `${…}` as a `$variable`, also inside quoted text. Run git alone in its own plain call with literal arguments (no `&&`, `|` or `;` joins); when a command only names git in a path or URL, use literal paths with no `$` or globs (e.g. `rg -g '*.ts'`), or a scratch copy whose name lacks git.",
+    "- Heredoc file writes and heredoc scripts (`cat > f <<'EOF'`, `uv run python - <<'EOF'`), even with a plain body, are often refused, as are `<(…)` process substitutions and Bash writes outside the worktree (the scratchpad included). Write the file or script with the Write tool, then run it by literal path in its own plain call.",
+    "- A compound command that chains file writes (`sed -i`, `>` or `printf >` redirects, heredocs) with other steps. Change files with Edit or Write, run checks in their own plain call, and never run a dependent Bash call in parallel with one that may be refused.",
     "- A program that runs code, such as sed, bash or bun, given a `$variable` or `$(…)` value. Give it literal paths and text.",
     "- The word eval anywhere, even in a quoted grep pattern. Write the pattern as `ev[a]l`.",
     "- git, `git -C` or `cd` aimed at another checkout. Do that work from a session or delegate started there.",
     "- `gitleaks git`. Write the diff to a scratch file in its own call, then run `gitleaks dir <file>`.",
-    "Loops, pipes, heredocs, `cd` and `VAR=value cmd` pass without these forms. For a poll, use a loop of plain commands with no git word, such as `until gh pr checks 12; do sleep 30; done`, or the Monitor tool.",
+    "Plain loops, pipes, literal `cd` inside the worktree and literal `VAR=value cmd` pass without these forms. For a poll, prefer the Monitor tool; if using a loop, run plain commands with no git word in the background rather than a foreground `sleep`.",
   ];
   if (entered) lines.push("Subagents started before EnterWorktree stay outside the worktree, and the guard refuses their Bash calls: stop them and start them again.");
   return lines.join("\n");
