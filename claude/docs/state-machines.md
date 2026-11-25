@@ -1591,24 +1591,24 @@ Sources: the `e5-scripts_r2_machines-2.md` record (round 2) and the `e5-scripts_
   - listed -> locked: lock files are listed before the locks are taken. Enforced at `disk-alert/disk_space_alert.py:630-631`.
   - unreadable snapshot -> step ends. Enforced at `disk-alert/disk_space_alert.py:476-477`, `:288`.
   - `removable` error -> skipped. Enforced at `disk-alert/disk_space_alert.py:638-641`.
-  - sweeper -> sweeper: no lock between runs. Enforced at `disk-alert/disk_space_alert.py:948`.
+  - sweeper -> sweeper: non-blocking `sweep.lock` skips overlapping runs (`sweep_skipped` / `daily_skipped`). Enforced at `disk-alert/disk_space_alert.py` (`sweep_lock`, `run_check`, `run_sweep`, `run_daily`).
 - Gaps:
   - DA-G3: a write to the scratch folder or a subagent transcript during the process check is missed, and the folder is removed. Verdict: confirmed (round 1 run). Evidence: round 1 output: `scratch-write {"folder_exists": false ...}`, `subagent-write {"folder_exists": false ...}`; control `folder_exists: true`. Task: note on dotfiles-437 (#6789).
-  - DA-G4: two sweepers can run at once. The second removes the folder and the first exits 1. Verdict: confirmed (round 1 run). Evidence: r2 P23, round 1 output: `nested-session {"events": ["swept", "swept"], "first_exit": 1 ...}`. Task: dotfiles-643.
+  - DA-G4: resolved by `sweep_lock` (`fcntl.flock` on `sweep.lock` in `state_dir`), which skips overlapping `check`/`sweep`/`daily` runs cleanly instead of racing. Originally dotfiles-643.
   - DA-G5: an unreadable process list ends the sessions step with no event, and the targets step returns with no record. Verdict: confirmed (round 1 run). Evidence: r2 P27, round 1 output: sessions `{"events": ["escalated"], "folder_exists": true}`; targets `{"swept": [], "target_built": true}`. Task: dotfiles-647.
   - DA-G6: an OSError from `removable()` is skipped with no record. Verdict: confirmed (by mock; the real trigger is a race only). Evidence: r2 P27, round 1 output: `removable-raises {"failures": [], "swept": []}`; the control sweeps. Task: dotfiles-647.
   - DA-G8: a build that starts after the lock listing and before the lock is taken loses its release folder. Verdict: confirmed (round 1 run). Evidence: round 1 output: control `release_lock_left: true`; race `release_folder_left: false`. Task: note on dotfiles-437 (#6789).
-- Tests: `disk-alert/tests/test_disk_space_alert.py:304` (idle removed), `:337` (running kept), `:473` (time limit), `:655` (held build lock), `:710` (unreadable registry). Not pinned: DA-G3, DA-G4, DA-G5 (no event), DA-G6.
+- Tests: `disk-alert/tests/test_disk_space_alert.py:304` (idle removed), `:337` (running kept), `:473` (time limit), `:655` (held build lock), `:710` (unreadable registry), `DailyCacheAndLaunchAgentTest.test_sweep_lock_skips_overlapping_daily_run` (DA-G4). Not pinned: DA-G3, DA-G5 (no event), DA-G6.
 
 ### disk-alert LaunchAgent install
 
-- Where: `disk-alert/disk_space_alert.py:993`, `:997-1028`, `:1031-1052`; `disk-alert/tests/test_disk_space_alert.py:853-873`
+- Where: `disk-alert/disk_space_alert.py` (`plist_path`, `daily_plist_path`, `launch_agent`, `daily_launch_agent`, `install_plist`, `run_install`, `run_install_daily`); `disk-alert/tests/test_disk_space_alert.py` (`LaunchAgentTest`, `DailyCacheAndLaunchAgentTest`)
 - States: plist absent; plist written; unloaded; loaded
 - Transitions:
-  - plist written (1044) -> bootout (1046, rc ignored) -> bootstrap (1047); a failed bootstrap exits 1. Enforced at `disk-alert/disk_space_alert.py:1044-1050`.
+  - plist written -> bootout (rc ignored) -> bootstrap; a failed bootstrap unlinks the plist and exits 1. Enforced in `install_plist`.
 - Gaps:
-  - DA-G9: a failed bootstrap leaves the plist and an unloaded agent. The unloaded state follows from launchctl semantics; no real launchctl ran. Verdict: confirmed (round 1 run). Evidence: r2 P24, round 1 output: calls `bootout` then `bootstrap`; `"exit": 1, "plist_written": true`. Task: dotfiles-644.
-- Tests: `disk-alert/tests/test_disk_space_alert.py:853`, `:873`. No bootstrap-failure case.
+  - DA-G9: resolved in `install_plist`, which unlinks the written plist if `launchctl bootstrap` fails. Originally dotfiles-644.
+- Tests: `LaunchAgentTest` and `DailyCacheAndLaunchAgentTest.test_daily_launch_agent_and_install_cleanup_on_bootstrap_failure`.
 
 ### vimtex tectonic build on save
 

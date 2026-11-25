@@ -27,6 +27,9 @@ alert.DEFAULT_CLAUDE_TMP = Path(SANDBOX.name) / "claude-tmp"
 alert.DEFAULT_CLAUDE_PROJECTS = Path(SANDBOX.name) / "projects"
 alert.DEFAULT_CLAUDE_SESSIONS = Path(SANDBOX.name) / "sessions"
 alert.DEFAULT_WORKTREES = Path(SANDBOX.name) / "worktrees"
+alert.DEFAULT_T3_DB = Path(SANDBOX.name) / "statev2.sqlite"
+alert.DEFAULT_BUN_CACHE = Path(SANDBOX.name) / "bun-cache"
+alert.DEFAULT_PLAYWRIGHT_CACHE = Path(SANDBOX.name) / "ms-playwright"
 
 NOW = datetime(2026, 11, 7, 12, 0, tzinfo=timezone.utc)
 THREAD = "mcp:11111111-2222-3333-4444-555555555555"
@@ -1041,6 +1044,455 @@ class CommandLineTest(unittest.TestCase):
     def test_critical_must_be_below_low(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             alert.main(["check", "--low-gb", "20", "--critical-gb", "30"])
+
+
+def init_t3_db(db_path: Path, threads=(), runs=(), requests=()):
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE orchestration_v2_projection_threads (
+                thread_id TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE orchestration_v2_projection_runs (
+                run_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE orchestration_v2_projection_runtime_requests (
+                request_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+            """
+        )
+        for tid, wt, updated_at in threads:
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_threads VALUES (?, ?, ?)",
+                (tid, json.dumps({"worktreePath": str(wt)}), updated_at),
+            )
+        for rid, tid, status in runs:
+            conn.execute("INSERT INTO orchestration_v2_projection_runs VALUES (?, ?, ?)", (rid, tid, status))
+        for qid, tid, status in requests:
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_runtime_requests VALUES (?, ?, ?)",
+                (qid, tid, status),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class DailyWorktreeSweepTest(unittest.TestCase):
+    """Real git repository + linked worktrees + read-only T3 SQLite DB."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.origin = self.root / "origin.git"
+        self.repo = self.root / "repo"
+        self.worktrees = self.root / "worktrees"
+        self.db_path = self.root / "statev2.sqlite"
+        self.now = datetime.now(timezone.utc) + timedelta(days=5)
+        self.old_iso = (self.now - timedelta(days=3)).isoformat()
+        self.recent_iso = (self.now - timedelta(hours=2)).isoformat()
+        self.git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+            "GIT_AUTHOR_DATE": "2026-11-01T00:00:00Z",
+            "GIT_COMMITTER_DATE": "2026-11-01T00:00:00Z",
+        }
+        self._git(self.root, "init", "--bare", "-b", "main", str(self.origin))
+        self._git(self.root, "clone", str(self.origin), str(self.repo))
+        (self.repo / "README.md").write_text("hello\n")
+        (self.repo / ".gitignore").write_text(".env\n.env.*\n!.env.example\ntarget/\n")
+        (self.repo / ".env.example").write_text("KEY=value\n")
+        self._git(self.repo, "add", ".")
+        self._git(self.repo, "commit", "-m", "initial")
+        self._git(self.repo, "push", "-u", "origin", "main")
+        self._git(self.repo, "remote", "set-head", "origin", "main")
+        init_t3_db(self.db_path)
+        self.config = replace(
+            CONFIG,
+            state_dir=self.root / "state",
+            worktrees=self.worktrees,
+            t3_db=self.db_path,
+            search_path="",
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _git(self, cwd: Path, *args: str):
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args],
+            env=self.git_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def add_worktree(self, name: str, ref: str = "HEAD", detach: bool = True, branch: str | None = None) -> Path:
+        path = self.worktrees / "repo" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if branch is not None:
+            self._git(self.repo, "worktree", "add", "-b", branch, str(path), ref)
+        elif detach:
+            self._git(self.repo, "worktree", "add", "--detach", str(path), ref)
+        else:
+            self._git(self.repo, "worktree", "add", str(path), ref)
+        return path
+
+    def make_runner(self, ps="/sbin/launchd\n", lsof="p1\nn/\n"):
+        def run(args, input_text):
+            if args[0] == "ps":
+                return subprocess.CompletedProcess(args, 0, ps, "")
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, lsof, "")
+            return alert.run_command(args, input_text)
+        return run
+
+    def test_clean_idle_merged_worktree_is_removed_and_dry_run_preserves_it(self):
+        tree = self.add_worktree("wt-merged")
+        dry = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=True)
+        self.assertEqual([item.path for item in dry], [str(tree)])
+        self.assertTrue(tree.exists())
+
+        swept = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
+        self.assertEqual([(item.path, item.kind, item.error) for item in swept], [(str(tree), "worktree", None)])
+        self.assertFalse(tree.exists())
+
+    def test_dirty_unmerged_or_secret_env_worktrees_are_kept(self):
+        dirty = self.add_worktree("wt-dirty")
+        (dirty / "README.md").write_text("changed\n")
+
+        untracked = self.add_worktree("wt-untracked")
+        (untracked / "notes.txt").write_text("keep\n")
+
+        unmerged = self.add_worktree("wt-unmerged", branch="feat/unmerged")
+        (unmerged / "new.txt").write_text("commit\n")
+        self._git(unmerged, "add", "new.txt")
+        self._git(unmerged, "commit", "-m", "ahead")
+
+        secret_env = self.add_worktree("wt-secret")
+        (secret_env / ".env").write_text("SECRET=real\n")
+
+        nested_secret = self.add_worktree("wt-nested-secret")
+        (nested_secret / "apps" / "web").mkdir(parents=True)
+        (nested_secret / "apps" / "web" / ".env.local").write_text("TOKEN=secret\n")
+
+        copy_env = self.add_worktree("wt-example-env")
+        (copy_env / ".env").write_text("KEY=value\n")
+
+        swept = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
+        self.assertEqual([item.path for item in swept], [str(copy_env)])
+        self.assertTrue(
+            dirty.exists() and untracked.exists() and unmerged.exists()
+            and secret_env.exists() and nested_secret.exists()
+        )
+        self.assertFalse(copy_env.exists())
+
+    def test_recent_locked_or_open_handle_worktrees_are_kept(self):
+        recent = self.add_worktree("wt-recent-mtime")
+        recent_ts = (self.now - timedelta(hours=12)).timestamp()
+        os.utime(recent / "README.md", (recent_ts, recent_ts))
+        os.utime(recent, (recent_ts, recent_ts))
+
+        locked = self.add_worktree("wt-locked")
+        self._git(self.repo, "worktree", "lock", str(locked))
+
+        open_fd = self.add_worktree("wt-open-fd")
+        runner = self.make_runner(lsof=f"p77\nf4\nn{open_fd}/README.md\n")
+
+        swept = alert.sweep_merged_worktrees(self.config, runner, self.now, dry_run=False)
+        self.assertEqual(swept, [])
+        self.assertTrue(recent.exists() and locked.exists() and open_fd.exists())
+
+    def test_daily_no_sweep_still_prunes_worktrees_and_no_worktree_prune_still_sweeps_targets(self):
+        tree = self.add_worktree("wt-flags")
+        target = tree / "target"
+        (target / "debug").mkdir(parents=True)
+        (target / "debug" / "libx.rlib").write_bytes(b"x" * 4096)
+        (target / "CACHEDIR.TAG").write_bytes(alert.CARGO_TAG + b"\n")
+        base_args = [
+            "daily", "--dry-run", "--state-dir", str(self.root / "state"),
+            "--worktrees", str(self.worktrees), "--t3-db", str(self.db_path),
+            "--claude-tmp", str(self.root / "no-tmp"),
+            "--bun-cache", str(self.root / "no-bun"),
+            "--playwright-cache", str(self.root / "no-pw"),
+            "--no-notify",
+        ]
+        out_no_sweep = io.StringIO()
+        with contextlib.redirect_stdout(out_no_sweep):
+            self.assertEqual(alert.main(base_args + ["--no-sweep"], run=self.make_runner(), now=self.now), 0)
+        parsed = json.loads(out_no_sweep.getvalue())
+        self.assertEqual(parsed["targets"], [])
+        self.assertEqual([item["path"] for item in parsed["worktrees"]], [str(tree)])
+
+        out_no_wt = io.StringIO()
+        with contextlib.redirect_stdout(out_no_wt):
+            self.assertEqual(alert.main(base_args + ["--no-worktree-prune"], run=self.make_runner(), now=self.now), 0)
+        parsed_wt = json.loads(out_no_wt.getvalue())
+        self.assertEqual(parsed_wt["worktrees"], [])
+        self.assertEqual([item["path"] for item in parsed_wt["targets"]], [str(target)])
+
+    def test_active_pending_or_recent_t3_thread_holds_worktree(self):
+        active_wt = self.add_worktree("wt-active")
+        pending_wt = self.add_worktree("wt-pending")
+        recent_wt = self.add_worktree("wt-recent")
+        old_wt = self.add_worktree("wt-old")
+        self.db_path.unlink()
+        init_t3_db(
+            self.db_path,
+            threads=[
+                ("t1", active_wt, self.old_iso),
+                ("t2", pending_wt, self.old_iso),
+                ("t3", recent_wt, self.recent_iso),
+                ("t4", old_wt, self.old_iso),
+            ],
+            runs=[("r1", "t1", "running"), ("r4", "t4", "completed")],
+            requests=[("q2", "t2", "pending")],
+        )
+        swept = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
+        self.assertEqual([item.path for item in swept], [str(old_wt)])
+        self.assertTrue(active_wt.exists() and pending_wt.exists() and recent_wt.exists())
+
+    def test_upstream_fork_branch_counts_as_base_ref(self):
+        self._git(self.repo, "checkout", "-b", "fork")
+        (self.repo / "fork.txt").write_text("fork\n")
+        self._git(self.repo, "add", "fork.txt")
+        self._git(self.repo, "commit", "-m", "fork commit")
+        self._git(self.repo, "push", "-u", "origin", "fork")
+        tree = self.add_worktree("wt-fork", ref="origin/fork")
+        swept = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
+        self.assertEqual([item.path for item in swept], [str(tree)])
+        self.assertFalse(tree.exists())
+
+    def test_unreadable_t3_db_fails_closed(self):
+        tree = self.add_worktree("wt-db-err")
+        self.db_path.unlink()
+        with self.assertRaises(OSError):
+            alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
+        self.assertTrue(tree.exists())
+
+    def test_running_process_keeps_merged_worktree(self):
+        tree = self.add_worktree("wt-busy")
+        runner = self.make_runner(lsof=f"p42\nfcwd\nn{tree}\n")
+        self.assertEqual(alert.sweep_merged_worktrees(self.config, runner, self.now, dry_run=False), [])
+        self.assertTrue(tree.exists())
+
+
+class DailyCacheAndLaunchAgentTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.now = datetime.now(timezone.utc) + timedelta(days=3)
+        self.playwright = self.root / "ms-playwright"
+        self.bun_cache = self.root / "bun-cache"
+        self.bin_dir = self.root / "bin"
+        self.bin_dir.mkdir()
+        self.config = replace(
+            CONFIG,
+            state_dir=self.root / "state",
+            playwright_cache=self.playwright,
+            bun_cache=self.bun_cache,
+            bun_cache_max_gb=0.0001,  # 100 KB for fast tests
+            search_path=str(self.bin_dir),
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def make_tool(self, name: str):
+        path = self.bin_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+        return path
+
+    def test_playwright_keeps_newest_and_drops_older_idle_revisions(self):
+        old_shell = self.playwright / "chromium_headless_shell-1248"
+        new_shell = self.playwright / "chromium_headless_shell-1255"
+        only_chrome = self.playwright / "chromium-1255"
+        for d in (old_shell, new_shell, only_chrome):
+            d.mkdir(parents=True)
+            (d / "bin").write_bytes(b"x" * 8192)
+        # Self-invocation mentioning --playwright-cache must not falsely block cleanup.
+        runner = FakeRunner(ps="/bin/uv run disk_space_alert.py daily --playwright-cache /tmp/ms-playwright\n")
+        swept = alert.sweep_playwright_cache(self.config, runner, self.now, dry_run=False)
+        self.assertEqual([(item.path, item.kind) for item in swept], [(str(old_shell), "playwright")])
+        self.assertFalse(old_shell.exists())
+        self.assertTrue(new_shell.exists() and only_chrome.exists())
+
+    def test_playwright_keeps_recent_older_revision(self):
+        old_shell = self.playwright / "chromium_headless_shell-1248"
+        new_shell = self.playwright / "chromium_headless_shell-1255"
+        for d in (old_shell, new_shell):
+            d.mkdir(parents=True)
+            (d / "bin").write_bytes(b"x" * 4096)
+        recent_ts = (self.now - timedelta(hours=2)).timestamp()
+        os.utime(old_shell / "bin", (recent_ts, recent_ts))
+        self.assertEqual(alert.sweep_playwright_cache(self.config, FakeRunner(), self.now, dry_run=False), [])
+        self.assertTrue(old_shell.exists())
+
+    def test_playwright_skips_when_headless_shell_is_running(self):
+        old_shell = self.playwright / "chromium_headless_shell-1248"
+        new_shell = self.playwright / "chromium_headless_shell-1255"
+        for d in (old_shell, new_shell):
+            d.mkdir(parents=True)
+            (d / "bin").write_bytes(b"x" * 4096)
+        runner = FakeRunner(ps="/usr/bin/chrome-headless-shell --remote-debugging-port=9222\n")
+        self.assertEqual(alert.sweep_playwright_cache(self.config, runner, self.now, dry_run=False), [])
+        self.assertTrue(old_shell.exists())
+
+    def test_tool_caches_respect_caps_and_running_processes(self):
+        uv = self.make_tool("uv")
+        brew = self.make_tool("brew")
+        bun = self.make_tool("bun")
+        self.bun_cache.mkdir()
+        (self.bun_cache / "pkg.tgz").write_bytes(b"x" * 200_000)
+
+        # Postgres under /opt/homebrew/opt/... and `bun server.ts` must NOT block brew/bun cleanup.
+        recorded = []
+
+        def ok_runner(args, input_text):
+            recorded.append(list(args))
+            if args[0] == "ps":
+                return subprocess.CompletedProcess(
+                    args, 0, "/opt/homebrew/opt/postgresql@17/bin/postgres\nbun server.ts --port 59807\n", ""
+                )
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        results = alert.sweep_tool_caches(self.config, ok_runner, dry_run=False)
+        self.assertTrue(all(r["ran"] and r["error"] is None for r in results))
+        self.assertIn([str(uv), "cache", "prune"], recorded)
+        self.assertIn([str(brew), "cleanup", "--prune=14", "-s"], recorded)
+        self.assertIn([str(bun), "pm", "cache", "rm"], recorded)
+
+        # Running brew + bun install/bunx/flagged bun must skip both.
+        for bun_cmd in ("bun install", "bunx vitest", "bun --cwd app install", "bun x prettier"):
+            def busy_runner(args, input_text, cmd=bun_cmd):
+                if args[0] == "ps":
+                    return subprocess.CompletedProcess(args, 0, f"/opt/homebrew/bin/brew upgrade\n{cmd}\n", "")
+                if args[0] == "lsof":
+                    return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            busy = {r["tool"]: r for r in alert.sweep_tool_caches(self.config, busy_runner, dry_run=False)}
+            self.assertEqual(busy["brew"].get("skipped"), "brew_running")
+            self.assertEqual(busy["bun"].get("skipped"), "bun_install_running", bun_cmd)
+
+        # Fresh snapshot is taken after brew cleanup: a bun install that starts during brew blocks bun.
+        phase = {"brew_done": False}
+
+        def mid_run_runner(args, input_text):
+            if args[0] == "ps":
+                text = "bun install\n" if phase["brew_done"] else "/sbin/launchd\n"
+                return subprocess.CompletedProcess(args, 0, text, "")
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+            if args[0] == str(brew):
+                phase["brew_done"] = True
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        mid = {r["tool"]: r for r in alert.sweep_tool_caches(self.config, mid_run_runner, dry_run=False)}
+        self.assertTrue(mid["brew"]["ran"])
+        self.assertEqual(mid["bun"].get("skipped"), "bun_install_running")
+
+        # Below cap skips bun without calling it.
+        small = replace(self.config, bun_cache_max_gb=10.0)
+        small_res = {r["tool"]: r for r in alert.sweep_tool_caches(small, ok_runner, dry_run=False)}
+        self.assertEqual(small_res["bun"].get("skipped"), "below_cap")
+
+    def test_daily_launch_agent_and_install_cleanup_on_bootstrap_failure(self):
+        agent = alert.daily_launch_agent(
+            "/bin/uv", Path("/repo/disk-alert/disk_space_alert.py"), Path("/state"),
+            hour=4, minute=30, sweep_minutes=10.0, bun_cache_max_gb=1.0, brew_prune_days=14,
+        )
+        decoded = plistlib.loads(plistlib.dumps(agent))
+        self.assertEqual(decoded["Label"], "com.syz51.disk-space-daily")
+        self.assertEqual(decoded["StartCalendarInterval"], {"Hour": 4, "Minute": 30})
+        self.assertFalse(decoded["RunAtLoad"])
+        self.assertEqual(decoded["ProcessType"], "Standard")
+        self.assertEqual(
+            decoded["ProgramArguments"][-8:],
+            ["/repo/disk-alert/disk_space_alert.py", "daily", "--sweep-minutes", "10",
+             "--bun-cache-max-gb", "1", "--brew-prune-days", "14"],
+        )
+
+        # Failed bootstrap must remove the plist rather than leaving a broken file on disk.
+        target = self.root / "LaunchAgents" / "com.syz51.disk-space-daily.plist"
+
+        def fail_bootstrap(args, _input):
+            code = 1 if args[:2] == ["launchctl", "bootstrap"] else 0
+            return subprocess.CompletedProcess(args, code, "", "bootstrap error")
+
+        with mock.patch.object(alert, "LAUNCH_AGENTS", target.parent), \
+                mock.patch.object(alert, "DEFAULT_STATE_DIR", self.root / "state"), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rc = alert.install_plist(fail_bootstrap, alert.DAILY_LABEL, target, agent, dry_run=False)
+        self.assertEqual(rc, 1)
+        self.assertFalse(target.exists())
+
+    def test_sweep_lock_skips_overlapping_daily_run(self):
+        self.config.state_dir.mkdir(parents=True)
+        lock_fd = os.open(self.config.state_dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = alert.run_daily(self.config, FakeRunner(), self.now, dry_run=False)
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.getvalue())["event"], "daily_skipped")
+        finally:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+    def test_daily_cli_validation_and_quiet_success(self):
+        for bad in (["install-daily", "--hour", "24"], ["install-daily", "--minute", "60"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                alert.main(bad)
+        runner = FakeRunner()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = alert.run_daily(replace(self.config, search_path=""), runner, self.now, dry_run=False)
+        self.assertEqual(code, 0)
+        # Quiet on success: no notification sent.
+        self.assertNotIn("notify", runner.kinds())
+        events = [json.loads(line) for line in (self.config.state_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(events[-1]["event"], "daily")
+
+    def test_daily_notifies_on_failure_and_respects_time_limit(self):
+        # Missing t3_db with worktrees causes worktree step failure -> exits 1 and notifies.
+        (self.root / "wts").mkdir()
+        failing = replace(
+            self.config, worktrees=self.root / "wts", t3_db=self.root / "missing.sqlite", search_path=""
+        )
+        runner = FakeRunner()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = alert.run_daily(failing, runner, self.now, dry_run=False)
+        self.assertEqual(code, 1)
+        self.assertIn("notify", runner.kinds())
+        self.assertEqual(json.loads(out.getvalue())["failures"][0]["step"], "worktrees")
+
+        # Expired time limit stops cleanly and records stopped=True.
+        ticks = iter([0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0])
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            code2 = alert.run_daily(
+                replace(self.config, sweep_minutes=1.0, search_path=""),
+                FakeRunner(), self.now, dry_run=True, clock=lambda: next(ticks),
+            )
+        self.assertEqual(code2, 0)
+        self.assertTrue(json.loads(out2.getvalue())["stopped"])
 
 
 if __name__ == "__main__":
