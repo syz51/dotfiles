@@ -583,6 +583,53 @@ test("visit reports topLevel, piped, and background execution context (dotfiles-
     ["a", false, false, true],
     ["b", true, false, false],
   ]);
+  expect(ctx("({ a; b; } &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("c && ({ a; b; } &)")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, true],
+  ]);
+  expect(ctx("((a; b) &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("({ a; } && b &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("(for i in 1; do a; done &) && c").find(([cmd]) => cmd === "a")).toEqual(["a", false, false, true]);
+  expect(ctx("(for i in 1; do a; done &) && c").at(-1)).toEqual(["c", true, false, false]);
+  expect(ctx("coproc { a; b; } && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("coproc (a; b) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("coproc NAME (a; b) && c").filter(([cmd]) => cmd !== "NAME")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("c && { a & b; }")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, false],
+  ]);
+  expect(ctx("c && coproc { a; b; }")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, true],
+  ]);
   // loops, functions, groups, subshells, conditionals, and nested scripts are not top-level
   for (const [source, target] of [
     ["for i in 1 2; do a; b; done", "a"],

@@ -390,8 +390,11 @@ export function parseScript(source) {
         current.opens -= 1; // an empty `()`, as in a function definition
         if (commands.at(-1)?.next === "(" && !/=$/.test(commands.at(-1).argv.at(-1) ?? "")) current.funcBody = true;
       } else if (commands.length > 0) {
-        if (commands.at(-1).next === "&") commands.at(-1).background = true;
-        Object.assign(commands.at(-1), { closes: commands.at(-1).closes + 1, next: ")" });
+        const prev = commands.at(-1);
+        // Record the operator that preceded each `)` so analyzeCommands knows which
+        // command or closed group was followed by `&`, `|`, or `|&`.
+        (prev.closeOps ??= []).push(prev.next);
+        Object.assign(prev, { closes: prev.closes + 1, next: ")" });
       }
       i += 1;
     } else if (c === ";" && nesting.at(-1) === "case" && ";&|".includes(source[i + 1] ?? "")) {
@@ -815,80 +818,131 @@ function printed(words, depth = 0) {
 function analyzeCommands(commands, inheritedPiped, inheritedBg) {
   const n = commands.length;
   const grouped = new Array(n).fill(false);
-  const piped = new Array(n).fill(Boolean(inheritedPiped));
-  const extBg = new Array(n).fill(Boolean(inheritedBg));
-  const internalBg = new Array(n).fill(false);
-  const opensGroup = new Array(n).fill(false);
+  const pipedDepth = new Array(n).fill(inheritedPiped ? -1 : Infinity);
+  const bgDepth = new Array(n).fill(inheritedBg ? -1 : Infinity);
+  const bg = new Array(n).fill(Boolean(inheritedBg));
+  const depthBefore = new Array(n).fill(0);
   const spans = [];
   const subStack = [];
   const braceStack = [];
   const compoundStack = [];
+  const groupDepth = () => subStack.length + braceStack.length + compoundStack.length;
+  const isPipe = (op) => op === "|" || op === "|&";
+  const recordOp = (idx, op, depth) => {
+    if (op === "&") {
+      bg[idx] = true;
+      bgDepth[idx] = Math.min(bgDepth[idx], depth);
+    } else if (isPipe(op)) {
+      pipedDepth[idx] = Math.min(pipedDepth[idx], depth);
+    }
+  };
 
+  let pendingCoprocSubshell = false;
   for (let i = 0; i < n; i += 1) {
     const command = commands[i];
     if (command.funcBody) grouped[i] = true;
-    if (command.background) internalBg[i] = true;
-    if (command.opens > 0) opensGroup[i] = true;
-    for (let k = 0; k < command.opens; k += 1) subStack.push({ start: i });
+    depthBefore[i] = groupDepth();
+    const coprocSub = pendingCoprocSubshell;
+    pendingCoprocSubshell = false;
+    for (let k = 0; k < command.opens; k += 1) {
+      subStack.push({ start: i, outerDepth: groupDepth(), coproc: coprocSub && k === 0 });
+    }
+    let coprocHere = false;
+    let coprocPos = -1;
     let j = 0;
     while (j < command.argv.length) {
       const word = command.argv[j];
       if (basename(word) === "coproc") {
-        internalBg[i] = true;
-        j += command.argv[j + 2] === "{" ? 2 : 1;
+        coprocHere = true;
+        coprocPos = j;
+        bg[i] = true;
+        const next2 = command.argv[j + 2];
+        j += next2 === "{" || Object.hasOwn(COMPOUND_OPEN, next2) ? 2 : 1;
         continue;
       }
       if (word === "{") {
-        opensGroup[i] = true;
-        braceStack.push({ start: i, subshellDepth: subStack.length });
+        braceStack.push({ start: i, outerDepth: groupDepth(), subshellDepth: subStack.length, coproc: coprocHere });
+        coprocHere = false;
       } else if (Object.hasOwn(COMPOUND_OPEN, word)) {
-        opensGroup[i] = true;
-        compoundStack.push({ start: i, close: COMPOUND_OPEN[word], subshellDepth: subStack.length });
+        compoundStack.push({ start: i, close: COMPOUND_OPEN[word], outerDepth: groupDepth(), subshellDepth: subStack.length, coproc: coprocHere });
+        coprocHere = false;
       }
       if (word !== "time" && !SHELL_KEYWORDS.has(word)) break;
       j += 1;
     }
+    if (coprocHere && command.next === "(" && command.argv.length - coprocPos <= 2) {
+      pendingCoprocSubshell = true;
+    }
     if (command.argv[0] === "}" && braceStack.length > 0 && braceStack.at(-1).subshellDepth === subStack.length) {
-      spans.push([braceStack.pop().start, i]);
+      const open = braceStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
     } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
       && compoundStack.at(-1)?.close === command.argv[0] && compoundStack.at(-1).subshellDepth === subStack.length) {
-      spans.push([compoundStack.pop().start, i]);
+      const open = compoundStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
     }
+    const selfOp = command.closes > 0 ? command.closeOps[0] : command.next;
+    recordOp(i, selfOp, groupDepth());
     for (let k = 0; k < command.closes && subStack.length > 0; k += 1) {
-      spans.push([subStack.pop().start, i]);
-      while (braceStack.length > 0 && braceStack.at(-1).subshellDepth > subStack.length) spans.push([braceStack.pop().start, i]);
-      while (compoundStack.length > 0 && compoundStack.at(-1).subshellDepth > subStack.length) spans.push([compoundStack.pop().start, i]);
+      const open = subStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
+      while (braceStack.length > 0 && braceStack.at(-1).subshellDepth > subStack.length) {
+        const b = braceStack.pop();
+        spans.push({ start: b.start, end: i, outerDepth: b.outerDepth, coproc: b.coproc });
+      }
+      while (compoundStack.length > 0 && compoundStack.at(-1).subshellDepth > subStack.length) {
+        const c = compoundStack.pop();
+        spans.push({ start: c.start, end: i, outerDepth: c.outerDepth, coproc: c.coproc });
+      }
+      const closeOp = k + 1 < command.closes ? command.closeOps[k + 1] : command.next;
+      recordOp(i, closeOp, groupDepth());
     }
-    if (command.next === "|" || command.next === "|&") {
-      piped[i] = true;
-      if (i + 1 < n) piped[i + 1] = true;
+    recordOp(i, command.next, groupDepth());
+    if (isPipe(command.next) && i + 1 < n) {
+      pipedDepth[i + 1] = Math.min(pipedDepth[i + 1], groupDepth());
     }
-    if (command.next === "&") extBg[i] = true;
   }
   // Unclosed groups (e.g. zsh short `for x in a b; cmd`) cover through the end of the script.
-  for (const open of [...subStack, ...braceStack, ...compoundStack]) spans.push([open.start, n - 1]);
-  for (const [start, end] of spans) {
+  for (const open of [...subStack, ...braceStack, ...compoundStack]) {
+    spans.push({ start: open.start, end: n - 1, outerDepth: open.outerDepth, coproc: open.coproc });
+  }
+  for (const { start, end } of spans) {
     for (let k = start; k <= end; k += 1) grouped[k] = true;
   }
   let changed = true;
   while (changed) {
     changed = false;
-    for (const [start, end] of spans) {
-      const spanPiped = piped[start] || piped[end];
-      const spanBg = extBg[start] || extBg[end];
+    for (const { start, end, outerDepth, coproc } of spans) {
+      const spanPiped = Math.min(pipedDepth[start], pipedDepth[end]);
+      const spanBg = Math.min(bgDepth[start], bgDepth[end]);
       for (let k = start; k <= end; k += 1) {
-        if (spanPiped && !piped[k]) { piped[k] = true; changed = true; }
-        if (spanBg && !extBg[k]) { extBg[k] = true; changed = true; }
+        if (spanPiped <= outerDepth && spanPiped < pipedDepth[k]) {
+          pipedDepth[k] = spanPiped;
+          changed = true;
+        }
+        if (spanBg <= outerDepth && spanBg < bgDepth[k]) {
+          bgDepth[k] = spanBg;
+          bg[k] = true;
+          changed = true;
+        }
+        if (coproc && !bg[k]) {
+          bg[k] = true;
+          changed = true;
+        }
       }
     }
     for (let i = n - 2; i >= 0; i -= 1) {
       if (["&&", "||", "|", "|&"].includes(commands[i].next)) {
-        if (extBg[i + 1] && !extBg[i]) { extBg[i] = true; changed = true; }
-        if (!opensGroup[i + 1] && internalBg[i + 1] && !internalBg[i]) { internalBg[i] = true; changed = true; }
+        const listDepth = depthBefore[i + 1];
+        if (bgDepth[i + 1] <= listDepth && bgDepth[i + 1] < bgDepth[i]) {
+          bgDepth[i] = bgDepth[i + 1];
+          bg[i] = true;
+          changed = true;
+        }
       }
     }
   }
-  return commands.map((_, i) => ({ grouped: grouped[i], piped: piped[i], background: extBg[i] || internalBg[i] }));
+  return commands.map((_, i) => ({ grouped: grouped[i], piped: pipedDepth[i] < Infinity, background: bg[i] }));
 }
 
 function inspect(source, state, visit, depth, tooDeep) {

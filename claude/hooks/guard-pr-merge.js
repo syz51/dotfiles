@@ -691,8 +691,9 @@ function hasOnlyAllowedGhFlags(args, boolFlags, valueFlags, shortValueFlags) {
     } else if (arg.startsWith("-") && arg.length > 1) {
       for (let k = 1; k < arg.length; k += 1) {
         if (shortValueFlags.has(arg[k])) {
-          const rest = arg.slice(k + 1).replace(/^=/, "");
-          if (rest === "") i += 1;
+          // pflag attaches any remaining characters (including `=`) as this flag's value,
+          // so only a bare short flag at the end of the word consumes the next argument.
+          if (k + 1 === arg.length) i += 1;
           break;
         }
         return false;
