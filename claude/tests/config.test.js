@@ -1330,6 +1330,7 @@ describe("rules the live suites test", () => {
     const review = section("Review");
     expect(review).toMatch(/For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done/);
     expect(review).toMatch(/A change may skip review only when every file it changes is on the trivial list in `~\/\.claude\/factory\/scoring\/review-scope\.toml`, such as lockfiles; no repository is exempt\./);
+    expect(review).toContain("Daemon-dispatched managed workers are also exempt, as their PR receives an independent managed Review judge.");
     // No text limits the review to a tier of changes any more.
     for (const file of ["claude/CLAUDE.md", "claude/agents/reviewer.md", "claude/agents/worker.md", "claude/skills/diff-review/SKILL.md", "claude/skills/work-stages/SKILL.md", ...readdirSync(join(CLAUDE, "reference")).map((name) => `claude/reference/${name}`)])
       expect(read(file), file).not.toMatch(/high-impact/i);

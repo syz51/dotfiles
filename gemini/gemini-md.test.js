@@ -5,28 +5,34 @@ import { join } from "node:path";
 const REPO = join(import.meta.dir, "..");
 const read = (rel) => readFileSync(join(REPO, rel), "utf8");
 
-// Antigravity truncates single instruction/rule files past 24,000 bytes.
-const ANTIGRAVITY_BYTE_LIMIT = 24_000;
+// Lean core budget for cold-start token efficiency across workers, judges, and subagents
+// (dotfiles-865 / agent-board-737). Detailed procedures live in gemini/docs/*.md.
+const LEAN_CORE_BYTE_LIMIT = 8_500;
+const REFERENCE_DOCS = [
+  "gemini/docs/storage-remote-desktop.md",
+  "gemini/docs/delegation-and-t3.md",
+  "gemini/docs/work-board-reference.md",
+];
 
 describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => {
   const geminiMd = read("gemini/GEMINI.md");
+  const docs = Object.fromEntries(REFERENCE_DOCS.map((rel) => [rel, read(rel)]));
+  const allGeminiInstructions = [geminiMd, ...Object.values(docs)].join("\n\n");
   const hooksJson = JSON.parse(read("gemini/hooks.json"));
   const mcpConfig = JSON.parse(read("gemini/mcp_config.json"));
 
-  test("stays comfortably below Antigravity's 24,000-byte per-file truncation limit", () => {
+  test("keeps GEMINI.md core lean (<= 8,500 bytes) while preserving all sections", () => {
     const bytes = Buffer.byteLength(geminiMd, "utf8");
-    expect(bytes).toBeGreaterThan(8_000);
-    expect(bytes).toBeLessThan(ANTIGRAVITY_BYTE_LIMIT);
+    expect(bytes).toBeGreaterThan(4_000);
+    expect(bytes).toBeLessThanOrEqual(LEAN_CORE_BYTE_LIMIT);
   });
 
-  test("includes every core section self-contained in GEMINI.md", () => {
+  test("includes every core section heading directly in GEMINI.md", () => {
     const requiredHeadings = [
       "## Working preferences",
       "## Skills",
       "## Workflow",
-      "### Settling a T3 thread",
       "## Autonomy",
-      "### Merging pull requests",
       "## Delegation",
       "## Review",
       "## Work board",
@@ -39,7 +45,16 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     }
   });
 
-  test("contains no unportable paths, private hostnames, or Claude-only leftovers", () => {
+  test("points to every on-demand reference doc in gemini/docs/ with instruction force", () => {
+    for (const rel of REFERENCE_DOCS) {
+      expect(existsSync(join(REPO, rel)), rel).toBe(true);
+      expect(geminiMd, rel).toContain(`~/.config/${rel}`);
+      expect(docs[rel], rel).toContain("part of the global instructions (`~/.gemini/config/GEMINI.md`");
+      expect(docs[rel], rel).toContain("have the same force");
+    }
+  });
+
+  test("contains no unportable paths, private hostnames, or Claude-only leftovers across core and docs", () => {
     const forbidden = [
       "~/.claude/",
       "/Users/",
@@ -56,10 +71,12 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
       "/security-review",
       "dataviz",
     ];
-    for (const needle of forbidden) {
-      expect(geminiMd).not.toContain(needle);
+    for (const [name, text] of [["gemini/GEMINI.md", geminiMd], ...Object.entries(docs)]) {
+      for (const needle of forbidden) {
+        expect(text, `${name} should not contain ${needle}`).not.toContain(needle);
+      }
+      expect(text, `${name} should not contain tailnet hostnames`).not.toMatch(/\.ts\.net\b/);
     }
-    expect(geminiMd).not.toMatch(/\.ts\.net\b/);
   });
 
   test("enforces Gemini 4 Neon / Antigravity model routing and native orchestration", () => {
@@ -75,39 +92,50 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).toContain("diff-review");
   });
 
+  test("exempts daemon-dispatched managed workers from double diff-review while keeping interactive review", () => {
+    expect(geminiMd).toContain("Interactive / human-driven sessions");
+    expect(geminiMd).toContain("Daemon-dispatched managed workers (exempt)");
+    expect(geminiMd).toContain("exempt from spawning an internal `diff-review` subagent");
+    expect(geminiMd).toContain("independent managed `Review` judge");
+    expect(docs["gemini/docs/delegation-and-t3.md"]).toContain(
+      "Daemon-dispatched managed workers are exempt from spawning an internal `diff-review` subagent",
+    );
+  });
+
   test("routes full-access invoke_subagent reviews to self with git diff and keeps restricted-session fallback", () => {
-    expect(geminiMd).toContain(
+    const delegationDoc = docs["gemini/docs/delegation-and-t3.md"];
+    expect(delegationDoc).toContain(
       'launch `invoke_subagent` (`TypeName: "self"`, `Workspace: "inherit"`, strictly read-only)',
     );
-    expect(geminiMd).toContain("read `~/.gemini/config/skills/diff-review/SKILL.md`");
-    expect(geminiMd).toContain("git -C <worktree> diff origin/<base>...<SHA>");
-    expect(geminiMd).toContain("do not duplicate the diff or skill text into the parent prompt");
-    expect(geminiMd).toContain("Keep subagent prompts lean");
-    expect(geminiMd).toContain("restricted sessions without skip-permissions");
-    expect(geminiMd).toContain("inline the `diff-review` instructions");
-    expect(geminiMd).toContain("temporary file inside the active workspace");
-    expect(geminiMd).toContain("`read_file`-only `research` subagent");
-    expect(geminiMd).toContain("`delegate_task` / `~/.local/bin/agy-run`");
-    expect(geminiMd).not.toContain(
+    expect(delegationDoc).toContain("read `~/.gemini/config/skills/diff-review/SKILL.md`");
+    expect(delegationDoc).toContain("git -C <worktree> diff origin/<base>...<SHA>");
+    expect(delegationDoc).toContain("do not duplicate the diff or skill text into the parent prompt");
+    expect(geminiMd).toContain("keep subagent prompts lean");
+    expect(delegationDoc).toContain("restricted sessions without skip-permissions");
+    expect(delegationDoc).toContain("inline the `diff-review` instructions");
+    expect(delegationDoc).toContain("temporary file inside the active workspace");
+    expect(delegationDoc).toContain("`read_file`-only `research` subagent");
+    expect(delegationDoc).toContain("`delegate_task` / `~/.local/bin/agy-run`");
+    expect(allGeminiInstructions).not.toContain(
       "Do not rely on `invoke_subagent` running `git diff` or other `run_command` calls",
     );
   });
 
-  test("preserves user tone and translation preferences", () => {
+  test("preserves user tone and translation preferences in GEMINI.md core", () => {
     expect(geminiMd).toContain("language other than English or Chinese");
     expect(geminiMd).toContain("keep normal chat questions natural");
-    expect(geminiMd).not.toContain("Explain an item I ask about in the same structure");
+    expect(allGeminiInstructions).not.toContain("Explain an item I ask about in the same structure");
   });
 
-  test("all repo-tracked ~/.config/ paths referenced in GEMINI.md exist in the repository", () => {
-    const matches = [...geminiMd.matchAll(/~\/\.config\/([A-Za-z0-9._/-]+)/g)];
+  test("all repo-tracked ~/.config/ paths referenced in GEMINI.md and reference docs exist in the repository", () => {
+    const matches = [...allGeminiInstructions.matchAll(/~\/\.config\/([A-Za-z0-9._/-]+)/g)];
     expect(matches.length).toBeGreaterThan(0);
     for (const [, rel] of matches) {
-      expect(existsSync(join(REPO, rel))).toBe(true);
+      expect(existsSync(join(REPO, rel)), `~/.config/${rel}`).toBe(true);
     }
   });
 
-  test("documents every ask-policy reason from claude/hooks/ask-policy.json", () => {
+  test("documents every ask-policy reason from claude/hooks/ask-policy.json in GEMINI.md core", () => {
     const policy = JSON.parse(read("claude/hooks/ask-policy.json"));
     const reasons = Object.keys(policy.reasons);
     expect(reasons.length).toBeGreaterThan(0);
@@ -115,7 +143,7 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
       expect(geminiMd).toContain(`- \`${reason}\`:`);
     }
     expect(geminiMd).toContain(
-      "Put any change that loosens a guard, cap, budget, threshold, or allowlist in the commit message and PR body under `Loosens:` and in your report to the user.",
+      "put any change that loosens a guard, cap, budget, threshold, or allowlist in the commit message and PR body under `Loosens:` and in your report to the user",
     );
   });
 
@@ -149,42 +177,49 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
   });
 
   test("aligns with MCP servers configured in gemini/mcp_config.json (board + desktop)", () => {
+    const storageDoc = docs["gemini/docs/storage-remote-desktop.md"];
     expect(mcpConfig.mcpServers.board).toBeDefined();
     expect(mcpConfig.mcpServers.desktop).toBeDefined();
     expect(JSON.stringify(mcpConfig.mcpServers.desktop)).toContain(
       "claude/marketplace/computer-use/server/desktop.js",
     );
     expect(geminiMd).toContain("`board` MCP server");
-    expect(geminiMd).toContain("`desktop` MCP server");
-    expect(geminiMd).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
+    expect(geminiMd).toContain("`desktop` MCP");
+    expect(storageDoc).toContain("`desktop` MCP server");
+    expect(storageDoc).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
   });
 
   test("configures official gemini-notebook remote MCP with ADC and no hardcoded headers", () => {
+    const storageDoc = docs["gemini/docs/storage-remote-desktop.md"];
     expect(mcpConfig.mcpServers["gemini-notebook"]).toEqual({
       serverUrl: "https://notebook.googleapis.com/mcp",
       authProviderType: "google_credentials",
     });
-    expect(geminiMd).toContain("`gemini-notebook` MCP server");
-    expect(geminiMd).toContain("~/.local/bin/gnotebook");
-    expect(geminiMd).toContain("~/.local/bin/gnotebook-monitor");
-    expect(geminiMd).toContain("~/.config/gemini/docs/gemini-notebook-mcp.md");
+    expect(geminiMd).toContain("`gemini-notebook` MCP");
+    expect(storageDoc).toContain("`gemini-notebook` MCP server");
+    expect(storageDoc).toContain("~/.local/bin/gnotebook");
+    expect(storageDoc).toContain("~/.local/bin/gnotebook-monitor");
+    expect(storageDoc).toContain("~/.config/gemini/docs/gemini-notebook-mcp.md");
     expect(existsSync(join(REPO, "gemini/bin/gnotebook"))).toBe(true);
     expect(existsSync(join(REPO, "gemini/bin/gnotebook-monitor"))).toBe(true);
   });
 
   test("documents linked T3 Pro delegation, cross-Mac thread reading, and read-only ~/.config check", () => {
-    expect(geminiMd).toContain("`t3_environment_links`");
-    expect(geminiMd).toContain("`delegate_task`");
-    expect(geminiMd).toContain("`t3_thread_read`");
-    expect(geminiMd).toContain("`git -C ~/.config log -1`");
-    expect(geminiMd).not.toContain("`vps-247`");
-    expect(geminiMd).not.toMatch(/`ssh [\w.-]+[\s`]/);
+    const storageDoc = docs["gemini/docs/storage-remote-desktop.md"];
+    expect(storageDoc).toContain("`t3_environment_links`");
+    expect(storageDoc).toContain("`delegate_task`");
+    expect(storageDoc).toContain("`t3_thread_read`");
+    expect(storageDoc).toContain("`git -C ~/.config log -1`");
+    expect(allGeminiInstructions).not.toContain("`vps-247`");
+    expect(allGeminiInstructions).not.toMatch(/`ssh [\w.-]+[\s`]/);
   });
 
   test("documents Gemini-first offloading split and links gemini-board-workflow.md", () => {
-    expect(geminiMd).toContain("Gemini-first offloading");
+    const boardDoc = docs["gemini/docs/work-board-reference.md"];
     expect(geminiMd).toContain("`board-ops`");
-    expect(geminiMd).toContain("~/.config/gemini/docs/gemini-board-workflow.md");
+    expect(boardDoc).toContain("Gemini-first offloading");
+    expect(boardDoc).toContain("`board-ops`");
+    expect(boardDoc).toContain("~/.config/gemini/docs/gemini-board-workflow.md");
     expect(existsSync(join(REPO, "gemini/docs/gemini-board-workflow.md"))).toBe(true);
     expect(existsSync(join(REPO, "gemini/skills/board-ops/SKILL.md"))).toBe(true);
   });
