@@ -43,17 +43,29 @@ State lives in `~/.local/state/disk-space-alert/state.json` and every alert adds
 one line to `events.jsonl` there. `test` sends a test alert through both channels
 without touching the state, `status` reports the current reading, and `install`
 writes and loads the LaunchAgent.
+
+`daily` runs proactive maintenance regardless of free space (scheduled once a day
+through `install-daily` / `com.syz51.disk-space-daily`): it finishes trash, sweeps
+idle Claude Code session scratch (>=24 hours) and idle Cargo `target/` folders in
+agent worktrees (>=24 hours), removes clean merged T3 worktrees (>=48 hours idle,
+no open files, no active or recent T3 thread, tip reachable from a remote base
+ref), drops older duplicate Playwright browser revisions (>=24 hours idle), and
+runs safe tool cache cleanups (`uv cache prune`, `brew cleanup --prune=14 -s`,
+and `bun pm cache rm` when the Bun install cache exceeds its cap and no install
+is running). A non-blocking `sweep.lock` keeps overlapping runs from colliding.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
 import plistlib
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -62,10 +74,11 @@ import time
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 HOME = Path.home()
 LABEL = "com.syz51.disk-space-alert"
+DAILY_LABEL = "com.syz51.disk-space-daily"
 DEFAULT_VOLUME = "/System/Volumes/Data"
 DEFAULT_LOW_GB = 30.0
 DEFAULT_CRITICAL_GB = 20.0
@@ -74,9 +87,19 @@ REMIND_AFTER = timedelta(hours=24)
 INTERVAL_SECONDS = 600
 # A sweep stops after this long, so the run ends and launchd can start the next check.
 DEFAULT_SWEEP_MINUTES = 5.0
+DEFAULT_DAILY_SWEEP_MINUTES = 10.0
+DEFAULT_DAILY_HOUR = 4
+DEFAULT_DAILY_MINUTE = 30
 DEFAULT_STATE_DIR = HOME / ".local" / "state" / "disk-space-alert"
 DEFAULT_T3 = HOME / ".t3" / "bin" / "t3"
 DEFAULT_T3_PROJECT = HOME / ".t3" / "scratch"
+DEFAULT_T3_DB = HOME / ".t3" / "userdata" / "statev2.sqlite"
+DEFAULT_BUN_CACHE = HOME / ".bun" / "install" / "cache"
+DEFAULT_BUN_CACHE_MAX_GB = 1.0
+DEFAULT_PLAYWRIGHT_CACHE = HOME / "Library" / "Caches" / "ms-playwright"
+DEFAULT_BREW_PRUNE_DAYS = 14
+DEFAULT_WORKTREE_IDLE_HOURS = 48.0
+DEFAULT_DAILY_TARGET_IDLE_HOURS = 24.0
 DEFAULT_OSASCRIPT = "/usr/bin/osascript"
 LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 COMMAND_TIMEOUT_SECONDS = 90
@@ -90,7 +113,11 @@ PROCESS_SNAPSHOT_SECONDS = 5
 SWEEP_IDLE = timedelta(hours=24)
 SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 DEFAULT_WORKTREES = HOME / ".t3" / "worktrees"
-TARGET_IDLE = {"low": timedelta(hours=6), "critical": timedelta(hours=1)}
+TARGET_IDLE = {
+    "low": timedelta(hours=6),
+    "critical": timedelta(hours=1),
+    "daily": timedelta(hours=DEFAULT_DAILY_TARGET_IDLE_HOURS),
+}
 # The first line of the CACHEDIR.TAG cargo writes into every target folder.
 CARGO_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
 # Cargo holds these in each profile folder (target/debug, target/<triple>/release, ...)
@@ -98,6 +125,14 @@ CARGO_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
 CARGO_LOCKS = frozenset((".cargo-lock", ".cargo-build-lock", ".cargo-artifact-lock"))
 TARGET_SEARCH_DEPTH = 6
 LOCK_SEARCH_DEPTH = 3
+PLAYWRIGHT_DIR = re.compile(r"^(?P<browser>[a-z][a-z0-9_]*)-(?P<rev>\d+)$")
+ACTIVE_T3_RUN_STATUSES = ("queued", "preparing", "starting", "running", "waiting")
+BREW_COMMAND = re.compile(r"(?:^|/|\s)brew(?:\.rb)?(?:\s|$)")
+BUN_MUTATING_COMMAND = re.compile(r"(?:^|/|\s)bun\s+(?:install|i|add|a|update|up|ci|pm)\b")
+DAILY_SEARCH_PATH = (
+    f"{HOME / '.local' / 'bin'}:{HOME / '.bun' / 'bin'}"
+    ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+)
 
 Runner = Callable[[list, Optional[str]], subprocess.CompletedProcess]
 
@@ -138,6 +173,16 @@ class Config:
     # None turns that sweep off.
     worktrees: Optional[Path] = None
     sweep_minutes: float = DEFAULT_SWEEP_MINUTES
+    # Daily proactive cleanup paths; None leaves each step disabled unless enabled by `daily`.
+    t3_db: Optional[Path] = None
+    prune_worktrees: bool = True
+    bun_cache: Optional[Path] = None
+    bun_cache_max_gb: float = DEFAULT_BUN_CACHE_MAX_GB
+    playwright_cache: Optional[Path] = None
+    brew_prune_days: int = DEFAULT_BREW_PRUNE_DAYS
+    worktree_idle_hours: float = DEFAULT_WORKTREE_IDLE_HOURS
+    daily_target_idle_hours: float = DEFAULT_DAILY_TARGET_IDLE_HOURS
+    search_path: str = DAILY_SEARCH_PATH
 
 
 @dataclass(frozen=True)
@@ -620,7 +665,12 @@ def sweep_targets(
     limit = limit or Limit()
     if config.worktrees is None or not config.worktrees.is_dir():
         return []
-    cutoff = (now - TARGET_IDLE.get(level, TARGET_IDLE["low"])).timestamp()
+    idle_window = (
+        timedelta(hours=config.daily_target_idle_hours)
+        if level == "daily"
+        else TARGET_IDLE.get(level, TARGET_IDLE["low"])
+    )
+    cutoff = (now - idle_window).timestamp()
     swept = []
     processes, taken = None, 0.0
     for worktree in agent_worktrees(config.worktrees):
@@ -666,12 +716,13 @@ def sweep_targets(
 def sweep(
     config: Config, run: Runner, now: datetime, level: str = "low", dry_run: bool = False,
     clock: Callable[[], float] = time.monotonic, trash_only: bool = False,
+    limit: Optional[Limit] = None,
 ) -> tuple:
     """What earlier sweeps left in the trash, then (unless trash_only) idle session
     scratch, then idle cargo target folders, all within config.sweep_minutes. Returns what they removed, a
     failure record for each step that raised, and a `sweep_stopped` record or None; one
     step failing does not stop the next or lose what it removed."""
-    limit = Limit(clock() + config.sweep_minutes * 60, clock)
+    limit = limit or Limit(clock() + config.sweep_minutes * 60, clock)
     swept, failures = [], []
 
     def empty() -> list:
@@ -700,6 +751,395 @@ def sweep(
     if limit.reached:
         stopped = {"at": now.isoformat(timespec="seconds"), "event": "sweep_stopped", "limit_minutes": config.sweep_minutes}
     return swept, failures, stopped
+
+
+@contextlib.contextmanager
+def sweep_lock(state_dir: Path) -> Iterator[bool]:
+    """Acquire a non-blocking exclusive lock so overlapping check and daily runs do not race.
+    Yields True when the lock is held, False when another run already holds it."""
+    descriptor = None
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(state_dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        if descriptor is not None:
+            os.close(descriptor)
+        yield False
+        return
+    except OSError:
+        if descriptor is not None:
+            os.close(descriptor)
+        # If state_dir cannot hold a lock file (e.g. a full disk or unwritable parent),
+        # fall through rather than silently blocking emergency cleanup.
+        yield True
+        return
+    try:
+        yield True
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
+def tree_size(path: Path) -> int:
+    """Disk bytes allocated under path, counting each hard-linked inode once."""
+    seen = set()
+    total = 0
+
+    def add(entry) -> None:
+        nonlocal total
+        try:
+            stats = os.lstat(entry)
+        except OSError:
+            return
+        if (stats.st_dev, stats.st_ino) not in seen:
+            seen.add((stats.st_dev, stats.st_ino))
+            total += stats.st_blocks * 512
+
+    add(path)
+    if path.is_symlink() or not path.is_dir():
+        return total
+    for folder, dirs, files in os.walk(path):
+        for name in dirs + files:
+            add(os.path.join(folder, name))
+    return total
+
+
+def parse_iso_utc(value: Optional[str]) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def held_t3_worktrees(db_path: Path, cutoff: datetime) -> Optional[frozenset]:
+    """Resolved worktree paths held by T3 Code: any thread with an active run, a pending
+    runtime request, or an updated_at newer than cutoff. Returns None if db_path cannot be read."""
+    if not db_path.is_file():
+        return None
+    statuses = ", ".join(f"'{status}'" for status in ACTIVE_T3_RUN_STATUSES)
+    query = f"""
+    select
+      json_extract(t.payload_json, '$.worktreePath') as wt,
+      max(
+        exists (
+          select 1 from orchestration_v2_projection_runs r
+          where r.thread_id = t.thread_id and r.status in ({statuses})
+        )
+        or exists (
+          select 1 from orchestration_v2_projection_runtime_requests req
+          where req.thread_id = t.thread_id and req.status = 'pending'
+        )
+      ) as active,
+      max(t.updated_at) as updated_at
+    from orchestration_v2_projection_threads t
+    where json_extract(t.payload_json, '$.worktreePath') is not null
+    group by wt
+    """
+    connection = None
+    try:
+        connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+        rows = connection.execute(query).fetchall()
+    except (sqlite3.Error, OSError):
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+    held = set()
+    cutoff_utc = cutoff.astimezone(timezone.utc)
+    for wt, active, updated_at in rows:
+        if not isinstance(wt, str) or not wt:
+            continue
+        updated = parse_iso_utc(updated_at)
+        if active or updated is None or updated > cutoff_utc:
+            try:
+                held.add(str(Path(wt).resolve()))
+            except OSError:
+                held.add(wt)
+    return frozenset(held)
+
+
+def worktree_gitdir(worktree: Path) -> Optional[Path]:
+    try:
+        line = (worktree / ".git").read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not line.startswith("gitdir: "):
+        return None
+    return (worktree / line[len("gitdir: "):]).resolve()
+
+
+def worktree_base_refs(repo: Path, run: Runner) -> list:
+    """Remote base refs whose ancestors are safe to drop (origin/HEAD and main checkout's upstream)."""
+    refs = []
+    for cmd in (
+        ["git", "-C", str(repo), "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        ["git", "-C", str(repo), "rev-parse", "--symbolic-full-name", "@{u}"],
+    ):
+        result = run(cmd, None)
+        if result.returncode == 0:
+            ref = result.stdout.strip()
+            if ref and ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def worktree_has_secret_env(worktree: Path) -> bool:
+    """True when the worktree root has any .env* file other than .env.example (unless .env
+    is byte-for-byte identical to .env.example). Protects gitignored local secrets."""
+    try:
+        entries = list(worktree.iterdir())
+    except OSError:
+        return True
+    example = worktree / ".env.example"
+    for entry in entries:
+        name = entry.name
+        if name == ".env.example" or not (name == ".env" or name.startswith(".env.")):
+            continue
+        if entry.is_symlink() or not entry.is_file():
+            return True
+        if name == ".env" and example.is_file():
+            try:
+                if entry.read_bytes() == example.read_bytes():
+                    continue
+            except OSError:
+                return True
+        return True
+    return False
+
+
+def worktree_is_idle(worktree: Path, cutoff: float, run: Runner) -> bool:
+    """Cheap idle check for a git worktree: root, .git, gitdir HEAD/index, top-level entries
+    (excluding node_modules/target), and last commit timestamp must all be <= cutoff."""
+    check_paths = [worktree, worktree / ".git"]
+    gitdir = worktree_gitdir(worktree)
+    if gitdir is not None:
+        for name in ("HEAD", "index", "ORIG_HEAD"):
+            candidate = gitdir / name
+            if candidate.exists():
+                check_paths.append(candidate)
+    try:
+        for entry in worktree.iterdir():
+            if entry.name in ("node_modules", "target", ".git"):
+                continue
+            check_paths.append(entry)
+    except OSError:
+        return False
+    for path in check_paths:
+        try:
+            stats = os.lstat(path)
+        except OSError:
+            return False
+        if max(stats.st_mtime, stats.st_ctime) > cutoff:
+            return False
+    commit_time = run(["git", "-C", str(worktree), "log", "-1", "--format=%ct"], None)
+    if commit_time.returncode != 0:
+        return False
+    try:
+        if float(commit_time.stdout.strip()) > cutoff:
+            return False
+    except ValueError:
+        return False
+    return True
+
+
+def sweep_merged_worktrees(
+    config: Config, run: Runner, now: datetime, dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic, limit: Optional[Limit] = None,
+) -> list:
+    """Remove clean T3 worktrees that have been idle for >= worktree_idle_hours, hold no
+    uncommitted changes or secret .env files, have no active/recent T3 thread or running
+    process, and whose HEAD is already an ancestor of a remote base ref."""
+    limit = limit or Limit()
+    if not config.prune_worktrees or config.worktrees is None or not config.worktrees.is_dir():
+        return []
+    idle_delta = timedelta(hours=config.worktree_idle_hours)
+    cutoff_dt = now - idle_delta
+    cutoff = cutoff_dt.timestamp()
+    held: frozenset = frozenset()
+    if config.t3_db is not None:
+        loaded = held_t3_worktrees(config.t3_db, cutoff_dt)
+        if loaded is None:
+            raise OSError(f"T3 state database unreadable: {config.t3_db}")
+        held = loaded
+    swept = []
+    base_refs_cache: dict = {}
+    processes, taken = None, 0.0
+    for project in subfolders(config.worktrees):
+        for tree in subfolders(project):
+            if limit.passed():
+                return swept
+            resolved = str(tree.resolve())
+            if resolved in held:
+                continue
+            repo = main_checkout(tree)
+            if repo is None:
+                continue
+            if not worktree_is_idle(tree, cutoff, run):
+                continue
+            if worktree_has_secret_env(tree):
+                continue
+            status = run(["git", "-C", str(tree), "status", "--porcelain", "--untracked-files=normal"], None)
+            if status.returncode != 0 or status.stdout.strip():
+                continue
+            head_res = run(["git", "-C", str(tree), "rev-parse", "HEAD"], None)
+            if head_res.returncode != 0:
+                continue
+            head = head_res.stdout.strip()
+            if not head:
+                continue
+            if repo not in base_refs_cache:
+                base_refs_cache[repo] = worktree_base_refs(repo, run)
+            refs = base_refs_cache[repo]
+            if not refs:
+                continue
+            merged = any(
+                run(["git", "-C", str(repo), "merge-base", "--is-ancestor", head, ref], None).returncode == 0
+                for ref in refs
+            )
+            if not merged:
+                continue
+            if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
+                processes, taken = running_processes(run, None), clock()
+                if processes is None:
+                    return swept
+            if processes.inside(tree):
+                continue
+            size = tree_size(tree)
+            error = None
+            if not dry_run:
+                removed = run(["git", "-C", str(repo), "worktree", "remove", str(tree)], None)
+                if removed.returncode != 0:
+                    error = (removed.stderr or removed.stdout).strip() or f"git worktree remove exit {removed.returncode}"
+            swept.append(Swept(str(tree), size, error, "worktree"))
+    return swept
+
+
+def sweep_playwright_cache(
+    config: Config, run: Runner, now: datetime, dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic, limit: Optional[Limit] = None,
+) -> list:
+    """Remove older duplicate browser revisions in ms-playwright (>=24h idle), keeping the
+    newest numeric revision of each browser. Skips if Playwright or a headless shell runs."""
+    limit = limit or Limit()
+    root = config.playwright_cache
+    if root is None or not root.is_dir():
+        return []
+    groups: dict = {}
+    for entry in subfolders(root):
+        match = PLAYWRIGHT_DIR.match(entry.name)
+        if match:
+            groups.setdefault(match.group("browser"), []).append((int(match.group("rev")), entry))
+    older = []
+    for revisions in groups.values():
+        if len(revisions) < 2:
+            continue
+        revisions.sort(key=lambda pair: pair[0])
+        older.extend(folder for _rev, folder in revisions[:-1])
+    if not older:
+        return []
+    cutoff = (now - SWEEP_IDLE).timestamp()
+    candidates = []
+    for folder in older:
+        size = idle_size(folder, cutoff)
+        if size is not None:
+            candidates.append((folder, size))
+    if not candidates:
+        return []
+    processes = running_processes(run, None)
+    if processes is None:
+        return []
+    for line in processes.commands.splitlines():
+        lowered = line.lower()
+        if "disk_space_alert.py" in lowered:
+            continue
+        if "playwright" in lowered or "chrome-headless-shell" in lowered:
+            return []
+    swept = []
+    for folder, size in candidates:
+        if limit.passed():
+            break
+        if processes.inside(folder):
+            continue
+        error = None
+        if not dry_run:
+            try:
+                discard([folder], trash_dir(config), limit)
+            except SweepStopped as stop:
+                swept.append(Swept(str(folder), size, str(stop) if stop.in_place else None, "playwright"))
+                break
+            except OSError as failure:
+                error = str(failure)
+        swept.append(Swept(str(folder), size, error, "playwright"))
+    return swept
+
+
+def sweep_tool_caches(
+    config: Config, run: Runner, dry_run: bool = False, limit: Optional[Limit] = None,
+) -> list:
+    """Run official, lock/process-safe cache cleanups: uv cache prune, brew cleanup, and
+    bun pm cache rm (only when ~/.bun/install/cache exceeds bun_cache_max_gb)."""
+    limit = limit or Limit()
+    results = []
+    processes = None
+
+    def get_processes() -> Optional[Processes]:
+        nonlocal processes
+        if processes is None:
+            processes = running_processes(run, None)
+        return processes
+
+    uv = shutil.which("uv", path=config.search_path)
+    if uv and not limit.passed():
+        if dry_run:
+            results.append({"tool": "uv", "action": "would run uv cache prune", "ran": False, "error": None})
+        else:
+            res = run([uv, "cache", "prune"], None)
+            err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
+            results.append({"tool": "uv", "action": "uv cache prune", "ran": True, "error": err})
+
+    brew = shutil.which("brew", path=config.search_path)
+    if brew and not limit.passed():
+        procs = get_processes()
+        if procs is None:
+            results.append({"tool": "brew", "skipped": "unreadable_processes", "ran": False, "error": None})
+        elif BREW_COMMAND.search(procs.commands):
+            results.append({"tool": "brew", "skipped": "brew_running", "ran": False, "error": None})
+        else:
+            args = [brew, "cleanup"] + (["-n"] if dry_run else []) + [f"--prune={config.brew_prune_days}", "-s"]
+            res = run(args, None)
+            err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
+            results.append({"tool": "brew", "action": " ".join(args[1:]), "ran": not dry_run, "error": err})
+
+    bun_cache = config.bun_cache
+    bun = shutil.which("bun", path=config.search_path)
+    if bun and bun_cache is not None and bun_cache.is_dir() and not limit.passed():
+        size = tree_size(bun_cache)
+        cap_bytes = config.bun_cache_max_gb * 1e9
+        if size <= cap_bytes:
+            results.append({"tool": "bun", "skipped": "below_cap", "bytes": size, "ran": False, "error": None})
+        else:
+            procs = get_processes()
+            if procs is None:
+                results.append({"tool": "bun", "skipped": "unreadable_processes", "bytes": size, "ran": False, "error": None})
+            elif BUN_MUTATING_COMMAND.search(procs.commands):
+                results.append({"tool": "bun", "skipped": "bun_install_running", "bytes": size, "ran": False, "error": None})
+            elif dry_run:
+                results.append({"tool": "bun", "action": "would run bun pm cache rm", "bytes": size, "ran": False, "error": None})
+            else:
+                res = run([bun, "pm", "cache", "rm"], None)
+                err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
+                results.append({"tool": "bun", "action": "bun pm cache rm", "bytes": size, "ran": True, "error": err})
+
+    return results
 
 
 def format_size(size: int) -> str:
@@ -927,7 +1367,11 @@ def run_check(
     if config.claude_tmp or config.worktrees:
         # A sweep that fails must not stop the rest of the run. While space is ok it only
         # finishes what an earlier sweep left in the trash.
-        swept, failures, stopped = sweep(config, run, now, state.level, clock=clock, trash_only=state.level == "ok")
+        with sweep_lock(config.state_dir) as acquired:
+            if not acquired:
+                log(config, {"at": now.isoformat(timespec="seconds"), "event": "sweep_skipped", "reason": "lock_held"})
+                return 1 if failed else 0
+            swept, failures, stopped = sweep(config, run, now, state.level, clock=clock, trash_only=state.level == "ok")
         for failure in failures:
             failed = True
             log(config, failure)
@@ -946,7 +1390,14 @@ def run_check(
 
 
 def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
-    swept, failures, stopped = sweep(config, run, now, "low", dry_run)
+    lock_ctx = contextlib.nullcontext(True) if dry_run else sweep_lock(config.state_dir)
+    with lock_ctx as acquired:
+        if not acquired:
+            record = {"at": now.isoformat(timespec="seconds"), "event": "sweep_skipped", "reason": "lock_held"}
+            append_event(config.state_dir, record)
+            print(json.dumps(record, indent=2, ensure_ascii=False))
+            return 0
+        swept, failures, stopped = sweep(config, run, now, "low", dry_run)
     if not dry_run:
         for failure in failures:
             append_event(config.state_dir, failure)
@@ -967,6 +1418,88 @@ def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
         ensure_ascii=False,
     ))
     return 1 if failures or any(item.error for item in swept) else 0
+
+
+def run_daily(
+    config: Config, run: Runner, now: datetime, dry_run: bool = False,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Proactive daily maintenance: finishes trash, sweeps idle Claude sessions (>=24h),
+    idle Cargo targets (>=daily_target_idle_hours), clean merged T3 worktrees (>=worktree_idle_hours),
+    older duplicate Playwright browsers, and safe tool caches. Quiet on success; notifies on failure."""
+    lock_ctx = contextlib.nullcontext(True) if dry_run else sweep_lock(config.state_dir)
+    with lock_ctx as acquired:
+        if not acquired:
+            record = {"at": now.isoformat(timespec="seconds"), "event": "daily_skipped", "reason": "lock_held"}
+            append_event(config.state_dir, record)
+            print(json.dumps(record, indent=2, ensure_ascii=False))
+            return 0
+        limit = Limit(clock() + config.sweep_minutes * 60, clock)
+        swept, failures, stopped = sweep(config, run, now, "daily", dry_run, clock=clock, limit=limit)
+        for name, step in (
+            ("worktrees", lambda: sweep_merged_worktrees(config, run, now, dry_run, clock=clock, limit=limit)),
+            ("playwright", lambda: sweep_playwright_cache(config, run, now, dry_run, clock=clock, limit=limit)),
+        ):
+            if limit.reached:
+                break
+            try:
+                swept += step()
+            except SweepStopped:
+                pass
+            except OSError as error:
+                failures.append(
+                    {"at": now.isoformat(timespec="seconds"), "event": "daily_failed", "step": name, "error": str(error)}
+                )
+        caches = []
+        if not limit.reached:
+            try:
+                caches = sweep_tool_caches(config, run, dry_run=dry_run, limit=limit)
+            except OSError as error:
+                failures.append(
+                    {"at": now.isoformat(timespec="seconds"), "event": "daily_failed", "step": "caches", "error": str(error)}
+                )
+        if limit.reached and stopped is None:
+            stopped = {"at": now.isoformat(timespec="seconds"), "event": "sweep_stopped", "limit_minutes": config.sweep_minutes}
+
+    freed_bytes = sum(item.bytes for item in swept if item.error is None)
+    freed_bytes += sum(entry.get("bytes", 0) for entry in caches if entry.get("ran") and entry.get("error") is None)
+    item_errors = {item.path: item.error for item in swept if item.error}
+    cache_errors = {entry["tool"]: entry["error"] for entry in caches if entry.get("error")}
+    had_error = bool(failures or item_errors or cache_errors)
+    summary = {
+        "at": now.isoformat(timespec="seconds"),
+        "event": "daily",
+        "dry_run": dry_run,
+        "freed_gb": round(freed_bytes / 1e9, 2),
+        "sessions": [asdict(item) for item in swept if item.kind == "session"],
+        "targets": [asdict(item) for item in swept if item.kind == "target"],
+        "worktrees": [asdict(item) for item in swept if item.kind == "worktree"],
+        "playwright": [asdict(item) for item in swept if item.kind == "playwright"],
+        "caches": caches,
+        "failures": failures,
+        "stopped": stopped is not None,
+    }
+    if not dry_run:
+        log_record = {
+            "at": summary["at"],
+            "event": "daily",
+            "freed_gb": summary["freed_gb"],
+            "removed": [item.path for item in swept if item.error is None],
+            "caches": caches,
+            "errors": {**item_errors, **cache_errors},
+            "failures": failures,
+            "stopped": summary["stopped"],
+        }
+        append_event(config.state_dir, log_record)
+        if had_error:
+            notify(
+                run,
+                config,
+                "Disk space: daily cleanup had errors",
+                "Some daily cleanup steps failed; see ~/.local/state/disk-space-alert/events.jsonl.",
+            )
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 1 if had_error else 0
 
 def run_test(config: Config, run: Runner, now: datetime) -> int:
     free = free_gb(config.volume)
@@ -992,6 +1525,10 @@ def run_test(config: Config, run: Runner, now: datetime) -> int:
 
 def plist_path() -> Path:
     return LAUNCH_AGENTS / f"{LABEL}.plist"
+
+
+def daily_plist_path() -> Path:
+    return LAUNCH_AGENTS / f"{DAILY_LABEL}.plist"
 
 
 def launch_agent(
@@ -1028,28 +1565,84 @@ def launch_agent(
     }
 
 
+def daily_launch_agent(
+    uv: str, script: Path, state_dir: Path,
+    hour: int = DEFAULT_DAILY_HOUR, minute: int = DEFAULT_DAILY_MINUTE,
+    sweep_minutes: float = DEFAULT_DAILY_SWEEP_MINUTES,
+    bun_cache_max_gb: float = DEFAULT_BUN_CACHE_MAX_GB,
+    brew_prune_days: int = DEFAULT_BREW_PRUNE_DAYS,
+) -> dict:
+    return {
+        "Label": DAILY_LABEL,
+        "ProgramArguments": [
+            uv,
+            "run",
+            "--no-project",
+            "--python",
+            "3.11",
+            "python",
+            "-B",
+            str(script),
+            "daily",
+            "--sweep-minutes",
+            f"{sweep_minutes:g}",
+            "--bun-cache-max-gb",
+            f"{bun_cache_max_gb:g}",
+            "--brew-prune-days",
+            str(brew_prune_days),
+        ],
+        "StartCalendarInterval": {"Hour": hour, "Minute": minute},
+        "RunAtLoad": False,
+        "ProcessType": "Standard",
+        "EnvironmentVariables": {"PATH": DAILY_SEARCH_PATH},
+        "StandardOutPath": str(state_dir / "daily-launchd.log"),
+        "StandardErrorPath": str(state_dir / "daily-launchd.log"),
+    }
+
+
+def install_plist(run: Runner, label: str, target: Path, agent: dict, dry_run: bool) -> int:
+    if dry_run:
+        sys.stdout.write(plistlib.dumps(agent).decode())
+        return 0
+    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(plistlib.dumps(agent))
+    domain = f"gui/{os.getuid()}"
+    run(["launchctl", "bootout", f"{domain}/{label}"], None)
+    loaded = run(["launchctl", "bootstrap", domain, str(target)], None)
+    if loaded.returncode != 0:
+        target.unlink(missing_ok=True)
+        print(f"launchctl bootstrap failed: {loaded.stderr.strip()}", file=sys.stderr)
+        return 1
+    print(f"Loaded {label} from {target}")
+    return 0
+
+
 def run_install(run: Runner, dry_run: bool, low_gb: float, critical_gb: float, sweep_minutes: float) -> int:
-    uv = shutil.which("uv")
+    uv = shutil.which("uv", path=DAILY_SEARCH_PATH) or shutil.which("uv")
     if uv is None:
         print("uv is not on PATH; install it first.", file=sys.stderr)
         return 1
     agent = launch_agent(
         str(Path(uv).resolve()), Path(__file__).resolve(), DEFAULT_STATE_DIR, low_gb, critical_gb, sweep_minutes
     )
-    if dry_run:
-        sys.stdout.write(plistlib.dumps(agent).decode())
-        return 0
-    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
-    LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
-    plist_path().write_bytes(plistlib.dumps(agent))
-    domain = f"gui/{os.getuid()}"
-    run(["launchctl", "bootout", f"{domain}/{LABEL}"], None)
-    loaded = run(["launchctl", "bootstrap", domain, str(plist_path())], None)
-    if loaded.returncode != 0:
-        print(f"launchctl bootstrap failed: {loaded.stderr.strip()}", file=sys.stderr)
+    return install_plist(run, LABEL, plist_path(), agent, dry_run)
+
+
+def run_install_daily(
+    run: Runner, dry_run: bool, hour: int, minute: int,
+    sweep_minutes: float, bun_cache_max_gb: float, brew_prune_days: int,
+) -> int:
+    uv = shutil.which("uv", path=DAILY_SEARCH_PATH) or shutil.which("uv")
+    if uv is None:
+        print("uv is not on PATH; install it first.", file=sys.stderr)
         return 1
-    print(f"Loaded {LABEL} from {plist_path()}")
-    return 0
+    agent = daily_launch_agent(
+        str(Path(uv).resolve()), Path(__file__).resolve(), DEFAULT_STATE_DIR,
+        hour=hour, minute=minute, sweep_minutes=sweep_minutes,
+        bun_cache_max_gb=bun_cache_max_gb, brew_prune_days=brew_prune_days,
+    )
+    return install_plist(run, DAILY_LABEL, daily_plist_path(), agent, dry_run)
 
 
 def run_uninstall(run: Runner) -> int:
@@ -1059,10 +1652,18 @@ def run_uninstall(run: Runner) -> int:
     return 0
 
 
+def run_uninstall_daily(run: Runner) -> int:
+    run(["launchctl", "bootout", f"gui/{os.getuid()}/{DAILY_LABEL}"], None)
+    daily_plist_path().unlink(missing_ok=True)
+    print(f"Removed {DAILY_LABEL}; state in {DEFAULT_STATE_DIR} is kept.")
+    return 0
+
+
 def run_status(config: Config, run: Runner) -> int:
     free = free_gb(config.volume)
     state = load_state(config.state_dir / "state.json")
     loaded = run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"], None).returncode == 0
+    daily_loaded = run(["launchctl", "print", f"gui/{os.getuid()}/{DAILY_LABEL}"], None).returncode == 0
     print(
         json.dumps(
             {
@@ -1072,6 +1673,7 @@ def run_status(config: Config, run: Runner) -> int:
                 "thresholds_gb": {"low": config.low_gb, "critical": config.critical_gb},
                 "state": asdict(state),
                 "launch_agent_loaded": loaded,
+                "daily_agent_loaded": daily_loaded,
             },
             indent=2,
         )
@@ -1084,6 +1686,29 @@ def positive(value: str) -> float:
     if not number > 0:
         raise argparse.ArgumentTypeError(f"must be above 0: {value}")
     return number
+
+
+def non_negative(value: str) -> float:
+    number = float(value)
+    if not number >= 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or above: {value}")
+    return number
+
+
+def non_negative_int(value: str) -> int:
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or above: {value}")
+    return number
+
+
+def int_range(low: int, high: int) -> Callable[[str], int]:
+    def check_value(value: str) -> int:
+        number = int(value)
+        if not low <= number <= high:
+            raise argparse.ArgumentTypeError(f"must be between {low} and {high}: {value}")
+        return number
+    return check_value
 
 
 def parse_args(argv: list) -> argparse.Namespace:
@@ -1102,7 +1727,7 @@ def parse_args(argv: list) -> argparse.Namespace:
         command.add_argument("--no-notify", action="store_true", help="skip macOS notifications")
         add_sweep(command)
 
-    def add_sweep(command: argparse.ArgumentParser) -> None:
+    def add_sweep(command: argparse.ArgumentParser, default_minutes: float = DEFAULT_SWEEP_MINUTES) -> None:
         command.add_argument("--claude-tmp", type=Path, default=DEFAULT_CLAUDE_TMP)
         command.add_argument("--claude-projects", type=Path, default=DEFAULT_CLAUDE_PROJECTS)
         command.add_argument("--claude-sessions", type=Path, default=DEFAULT_CLAUDE_SESSIONS)
@@ -1113,11 +1738,11 @@ def parse_args(argv: list) -> argparse.Namespace:
         command.add_argument(
             "--no-sweep", action="store_true", help="never remove session or target folders"
         )
-        add_sweep_minutes(command)
+        add_sweep_minutes(command, default_minutes)
 
-    def add_sweep_minutes(command: argparse.ArgumentParser) -> None:
+    def add_sweep_minutes(command: argparse.ArgumentParser, default: float = DEFAULT_SWEEP_MINUTES) -> None:
         command.add_argument(
-            "--sweep-minutes", type=positive, default=DEFAULT_SWEEP_MINUTES,
+            "--sweep-minutes", type=positive, default=default,
             help="stop a sweep after this many minutes; the next one goes on",
         )
 
@@ -1135,6 +1760,16 @@ def parse_args(argv: list) -> argparse.Namespace:
     install.add_argument("--critical-gb", type=float, default=DEFAULT_CRITICAL_GB)
     add_sweep_minutes(install)
     commands.add_parser("uninstall", help="unload and remove the LaunchAgent")
+
+    install_daily = commands.add_parser("install-daily", help="write and load the daily cleanup LaunchAgent")
+    install_daily.add_argument("--dry-run", action="store_true", help="print the plist only")
+    install_daily.add_argument("--hour", type=int_range(0, 23), default=DEFAULT_DAILY_HOUR)
+    install_daily.add_argument("--minute", type=int_range(0, 59), default=DEFAULT_DAILY_MINUTE)
+    add_sweep_minutes(install_daily, DEFAULT_DAILY_SWEEP_MINUTES)
+    install_daily.add_argument("--bun-cache-max-gb", type=non_negative, default=DEFAULT_BUN_CACHE_MAX_GB)
+    install_daily.add_argument("--brew-prune-days", type=non_negative_int, default=DEFAULT_BREW_PRUNE_DAYS)
+    commands.add_parser("uninstall-daily", help="unload and remove the daily cleanup LaunchAgent")
+
     sweep_command = commands.add_parser(
         "sweep", help="remove idle session scratch and worktree target folders now"
     )
@@ -1142,8 +1777,25 @@ def parse_args(argv: list) -> argparse.Namespace:
     sweep_command.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     add_sweep(sweep_command)
 
+    daily_command = commands.add_parser(
+        "daily", help="run proactive daily cleanup of idle targets, sessions, merged worktrees and safe caches"
+    )
+    daily_command.add_argument("--dry-run", action="store_true", help="preview without removing")
+    daily_command.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    daily_command.add_argument("--t3-db", type=Path, default=DEFAULT_T3_DB)
+    daily_command.add_argument("--no-worktree-prune", action="store_true", help="skip removing merged T3 worktrees")
+    daily_command.add_argument("--bun-cache", type=Path, default=DEFAULT_BUN_CACHE)
+    daily_command.add_argument("--bun-cache-max-gb", type=non_negative, default=DEFAULT_BUN_CACHE_MAX_GB)
+    daily_command.add_argument("--playwright-cache", type=Path, default=DEFAULT_PLAYWRIGHT_CACHE)
+    daily_command.add_argument("--brew-prune-days", type=non_negative_int, default=DEFAULT_BREW_PRUNE_DAYS)
+    daily_command.add_argument("--worktree-idle-hours", type=positive, default=DEFAULT_WORKTREE_IDLE_HOURS)
+    daily_command.add_argument("--target-idle-hours", type=positive, default=DEFAULT_DAILY_TARGET_IDLE_HOURS)
+    daily_command.add_argument("--osascript", default=DEFAULT_OSASCRIPT)
+    daily_command.add_argument("--no-notify", action="store_true", help="skip macOS notifications")
+    add_sweep(daily_command, DEFAULT_DAILY_SWEEP_MINUTES)
+
     args = parser.parse_args(argv)
-    if args.command not in ("uninstall", "sweep") and args.critical_gb >= args.low_gb:
+    if args.command in ("check", "test", "status", "install") and args.critical_gb >= args.low_gb:
         parser.error("--critical-gb must be below --low-gb")
     return args
 
@@ -1155,6 +1807,13 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
         return run_install(run, args.dry_run, args.low_gb, args.critical_gb, args.sweep_minutes)
     if args.command == "uninstall":
         return run_uninstall(run)
+    if args.command == "install-daily":
+        return run_install_daily(
+            run, args.dry_run, args.hour, args.minute,
+            args.sweep_minutes, args.bun_cache_max_gb, args.brew_prune_days,
+        )
+    if args.command == "uninstall-daily":
+        return run_uninstall_daily(run)
     # A simulated reading never sweeps: it must not touch real folders.
     simulated = getattr(args, "free_gb", None) is not None
     claude_tmp = None if args.no_sweep or simulated else args.claude_tmp
@@ -1171,6 +1830,25 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
             sweep_minutes=args.sweep_minutes,
         )
         return run_sweep(config, run, now, args.dry_run)
+    if args.command == "daily":
+        config = Config(
+            state_dir=args.state_dir,
+            osascript=None if args.no_notify else args.osascript,
+            claude_tmp=claude_tmp,
+            claude_projects=args.claude_projects,
+            claude_sessions=args.claude_sessions,
+            worktrees=worktrees,
+            sweep_minutes=args.sweep_minutes,
+            t3_db=None if args.no_worktree_prune else args.t3_db,
+            prune_worktrees=not args.no_worktree_prune,
+            bun_cache=args.bun_cache,
+            bun_cache_max_gb=args.bun_cache_max_gb,
+            playwright_cache=args.playwright_cache,
+            brew_prune_days=args.brew_prune_days,
+            worktree_idle_hours=args.worktree_idle_hours,
+            daily_target_idle_hours=args.target_idle_hours,
+        )
+        return run_daily(config, run, now, args.dry_run)
     config = Config(
         volume=args.volume,
         low_gb=args.low_gb,
