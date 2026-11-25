@@ -286,6 +286,28 @@ change = "A PR on dotfiles"
 verify = ["git config --list --show-origin"]
 
 [[setup]]
+id = "research-factory"
+title = "Research factory tools: lab, papers, claimcheck, prov, ireval and agentprof"
+covers = [
+  "the research-factory CLIs and skill tracked on the research-factory board: lab (github.com/syz51/research-factory), papers (github.com/syz51/papers), claimcheck (github.com/syz51/claimcheck), prov (github.com/syz51/prov), ireval (github.com/syz51/ireval) and agentprof (github.com/syz51/agentprof)",
+]
+owner = { repo = "github.com/syz51/research-factory (and syz51/papers, syz51/claimcheck, syz51/prov, syz51/ireval, syz51/agentprof)", board = "research-factory" }
+channel = "board"
+change = "A PR on the tool's repository, tracked on the research-factory board; reinstall with `cargo install` on both Macs"
+verify = ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings", "cargo test"]
+
+[[setup]]
+id = "masters"
+title = "Masters research project"
+covers = [
+  "the local masters coursework and research repository (no git remote by design), tracked on the research-factory board by convention",
+]
+owner = { repo = "local masters repository (no git remote)", board = "research-factory" }
+channel = "board"
+change = "A commit on the local masters repository, tracked on the research-factory board; run `sh docs/process/backup-git.sh` after merges to main"
+verify = ["lab check --new-only"]
+
+[[setup]]
 id = "ci"
 title = "A repository's CI and merge rules"
 covers = ["a repository's GitHub Actions workflows, required checks, branch protection, merge queue and auto-merge rules"]
