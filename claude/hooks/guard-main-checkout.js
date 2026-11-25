@@ -67,6 +67,8 @@ const HINTS = {
 // The git config forms that only read, so the words xargs adds cannot make them write.
 const CONFIG_READS = ["get", "list", "--get", "--get-all", "--get-regexp", "--list", "-l"];
 const XARGS_ROUTE = "Write the command out literally, or run it from your own worktree (EnterWorktree in Claude Code, a worktree thread in T3).";
+const XARGS_OPAQUE_ROUTE = 'Write the command out literally, pass each item as an argument (`xargs -I{} sh -c \'… "$1" …\' _ {}`), loop with `while read`, '
+  + "or run it from your own worktree (EnterWorktree in Claude Code, a worktree thread in T3).";
 const CONFIG_WRITES = ["set", "unset", "rename-section", "remove-section", "edit", "--unset", "--unset-all", "--add",
   "--replace-all", "--rename-section", "--remove-section", "--edit", "-e"];
 
@@ -392,7 +394,7 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
       for (const candidate of candidates) {
         // xargs runs a command the guard cannot see; in a main checkout it may change the branch.
         const top = candidate === undefined ? undefined : sharedMainCheckout(candidate, git, tempRoots);
-        if (top !== undefined) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_ROUTE}`;
+        if (top !== undefined) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command the guard cannot see, in ${top}, a main checkout other threads share. ${XARGS_OPAQUE_ROUTE}`;
       }
       return undefined;
     }
