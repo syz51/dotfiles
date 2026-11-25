@@ -288,7 +288,8 @@ test("scripts nested too deeply to follow are skipped, not blocked", () => {
 });
 
 test("the reason names the command and the replacement", () => {
-  expect(verdict("python3 check.py")).toContain("`uv run python");
+  expect(verdict("python3 check.py")).toContain("`uv run --no-project python …`");
+  expect(verdict("python3 check.py")).not.toContain("`uv run python");
   expect(verdict("node check.js")).toContain("`bun <file>`");
   expect(verdict("node check.js")).not.toContain("lockfile");
   expect(verdict("pnpm install")).toContain("`bun install`");
@@ -303,6 +304,21 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("codex exec hi")).toContain("Gemini 4 Neon");
   expect(verdict("codex exec hi")).not.toContain("bun");
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
+});
+
+test("local python refusal leads with uv run --no-project python, names -I and the Edit tool", () => {
+  const guidance = "Run Python through uv instead: `uv run --no-project python …`, "
+    + "`uv run --no-project python -I …` for reading downloaded or untrusted files, "
+    + "`uv run --with pytest pytest …` or `uv pip …`. Use the Edit tool for file edits.";
+  for (const [command, shown] of [
+    ["python3 -c 'print(1)'", "`python3 -c print(1)`"],
+    ["python3 -I -c 'print(1)'", "`python3 -I -c print(1)`"],
+    ["python3 - <<EOF\nprint(1)\nEOF", "`python3 -`"],
+  ]) {
+    const reason = verdict(command);
+    expect(reason).toBe(`${shown} runs python3 directly. ${guidance}`);
+    expect(reason).not.toContain("`uv run python");
+  }
 });
 
 // uv may be missing on a remote host, so the reason there names jq for JSON and uv only where
@@ -331,7 +347,7 @@ test("python over ssh stays blocked, and its reason names what works on the remo
   expect(verdict("ssh host 'cd app && npm ci'")).toContain("`bun install`");
   for (const command of ["python3 -c 'import json'", "ssh host ls; python3 check.py", "ssh -o ProxyCommand='python3 proxy.py' host ls",
     "ssh host cat x.json | python3 -c 'import json'", "python3 -c \"$(ssh host cat x.py)\"", "vpx -c 'python3 x.py; ssh host ls'"]) {
-    expect(verdict(command)).toContain("Run Python through uv instead: `uv run python …`");
+    expect(verdict(command)).toContain("Run Python through uv instead: `uv run --no-project python …`");
     expect(verdict(command)).not.toContain("remote host");
   }
 });
