@@ -746,8 +746,17 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
     ["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"],
     ["git ls-files -m | xargs git checkout --"], ["git ls-files | xargs git add"], ["echo a | xargs git config --get"], ["echo user.name | xargs git config --global --get"],
     ["git branch --merged | xargs git branch -d"], ["echo 12 | xargs gh pr view"],
+    ["ls | xargs -I{} sh -c 'test -s \"$1\" && echo \"$1\"' _ {}"],
+    ["git rev-list -n 5 HEAD | xargs -I{} sh -c 'git show --stat \"$1\"' _ {}"],
+    ["git rev-list -n 5 HEAD | while IFS= read -r rev; do git show --stat \"$rev\"; done"],
   ])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
+  });
+
+  test("opaque xargs refusal names the positional sh -c form and a while read loop (dotfiles-757)", () => {
+    const reason = verdict("git rev-list -n 5 HEAD | xargs -I{} sh -c 'git show --stat {}'");
+    expect(reason).toContain('`xargs -I{} sh -c \'… "$1" …\' _ {}`');
+    expect(reason).toContain("`while read`");
   });
 
   test("a linked worktree, a temporary directory and a remote script stay open to xargs", () => {

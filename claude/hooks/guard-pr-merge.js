@@ -704,7 +704,7 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
   const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote }) => {
     if (opaque) {
       return `${quoted(words)}: xargs runs the words it reads as a command or script the guard cannot see, so it may merge a pull request. `
-        + "Write the command out literally.";
+        + 'Write the command out literally, pass each item as an argument (`xargs -I{} sh -c \'… "$1" …\' _ {}`), or loop with `while read`.';
     }
     const before = merges.length;
     // macOS volumes ignore case, so GH and Gh run gh too, and a glob such as [g]h can name it.

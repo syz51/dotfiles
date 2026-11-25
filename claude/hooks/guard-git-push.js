@@ -246,7 +246,10 @@ function gitPush(words, dir, git, state, { appended, remote }) {
 export function findViolation(command, cwd, git) {
   const state = { configChanged: false };
   return visitCommands(command, cwd, (words, dir, flags) => {
-    if (flags.opaque) return `\`${words.join(" ")}\`: xargs runs the words it reads as a command or script the guard cannot see, so it may push. Write the command out literally.`;
+    if (flags.opaque) {
+      return `\`${words.join(" ")}\`: xargs runs the words it reads as a command or script the guard cannot see, so it may push. `
+        + 'Write the command out literally, pass each item as an argument (`xargs -I{} sh -c \'… "$1" …\' _ {}`), or loop with `while read`.';
+    }
     return basename(words[0]).toLowerCase() === "git" || (expands(words[0]) && words.includes("push")) ? gitPush(words, dir, git, state, flags) : undefined;
   }, TOO_DEEP);
 }
