@@ -86,18 +86,32 @@ describe("when the hook speaks", () => {
   });
 });
 
-// The forms come from live probes on Claude Code 2.1.319 (dotfiles-111): these were refused,
-// and plain loops, pipes, heredocs, cd and VAR=value prefixes without them passed.
+// The forms come from live probes on Claude Code 2.1.319 (dotfiles-111) and subsequent
+// session refusals (dotfiles-418, dotfiles-461, dotfiles-467).
 describe("the rule names the measured forms and the allowed routes", () => {
   const text = rule(WT, { entered: true });
   test.each([
-    ["git words in compound forms", "git, gitleaks or the word git inside a loop, `$(…)` or heredoc, or next to a `$variable` or `$?`"],
+    ["git substring in files, URLs or repo names", "The text `git` anywhere in the command — even inside a file, URL or repo name (`guard-git-push.js`, `github.com`, `gitleaks`)"],
+    ["git in loops, substitutions, heredocs, process subst, sh -c and xargs", "inside a loop, `$(…)`, heredoc, `<(…)`, `sh -c` or `xargs … git`"],
+    ["git next to vars, globs, VAR=$x prefixes and computed cd", "next to a `$variable`, `$?`, shell glob or `VAR=$x` prefix (`PATH=$PATH:…`, `GIT_TRACE=$v`), or after `cd` to a `$variable` or `$(…)` path."],
+    ["backticks and brace vars inside quotes", "Backticks count as `$(…)` and `${…}` as a `$variable`, also inside quoted text."],
+    ["git alone without joins", "Run git alone in its own plain call with literal arguments (no `&&`, `|` or `;` joins)"],
+    ["way around git in a path or URL", "when a command only names git in a path or URL, use literal paths with no `$` or globs (e.g. `rg -g '*.ts'`), or a scratch copy whose name lacks git."],
+    ["heredoc writes, scripts, process subst and outside writes", "Heredoc file writes and heredoc scripts (`cat > f <<'EOF'`, `uv run python - <<'EOF'`), even with a plain body, are often refused, as are `<(…)` process substitutions and Bash writes outside the worktree (the scratchpad included)."],
+    ["write-then-run route", "Write the file or script with the Write tool, then run it by literal path in its own plain call."],
+    ["compound file-write chains", "A compound command that chains file writes (`sed -i`, `>` or `printf >` redirects, heredocs) with other steps. Change files with Edit or Write, run checks in their own plain call, and never run a dependent Bash call in parallel with one that may be refused."],
     ["code-running programs with computed values", "A program that runs code, such as sed, bash or bun, given a `$variable` or `$(…)` value"],
     ["eval anywhere", "The word eval anywhere, even in a quoted grep pattern. Write the pattern as `ev[a]l`."],
     ["other checkouts", "git, `git -C` or `cd` aimed at another checkout. Do that work from a session or delegate started there."],
     ["gitleaks git", "`gitleaks git`. Write the diff to a scratch file in its own call, then run `gitleaks dir <file>`."],
     ["no hidden scripts", "never hide a refused command in a script"],
-    ["what passes", "Loops, pipes, heredocs, `cd` and `VAR=value cmd` pass without these forms."],
-    ["polls", "For a poll, use a loop of plain commands with no git word, such as `until gh pr checks 12; do sleep 30; done`, or the Monitor tool."],
+    ["what passes", "Plain loops, pipes, literal `cd` inside the worktree and literal `VAR=value cmd` pass without these forms."],
+    ["polls", "For a poll, prefer the Monitor tool; if using a loop, run plain commands with no git word in the background rather than a foreground `sleep`."],
   ])("%s", (_, phrase) => expect(text).toContain(phrase));
+
+  test("no longer promises heredocs, joined git or foreground sleep loops pass", () => {
+    expect(text).not.toMatch(/heredocs[^.\n]*pass/i);
+    expect(text).not.toContain("joined to plain commands with && or |");
+    expect(text).not.toContain("until gh pr checks 12; do sleep 30; done");
+  });
 });

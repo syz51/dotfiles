@@ -207,8 +207,9 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
       + "`uv run --no-project --with pytest pytest …` where uv is on that host.";
   }
   if (PYTHON.test(tool)) {
-    return `${command} runs ${tool}${via ? ` through ${via}` : " directly"}. Run Python through uv instead: \`uv run python …\`, `
-      + "`uv run --with pytest pytest …` or `uv pip …`.";
+    return `${command} runs ${tool}${via ? ` through ${via}` : " directly"}. Run Python through uv instead: \`uv run --no-project python …\`, `
+      + "`uv run --no-project python -I …` for reading downloaded or untrusted files, `uv run --with pytest pytest …` or `uv pip …`. "
+      + "Use the Edit tool for file edits.";
   }
   if (VITE_PLUS.test(tool.split(" ")[0])) {
     return `${command} runs the project's package manager through \`${tool}\`, which is pnpm when no lockfile names one. `
