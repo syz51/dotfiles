@@ -1243,7 +1243,15 @@ describe("commands xargs supplies or extends (dotfiles-338)", () => {
 
   test.each([["git ls-files | xargs grep foo"], ["ls | xargs -n1 basename"], ["find . -name x | xargs rm -f"],
     // a read-only gh subcommand stays read-only whatever words xargs adds
-    ["gh pr list -q x | xargs -n1 gh pr view"], ["echo 12 | xargs gh pr checks"]])("allows %s", (command) => {
+    ["gh pr list -q x | xargs -n1 gh pr view"], ["echo 12 | xargs gh pr checks"],
+    ["ls | xargs -I{} sh -c 'test -s \"$1\" && echo \"$1\"' _ {}"],
+    ["ls | while IFS= read -r f; do test -s \"$f\" && echo \"$f\"; done"]])("allows %s", (command) => {
     expect(verdict(command)).toBeUndefined();
+  });
+
+  test("opaque xargs refusal names the positional sh -c form and a while read loop (dotfiles-757)", () => {
+    const reason = verdict("ls | xargs -I{} sh -c 'test -s {} && echo {}'");
+    expect(reason).toContain('`xargs -I{} sh -c \'… "$1" …\' _ {}`');
+    expect(reason).toContain("`while read`");
   });
 });
