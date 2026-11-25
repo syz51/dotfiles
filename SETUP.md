@@ -1212,20 +1212,44 @@ limit cut it short. `sweep --dry-run` lists what would go now, whatever the free
 it and logs it (exiting 1 when either part of the sweep failed), and `--no-sweep` turns the sweep off for a run. A simulated reading
 (`check --free-gb`) never sweeps.
 
-Install it on the Air from the main checkout, which the plist points to, and send a
-test alert through both channels. Its alert starts a Claude thread, so it stays off the Pro:
+Install the alert and the proactive daily cleanup from the main checkout, which the
+plists point to, and verify status. Both Air (30/20 GB) and Pro (80/40 GB, 1 TB disk)
+run T3 Code with Antigravity:
 
 ```sh
+# Air (30 GB low / 20 GB critical):
 uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install-daily
+
+# Pro (80 GB low / 40 GB critical):
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install --low-gb 80 --critical-gb 40
+uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py install-daily
+
 uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py test
 uv run --no-project --python 3.11 python -B ~/.config/disk-alert/disk_space_alert.py status
 ```
 
-`install --dry-run` prints the plist without loading it, and `uninstall` unloads and
-removes it. To change a threshold, run `install` again with `--low-gb` or
-`--critical-gb`; `--sweep-minutes` works the same way. The LaunchAgent runs with
-`ProcessType` Standard rather than Background, so macOS does not throttle the sweep.
-A one-off run with
+`install-daily` writes and loads `com.syz51.disk-space-daily` (daily at 04:30 local time;
+`launchd` runs missed calendar jobs on wake). Regardless of free space, `daily` empties
+leftover trash, sweeps idle Claude Code session scratch (>=24 hours) and idle Cargo
+`target/` folders in agent worktrees (>=24 hours), removes clean merged T3 worktrees
+(>=48 hours idle, no open files or running processes, no active or recent T3 thread in
+`statev2.sqlite`, no secret `.env*` files, and `HEAD` reachable from `origin/HEAD` or the
+main checkout's upstream), drops older duplicate Playwright browser revisions in
+`~/Library/Caches/ms-playwright` (>=24 hours idle when Playwright is not running), and
+runs safe tool cache cleanups (`uv cache prune`, `brew cleanup --prune=14 -s` when `brew`
+is idle, and `bun pm cache rm` when `~/.bun/install/cache` exceeds 1 GB and no Bun
+install is running). It never touches live browser caches, `~/.cargo/registry`, Colima
+disks, T3 databases, downloads, or user documents. Normal daily runs log a `daily` record
+to `events.jsonl` quietly and notify only on failure; `daily --dry-run` previews without
+modifying anything. A non-blocking `sweep.lock` prevents overlapping `check` and `daily`
+runs from colliding.
+
+`install --dry-run` and `install-daily --dry-run` print their plists without loading
+them, and `uninstall` / `uninstall-daily` unload and remove them. To change a threshold
+or schedule, run `install` or `install-daily` again with the new options. Both
+LaunchAgents run with `ProcessType` Standard rather than Background, so macOS does not
+throttle sweeps. A one-off run with
 `check --free-gb 15 --state-dir <scratch folder>` simulates a reading without touching
 the real state.
 
