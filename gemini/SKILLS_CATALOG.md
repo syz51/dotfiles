@@ -41,6 +41,14 @@ Bundled by Antigravity itself (mounted automatically, not stored in `~/.gemini/c
 - `run-workflow`: Dynamic Python multi-agent workflow orchestration via `run_workflow`.
 - `swarm_pane` / `swarm_monitor`: Swarm coordinator/monitor skills (only for active `/swarm` sessions).
 
+## Gemini App Skills (uploaded to Gemini Web / Mobile / Desktop)
+
+Packaged in `gemini/skills/` for upload to the Gemini App `技能` tab (not symlinked into `~/.gemini/config/skills/`):
+
+| Skill | Repo Path | Transport | Purpose |
+| --- | --- | --- | --- |
+| `board-ops` | `gemini/skills/board-ops/SKILL.md` | Cloud MCP (`https://board-mcp.syzroy.com/mcp`) | 24/7 mobile/web fleet ops, `board-feedback` triage, non-code research/planning, backlog grooming, and scheduled digests on the separate Gemini Ultra pool. See `gemini/docs/gemini-board-workflow.md`. |
+
 ## Exposure & Sync Health
 
 - **Dotfiles skills (6)** and `~/.gemini/config/{GEMINI.md,SKILLS_CATALOG.md,hooks.json,mcp_config.json}` are verified every 30 minutes by `config-sync` (`~/.config/config-sync/config_sync.py check`).
