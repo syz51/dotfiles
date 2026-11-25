@@ -35,10 +35,11 @@ const TITLE = 72;
 const DETAIL = 400;
 const ERROR_LINE = 160;
 // Items the judge may match: those capture reported to in this window, and the board's
-// unresolved ones, newest first up to this many, so the cached prompt stays small.
+// live ones, newest first up to this many, so the cached prompt stays small.
 const MATCH_WINDOW = 7 * 24 * HOUR;
 const MATCH_ITEMS = 200;
 const CLOSED = new Set(["done", "dropped"]);
+const LIVE_UNSUPPORTED = /the server does not filter live feedback items yet;\s*upgrade it|unexpected argument '--live'/i;
 // Duplicate and routing links followed at most, as the board does.
 const LINK_DEPTH = 8;
 
@@ -152,13 +153,10 @@ export function filedItems(records, since) {
   return items;
 }
 
-// The board's unresolved feedback items, by id. Resolved items are done whether or not
-// they still take reports, so those come from capture's own records.
-export async function unresolvedItems() {
-  const tasks = await listTasks(["--board", FEEDBACK_BOARD, "--open"]);
+function feedbackItems(tasks, { openOnly = false } = {}) {
   const items = new Map();
   for (const task of tasks) {
-    if (CLOSED.has(task?.status)) continue;
+    if (openOnly && CLOSED.has(task?.status)) continue;
     if (typeof task?.id !== "string" || typeof task.title !== "string" || typeof task.feedback?.about !== "string")
       throw new Error(`board ls --board ${FEEDBACK_BOARD}: expected tasks with id, title and feedback.about`);
     items.set(task.id, { id: task.id, about: task.feedback.about, title: task.title, at: task.feedback.last_reported_at ?? task.created_at });
@@ -166,10 +164,30 @@ export async function unresolvedItems() {
   return items;
 }
 
+// The board's unresolved feedback items, by id: fallback when the server or CLI lacks
+// `board ls --live`.
+export async function unresolvedItems() {
+  return feedbackItems(await listTasks(["--board", FEEDBACK_BOARD, "--open"]), { openOnly: true });
+}
+
+// The board's live feedback items, by id (unresolved, declined, or routed to / duplicating
+// open work, whatever their status). Falls back to unresolved items when the server or CLI
+// does not support `--live` yet.
+export async function liveItems() {
+  let tasks;
+  try {
+    tasks = await listTasks(["--live", "--board", FEEDBACK_BOARD]);
+  } catch (error) {
+    if (!LIVE_UNSUPPORTED.test(String(error?.message ?? ""))) throw error;
+    return unresolvedItems();
+  }
+  return feedbackItems(tasks);
+}
+
 // The items the judge may match, newest first: capture's recent ones and the board's
-// unresolved ones (whose titles win), at most MATCH_ITEMS.
-export function matchItems(filed, unresolved) {
-  const items = new Map([...filed, ...unresolved]);
+// live ones (whose titles win), at most MATCH_ITEMS.
+export function matchItems(filed, live) {
+  const items = new Map([...filed, ...live]);
   return [...items.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, MATCH_ITEMS);
 }
 
@@ -399,19 +417,19 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     const filed = [];
     const skippedFixed = [];
     // The items the judge may match (id to setup), listed only when a turn is to be judged.
-    // When the board cannot list its unresolved items, capture's own still count; the
+    // When the board cannot list its live items, capture's own still count; the
     // findings are judged and filed (or retried) as usual. Items filed in this run go to the
     // turn's prompt, as the cached instructions do not list them.
-    let unresolved = new Map();
+    let live = new Map();
     if (candidates.length) {
       try {
-        unresolved = await unresolvedItems();
+        live = await liveItems();
       } catch (error) {
         errors++;
-        console.error(`Listing unresolved feedback failed; matching only capture's own items: ${line(error.message, 300)}`);
+        console.error(`Listing live feedback failed; matching only capture's own items: ${line(error.message, 300)}`);
       }
     }
-    const items = candidates.length ? matchItems(filedItems(records, now - MATCH_WINDOW), unresolved) : [];
+    const items = candidates.length ? matchItems(filedItems(records, now - MATCH_WINDOW), live) : [];
     const matchable = new Map(items.map((item) => [item.id, item.about]));
     const runItems = [];
     const fileOne = async (record, finding, n) => {

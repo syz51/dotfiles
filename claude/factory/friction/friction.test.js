@@ -6,7 +6,7 @@ import { rolloutThreads } from "../lib/codex.js";
 import { readJson, readJsonl } from "../lib/state.js";
 import { Rollout, writeRollouts } from "../lib/testing/codex.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
-import { AGENT, checkFindings, feedbackText, filedItems, judgeSchema, judgeSystem, LABEL, matchItems, plist, run, unresolvedItems } from "./cli.js";
+import { AGENT, checkFindings, feedbackText, filedItems, judgeSchema, judgeSystem, LABEL, liveItems, matchItems, plist, run, unresolvedItems } from "./cli.js";
 import { claudeTurns, codexTurns, digest, filedFeedback, signals } from "./turns.js";
 
 const FAKE_CLAUDE = join(import.meta.dir, "..", "lib", "testing", "fake-claude.js");
@@ -48,14 +48,28 @@ if (args.includes("--help")) {
 appendFileSync(process.env.FAKE_BOARD_LOG, JSON.stringify(args) + "\\n");
 if (process.env.FAKE_BOARD_FAIL) { console.error("error: server unreachable"); process.exit(1); }
 const tasks = JSON.parse(process.env.FAKE_BOARD_TASKS_FILE ? readFileSync(process.env.FAKE_BOARD_TASKS_FILE, "utf8") : (process.env.FAKE_BOARD_TASKS ?? "{}"));
+if (args[0] === "ls" && args.includes("--live") && process.env.FAKE_BOARD_NO_LIVE) {
+  console.error(process.env.FAKE_BOARD_NO_LIVE === "1" ? "error: the server does not filter live feedback items yet; upgrade it, then list them again" : process.env.FAKE_BOARD_NO_LIVE);
+  process.exit(1);
+}
 if (args[0] === "ls" && process.env.FAKE_BOARD_LS_FAIL) { console.error("error: listing failed"); process.exit(1); }
 if (args[0] === "ls") {
   const opt = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
   const board = opt("--board");
   const status = opt("--status");
+  const isLive = (task, depth = 0) => {
+    if (!task) return false;
+    const resolution = task.feedback?.resolution;
+    if (!resolution) return task.status !== "done" && task.status !== "dropped";
+    if (resolution.kind === "declined") return true;
+    if ((resolution.kind === "routed" || resolution.kind === "duplicate") && resolution.task && depth < 8)
+      return isLive(tasks[resolution.task], depth + 1);
+    return false;
+  };
   let list = Object.values(tasks).filter((task) => task.board === board
     && (status ? task.status === status : true)
-    && (args.includes("--open") ? task.status !== "done" && task.status !== "dropped" : true));
+    && (args.includes("--open") && !process.env.FAKE_BOARD_IGNORE_OPEN ? task.status !== "done" && task.status !== "dropped" : true)
+    && (args.includes("--live") ? isLive(task) : true));
   const after = opt("--after");
   if (after) {
     const index = list.findIndex((task) => task.id === after);
@@ -79,7 +93,7 @@ console.log(JSON.stringify({ task: { id: "board-feedback-" + count, board: "boar
   setEnv({
     CLAUDE_FACTORY_STATE: join(scratch, "state"), CLAUDE_FACTORY_BIN: FAKE_CLAUDE, CLAUDE_FACTORY_BOARD: board,
     FAKE_CLAUDE_LOG: join(scratch, "claude.jsonl"), FAKE_BOARD_LOG: join(scratch, "board.jsonl"), FAKE_CLAUDE_MODE: "structured",
-    FAKE_CLAUDE_COST: "0.01", FAKE_BOARD_FAIL: undefined, FAKE_BOARD_OLD: undefined, FAKE_BOARD_TASKS: undefined, FAKE_BOARD_TASKS_FILE: undefined, FAKE_BOARD_LS_FAIL: undefined,
+    FAKE_CLAUDE_COST: "0.01", FAKE_BOARD_FAIL: undefined, FAKE_BOARD_OLD: undefined, FAKE_BOARD_TASKS: undefined, FAKE_BOARD_TASKS_FILE: undefined, FAKE_BOARD_LS_FAIL: undefined, FAKE_BOARD_NO_LIVE: undefined, FAKE_BOARD_IGNORE_OPEN: undefined,
     FAKE_CLAUDE_OUTPUT: JSON.stringify({ findings: [{ about: "board", activity: "build", title: "Claims are refused for a task the agent owns", detail: "The agent retried the claim twice.", error: "claim refused: owned by\nanother agent" }] }),
   });
   spyOn(console, "log").mockImplementation(() => {});
@@ -480,12 +494,12 @@ describe("matching known items", () => {
     setEnv({ FAKE_BOARD_TASKS: JSON.stringify({ "board-feedback-40": feedbackItem("board-feedback-40"), "board-feedback-41": feedbackItem("board-feedback-41", { about: "hooks" }) }) });
     answer("board-feedback-40");
     expect(await run(["run"], context(roots))).toBe(0);
-    // The judge saw the board's unresolved items, by setup.
+    // The judge saw the board's live items, by setup.
     const [call] = log("claude.jsonl");
     expect(call.system).toContain('# Known items');
     expect(call.system).toContain('## board\n\n- board-feedback-40: "Item board-feedback-40"');
     expect(call.system).toContain('## hooks\n\n- board-feedback-41: "Item board-feedback-41"');
-    expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([["ls", "--board", "board-feedback", "--open", "--json", "--limit", "1000"]]);
+    expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([["ls", "--live", "--board", "board-feedback", "--json", "--limit", "1000"]]);
     const filed = feedbackCalls();
     expect(filed).toHaveLength(2);
     for (const args of filed) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "board", "--activity", "build", "--signature", "board:item board-feedback-40", "--json"]);
@@ -498,6 +512,61 @@ describe("matching known items", () => {
       expect(await run(["run"], context(roots))).toBe(0);
       expect(feedbackCalls()).toHaveLength(2);
       expect(feedbackCalls().some((args) => args.includes("--signature"))).toBe(false);
+    }
+  }, FRICTION_TIMEOUT);
+
+  test("offers declined and routed-to-open done items from other agents to the judge, and omits closed ones", async () => {
+    const roots = fixture();
+    const at = "2026-10-31T08:00:00Z";
+    setEnv({
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-50": feedbackItem("board-feedback-50", { status: "done", resolution: { kind: "declined", at, by: "user" } }),
+        "board-feedback-51": feedbackItem("board-feedback-51", { status: "done", resolution: { kind: "routed", task: "dotfiles-9", at, by: "user" } }),
+        "board-feedback-52": feedbackItem("board-feedback-52", { status: "done", about: "hooks", resolution: { kind: "declined", at, by: "user" } }),
+        "board-feedback-53": feedbackItem("board-feedback-53", { status: "done", resolution: { kind: "fixed", at, by: "user" } }),
+        "dotfiles-9": { id: "dotfiles-9", board: "dotfiles", title: "Fix it", status: "open", updated_at: at },
+      }),
+    });
+    answer("board-feedback-50");
+    expect(await run(["run"], context(roots))).toBe(0);
+    const [call] = log("claude.jsonl");
+    expect(call.system).toContain('- board-feedback-50: "Item board-feedback-50"');
+    expect(call.system).toContain('- board-feedback-51: "Item board-feedback-51"');
+    expect(call.system).toContain('## hooks\n\n- board-feedback-52: "Item board-feedback-52"');
+    expect(call.system).not.toContain("board-feedback-53");
+    const filed = feedbackCalls();
+    expect(filed).toHaveLength(2);
+    for (const args of filed) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "board", "--activity", "build", "--signature", "board:item board-feedback-50", "--json"]);
+    expect(records().filter((record) => record.kind === "filed").map((record) => record.match)).toEqual(["board-feedback-50", "board-feedback-50"]);
+  }, FRICTION_TIMEOUT);
+
+  test("falls back to unresolved items when board ls --live fails with the upgrade-it error", async () => {
+    const roots = fixture();
+    const at = "2026-10-31T08:00:00Z";
+    setEnv({
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-40": feedbackItem("board-feedback-40"),
+        "board-feedback-50": feedbackItem("board-feedback-50", { status: "done", resolution: { kind: "declined", at, by: "user" } }),
+      }),
+      FAKE_BOARD_NO_LIVE: "1",
+    });
+    answer("board-feedback-40");
+    expect(await run(["run"], context(roots))).toBe(0);
+    expect(console.error).not.toHaveBeenCalled();
+    expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([
+      ["ls", "--live", "--board", "board-feedback", "--json", "--limit", "1000"],
+      ["ls", "--board", "board-feedback", "--open", "--json", "--limit", "1000"],
+    ]);
+    const [call] = log("claude.jsonl");
+    expect(call.system).toContain('- board-feedback-40: "Item board-feedback-40"');
+    expect(call.system).not.toContain("board-feedback-50");
+    expect(feedbackCalls()[0]).toContain("board:item board-feedback-40");
+
+    // Also accepts the shorter upgrade-it message and an older CLI lacking --live.
+    for (const msg of ["error: the server does not filter live feedback items yet; upgrade it", "error: unexpected argument '--live' found"]) {
+      setEnv({ FAKE_BOARD_NO_LIVE: msg });
+      const items = await liveItems();
+      expect([...items.keys()]).toEqual(["board-feedback-40"]);
     }
   }, FRICTION_TIMEOUT);
 
@@ -564,45 +633,63 @@ describe("matching known items", () => {
     setEnv({ FAKE_BOARD_LS_FAIL: "1" });
     answer("");
     expect(await run(["run"], context(roots))).toBe(1);
-    expect(console.error.mock.calls.flat().join("\n")).toContain("Listing unresolved feedback failed; matching only capture's own items");
+    expect(console.error.mock.calls.flat().join("\n")).toContain("Listing live feedback failed; matching only capture's own items");
+    expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([["ls", "--live", "--board", "board-feedback", "--json", "--limit", "1000"]]);
     expect(log("claude.jsonl")[0].system).toContain("board-feedback-30");
     expect(feedbackCalls()).toHaveLength(2);
   }, FRICTION_TIMEOUT);
 
-  test("pages with --after when more than 1000 unresolved items exist and offers the newest ones to the judge", async () => {
+  test("pages with --after when more than 1000 live items exist and offers the newest ones to the judge", async () => {
     const roots = fixture();
     const tasksFile = join(scratch, "tasks.json");
-    const statuses = ["open", "doing", "blocked", "review"];
+    const statuses = ["open", "doing", "blocked", "review", "done"];
     const tasks = {};
     for (let i = 1; i <= 1050; i++) {
       const id = `board-feedback-${i}`;
       const at = new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString();
+      const status = statuses[(i - 1) % statuses.length];
       tasks[id] = {
-        id, board: "board-feedback", title: `Unresolved item ${i}`, status: statuses[(i - 1) % statuses.length], created_at: at,
-        feedback: { about: "board", source: "agent", signature: `board:item-${i}`, last_reported_at: at, reports: 1 },
+        id, board: "board-feedback", title: `Live item ${i}`, status, created_at: at,
+        feedback: {
+          about: "board", source: "agent", signature: `board:item-${i}`, last_reported_at: at, reports: 1,
+          ...(status === "done" ? { resolution: { kind: "declined", at, by: "user" } } : {}),
+        },
       };
     }
-    for (let i = 1; i <= 20; i++) tasks[`board-feedback-done-${i}`] = feedbackItem(`board-feedback-done-${i}`, { status: "done" });
+    for (let i = 1; i <= 20; i++) tasks[`board-feedback-fixed-${i}`] = feedbackItem(`board-feedback-fixed-${i}`, { status: "done", resolution: { kind: "fixed", at: "2026-10-31T08:00:00Z", by: "user" } });
     writeFileSync(tasksFile, JSON.stringify(tasks));
     setEnv({ FAKE_BOARD_TASKS_FILE: tasksFile });
 
-    const all = await unresolvedItems();
+    const all = await liveItems();
     expect(all.size).toBe(1050);
-    expect([all.has("board-feedback-1"), all.has("board-feedback-1050"), all.has("board-feedback-done-1")]).toEqual([true, true, false]);
+    expect([all.has("board-feedback-1"), all.has("board-feedback-1050"), all.has("board-feedback-fixed-1")]).toEqual([true, true, false]);
     expect(log("board.jsonl").filter((args) => args[0] === "ls")).toEqual([
-      ["ls", "--board", "board-feedback", "--open", "--json", "--limit", "1000"],
-      ["ls", "--board", "board-feedback", "--open", "--after", "board-feedback-1000", "--json", "--limit", "1000"],
+      ["ls", "--live", "--board", "board-feedback", "--json", "--limit", "1000"],
+      ["ls", "--live", "--board", "board-feedback", "--after", "board-feedback-1000", "--json", "--limit", "1000"],
     ]);
 
     reset();
     answer("board-feedback-1050");
     expect(await run(["run"], context(roots))).toBe(0);
-    // Item 1050 sits on page 2 and is the newest, so the judge sees it first in Known items.
-    expect(log("claude.jsonl")[0].system).toContain('- board-feedback-1050: "Unresolved item 1050"');
+    // Item 1050 (a declined done item) sits on page 2 and is the newest, so the judge sees it first in Known items.
+    expect(log("claude.jsonl")[0].system).toContain('- board-feedback-1050: "Live item 1050"');
     expect(feedbackCalls()[0]).toContain("board:item-1050");
   }, FRICTION_TIMEOUT);
 
-  test("known items: capture's recent ones and the board's unresolved ones, newest first and capped", () => {
+  test("unresolvedItems fallback skips closed items even when the server ignores --open", async () => {
+    setEnv({
+      FAKE_BOARD_IGNORE_OPEN: "1",
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-1": feedbackItem("board-feedback-1"),
+        "board-feedback-2": feedbackItem("board-feedback-2", { status: "done", resolution: { kind: "declined", at: "2026-10-31T08:00:00Z", by: "user" } }),
+        "board-feedback-3": feedbackItem("board-feedback-3", { status: "dropped" }),
+      }),
+    });
+    const open = await unresolvedItems();
+    expect([...open.keys()]).toEqual(["board-feedback-1"]);
+  });
+
+  test("known items: capture's recent ones and the board's live ones, newest first and capped", () => {
     const judged = (key, title) => ({ kind: "judged", key, findings: [{ title }, { title: `${title} 2` }] });
     const filed = (key, n, task, at) => ({ kind: "filed", key, filing: `capture:s:1:${n}`, about: "board", task, at });
     const records = [judged("a", "Old"), filed("a", 1, "board-feedback-1", "2026-10-01T00:00:00Z"), judged("b", "New"), filed("b", 2, "board-feedback-2", "2026-11-01T00:00:00Z"), filed("b", 1, "board-feedback-3", "2026-11-01T01:00:00Z")];

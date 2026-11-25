@@ -699,7 +699,8 @@ factual lines quoting at most one error line and naming the session, turn and pr
 folder. The board merges reports with the same signature, by default the setup and title,
 so the same friction seen in many turns is one item. Titles differ between turns, so the
 judge also sees the items already filed: those capture reported to in the last 7 days and
-the board's unresolved `board-feedback` items, newest 200 first, by setup. It names the
+the board's live `board-feedback` items (`board ls --live`, falling back to `--open` on an
+older server), newest 200 first, by setup. It names the
 item a finding repeats. Capture then files the report with that item's `--signature`, so
 the board adds it to the item while it is live (unresolved, declined, or routed to open
 work), or files a new item that recurs it. A finding whose item was fixed, or whose work
