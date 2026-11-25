@@ -363,9 +363,17 @@ adds arguments to, such as `echo 'merge 12' | xargs gh pr`, unless its visible s
 read-only, as in `xargs gh pr view`, any opaque command, options other than `-R` before the subcommand, `GH_HOST` set in the command,
 `GH_REPO` set without `-R`, `GIT_DIR` and `GIT_WORK_TREE`, and a glob that can name gh or
 fill in its subcommand or selector. It runs once before the whole command, so it refuses a
-merge in a command that also runs another merge, or a git or gh command that is not
-read-only, such as `git push`, `git switch`, `gh pr checkout` or `gh pr update-branch`: merge
-in a separate call once the head's checks pass.
+merge in a command that also runs another merge, or a piped or backgrounded form with a
+non-read-only git or gh command. A non-read-only git or gh command strictly after a single
+top-level merge in a sequential list (`&&`, `;`, `||`, or newline) passes — such as deleting
+the remote branch after the merge — while a merge inside a loop, function body, group,
+subshell, or nested script still refuses movers. Before a merge that names its pull request
+by number or URL and pins `--match-head-commit`, only an allowlist of commands whose effect
+the head pin catches passes (`git add`, `git commit`, `git push`, `gh pr update-branch`, and
+`gh pr edit` without `--base`/`-B`); any other non-read-only git or gh command — such as
+`gh pr edit --base`, `gh api` writes, `gh repo edit`, `gh pr create`, `gh pr checkout`,
+`git switch`, `git remote`, `git config`, or `gh repo set-default` — and any mover before
+an unpinned or selector-less merge stay refused.
 It fails closed: a gh error, a call past its 8-second limit, an unknown option or a
 crash blocks the merge. The queries add about 0.7 seconds to each merge, about 1.5 with the
 GraphQL call, and its

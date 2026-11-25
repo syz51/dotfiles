@@ -17,10 +17,17 @@
 // `ssh` are seen; any merge argument the shell fills in, arguments xargs adds, options before
 // `merge` other than -R, a command that sets GH_HOST, and one that sets GH_REPO without a literal
 // -R are refused, as are GIT_DIR, GIT_WORK_TREE and a glob in the command name, selector or
-// subcommand. The hook runs once before the whole command, so it refuses a merge in a command
-// that also runs, in any order, another merge or a git or gh command that is not read-only,
-// such as `git push`, `git switch` or `gh pr checkout`: it could move the head or change which
-// pull request gh merges after the check. Within one Actions workflow run only the latest
+// subcommand. The hook runs once before the whole command, so it refuses a second merge in the
+// same command and piped or backgrounded forms with a non-read-only git or gh command. A
+// non-read-only git or gh command strictly after a single top-level merge in a sequential list
+// (`&&`, `;`, `||`, or newline) passes, because it cannot change what was checked; a merge inside
+// a loop, function body, group, subshell, or nested script still refuses movers. Before a merge
+// that names its pull request by number or URL and pins --match-head-commit, only an allowlist of
+// commands whose effect the head pin catches passes (`git add`, `git commit`, `git push`,
+// `gh pr update-branch`, and `gh pr edit` without `--base`/`-B`); any other non-read-only git or
+// gh command (such as `gh pr edit --base`, `gh api` writes, `gh repo edit`, `gh pr create`,
+// `gh pr checkout`, `git switch`, `git remote`, `git config`, or `gh repo set-default`), and any
+// mover before an unpinned or selector-less merge, stays refused. Within one Actions workflow run only the latest
 // attempt of each job counts, so a passing re-run replaces a failed attempt. A failed Actions job
 // that GitHub never started for billing, with no steps, the billing annotation and at most
 // GitHub's notices besides, counts as passed when a passing non-Actions check is named
@@ -627,6 +634,22 @@ const GIT_READ_ONLY = new Set(["blame", "cat-file", "describe", "diff", "fetch",
 const GH_READ_ONLY = { pr: ["checks", "diff", "list", "status", "view"], run: ["list", "view", "watch"], repo: ["list", "view"],
   issue: ["list", "view"], auth: ["status"] };
 const API_FIELDS = /^(?:-[fF]|--field|--raw-field|--input)(?:=|$)|^-[fF]./;
+// Pull request selectors that name a specific pull request rather than the current or a named branch.
+const PR_NUMBER = /^[1-9]\d*$/;
+const PR_URL = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/[1-9]\d*(?:[/?#]|$)/;
+// Pre-merge allowlist: git and gh commands whose effect on the pull request is caught by
+// `--match-head-commit` (or harmless PR metadata edits) and that cannot change the PR base branch
+// or which repository `gh` resolves.
+const PRE_MERGE_GIT = new Set(["add", "commit", "push"]);
+const GH_PR_UPDATE_BRANCH_FLAGS = new Set(["--rebase", "--help"]);
+const GH_PR_UPDATE_BRANCH_VALUE_FLAGS = new Set(["--repo"]);
+const GH_PR_UPDATE_BRANCH_SHORT_VALUE_FLAGS = new Set(["R"]);
+// `gh pr edit --help` flags excluding `-B`/`--base`, which changes the base branch and is not caught by the head pin.
+const GH_PR_EDIT_FLAGS = new Set(["--remove-milestone", "--help"]);
+const GH_PR_EDIT_VALUE_FLAGS = new Set(["--add-assignee", "--add-label", "--add-project", "--add-reviewer", "--attach",
+  "--body", "--body-file", "--milestone", "--remove-assignee", "--remove-label", "--remove-project", "--remove-reviewer",
+  "--title", "--repo"]);
+const GH_PR_EDIT_SHORT_VALUE_FLAGS = new Set(["b", "F", "m", "t", "R"]);
 
 /**
  * Whether `words`, a command other than `gh pr merge`, may push a new head or change which pull
@@ -653,12 +676,79 @@ function mayMoveHead(words, appended) {
   return other !== undefined || !(GH_READ_ONLY[group] ?? []).includes(subcommand);
 }
 
+/** Whether `args` for a `gh pr` subcommand use only allowed literal flags and have no shell expansions. */
+function hasOnlyAllowedGhFlags(args, boolFlags, valueFlags, shortValueFlags) {
+  if (args.some(expands)) return false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const name = equals === -1 ? arg : arg.slice(0, equals);
+      if (valueFlags.has(name)) {
+        if (equals === -1) i += 1;
+      } else if (!boolFlags.has(name)) return false;
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      for (let k = 1; k < arg.length; k += 1) {
+        if (shortValueFlags.has(arg[k])) {
+          const rest = arg.slice(k + 1).replace(/^=/, "");
+          if (rest === "") i += 1;
+          break;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether `words` is in the strict pre-merge allowlist: a command whose effect on the pull request
+ * is caught by `--match-head-commit` (or harmless PR metadata edits) and that cannot change the
+ * base branch or which repository `gh` resolves. Any xargs-appended, globbed, or shell-filled
+ * command stays refused.
+ */
+function isPreMergeAllowed(words, appended) {
+  if (appended || words.length === 0 || unsure(words[0])) return false;
+  const name = basename(words[0]).toLowerCase();
+  if (name === "git") {
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-")) {
+      if (words[i] === "--" || expands(words[i])) return false;
+      if (GIT_VALUE_OPTIONS.has(words[i])) {
+        if (words[i + 1] === undefined || expands(words[i + 1])) return false;
+        i += 2;
+      } else i += 1;
+    }
+    return words[i] !== undefined && PRE_MERGE_GIT.has(words[i]);
+  }
+  if (name !== "gh") return false;
+  const { path: [group, subcommand], next, repo, other } = ghSubcommands(words, 2);
+  if (other !== undefined || group !== "pr" || (repo !== undefined && expands(repo))) return false;
+  const args = words.slice(next);
+  if (subcommand === "update-branch") {
+    return hasOnlyAllowedGhFlags(args, GH_PR_UPDATE_BRANCH_FLAGS, GH_PR_UPDATE_BRANCH_VALUE_FLAGS, GH_PR_UPDATE_BRANCH_SHORT_VALUE_FLAGS);
+  }
+  if (subcommand === "edit") {
+    return hasOnlyAllowedGhFlags(args, GH_PR_EDIT_FLAGS, GH_PR_EDIT_VALUE_FLAGS, GH_PR_EDIT_SHORT_VALUE_FLAGS);
+  }
+  return false;
+}
+
+/** Whether parsed `merge` names its pull request by number or URL and literally pins --match-head-commit. */
+function isPinnedExplicitMerge(merge) {
+  return merge.unresolved === undefined
+    && merge.unknown === undefined
+    && typeof merge.matchHead === "string" && merge.matchHead !== ""
+    && typeof merge.selector === "string" && (PR_NUMBER.test(merge.selector) || PR_URL.test(merge.selector));
+}
+
 /**
  * Checks gh command `words`. Returns why it must not run, or undefined. A `gh pr merge` that
  * passes the checks on its words is added to `merges` with a `check()` that queries GitHub,
  * so the caller can first see the rest of the command.
  */
-function ghCommand(words, dir, query, state, merges) {
+function ghCommand(words, dir, query, state, merges, context) {
   const fail = (reason) => `${quoted(words)}: ${reason}`;
   // gh reads options anywhere, so the API check looks at every word, not only after `api`.
   if (words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)) || (words.includes("api") && MERGE_MUTATIONS.test(state.source))) {
@@ -673,11 +763,14 @@ function ghCommand(words, dir, query, state, merges) {
   if (subcommand !== undefined && unsure(subcommand)) return fail(`the shell fills in the gh pr subcommand \`${subcommand}\`, so the guard cannot see whether it merges.`);
   if (subcommand !== "merge") return undefined;
   if (repo !== undefined && expands(repo)) return fail(`the shell fills in the repository \`${repo}\`. Write it out literally.`);
+  const merge = parseMerge(words.slice(next), repo);
   merges.push({
     words,
+    merge,
+    ...context,
     check: () => {
       try {
-        const reason = judgeMerge(parseMerge(words.slice(next), repo), words, next, dir, query, state);
+        const reason = judgeMerge(merge, words, next, dir, query, state);
         return reason && fail(reason);
       } catch (error) {
         if (error instanceof Refusal) return fail(`${error.message} The guard refuses a merge it cannot check; try again, and if gh keeps failing, report it.`);
@@ -700,8 +793,8 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
   const env = { source: command, setsHost: /\bGH_HOST\b/.test(command), setsRepo: /\bGH_REPO\b/.test(command),
     setsGitDir: /\bGIT_(?:DIR|WORK_TREE)\b/.test(command) };
   const merges = [];
-  let mover;
-  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote }) => {
+  const movers = [];
+  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote, topLevel, piped, background }) => {
     if (opaque) {
       return `${quoted(words)}: xargs runs the words it reads as a command or script the guard cannot see, so it may merge a pull request. `
         + "Write the command out literally.";
@@ -720,11 +813,13 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
       }
     }
     let reason;
-    if (isGh) reason = ghCommand(words, dir, query, { ...env, remote }, merges);
+    if (isGh) reason = ghCommand(words, dir, query, { ...env, remote }, merges, { topLevel, piped, background });
     else if (expands(words[0]) && ((words.includes("pr") && words.includes("merge")) || words.some((word) => MERGE_ENDPOINT.test(word) || MERGE_MUTATIONS.test(word)))) {
       reason = `${quoted(words)}: the shell fills in the command name \`${words[0]}\`, so the guard cannot see whether it merges a pull request. Run \`gh\` by name.`;
     }
-    if (reason === undefined && merges.length === before && mayMoveHead(words, appended)) mover ??= words;
+    if (reason === undefined && merges.length === before && mayMoveHead(words, appended)) {
+      movers.push({ words, appended, piped, background, afterMerge: merges.length > 0 });
+    }
     return reason;
   }, TOO_DEEP);
   if (violation || merges.length === 0) return violation;
@@ -733,12 +828,24 @@ export function findMergeViolation(command, cwd, run, { budgetMs = BUDGET_MS } =
     return `${quoted(merges[1].words)}: the same command runs another \`gh pr merge\`, and the first merge can change what the second one merges. `
       + "Merge each pull request in its own Bash call.";
   }
-  if (mover !== undefined) {
-    return `${quoted(merges[0].words)}: the same command also runs ${quoted(mover)}, which may push a new head or change which pull request gh merges. `
+  const [entry] = merges;
+  const pinnedExplicit = isPinnedExplicitMerge(entry.merge);
+  for (const mover of movers) {
+    if (entry.piped || entry.background || mover.piped || mover.background) {
+      return `${quoted(entry.words)}: the same command also runs ${quoted(mover.words)} in a pipeline or background job, which may push a new head or change which pull request gh merges. `
+        + "Run that command in its own Bash call, or chain it sequentially in an `&&` or `;` list.";
+    }
+    if (mover.afterMerge) {
+      if (entry.topLevel) continue;
+      return `${quoted(entry.words)}: the same command also runs ${quoted(mover.words)} while the merge is inside a loop, function or group whose run order the guard cannot verify, so it may push a new head or change which pull request gh merges. `
+        + "Run that command in its own Bash call, or chain it after a top-level merge in an `&&` or `;` list.";
+    }
+    if (pinnedExplicit && isPreMergeAllowed(mover.words, mover.appended)) continue;
+    return `${quoted(entry.words)}: the same command also runs ${quoted(mover.words)}, which may push a new head or change which pull request gh merges. `
       + "The guard checks the pull request once, before the whole command runs, so it would read one head's checks and merge another. "
       + "Run that command in its own Bash call, wait for the head's checks to pass, then merge in a separate call.";
   }
-  return merges[0].check();
+  return entry.check();
 }
 
 const MCP_MERGE_TOOLS = new Set(["mcp__t3-code__pull_request_merge", "mcp_t3-code_pull_request_merge"]);
