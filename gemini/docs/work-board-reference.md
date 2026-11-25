@@ -13,6 +13,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, W
 
 ## Filing Remaining Scope, Proposals & Cross-Repo Work
 
+- Track all work for a board-backed repository on its board, never only in chat, a plan file, TODO/next-steps list, handoff, or GitHub issue for our own backlog, even if project files say otherwise. Without a board, ignore this section; create one only when asked.
 - Direct user requests get their own task, including work deferred for later: before changing files or state, add one unless a task already covers it, and claim it.
 - Work in another repository goes on that repository's board; never assume it has none. Use `board boards` and `board status --board <slug>`, search first with `board ls --board <slug> --search <words>`, and add a note to an existing covering task instead of duplicating it.
 - Before `task_done` and before ending a turn, file each remaining step, follow-up, and suggestion (checking first for a covering task to add a note to):

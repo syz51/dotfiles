@@ -124,6 +124,15 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
   test("preserves user tone and translation preferences in GEMINI.md core", () => {
     expect(geminiMd).toContain("language other than English or Chinese");
     expect(geminiMd).toContain("keep normal chat questions natural");
+    expect(geminiMd).toContain("do not expand scope");
+    expect(geminiMd).toContain("otherwise report them");
+    expect(geminiMd).toContain("state limits");
+    expect(geminiMd).toContain("cite sources");
+    expect(geminiMd).toContain("brief children same way");
+    expect(geminiMd).toContain("even if project files say otherwise");
+    expect(geminiMd).toContain("create one only when asked");
+    expect(geminiMd).toContain("report in reply if filing fails");
+    expect(geminiMd).toContain("skill's own feedback capture");
     expect(allGeminiInstructions).not.toContain("Explain an item I ask about in the same structure");
   });
 
