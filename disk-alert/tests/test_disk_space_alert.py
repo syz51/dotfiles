@@ -1111,7 +1111,7 @@ class DailyWorktreeSweepTest(unittest.TestCase):
         self._git(self.root, "init", "--bare", "-b", "main", str(self.origin))
         self._git(self.root, "clone", str(self.origin), str(self.repo))
         (self.repo / "README.md").write_text("hello\n")
-        (self.repo / ".gitignore").write_text(".env\n.env.*\n!.env.example\n")
+        (self.repo / ".gitignore").write_text(".env\n.env.*\n!.env.example\ntarget/\n")
         (self.repo / ".env.example").write_text("KEY=value\n")
         self._git(self.repo, "add", ".")
         self._git(self.repo, "commit", "-m", "initial")
@@ -1183,13 +1183,64 @@ class DailyWorktreeSweepTest(unittest.TestCase):
         secret_env = self.add_worktree("wt-secret")
         (secret_env / ".env").write_text("SECRET=real\n")
 
+        nested_secret = self.add_worktree("wt-nested-secret")
+        (nested_secret / "apps" / "web").mkdir(parents=True)
+        (nested_secret / "apps" / "web" / ".env.local").write_text("TOKEN=secret\n")
+
         copy_env = self.add_worktree("wt-example-env")
         (copy_env / ".env").write_text("KEY=value\n")
 
         swept = alert.sweep_merged_worktrees(self.config, self.make_runner(), self.now, dry_run=False)
         self.assertEqual([item.path for item in swept], [str(copy_env)])
-        self.assertTrue(dirty.exists() and untracked.exists() and unmerged.exists() and secret_env.exists())
+        self.assertTrue(
+            dirty.exists() and untracked.exists() and unmerged.exists()
+            and secret_env.exists() and nested_secret.exists()
+        )
         self.assertFalse(copy_env.exists())
+
+    def test_recent_locked_or_open_handle_worktrees_are_kept(self):
+        recent = self.add_worktree("wt-recent-mtime")
+        recent_ts = (self.now - timedelta(hours=12)).timestamp()
+        os.utime(recent / "README.md", (recent_ts, recent_ts))
+        os.utime(recent, (recent_ts, recent_ts))
+
+        locked = self.add_worktree("wt-locked")
+        self._git(self.repo, "worktree", "lock", str(locked))
+
+        open_fd = self.add_worktree("wt-open-fd")
+        runner = self.make_runner(lsof=f"p77\nf4\nn{open_fd}/README.md\n")
+
+        swept = alert.sweep_merged_worktrees(self.config, runner, self.now, dry_run=False)
+        self.assertEqual(swept, [])
+        self.assertTrue(recent.exists() and locked.exists() and open_fd.exists())
+
+    def test_daily_no_sweep_still_prunes_worktrees_and_no_worktree_prune_still_sweeps_targets(self):
+        tree = self.add_worktree("wt-flags")
+        target = tree / "target"
+        (target / "debug").mkdir(parents=True)
+        (target / "debug" / "libx.rlib").write_bytes(b"x" * 4096)
+        (target / "CACHEDIR.TAG").write_bytes(alert.CARGO_TAG + b"\n")
+        base_args = [
+            "daily", "--dry-run", "--state-dir", str(self.root / "state"),
+            "--worktrees", str(self.worktrees), "--t3-db", str(self.db_path),
+            "--claude-tmp", str(self.root / "no-tmp"),
+            "--bun-cache", str(self.root / "no-bun"),
+            "--playwright-cache", str(self.root / "no-pw"),
+            "--no-notify",
+        ]
+        out_no_sweep = io.StringIO()
+        with contextlib.redirect_stdout(out_no_sweep):
+            self.assertEqual(alert.main(base_args + ["--no-sweep"], run=self.make_runner(), now=self.now), 0)
+        parsed = json.loads(out_no_sweep.getvalue())
+        self.assertEqual(parsed["targets"], [])
+        self.assertEqual([item["path"] for item in parsed["worktrees"]], [str(tree)])
+
+        out_no_wt = io.StringIO()
+        with contextlib.redirect_stdout(out_no_wt):
+            self.assertEqual(alert.main(base_args + ["--no-worktree-prune"], run=self.make_runner(), now=self.now), 0)
+        parsed_wt = json.loads(out_no_wt.getvalue())
+        self.assertEqual(parsed_wt["worktrees"], [])
+        self.assertEqual([item["path"] for item in parsed_wt["targets"]], [str(target)])
 
     def test_active_pending_or_recent_t3_thread_holds_worktree(self):
         active_wt = self.add_worktree("wt-active")
@@ -1278,6 +1329,17 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
         self.assertFalse(old_shell.exists())
         self.assertTrue(new_shell.exists() and only_chrome.exists())
 
+    def test_playwright_keeps_recent_older_revision(self):
+        old_shell = self.playwright / "chromium_headless_shell-1248"
+        new_shell = self.playwright / "chromium_headless_shell-1255"
+        for d in (old_shell, new_shell):
+            d.mkdir(parents=True)
+            (d / "bin").write_bytes(b"x" * 4096)
+        recent_ts = (self.now - timedelta(hours=2)).timestamp()
+        os.utime(old_shell / "bin", (recent_ts, recent_ts))
+        self.assertEqual(alert.sweep_playwright_cache(self.config, FakeRunner(), self.now, dry_run=False), [])
+        self.assertTrue(old_shell.exists())
+
     def test_playwright_skips_when_headless_shell_is_running(self):
         old_shell = self.playwright / "chromium_headless_shell-1248"
         new_shell = self.playwright / "chromium_headless_shell-1255"
@@ -1314,17 +1376,35 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
         self.assertIn([str(brew), "cleanup", "--prune=14", "-s"], recorded)
         self.assertIn([str(bun), "pm", "cache", "rm"], recorded)
 
-        # Running brew + bun install must skip both.
-        def busy_runner(args, input_text):
+        # Running brew + bun install/bunx/flagged bun must skip both.
+        for bun_cmd in ("bun install", "bunx vitest", "bun --cwd app install", "bun x prettier"):
+            def busy_runner(args, input_text, cmd=bun_cmd):
+                if args[0] == "ps":
+                    return subprocess.CompletedProcess(args, 0, f"/opt/homebrew/bin/brew upgrade\n{cmd}\n", "")
+                if args[0] == "lsof":
+                    return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+                return subprocess.CompletedProcess(args, 0, "", "")
+
+            busy = {r["tool"]: r for r in alert.sweep_tool_caches(self.config, busy_runner, dry_run=False)}
+            self.assertEqual(busy["brew"].get("skipped"), "brew_running")
+            self.assertEqual(busy["bun"].get("skipped"), "bun_install_running", bun_cmd)
+
+        # Fresh snapshot is taken after brew cleanup: a bun install that starts during brew blocks bun.
+        phase = {"brew_done": False}
+
+        def mid_run_runner(args, input_text):
             if args[0] == "ps":
-                return subprocess.CompletedProcess(args, 0, "/opt/homebrew/bin/brew upgrade\nbun install\n", "")
+                text = "bun install\n" if phase["brew_done"] else "/sbin/launchd\n"
+                return subprocess.CompletedProcess(args, 0, text, "")
             if args[0] == "lsof":
                 return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+            if args[0] == str(brew):
+                phase["brew_done"] = True
             return subprocess.CompletedProcess(args, 0, "", "")
 
-        busy = {r["tool"]: r for r in alert.sweep_tool_caches(self.config, busy_runner, dry_run=False)}
-        self.assertEqual(busy["brew"].get("skipped"), "brew_running")
-        self.assertEqual(busy["bun"].get("skipped"), "bun_install_running")
+        mid = {r["tool"]: r for r in alert.sweep_tool_caches(self.config, mid_run_runner, dry_run=False)}
+        self.assertTrue(mid["brew"]["ran"])
+        self.assertEqual(mid["bun"].get("skipped"), "bun_install_running")
 
         # Below cap skips bun without calling it.
         small = replace(self.config, bun_cache_max_gb=10.0)
@@ -1388,6 +1468,31 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
         self.assertNotIn("notify", runner.kinds())
         events = [json.loads(line) for line in (self.config.state_dir / "events.jsonl").read_text().splitlines()]
         self.assertEqual(events[-1]["event"], "daily")
+
+    def test_daily_notifies_on_failure_and_respects_time_limit(self):
+        # Missing t3_db with worktrees causes worktree step failure -> exits 1 and notifies.
+        (self.root / "wts").mkdir()
+        failing = replace(
+            self.config, worktrees=self.root / "wts", t3_db=self.root / "missing.sqlite", search_path=""
+        )
+        runner = FakeRunner()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = alert.run_daily(failing, runner, self.now, dry_run=False)
+        self.assertEqual(code, 1)
+        self.assertIn("notify", runner.kinds())
+        self.assertEqual(json.loads(out.getvalue())["failures"][0]["step"], "worktrees")
+
+        # Expired time limit stops cleanly and records stopped=True.
+        ticks = iter([0.0, 10_000.0, 10_000.0, 10_000.0, 10_000.0])
+        out2 = io.StringIO()
+        with contextlib.redirect_stdout(out2):
+            code2 = alert.run_daily(
+                replace(self.config, sweep_minutes=1.0, search_path=""),
+                FakeRunner(), self.now, dry_run=True, clock=lambda: next(ticks),
+            )
+        self.assertEqual(code2, 0)
+        self.assertTrue(json.loads(out2.getvalue())["stopped"])
 
 
 if __name__ == "__main__":

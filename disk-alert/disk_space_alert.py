@@ -113,11 +113,7 @@ PROCESS_SNAPSHOT_SECONDS = 5
 SWEEP_IDLE = timedelta(hours=24)
 SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 DEFAULT_WORKTREES = HOME / ".t3" / "worktrees"
-TARGET_IDLE = {
-    "low": timedelta(hours=6),
-    "critical": timedelta(hours=1),
-    "daily": timedelta(hours=DEFAULT_DAILY_TARGET_IDLE_HOURS),
-}
+TARGET_IDLE = {"low": timedelta(hours=6), "critical": timedelta(hours=1)}
 # The first line of the CACHEDIR.TAG cargo writes into every target folder.
 CARGO_TAG = b"Signature: 8a477f597d28d172789f06886806bc55"
 # Cargo holds these in each profile folder (target/debug, target/<triple>/release, ...)
@@ -128,7 +124,9 @@ LOCK_SEARCH_DEPTH = 3
 PLAYWRIGHT_DIR = re.compile(r"^(?P<browser>[a-z][a-z0-9_]*)-(?P<rev>\d+)$")
 ACTIVE_T3_RUN_STATUSES = ("queued", "preparing", "starting", "running", "waiting")
 BREW_COMMAND = re.compile(r"(?:^|/|\s)brew(?:\.rb)?(?:\s|$)")
-BUN_MUTATING_COMMAND = re.compile(r"(?:^|/|\s)bun\s+(?:install|i|add|a|update|up|ci|pm)\b")
+BUN_MUTATING_COMMAND = re.compile(
+    r"(?:^|/|\s)(?:bunx(?:\s|$)|bun\s+(?:-\S+(?:\s+[^\s-]+)?\s+)*(?:install|i|add|a|update|up|ci|pm|x)(?:\s|$))"
+)
 DAILY_SEARCH_PATH = (
     f"{HOME / '.local' / 'bin'}:{HOME / '.bun' / 'bin'}"
     ":/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -176,6 +174,7 @@ class Config:
     # Daily proactive cleanup paths; None leaves each step disabled unless enabled by `daily`.
     t3_db: Optional[Path] = None
     prune_worktrees: bool = True
+    sweep_targets_enabled: bool = True
     bun_cache: Optional[Path] = None
     bun_cache_max_gb: float = DEFAULT_BUN_CACHE_MAX_GB
     playwright_cache: Optional[Path] = None
@@ -552,18 +551,23 @@ def subfolders(folder: Path) -> list:
         return []
 
 
-def main_checkout(worktree: Path) -> Optional[Path]:
-    """The repository a linked worktree belongs to, read from its `.git` file
-    (`gitdir: <repo>/.git/worktrees/<name>`, the path absolute or relative to the
-    worktree), or None."""
+def worktree_gitdir(worktree: Path) -> Optional[Path]:
+    """The resolved gitdir from a linked worktree's `.git` file, or None."""
     try:
         line = (worktree / ".git").read_text().strip()
     except (OSError, UnicodeDecodeError):
         return None
     if not line.startswith("gitdir: "):
         return None
-    gitdir = (worktree / line[len("gitdir: "):]).resolve()
-    if gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
+    return (worktree / line[len("gitdir: "):]).resolve()
+
+
+def main_checkout(worktree: Path) -> Optional[Path]:
+    """The repository a linked worktree belongs to, read from its `.git` file
+    (`gitdir: <repo>/.git/worktrees/<name>`, the path absolute or relative to the
+    worktree), or None."""
+    gitdir = worktree_gitdir(worktree)
+    if gitdir is None or gitdir.parent.name != "worktrees" or gitdir.parent.parent.name != ".git":
         return None
     return gitdir.parents[2]
 
@@ -737,6 +741,8 @@ def sweep(
     for name, step in steps:
         if (dry_run and name == "trash") or (trash_only and name != "trash"):
             continue
+        if name == "targets" and not config.sweep_targets_enabled:
+            continue
         try:
             swept += step()
         except SweepStopped:
@@ -867,16 +873,6 @@ def held_t3_worktrees(db_path: Path, cutoff: datetime) -> Optional[frozenset]:
     return frozenset(held)
 
 
-def worktree_gitdir(worktree: Path) -> Optional[Path]:
-    try:
-        line = (worktree / ".git").read_text().strip()
-    except (OSError, UnicodeDecodeError):
-        return None
-    if not line.startswith("gitdir: "):
-        return None
-    return (worktree / line[len("gitdir: "):]).resolve()
-
-
 def worktree_base_refs(repo: Path, run: Runner) -> list:
     """Remote base refs whose ancestors are safe to drop (origin/HEAD and main checkout's upstream)."""
     refs = []
@@ -893,27 +889,42 @@ def worktree_base_refs(repo: Path, run: Runner) -> list:
 
 
 def worktree_has_secret_env(worktree: Path) -> bool:
-    """True when the worktree root has any .env* file other than .env.example (unless .env
-    is byte-for-byte identical to .env.example). Protects gitignored local secrets."""
-    try:
-        entries = list(worktree.iterdir())
-    except OSError:
-        return True
-    example = worktree / ".env.example"
-    for entry in entries:
-        name = entry.name
-        if name == ".env.example" or not (name == ".env" or name.startswith(".env.")):
-            continue
-        if entry.is_symlink() or not entry.is_file():
-            return True
-        if name == ".env" and example.is_file():
-            try:
-                if entry.read_bytes() == example.read_bytes():
-                    continue
-            except OSError:
+    """True when the worktree (at root or any non-vendor subdirectory) has any .env* file
+    other than .env.example (unless .env is byte-for-byte identical to a sibling .env.example).
+    Protects gitignored local secrets; unreadable directories fail closed."""
+    unreadable = []
+    skip_dirs = {".git", "node_modules", "target", ".venv"}
+    for folder, dirs, files in os.walk(worktree, onerror=unreadable.append):
+        dirs[:] = [name for name in dirs if name not in skip_dirs]
+        folder_path = Path(folder)
+        example = folder_path / ".env.example"
+        for name in files:
+            if name == ".env.example" or not (name == ".env" or name.startswith(".env.")):
+                continue
+            entry = folder_path / name
+            if entry.is_symlink() or not entry.is_file():
                 return True
-        return True
-    return False
+            if name == ".env" and example.is_file():
+                try:
+                    if entry.read_bytes() == example.read_bytes():
+                        continue
+                except OSError:
+                    return True
+            return True
+    return bool(unreadable)
+
+
+def open_paths(run: Runner) -> Optional[tuple]:
+    """Open file paths held by any process of this user, or None when unreadable."""
+    lsof = run(["lsof", "-nP", "-u", str(os.getuid()), "-Fn"], None)
+    if not lsof.stdout:
+        return None
+    return tuple(line[1:] for line in lsof.stdout.splitlines() if line.startswith("n/"))
+
+
+def path_has_open_handles(folder: Path, paths: tuple) -> bool:
+    real = str(folder.resolve())
+    return any(path == real or path.startswith(real + "/") for path in paths)
 
 
 def worktree_is_idle(worktree: Path, cutoff: float, run: Runner) -> bool:
@@ -955,9 +966,10 @@ def sweep_merged_worktrees(
     config: Config, run: Runner, now: datetime, dry_run: bool = False,
     clock: Callable[[], float] = time.monotonic, limit: Optional[Limit] = None,
 ) -> list:
-    """Remove clean T3 worktrees that have been idle for >= worktree_idle_hours, hold no
-    uncommitted changes or secret .env files, have no active/recent T3 thread or running
-    process, and whose HEAD is already an ancestor of a remote base ref."""
+    """Remove clean T3 worktrees that have been idle for >= worktree_idle_hours, are not
+    git-locked, hold no uncommitted changes or secret .env files, have no active/recent T3
+    thread, open file handles or running process, and whose HEAD is already an ancestor of
+    a remote base ref."""
     limit = limit or Limit()
     if not config.prune_worktrees or config.worktrees is None or not config.worktrees.is_dir():
         return []
@@ -972,13 +984,16 @@ def sweep_merged_worktrees(
         held = loaded
     swept = []
     base_refs_cache: dict = {}
-    processes, taken = None, 0.0
+    processes, held_open, taken = None, None, 0.0
     for project in subfolders(config.worktrees):
         for tree in subfolders(project):
             if limit.passed():
                 return swept
             resolved = str(tree.resolve())
             if resolved in held:
+                continue
+            gitdir = worktree_gitdir(tree)
+            if gitdir is None or (gitdir / "locked").exists():
                 continue
             repo = main_checkout(tree)
             if repo is None:
@@ -1007,11 +1022,13 @@ def sweep_merged_worktrees(
             )
             if not merged:
                 continue
-            if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
-                processes, taken = running_processes(run, None), clock()
-                if processes is None:
+            if processes is None or held_open is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
+                processes = running_processes(run, None)
+                held_open = open_paths(run) if processes is not None else None
+                taken = clock()
+                if processes is None or held_open is None:
                     return swept
-            if processes.inside(tree):
+            if processes.inside(tree) or path_has_open_handles(tree, held_open):
                 continue
             size = tree_size(tree)
             error = None
@@ -1023,6 +1040,16 @@ def sweep_merged_worktrees(
     return swept
 
 
+def playwright_running(processes: Processes) -> bool:
+    for line in processes.commands.splitlines():
+        lowered = line.lower()
+        if "disk_space_alert.py" in lowered:
+            continue
+        if "playwright" in lowered or "chrome-headless-shell" in lowered:
+            return True
+    return False
+
+
 def sweep_playwright_cache(
     config: Config, run: Runner, now: datetime, dry_run: bool = False,
     clock: Callable[[], float] = time.monotonic, limit: Optional[Limit] = None,
@@ -1031,7 +1058,7 @@ def sweep_playwright_cache(
     newest numeric revision of each browser. Skips if Playwright or a headless shell runs."""
     limit = limit or Limit()
     root = config.playwright_cache
-    if root is None or not root.is_dir():
+    if root is None or not root.is_dir() or limit.passed():
         return []
     groups: dict = {}
     for entry in subfolders(root):
@@ -1049,24 +1076,22 @@ def sweep_playwright_cache(
     cutoff = (now - SWEEP_IDLE).timestamp()
     candidates = []
     for folder in older:
+        if limit.passed():
+            return []
         size = idle_size(folder, cutoff)
         if size is not None:
             candidates.append((folder, size))
     if not candidates:
         return []
-    processes = running_processes(run, None)
-    if processes is None:
-        return []
-    for line in processes.commands.splitlines():
-        lowered = line.lower()
-        if "disk_space_alert.py" in lowered:
-            continue
-        if "playwright" in lowered or "chrome-headless-shell" in lowered:
-            return []
     swept = []
+    processes, taken = None, 0.0
     for folder, size in candidates:
         if limit.passed():
             break
+        if processes is None or clock() - taken > PROCESS_SNAPSHOT_SECONDS:
+            processes, taken = running_processes(run, None), clock()
+            if processes is None or playwright_running(processes):
+                break
         if processes.inside(folder):
             continue
         error = None
@@ -1089,13 +1114,6 @@ def sweep_tool_caches(
     bun pm cache rm (only when ~/.bun/install/cache exceeds bun_cache_max_gb)."""
     limit = limit or Limit()
     results = []
-    processes = None
-
-    def get_processes() -> Optional[Processes]:
-        nonlocal processes
-        if processes is None:
-            processes = running_processes(run, None)
-        return processes
 
     uv = shutil.which("uv", path=config.search_path)
     if uv and not limit.passed():
@@ -1108,7 +1126,7 @@ def sweep_tool_caches(
 
     brew = shutil.which("brew", path=config.search_path)
     if brew and not limit.passed():
-        procs = get_processes()
+        procs = running_processes(run, None)
         if procs is None:
             results.append({"tool": "brew", "skipped": "unreadable_processes", "ran": False, "error": None})
         elif BREW_COMMAND.search(procs.commands):
@@ -1127,7 +1145,7 @@ def sweep_tool_caches(
         if size <= cap_bytes:
             results.append({"tool": "bun", "skipped": "below_cap", "bytes": size, "ran": False, "error": None})
         else:
-            procs = get_processes()
+            procs = running_processes(run, None)
             if procs is None:
                 results.append({"tool": "bun", "skipped": "unreadable_processes", "bytes": size, "ran": False, "error": None})
             elif BUN_MUTATING_COMMAND.search(procs.commands):
@@ -1440,7 +1458,7 @@ def run_daily(
             ("worktrees", lambda: sweep_merged_worktrees(config, run, now, dry_run, clock=clock, limit=limit)),
             ("playwright", lambda: sweep_playwright_cache(config, run, now, dry_run, clock=clock, limit=limit)),
         ):
-            if limit.reached:
+            if limit.passed():
                 break
             try:
                 swept += step()
@@ -1451,7 +1469,7 @@ def run_daily(
                     {"at": now.isoformat(timespec="seconds"), "event": "daily_failed", "step": name, "error": str(error)}
                 )
         caches = []
-        if not limit.reached:
+        if not limit.passed():
             try:
                 caches = sweep_tool_caches(config, run, dry_run=dry_run, limit=limit)
             except OSError as error:
@@ -1834,10 +1852,11 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
         config = Config(
             state_dir=args.state_dir,
             osascript=None if args.no_notify else args.osascript,
-            claude_tmp=claude_tmp,
+            claude_tmp=None if args.no_sweep else args.claude_tmp,
             claude_projects=args.claude_projects,
             claude_sessions=args.claude_sessions,
-            worktrees=worktrees,
+            worktrees=args.worktrees,
+            sweep_targets_enabled=not args.no_sweep,
             sweep_minutes=args.sweep_minutes,
             t3_db=None if args.no_worktree_prune else args.t3_db,
             prune_worktrees=not args.no_worktree_prune,
