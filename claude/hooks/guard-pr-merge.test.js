@@ -140,10 +140,11 @@ describe("refuses", () => {
     ["gh pr merge 12 --subject \"$(date)\"", {}, "the shell fills in"],
     // xargs appends the selector, which the guard cannot see
     ["echo 13 | xargs gh pr merge --squash", {}, "xargs adds arguments"],
-    // a push in the same command moves the head after the guard reads its checks, in any order
+    // a push before an unpinned merge moves the head after the guard reads its checks;
+    // a post-merge mover passes the mover check, so an unpinned merge still fails on missing pin
     ["git push && gh pr merge 12", {}, "also runs `git push`, which may push a new head"],
     ["git push -u origin feature; gh pr merge 12 --squash", {}, "also runs `git push -u origin feature`"],
-    ["gh pr merge 12 && git push", {}, "also runs `git push`"],
+    ["gh pr merge 12 && git push", {}, "Pin the merge to that commit"],
     ["git -C /repo push & gh pr merge 12", {}, "also runs `git -C /repo push`"],
     ["bash -c 'git push' && gh pr merge 12", {}, "also runs `git push`"],
     ["GIT push && gh pr merge 12", {}, "also runs `GIT push`"],
@@ -789,9 +790,8 @@ describe("pins the merge to the head commit it checked", () => {
   test.each([
     ["gh pr merge 12 --match-head-commit \"$SHA\"", "the shell fills in `$SHA`"],
     ["gh pr merge 12 --match-head-commit $(git rev-parse HEAD)", "the shell fills in"],
-    // the guard runs once before the whole command, so a push in it moves the head after the check
+    // without a head pin, a pre-merge push is still refused before calling gh
     ["git push && gh pr merge 12", "the same command also runs `git push`"],
-    [`git push && gh pr merge 12 --match-head-commit ${HEAD}`, "the same command also runs `git push`"],
   ])("refuses %s", (command, reason) => {
     expect(verdict(command)).toContain(reason);
   });
@@ -802,6 +802,119 @@ describe("pins the merge to the head commit it checked", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].args.at(-1)).toContain("headRefOid,statusCheckRollup");
     expect(calls[1].args).toContain("workflows=def456:.github/workflows");
+  });
+});
+
+describe("chained commands with a pinned or top-level merge (dotfiles-756)", () => {
+  const URL = "https://github.com/o/r/pull/12";
+
+  test.each([
+    // pre-merge allowlist before a merge naming its PR by number or URL and pinning --match-head-commit
+    [`gh pr update-branch 12 && gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
+    [`gh pr update-branch 12 --rebase && gh pr merge ${URL} --squash --match-head-commit ${HEAD}`, {}],
+    [`git push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
+    [`git push -u origin feature; gh pr merge 12 --squash --match-head-commit=${HEAD}`, {}],
+    [`git add -A && git commit -m "fix" && git push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
+    [`git -C /repo push && gh pr merge ${URL} --match-head-commit ${HEAD}`, {}],
+    [`gh pr edit 12 --body "updated summary" && gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
+    [`gh pr edit 12 --title "New title" --add-label bug -F body.md && gh pr merge ${URL} --match-head-commit ${HEAD}`, {}],
+    [`gh pr edit 12 -b -B && gh pr merge 12 --match-head-commit ${HEAD}`, {}],
+    // post-merge commands strictly after a single top-level merge in a sequential list
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD}; git push origin --delete feat`, {}],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD}\ngit push origin --delete feat`, {}],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && gh run rerun 99`, {}],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && git merge --ff-only origin/main`, {}],
+    [`gh pr merge --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
+    ["gh pr merge 12 --auto --squash && git push origin --delete feat", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED" } }],
+    [`cd /other && gh pr merge 12 --squash --match-head-commit ${HEAD} && git branch -d feat && git push origin --delete feat`, {}],
+    // both an allowlisted pre-merge command and a post-merge cleanup command
+    [`gh pr update-branch 12 && gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
+    // a closed loop or function before a top-level merge does not prevent post-merge pass
+    [`for i in 1; do echo ok; done && gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
+  ])("allows %s", (command, options) => {
+    expect(verdict(command, options)).toBeUndefined();
+  });
+
+  test("still runs GitHub checks on allowed chained merges", () => {
+    expect(verdict(`gh pr update-branch 12 && gh pr merge 12 --squash --match-head-commit ${HEAD}`, { view: { isDraft: true } }))
+      .toContain("is a draft");
+    expect(verdict(`gh pr update-branch 12 && gh pr merge 12 --squash --match-head-commit 0000000`))
+      .toContain("is not pull request #12's head commit");
+    expect(verdict(`gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, { view: { mergeStateStatus: "BEHIND" } }))
+      .toContain("is behind main");
+  });
+
+  test.each([
+    // pre-merge commands the head pin does not cover
+    [`gh pr edit 12 --base develop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 --base develop`"],
+    [`gh pr edit 12 --base=develop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 --base=develop`"],
+    [`gh pr edit 12 -B develop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 -B develop`"],
+    [`gh pr edit 12 -Bdevelop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 -Bdevelop`"],
+    [`gh pr edit 12 --unknown-flag && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 --unknown-flag`"],
+    [`gh pr edit 12 $OPT && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr edit 12 $OPT`"],
+    [`gh pr -B develop edit 12 && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr -B develop edit 12`"],
+    [`gh api -X PATCH repos/o/r/pulls/12 -f base=develop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh api -X PATCH"],
+    [`gh api repos/o/r/pulls/12 -f base=develop && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh api repos/o/r/pulls/12"],
+    [`gh repo edit --allow-squash-merge && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh repo edit --allow-squash-merge`"],
+    [`gh pr ready 12 && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh pr ready 12`"],
+    [`gh pr create --title x --body y && gh pr merge --auto`, "also runs `gh pr create"],
+    [`gh pr create --title x --body y && gh pr merge 12 --auto --match-head-commit ${HEAD}`, "also runs `gh pr create"],
+    // commands that can change which repository gh resolves before a number-only merge without -R
+    [`git remote set-url origin https://github.com/other/r.git && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `git remote set-url"],
+    [`git config remote.origin.url https://github.com/other/r.git && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `git config"],
+    [`gh repo set-default o/other && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh repo set-default o/other`"],
+    // non-allowlisted or obfuscated pre-merge commands, including alongside an allowlisted one
+    [`git push && gh repo edit && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh repo edit`"],
+    [`git -c alias.p=push p origin HEAD && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `git -c alias.p=push"],
+    [`[g]it push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `[g]it push`"],
+    [`$GIT push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `$GIT push`"],
+    [`git -$OPT push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `git -$OPT push`"],
+    [`git -C $DIR push && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `git -C $DIR push`"],
+    [`gh -R $REPO pr edit 12 --body ok && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "also runs `gh -R $REPO pr edit"],
+    [`echo --base other | xargs gh pr edit 12 && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "xargs adds arguments"],
+    // selector-less or branch-selector merge with pre-merge mover
+    [`gh pr checkout 13 && gh pr merge --squash --match-head-commit ${HEAD}`, "also runs `gh pr checkout 13`"],
+    [`git switch feature-b && gh pr merge --squash --match-head-commit ${HEAD}`, "also runs `git switch feature-b`"],
+    [`git push && gh pr merge --squash --match-head-commit ${HEAD}`, "also runs `git push`"],
+    [`git push && gh pr merge feature-branch --squash --match-head-commit ${HEAD}`, "also runs `git push`"],
+    // two merges in one call, even pinned
+    [`gh pr merge 12 --match-head-commit ${HEAD} && gh pr merge 13 --match-head-commit ${HEAD}`, "runs another `gh pr merge`"],
+    // post-merge pass does NOT hold inside a loop, function body, group, subshell, conditional, or nested script
+    [`for i in 1 2; do gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`for ((i=0; i<2; i++)); do gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`while true; do gh pr merge 12 --squash --match-head-commit ${HEAD} && git push; done`, "inside a loop, function or group"],
+    [`until false; do gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`select x in 1 2; do gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`repeat 2; do gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`f() { gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; }; f`, "inside a loop, function or group"],
+    [`function f { gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; }; f`, "inside a loop, function or group"],
+    [`f() gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; f`, "inside a loop, function or group"],
+    [`{ gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; }`, "inside a loop, function or group"],
+    [`(gh pr merge 12 --squash --match-head-commit ${HEAD} && git push)`, "inside a loop, function or group"],
+    [`if true; then gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; fi`, "inside a loop, function or group"],
+    [`case a in a) gh pr merge 12 --squash --match-head-commit ${HEAD}; git push;; esac`, "inside a loop, function or group"],
+    [`bash -c 'gh pr merge 12 --squash --match-head-commit ${HEAD} && git push'`, "inside a loop, function or group"],
+    [`x=$(gh pr merge 12 --squash --match-head-commit ${HEAD}); git push`, "inside a loop, function or group"],
+    // piped and backgrounded forms
+    [`git push | gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} | git push`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} | cat && git push`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && git push | cat`, "in a pipeline or background job"],
+    [`git push & gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} & git push`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && git push &`, "in a pipeline or background job"],
+    [`{ git push; } & gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`(git push &) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && (git push &)`, "in a pipeline or background job"],
+    [`coproc git push; gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`coproc gh pr merge 12 --squash --match-head-commit ${HEAD}; git push`, "in a pipeline or background job"],
+  ])("refuses %s", (command, reason) => {
+    const calls = [];
+    const violation = verdict(command, { calls });
+    expect(violation).toBeString();
+    expect(violation).toContain(reason);
+    expect(calls).toHaveLength(0);
   });
 });
 
