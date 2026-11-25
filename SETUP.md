@@ -1156,6 +1156,49 @@ whole build folder for each build, so parallel agents would wait on each other. 
 worktrees of a repository would also overwrite each other's builds. Cargo's
 fine-grained build locking and shared build cache were still unstable in Cargo 1.99.
 
+To share compiled Rust and C/C++ artifacts across worktrees without sharing a
+`CARGO_TARGET_DIR`, install [Kache](https://github.com/kunobi-ninja/kache) on each Mac.
+Kache keeps one content-addressed store under `~/Library/Caches/kache` (auto-budgeted to
+5% of the volume) and restores matching artifacts into each worktree's own `target/` via
+APFS copy-on-write clones, so parallel worktrees share physical blocks without lock
+contention. `kache/config.toml` is tracked directly in `~/.config/kache/config.toml` and
+keeps `explain_miss = true`, `blaze = false`, and `seed_new_targets` /
+`auto_share_target_files = false` (avoiding a `kache-engine` v2.3.1 daemon `.cargo-lock`
+FD leak).
+
+```sh
+brew install kunobi-ninja/kunobi/kache
+kache init --shims
+rm -f ~/.local/lib/kache/shims/cargo
+kache daemon install
+```
+
+Enable Kache machine-wide via `~/.zshenv` (leaving `cargo/config.toml` portable for CI
+and machines without Kache) and keep its C/C++ shims ahead of `/usr/bin` in `~/.zprofile`
+after macOS `path_helper` runs:
+
+```zsh
+# ~/.zshenv (opt out per command with RUSTC_WRAPPER="" or KACHE_DISABLED=1)
+if [[ -z "${RUSTC_WRAPPER+x}" ]]; then
+  _kache_bin="$(command -v kache 2>/dev/null || true)"
+  if [[ -z "$_kache_bin" && -x /opt/homebrew/bin/kache ]]; then
+    _kache_bin="/opt/homebrew/bin/kache"
+  fi
+  if [[ -n "$_kache_bin" ]]; then
+    export RUSTC_WRAPPER="$_kache_bin"
+    if [[ -d "$HOME/.local/lib/kache/shims" ]]; then
+      export PATH="$HOME/.local/lib/kache/shims:$PATH"
+    fi
+  fi
+  unset _kache_bin
+fi
+
+# ~/.zprofile (after `brew shellenv` and `~/.local/bin`)
+if [[ -d "$HOME/.local/lib/kache/shims" ]] && [[ "${RUSTC_WRAPPER##*/}" == "kache" ]]; then
+  export PATH="$HOME/.local/lib/kache/shims:$PATH"
+fi
+```
+
 ## Disk space alert
 
 `disk-alert/disk_space_alert.py` warns when the Data volume runs low on free space.
@@ -1269,6 +1312,7 @@ uv run --no-project python -B shell/test-vp-launcher.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s cargo/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s kache/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s config-sync/tests -v
 ```
 

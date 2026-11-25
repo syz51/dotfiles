@@ -206,12 +206,15 @@ verify = ["uv run --no-project python -B -m unittest discover -s disk-alert/test
 
 [[setup]]
 id = "cargo"
-title = "User-wide Cargo settings that shrink Rust builds"
-covers = ["cargo"]
+title = "User-wide Cargo and Kache settings that shrink Rust builds"
+covers = ["cargo", "kache"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests; measure build size and rebuild time before changing a setting"
-verify = ["uv run --no-project python -B -m unittest discover -s cargo/tests"]
+verify = [
+  "uv run --no-project python -B -m unittest discover -s cargo/tests",
+  "uv run --no-project python -B -m unittest discover -s kache/tests",
+]
 
 [[setup]]
 id = "config-sync"
