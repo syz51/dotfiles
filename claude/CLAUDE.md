@@ -14,7 +14,7 @@
 
 ## Skills
 
-- Load skills with the Skill tool before matching work: `frontend-ui` for frontend/UI work or its tooling, including TSX and Vue; `typescript` for TypeScript implementation, review, debugging, migration, or tooling; `rust` for Rust or Cargo/toolchain work; and `tauri` for Tauri work. When several apply, load `frontend-ui` first. Follow each skill's routing to the references the task needs; unrelated work in a TypeScript or Rust repository needs neither language skill.
+- Load skills with Skill before matching work: `frontend-ui` (UI/TSX/Vue/tooling), `typescript` (TS code/review/tooling), `rust` (Rust/Cargo), `tauri` (Tauri). When several apply, load `frontend-ui` first. Follow each skill's routing; unrelated work in a TypeScript or Rust repository needs neither language skill.
 - For charts, load a data-visualization skill such as `dataviz` and apply it within `frontend-ui`'s constraints.
 
 ## Workflow
@@ -83,7 +83,7 @@
 
 ## Review
 
-- The `reviewer` agent is the only review process. For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done; it reviews as its `diff-review` skill says, on the session's model and effort. A change may skip review only when every file it changes is on the trivial list in `~/.claude/factory/scoring/review-scope.toml`, such as lockfiles; no repository is exempt. Don't run a second review, `/code-review`, `/simplify`, or `/security-review` unless I ask.
+- The `reviewer` agent is the only review process. For every change you push or merge, in any repository I own or work in, run it once on the final diff before pushing or reporting done; it reviews as its `diff-review` skill says, on the session's model and effort. A change may skip review only when every file it changes is on the trivial list in `~/.claude/factory/scoring/review-scope.toml`, such as lockfiles; no repository is exempt. Daemon-dispatched managed workers are also exempt, as their PR receives an independent managed Review judge. Don't run a second review, `/code-review`, `/simplify`, or `/security-review` unless I ask.
 - Before you start the `reviewer` agent, read `~/.claude/reference/review.md`: how to run it in the background, decide on its findings and record their outcomes.
 
 ## Basic safeguards
