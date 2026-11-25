@@ -71,6 +71,8 @@ uv
 /atuin/atuin-receipt.json
 /homebrew/
 /fish/conf.d/atuin.env.fish
+/fish/conf.d/uv.env.fish
+/cursor/cli-config.json
 /television/config.toml
 /ghostty/config.local
 /t3/
