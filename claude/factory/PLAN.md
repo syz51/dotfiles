@@ -764,3 +764,6 @@ coordination). This file keeps the goal, evidence, decisions and log.
   corrections in person-run sessions. The weekly summary adds a `## Dotfiles skills`
   section with one line per skill combining `metrics` loads, `evolve` feedback counts, and
   dotfiles commits touching `claude/skills/<name>/` in the 7-day window.
+- 2026-11-25: Registered `research-factory` (covering `lab`, `papers`, `claimcheck`, `prov`,
+  `ireval` and `agentprof`) and `masters` (local remote-less repository) in `setups.toml`
+  (dotfiles-98), both owned by the `research-factory` board. The registry now has 35 setups.

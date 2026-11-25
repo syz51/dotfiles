@@ -180,4 +180,12 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(geminiMd).not.toContain("`vps-247`");
     expect(geminiMd).not.toMatch(/`ssh [\w.-]+[\s`]/);
   });
+
+  test("documents Gemini-first offloading split and links gemini-board-workflow.md", () => {
+    expect(geminiMd).toContain("Gemini-first offloading");
+    expect(geminiMd).toContain("`board-ops`");
+    expect(geminiMd).toContain("~/.config/gemini/docs/gemini-board-workflow.md");
+    expect(existsSync(join(REPO, "gemini/docs/gemini-board-workflow.md"))).toBe(true);
+    expect(existsSync(join(REPO, "gemini/skills/board-ops/SKILL.md"))).toBe(true);
+  });
 });

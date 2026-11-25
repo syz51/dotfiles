@@ -57,6 +57,18 @@ describe("setups", () => {
       channel: "board",
       verify: expect.arrayContaining(["bun test claude/tests/cheatsheets.test.js"]),
     });
+    // Research-factory CLIs and the local masters repo route to the research-factory board.
+    const rf = loadSetups().find((entry) => entry.id === "research-factory");
+    expect(rf).toMatchObject({ owner: { board: "research-factory" }, channel: "board" });
+    expect(rf.covers.filter(isPath)).toEqual([]);
+    for (const tool of ["lab", "papers", "claimcheck", "prov", "ireval", "agentprof"])
+      expect(rf.covers.join(" ")).toContain(tool);
+    const masters = loadSetups().find((entry) => entry.id === "masters");
+    expect(masters).toMatchObject({
+      owner: { repo: "local masters repository (no git remote)", board: "research-factory" },
+      channel: "board",
+    });
+    expect(masters.covers.filter(isPath)).toEqual([]);
   });
 
   test("every tracked top-level directory and claude/skills directory has a setup", () => {
@@ -137,11 +149,15 @@ verify = ["y"]
     expect([isPath("claude/factory"), isPath("the board server")]).toEqual([true, false]);
   });
 
-  test("owners: <project> and skill-notes setups without a board are valid; ids are bounded", () => {
+  test("owners: <project>, skill-notes without a board, and phrase/local-path owner.repo are valid; ids are bounded", () => {
     const registry = valid();
     registry.setup.find((entry) => entry.id === "project").owner = { repo: "<project>", board: "<project>" };
     Object.assign(registry.setup.find((entry) => entry.id === "skills"), { channel: "skill-notes", owner: { repo: "agent-skills" } });
-    registry.setup.push(setup("a:b_c-1"), setup("x".repeat(41)));
+    registry.setup.push(
+      setup("a:b_c-1", { owner: { repo: "local masters repository (no git remote)", board: "research-factory" } }),
+      setup("local-path", { owner: { repo: "~/Documents/project", board: "research-factory" } }),
+      setup("x".repeat(41)),
+    );
     expect(problems(registry)).toEqual([`${"x".repeat(41)}: id must be 1-40 characters of [a-z0-9:_-]`]);
     registry.setup.pop();
     registry.setup.find((entry) => entry.id === "other").owner = { repo: "r" };
