@@ -540,3 +540,118 @@ test("ANSI-C $'...' handles \\' and \\\\ escapes without breaking later commands
   expect(commands("sh -c $'echo \\'${\\'; make'").map(([cmd]) => cmd)).toContain("make");
   expect(commands("eval $'cd /other\\nmake'")).toContainEqual(["make", "/other"]);
 });
+
+test("visit reports topLevel, piped, and background execution context (dotfiles-756)", () => {
+  const ctx = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (words, _dir, { topLevel, piped, background }) => {
+      seen.push([words.join(" "), topLevel, piped, background]);
+    });
+    return seen;
+  };
+  // top-level sequential lists
+  expect(ctx("a && b; c\nd")).toEqual([
+    ["a", true, false, false],
+    ["b", true, false, false],
+    ["c", true, false, false],
+    ["d", true, false, false],
+  ]);
+  // pipelines and backgrounded jobs
+  expect(ctx("a | b && c")).toEqual([
+    ["a", false, true, false],
+    ["b", false, true, false],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("a & b")).toEqual([
+    ["a", false, false, true],
+    ["b", true, false, false],
+  ]);
+  expect(ctx("a && b & c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("{ a; } & b")).toEqual([
+    ["a", false, false, true],
+    ["b", true, false, false],
+  ]);
+  expect(ctx("(a &) && b")).toEqual([
+    ["a", false, false, true],
+    ["b", true, false, false],
+  ]);
+  expect(ctx("coproc a; b")).toEqual([
+    ["a", false, false, true],
+    ["b", true, false, false],
+  ]);
+  expect(ctx("({ a; b; } &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("c && ({ a; b; } &)")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, true],
+  ]);
+  expect(ctx("((a; b) &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("({ a; } && b &) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("(for i in 1; do a; done &) && c").find(([cmd]) => cmd === "a")).toEqual(["a", false, false, true]);
+  expect(ctx("(for i in 1; do a; done &) && c").at(-1)).toEqual(["c", true, false, false]);
+  expect(ctx("coproc { a; b; } && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("coproc (a; b) && c")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("coproc NAME (a; b) && c").filter(([cmd]) => cmd !== "NAME")).toEqual([
+    ["a", false, false, true],
+    ["b", false, false, true],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("c && { a & b; }")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, false],
+  ]);
+  expect(ctx("c && coproc { a; b; }")).toEqual([
+    ["c", true, false, false],
+    ["a", false, false, true],
+    ["b", false, false, true],
+  ]);
+  // loops, functions, groups, subshells, conditionals, and nested scripts are not top-level
+  for (const [source, target] of [
+    ["for i in 1 2; do a; b; done", "a"],
+    ["while true; do a; b; done", "a"],
+    ["until false; do a; b; done", "a"],
+    ["select x in 1 2; do a; b; done", "a"],
+    ["repeat 2; do a; b; done", "a"],
+    ["if true; then a; fi", "a"],
+    ["case x in x) a;; esac", "a"],
+    ["{ a; b; }", "a"],
+    ["(a; b)", "a"],
+    ["f() { a; b; }", "a"],
+    ["function f { a; b; }", "a"],
+    ["f() a; b", "a"],
+    ["bash -c 'a && b'", "a"],
+    ["x=$(a); b", "a"],
+  ]) {
+    const entry = ctx(source).find(([cmd]) => cmd === target);
+    expect(entry, source).toEqual([target, false, false, false]);
+  }
+  // commands after a closed loop, function, or empty array assignment return to top-level
+  expect(ctx("for i in 1; do a; done && b").at(-1)).toEqual(["b", true, false, false]);
+  expect(ctx("f() { a; }; b").at(-1)).toEqual(["b", true, false, false]);
+  expect(ctx("x=(); b").at(-1)).toEqual(["b", true, false, false]);
+});

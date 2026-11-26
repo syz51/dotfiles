@@ -10,7 +10,7 @@ const MAX_DEPTH = 8;
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const SHELL_VALUE_OPTIONS = new Set(["-o", "+o", "-O", "+O", "--rcfile", "--init-file"]);
 const SHELL_KEYWORDS = new Set(["!", "{", "}", "if", "then", "else", "elif", "do", "while", "until"]);
-const COMPOUND_OPEN = { while: "done", until: "done", for: "done", if: "fi", case: "esac" };
+const COMPOUND_OPEN = { while: "done", until: "done", for: "done", select: "done", repeat: "done", if: "fi", case: "esac" };
 const COMPOUND_CLOSE = new Set(Object.values(COMPOUND_OPEN));
 const STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "-"]);
 /** git's global options that take the next word as their value, for the guards that read git commands. */
@@ -299,6 +299,8 @@ export function parseScript(source) {
     } else if (current.substitutions.length > 0) {
       commands.push({ ...current, next });
       current = fresh();
+    } else if (next !== "\n" && next !== "(" && next !== ")") {
+      delete current.funcBody;
     }
   };
 
@@ -384,8 +386,16 @@ export function parseScript(source) {
     } else if (c === ")") {
       endCommand(c);
       if (nesting.at(-1) === "(") nesting.pop();
-      if (current.opens > 0) current.opens -= 1; // an empty `()`, as in a function definition
-      else if (commands.length > 0) Object.assign(commands.at(-1), { closes: commands.at(-1).closes + 1, next: ")" });
+      if (current.opens > 0) {
+        current.opens -= 1; // an empty `()`, as in a function definition
+        if (commands.at(-1)?.next === "(" && !/=$/.test(commands.at(-1).argv.at(-1) ?? "")) current.funcBody = true;
+      } else if (commands.length > 0) {
+        const prev = commands.at(-1);
+        // Record the operator that preceded each `)` so analyzeCommands knows which
+        // command or closed group was followed by `&`, `|`, or `|&`.
+        (prev.closeOps ??= []).push(prev.next);
+        Object.assign(prev, { closes: prev.closes + 1, next: ")" });
+      }
       i += 1;
     } else if (c === ";" && nesting.at(-1) === "case" && ";&|".includes(source[i + 1] ?? "")) {
       endCommand(";"); // `;;`, `;&`, or zsh's `;|` ends a case item; a pattern comes next
@@ -799,6 +809,142 @@ function printed(words, depth = 0) {
   return args.join(" ").replaceAll("\\n", "\n");
 }
 
+/**
+ * Computes per-command execution-context metadata for `commands` from `parseScript`:
+ * - `grouped`: inside `( … )`, `{ …; }`, a compound command (`if`/`for`/`while`/`until`/`case`/`select`/`repeat`), or a function body.
+ * - `piped`: part of a `|` or `|&` pipeline, or enclosed by a piped group or script.
+ * - `background`: backgrounded via `&` (including an `&&`/`||` list ending in `&`), `coproc`, or enclosed by a backgrounded group or script.
+ */
+function analyzeCommands(commands, inheritedPiped, inheritedBg) {
+  const n = commands.length;
+  const grouped = new Array(n).fill(false);
+  const pipedDepth = new Array(n).fill(inheritedPiped ? -1 : Infinity);
+  const bgDepth = new Array(n).fill(inheritedBg ? -1 : Infinity);
+  const bg = new Array(n).fill(Boolean(inheritedBg));
+  const depthBefore = new Array(n).fill(0);
+  const spans = [];
+  const subStack = [];
+  const braceStack = [];
+  const compoundStack = [];
+  const groupDepth = () => subStack.length + braceStack.length + compoundStack.length;
+  const isPipe = (op) => op === "|" || op === "|&";
+  const recordOp = (idx, op, depth) => {
+    if (op === "&") {
+      bg[idx] = true;
+      bgDepth[idx] = Math.min(bgDepth[idx], depth);
+    } else if (isPipe(op)) {
+      pipedDepth[idx] = Math.min(pipedDepth[idx], depth);
+    }
+  };
+
+  let pendingCoprocSubshell = false;
+  for (let i = 0; i < n; i += 1) {
+    const command = commands[i];
+    if (command.funcBody) grouped[i] = true;
+    depthBefore[i] = groupDepth();
+    const coprocSub = pendingCoprocSubshell;
+    pendingCoprocSubshell = false;
+    for (let k = 0; k < command.opens; k += 1) {
+      subStack.push({ start: i, outerDepth: groupDepth(), coproc: coprocSub && k === 0 });
+    }
+    let coprocHere = false;
+    let coprocPos = -1;
+    let j = 0;
+    while (j < command.argv.length) {
+      const word = command.argv[j];
+      if (basename(word) === "coproc") {
+        coprocHere = true;
+        coprocPos = j;
+        bg[i] = true;
+        const next2 = command.argv[j + 2];
+        j += next2 === "{" || Object.hasOwn(COMPOUND_OPEN, next2) ? 2 : 1;
+        continue;
+      }
+      if (word === "{") {
+        braceStack.push({ start: i, outerDepth: groupDepth(), subshellDepth: subStack.length, coproc: coprocHere });
+        coprocHere = false;
+      } else if (Object.hasOwn(COMPOUND_OPEN, word)) {
+        compoundStack.push({ start: i, close: COMPOUND_OPEN[word], outerDepth: groupDepth(), subshellDepth: subStack.length, coproc: coprocHere });
+        coprocHere = false;
+      }
+      if (word !== "time" && !SHELL_KEYWORDS.has(word)) break;
+      j += 1;
+    }
+    if (coprocHere && command.next === "(" && command.argv.length - coprocPos <= 2) {
+      pendingCoprocSubshell = true;
+    }
+    if (command.argv[0] === "}" && braceStack.length > 0 && braceStack.at(-1).subshellDepth === subStack.length) {
+      const open = braceStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
+    } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
+      && compoundStack.at(-1)?.close === command.argv[0] && compoundStack.at(-1).subshellDepth === subStack.length) {
+      const open = compoundStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
+    }
+    const selfOp = command.closes > 0 ? command.closeOps[0] : command.next;
+    recordOp(i, selfOp, groupDepth());
+    for (let k = 0; k < command.closes && subStack.length > 0; k += 1) {
+      const open = subStack.pop();
+      spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
+      while (braceStack.length > 0 && braceStack.at(-1).subshellDepth > subStack.length) {
+        const b = braceStack.pop();
+        spans.push({ start: b.start, end: i, outerDepth: b.outerDepth, coproc: b.coproc });
+      }
+      while (compoundStack.length > 0 && compoundStack.at(-1).subshellDepth > subStack.length) {
+        const c = compoundStack.pop();
+        spans.push({ start: c.start, end: i, outerDepth: c.outerDepth, coproc: c.coproc });
+      }
+      const closeOp = k + 1 < command.closes ? command.closeOps[k + 1] : command.next;
+      recordOp(i, closeOp, groupDepth());
+    }
+    recordOp(i, command.next, groupDepth());
+    if (isPipe(command.next) && i + 1 < n) {
+      pipedDepth[i + 1] = Math.min(pipedDepth[i + 1], groupDepth());
+    }
+  }
+  // Unclosed groups (e.g. zsh short `for x in a b; cmd`) cover through the end of the script.
+  for (const open of [...subStack, ...braceStack, ...compoundStack]) {
+    spans.push({ start: open.start, end: n - 1, outerDepth: open.outerDepth, coproc: open.coproc });
+  }
+  for (const { start, end } of spans) {
+    for (let k = start; k <= end; k += 1) grouped[k] = true;
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const { start, end, outerDepth, coproc } of spans) {
+      const spanPiped = Math.min(pipedDepth[start], pipedDepth[end]);
+      const spanBg = Math.min(bgDepth[start], bgDepth[end]);
+      for (let k = start; k <= end; k += 1) {
+        if (spanPiped <= outerDepth && spanPiped < pipedDepth[k]) {
+          pipedDepth[k] = spanPiped;
+          changed = true;
+        }
+        if (spanBg <= outerDepth && spanBg < bgDepth[k]) {
+          bgDepth[k] = spanBg;
+          bg[k] = true;
+          changed = true;
+        }
+        if (coproc && !bg[k]) {
+          bg[k] = true;
+          changed = true;
+        }
+      }
+    }
+    for (let i = n - 2; i >= 0; i -= 1) {
+      if (["&&", "||", "|", "|&"].includes(commands[i].next)) {
+        const listDepth = depthBefore[i + 1];
+        if (bgDepth[i + 1] <= listDepth && bgDepth[i + 1] < bgDepth[i]) {
+          bgDepth[i] = bgDepth[i + 1];
+          bg[i] = true;
+          changed = true;
+        }
+      }
+    }
+  }
+  return commands.map((_, i) => ({ grouped: grouped[i], piped: pipedDepth[i] < Infinity, background: bg[i] }));
+}
+
 function inspect(source, state, visit, depth, tooDeep) {
   if (depth > MAX_DEPTH) return tooDeep;
   state.cdCount ??= 0;
@@ -810,6 +956,7 @@ function inspect(source, state, visit, depth, tooDeep) {
   // cannot tell which command gets them and treats every command in it as getting more words.
   const added = state.appended === true;
   const { commands } = parseScript(source);
+  const cmdMeta = analyzeCommands(commands, state.piped, state.background);
   const snapshot = () => ({
     dir: state.dir,
     dirs: state.dirs ? [...state.dirs] : undefined,
@@ -846,7 +993,9 @@ function inspect(source, state, visit, depth, tooDeep) {
     }
   };
   let pipeline = [];
-  for (const command of commands) {
+  for (let idx = 0; idx < commands.length; idx += 1) {
+    const command = commands[idx];
+    const meta = cmdMeta[idx];
     for (let k = 0; k < command.opens; k += 1) subshells.push(snapshot());
     for (const word of command.argv) {
       if (word === "{") braces.push({ ...snapshot(), subshellDepth: subshells.length });
@@ -875,7 +1024,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       groups.at(-1)?.push(...run.printed);
     }
     // `before` and `beforeDirs` hold the shell's directory state when this part starts, where its substitutions run.
-    pipeline.push({ command, run, before: state.dir, beforeDirs: state.dirs ? [...state.dirs] : undefined });
+    pipeline.push({ command, meta, run, before: state.dir, beforeDirs: state.dirs ? [...state.dirs] : undefined });
     if (command.next === "|" || command.next === "|&") {
       leave(command.closes);
       continue;
@@ -889,9 +1038,10 @@ function inspect(source, state, visit, depth, tooDeep) {
     const background = pipeline.at(-1).command.next === "&";
     const readerInShell = reader !== -1 && !background && reader === pipeline.length - 1 && !here
       && sourceTarget(pipeline[reader].run.words) !== undefined;
-    for (const [index, { command: { argv, inputs, substitutions }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
+    for (const [index, { command: { argv, inputs, substitutions }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       const lastInShell = !background && index === pipeline.length - 1 && !here;
+      const topLevel = depth === 0 && !grouped && !piped && !inBackground;
       // Its substitutions, which the shell running it expands first, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
       // run on the remote host; its local options' commands run here. The words xargs adds to
@@ -913,9 +1063,9 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
       if (name === "find") scripts.push(...findScripts(words, dir, dirs).map((entry) => ({ ...entry, remote: here })));
       if (reader !== -1) {
-        const piped = index < reader ? [...inputs, ...text] : inputs;
+        const pipedScripts = index < reader ? [...inputs, ...text] : inputs;
         const targetRun = pipeline[reader].run;
-        scripts.push(...piped.map((script) => ({
+        scripts.push(...pipedScripts.map((script) => ({
           script,
           dir: targetRun.dir,
           dirs: targetRun.dirs,
@@ -930,6 +1080,8 @@ function inspect(source, state, visit, depth, tooDeep) {
           dirs: whereDirs ? [...whereDirs] : undefined,
           remote: onRemote,
           appended: added || adds === true,
+          piped,
+          background: inBackground,
           cdCount: 0,
           cdTargets: [],
         };
@@ -952,7 +1104,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       if (opaque) {
         const opaqueDir = dir !== undefined || dirs !== undefined ? dir : before;
         const opaqueDirs = dir !== undefined || dirs !== undefined ? dirs : beforeDirs;
-        const violation = visit(argv, opaqueDir, { appended: true, opaque: true, remote: here, ...(opaqueDirs !== undefined && { dirs: opaqueDirs }) });
+        const violation = visit(argv, opaqueDir, { appended: true, opaque: true, remote: here, topLevel, piped, background: inBackground, ...(opaqueDirs !== undefined && { dirs: opaqueDirs }) });
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
@@ -973,7 +1125,7 @@ function inspect(source, state, visit, depth, tooDeep) {
           }
         }
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, ...(dirs !== undefined && { dirs }) });
+        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, topLevel, piped, background: inBackground, ...(dirs !== undefined && { dirs }) });
         if (violation) return violation;
       }
     }
@@ -984,12 +1136,15 @@ function inspect(source, state, visit, depth, tooDeep) {
 }
 
 /**
- * Calls `visit(words, dir, { appended, opaque, remote, dirs })` for every command `source` would run,
+ * Calls `visit(words, dir, { appended, opaque, remote, topLevel, piped, background, dirs })` for every command `source` would run,
  * after wrappers, through shells, substitutions, `eval`, `source`, `find -exec` and `ssh`; `dir` is its
  * directory when known, and always undefined for a command on another host or when a `cd` inside `eval`,
  * `source` or a non-last piped compound command leaves the directory uncertain (in which case `dirs` lists
  * the known candidate directories), `appended` says that xargs adds arguments the guard cannot see, and
- * `remote` says that it runs on another host over `ssh`. `opaque` says that the words xargs adds may run
+ * `remote` says that it runs on another host over `ssh`. `topLevel` says that the command runs directly
+ * in the top-level sequential list (not nested inside a loop, function body, group, subshell, pipeline,
+ * background job, or inner script); `piped` and `background` say whether the command (or an enclosing
+ * group or script) is in a pipeline or backgrounded. `opaque` says that the words xargs adds may run
  * a command the guard cannot see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or
  * `xargs find`; then `words` are the xargs command's own words, and the command they name is visited too.
  * A word that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
