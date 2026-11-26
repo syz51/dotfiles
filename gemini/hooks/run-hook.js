@@ -16,9 +16,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
-  createsPullRequest,
+  pullRequestUrls,
   report as autoMergeReport,
   reportMcpCreate as autoMergeMcpReport,
 } from "../../claude/hooks/auto-merge.js";
@@ -35,6 +35,13 @@ import {
   runGh,
 } from "../../claude/hooks/guard-pr-merge.js";
 import { findRuntimeViolation } from "../../claude/hooks/guard-runtimes.js";
+import {
+  expands,
+  ghSubcommands,
+  gitGlobalOptions,
+  parseScript,
+  visitCommands,
+} from "../../claude/hooks/shell.js";
 
 const HOOKS_DIR = resolve(dirname(import.meta.path), "..", "..", "claude", "hooks");
 
@@ -65,17 +72,401 @@ function mainCheckoutTempRoots() {
   return roots.filter((root) => existsSync(root)).map((root) => realpathSync(root));
 }
 
-function resolveBranchPrStdout(cwd) {
-  // Antigravity PostToolUse does not pass command stdout; resolve the current branch's PR URL via gh.
-  const pr = spawnSync("gh", ["pr", "view", "--json", "url", "-q", ".url"], {
-    cwd,
-    encoding: "utf8",
-    timeout: 5000,
-  });
-  if (pr.status === 0 && pr.stdout?.trim()) {
-    return `${pr.stdout.trim()}\n`;
+const CREATE_BOOL_FLAGS = new Set([
+  "--draft",
+  "--dry-run",
+  "--editor",
+  "--fill",
+  "--fill-first",
+  "--fill-verbose",
+  "--help",
+  "--no-maintainer-edit",
+  "--web",
+]);
+
+const CREATE_VALUE_FLAGS = new Set([
+  "--assignee",
+  "--attach",
+  "--base",
+  "--body",
+  "--body-file",
+  "--head",
+  "--label",
+  "--milestone",
+  "--project",
+  "--recover",
+  "--repo",
+  "--reviewer",
+  "--template",
+  "--title",
+]);
+
+const CREATE_SHORT_FLAGS = {
+  a: "--assignee",
+  B: "--base",
+  b: "--body",
+  d: "--draft",
+  e: "--editor",
+  F: "--body-file",
+  f: "--fill",
+  H: "--head",
+  h: "--help",
+  l: "--label",
+  m: "--milestone",
+  p: "--project",
+  R: "--repo",
+  r: "--reviewer",
+  T: "--template",
+  t: "--title",
+  w: "--web",
+};
+
+const PFLAG_FALSE = new Set(["0", "f", "F", "false", "FALSE", "False"]);
+const GLOB = /[*?[]/;
+const TOO_DEEP = Symbol("tooDeep");
+const ENV_OVERRIDE_RE = /^(GH_REPO|GH_HOST|GIT_DIR|GIT_WORK_TREE)=(.*)$/s;
+const EXPORT_BUILTINS = new Set(["export", "declare", "typeset", "local", "readonly", "setenv"]);
+const PREFIX_KEYWORDS = new Set([
+  "!",
+  "{",
+  "}",
+  "if",
+  "then",
+  "else",
+  "elif",
+  "do",
+  "while",
+  "until",
+  "time",
+  "command",
+  "builtin",
+  "nohup",
+  "exec",
+  "coproc",
+  "noglob",
+  "nocorrect",
+]);
+const SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+
+function isValidLiteralValue(val) {
+  return typeof val === "string" && val.length > 0 && !val.startsWith("-") && !expands(val) && !GLOB.test(val);
+}
+
+function parseCreate(args, initialRepo) {
+  const parsed = {
+    repoSeen: initialRepo !== undefined,
+    repo: initialRepo,
+    headSeen: false,
+    head: undefined,
+    draft: false,
+    dryRun: false,
+    web: false,
+    help: false,
+    unknown: false,
+  };
+  const set = (name, value) => {
+    if (name === "--repo") {
+      parsed.repoSeen = true;
+      parsed.repo = value;
+    } else if (name === "--head") {
+      parsed.headSeen = true;
+      parsed.head = value;
+    } else if (name === "--draft") {
+      parsed.draft = value;
+    } else if (name === "--dry-run") {
+      parsed.dryRun = value;
+    } else if (name === "--web") {
+      parsed.web = value;
+    } else if (name === "--help") {
+      parsed.help = value;
+    }
+  };
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--") break;
+    if (arg.startsWith("--")) {
+      const equals = arg.indexOf("=");
+      const name = equals === -1 ? arg : arg.slice(0, equals);
+      if (CREATE_VALUE_FLAGS.has(name)) {
+        const value = equals === -1 ? args[++i] : arg.slice(equals + 1);
+        set(name, value);
+      } else if (CREATE_BOOL_FLAGS.has(name)) {
+        set(name, equals === -1 || !PFLAG_FALSE.has(arg.slice(equals + 1)));
+      } else {
+        parsed.unknown = true;
+      }
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      for (let k = 1; k < arg.length; k += 1) {
+        const name = CREATE_SHORT_FLAGS[arg[k]];
+        if (name === undefined) {
+          parsed.unknown = true;
+          break;
+        }
+        if (CREATE_VALUE_FLAGS.has(name)) {
+          const rawRest = arg.slice(k + 1);
+          if (rawRest.startsWith("=")) {
+            set(name, rawRest.slice(1));
+          } else if (rawRest !== "") {
+            set(name, rawRest);
+          } else {
+            set(name, args[++i]);
+          }
+          break;
+        }
+        set(name, true);
+      }
+    } else if (expands(arg)) {
+      // An unexpanded positional word (e.g. `$FLAGS`) may supply -R, --head, or --draft.
+      parsed.unknown = true;
+    }
   }
-  return "";
+  return parsed;
+}
+
+function detectEnvOverrides(source, depth = 0) {
+  const flags = { setsRepo: false, setsHost: false, setsGitDir: false };
+  if (depth > 8 || !source) return flags;
+  const record = (name) => {
+    if (name === "GH_REPO") flags.setsRepo = true;
+    else if (name === "GH_HOST") flags.setsHost = true;
+    else if (name === "GIT_DIR" || name === "GIT_WORK_TREE") flags.setsGitDir = true;
+  };
+  const merge = (other) => {
+    flags.setsRepo ||= other.setsRepo;
+    flags.setsHost ||= other.setsHost;
+    flags.setsGitDir ||= other.setsGitDir;
+  };
+  const { commands } = parseScript(source);
+  for (const cmd of commands) {
+    for (const sub of cmd.substitutions) merge(detectEnvOverrides(sub, depth + 1));
+    const argv = cmd.argv;
+    let i = 0;
+    while (i < argv.length) {
+      const word = argv[i];
+      if (PREFIX_KEYWORDS.has(word)) {
+        i += 1;
+        continue;
+      }
+      const match = ENV_OVERRIDE_RE.exec(word);
+      if (match) {
+        record(match[1]);
+        i += 1;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) {
+        i += 1;
+        continue;
+      }
+      const name = basename(word);
+      if (EXPORT_BUILTINS.has(name)) {
+        for (let k = i + 1; k < argv.length; k += 1) {
+          const item = argv[k];
+          if (item.startsWith("-")) continue;
+          const eq = item.indexOf("=");
+          record(eq === -1 ? item : item.slice(0, eq));
+        }
+        break;
+      }
+      if (name === "env") {
+        i += 1;
+        while (i < argv.length && argv[i].startsWith("-")) {
+          const opt = argv[i];
+          if (opt === "--") {
+            i += 1;
+            break;
+          }
+          if (opt === "-S" || opt === "--split-string") {
+            const val = argv[i + 1];
+            if (val) merge(detectEnvOverrides(val, depth + 1));
+            i += 2;
+          } else if (opt.startsWith("-S") && opt.length > 2) {
+            merge(detectEnvOverrides(opt.slice(2), depth + 1));
+            i += 1;
+          } else if (opt.startsWith("--split-string=")) {
+            merge(detectEnvOverrides(opt.slice("--split-string=".length), depth + 1));
+            i += 1;
+          } else if (["-u", "-P", "-C", "--unset", "--chdir"].includes(opt)) {
+            i += 2;
+          } else {
+            i += 1;
+          }
+        }
+        continue;
+      }
+      if (name === "sudo" || name === "doas") {
+        i += 1;
+        const valOpts =
+          name === "sudo"
+            ? new Set(["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "--chdir"])
+            : new Set(["-u", "-C"]);
+        while (i < argv.length && argv[i].startsWith("-")) {
+          const opt = argv[i];
+          if (opt === "--") {
+            i += 1;
+            break;
+          }
+          i += valOpts.has(opt) ? 2 : 1;
+        }
+        continue;
+      }
+      if (SHELL_NAMES.has(name)) {
+        for (const input of cmd.inputs) merge(detectEnvOverrides(input, depth + 1));
+        for (let k = i + 1; k < argv.length; k += 1) {
+          const opt = argv[k];
+          if (opt === "-o" || opt === "+o" || opt === "-O" || opt === "+O" || opt === "--rcfile" || opt === "--init-file") {
+            k += 1;
+          } else if (/^-[A-Za-z]*c[A-Za-z]*$/.test(opt)) {
+            if (argv[k + 1]) merge(detectEnvOverrides(argv[k + 1], depth + 1));
+            break;
+          } else if (!/^[-+]/.test(opt)) {
+            break;
+          }
+        }
+        break;
+      }
+      if (name === "eval") {
+        const evalWords = argv[i + 1] === "--" || argv[i + 1] === "-" ? argv.slice(i + 2) : argv.slice(i + 1);
+        if (evalWords.length > 0) merge(detectEnvOverrides(evalWords.join(" "), depth + 1));
+        break;
+      }
+      break;
+    }
+  }
+  return flags;
+}
+
+function switchesBranch(words, dir) {
+  const name = basename(words[0]).toLowerCase();
+  if (name === "git") {
+    const { dir: gitDir, index } = gitGlobalOptions(words, dir);
+    const sub = words[index];
+    const rest = words.slice(index + 1);
+    if (rest.includes("--help") || rest.includes("-h")) return { switched: false };
+    if (sub === "switch") return { switched: true, targetDir: gitDir };
+    if (sub === "checkout") {
+      const firstNonOptIdx = rest.findIndex((w) => !w.startsWith("-"));
+      if (rest[0] === "--" || rest.includes("-p") || rest.includes("--patch") || firstNonOptIdx === -1) {
+        return { switched: false };
+      }
+      const dashDash = rest.indexOf("--");
+      if (dashDash !== -1 && dashDash < firstNonOptIdx) return { switched: false };
+      return { switched: true, targetDir: gitDir };
+    }
+    return { switched: false };
+  }
+  if (name === "gh") {
+    const { path: [group, sub], next } = ghSubcommands(words, 2);
+    if (group === "pr" && sub === "checkout") {
+      const rest = words.slice(next);
+      if (rest.includes("--help") || rest.includes("-h")) return { switched: false };
+      return { switched: true, targetDir: dir };
+    }
+  }
+  return { switched: false };
+}
+
+/**
+ * Extracts resolvable `{ dir, repo, head }` targets for each `gh pr create` / `gh pr new`
+ * invocation in `command` (starting from `cwd`). Skips invocations whose target repo or branch
+ * cannot be resolved safely (unknown `cd`, remote `ssh`, `xargs`, draft/dry-run/web/help,
+ * shell-expanded `-R`/`--head`, conflicting env overrides, or post-create branch switches).
+ */
+export function extractPrCreateTargets(command, cwd) {
+  if (!command || !/gh/i.test(normalizeForPrefilter(command))) return [];
+  const envOverrides = detectEnvOverrides(command);
+  if (envOverrides.setsHost) return [];
+
+  const targets = [];
+  const result = visitCommands(
+    command,
+    cwd,
+    (words, dir, meta) => {
+      if (meta.opaque) {
+        for (const t of targets) {
+          if (t.head === undefined) t.stale = true;
+        }
+        return undefined;
+      }
+      if (words.length === 0) return undefined;
+
+      if (!meta.remote && targets.length > 0) {
+        const sw = switchesBranch(words, dir);
+        if (sw.switched) {
+          for (const t of targets) {
+            if (t.head === undefined && (sw.targetDir === undefined || t.dir === sw.targetDir)) {
+              t.stale = true;
+            }
+          }
+        }
+      }
+
+      if (basename(words[0]).toLowerCase() !== "gh") return undefined;
+      const { path: [group, subcommand], next, repo: initialRepo, other } = ghSubcommands(words, 2);
+      if (group !== "pr" || (subcommand !== "create" && subcommand !== "new")) return undefined;
+      if (meta.remote || meta.appended || other !== undefined) return undefined;
+
+      const parsed = parseCreate(words.slice(next), initialRepo);
+      if (parsed.unknown || parsed.draft || parsed.dryRun || parsed.web || parsed.help) return undefined;
+      if (parsed.repoSeen && !isValidLiteralValue(parsed.repo)) return undefined;
+      if (parsed.headSeen && !isValidLiteralValue(parsed.head)) return undefined;
+
+      const repo = parsed.repoSeen ? parsed.repo : undefined;
+      const head = parsed.headSeen ? parsed.head : undefined;
+      if (envOverrides.setsRepo && repo === undefined) return undefined;
+      if (envOverrides.setsGitDir && (repo === undefined || head === undefined)) return undefined;
+      if (dir === undefined && (repo === undefined || head === undefined)) return undefined;
+
+      targets.push({ dir, repo, head, stale: false });
+      return undefined;
+    },
+    TOO_DEEP,
+  );
+  if (result === TOO_DEEP) return [];
+
+  const unique = [];
+  const seen = new Set();
+  for (const { dir, repo, head, stale } of targets) {
+    if (stale) continue;
+    const key = `${dir ?? ""}\0${repo ?? ""}\0${head ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ dir, repo, head });
+  }
+  return unique;
+}
+
+/**
+ * Antigravity PostToolUse does not pass command stdout; resolve each created PR's URL via
+ * `gh pr view` in the command's target directory/repo/head (skipping unknown targets).
+ */
+export function resolveCreatedPrStdout(command, cwd, ghRunner = runGh) {
+  const targets = extractPrCreateTargets(command, cwd);
+  if (targets.length === 0) return "";
+  const urls = new Set();
+  for (const target of targets) {
+    const args = [
+      "pr",
+      "view",
+      ...(target.head !== undefined ? [target.head] : []),
+      ...(target.repo !== undefined ? ["--repo", target.repo] : []),
+      "--json",
+      "url",
+      "-q",
+      ".url",
+    ];
+    let res;
+    try {
+      res = ghRunner(target.dir ?? cwd, args, 5000);
+    } catch {
+      continue;
+    }
+    if (res && res.code === 0 && typeof res.stdout === "string") {
+      for (const url of pullRequestUrls(res.stdout)) {
+        urls.add(url);
+      }
+    }
+  }
+  return urls.size > 0 ? `${[...urls].join("\n")}\n` : "";
 }
 
 export function extractLastAssistantMessage(transcriptPath) {
@@ -181,7 +572,7 @@ function extractToolResponse(agyInput) {
   return agyInput?.toolResponse ?? agyInput?.toolResult ?? agyInput?.result ?? agyInput?.output;
 }
 
-export function translateInput(event, hookName, agyInput) {
+export function translateInput(event, hookName, agyInput, { runners = {} } = {}) {
   const cwd = typeof agyInput?.cwd === "string" && agyInput.cwd ? agyInput.cwd : process.cwd();
   if (event === "pre-tool-use") {
     if (hookName === "guard-asks") {
@@ -216,8 +607,8 @@ export function translateInput(event, hookName, agyInput) {
     }
     const command = extractCommand(agyInput);
     const stdout =
-      hookName === "auto-merge" && !agyInput?.error && command && createsPullRequest(command, cwd)
-        ? resolveBranchPrStdout(cwd)
+      hookName === "auto-merge" && !agyInput?.error && command
+        ? resolveCreatedPrStdout(command, cwd, runners.gh ?? runGh)
         : "";
     return {
       cwd,
@@ -348,12 +739,12 @@ const IN_PROCESS_PRE = new Set([
   "guard-asks",
 ]);
 
-function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin) {
+function runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin, runners = {}) {
   const scriptPath = join(hooksDir, `${hookName}.js`);
   if (!existsSync(scriptPath)) {
     return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
   }
-  const claudeInput = translateInput(event, hookName, agyInput);
+  const claudeInput = translateInput(event, hookName, agyInput, { runners });
   if (claudeInput === null) {
     return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
   }
@@ -452,14 +843,15 @@ export function runAdaptedHook(
           continue;
         }
         const command = extractCommand(agyInput);
-        if (!command || !/gh/i.test(command) || !createsPullRequest(command, cwd)) {
+        if (!command || !/gh/i.test(normalizeForPrefilter(command))) {
           continue;
         }
-        const stdout = resolveBranchPrStdout(cwd);
+        const ghRunner = runners.gh ?? runGh;
+        const stdout = resolveCreatedPrStdout(command, cwd, ghRunner);
         if (!stdout || !stdout.includes("/pull/")) continue;
         try {
           const text = autoMergeReport(command, cwd, stdout, (args, timeout) =>
-            (runners.gh ?? runGh)(cwd, args, timeout),
+            ghRunner(cwd, args, timeout),
           );
           if (text) process.stderr.write(`${text}\n`);
         } catch (err) {
@@ -467,7 +859,7 @@ export function runAdaptedHook(
         }
         continue;
       }
-      runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin);
+      runSubprocessHook(event, hookName, agyInput, hooksDir, bunBin, runners);
     }
     return {};
   }
