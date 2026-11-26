@@ -1783,3 +1783,68 @@ describe("models", () => {
     expect(exempt.test("claude/factory/ui/node_modules_notes.md")).toBe(false);
   });
 });
+
+describe("agent-board telemetry and schedules templates", () => {
+  const allowedTelemetryKeys = new Set([
+    "enabled",
+    "interval_secs",
+    "ttl_secs",
+    "collector",
+    "resources",
+    "tailscale",
+    "docker",
+    "systemd_services",
+    "launchd_services",
+    "version_probes",
+    "cpu_cap_slice",
+  ]);
+  const allowedScheduleKeys = new Set([
+    "enabled",
+    "launchd",
+    "launchd_dir",
+    "launchd_include",
+    "launchd_exclude",
+    "systemd_timers",
+    "os_timer_prefixes",
+    "crontab",
+    "t3_state_db",
+    "t3_link_base",
+    "categories",
+  ]);
+  const allowedCategories = new Set([
+    "backup",
+    "monitoring",
+    "agent_ops",
+    "sync",
+    "security",
+    "maintenance",
+    "research",
+    "app",
+    "os",
+    "other",
+  ]);
+
+  for (const rel of [
+    "agent-board/telemetry-schedules.air.toml",
+    "agent-board/telemetry-schedules.pro.toml",
+  ]) {
+    test(`${rel} parses with valid agent-board config keys and no personal paths`, () => {
+      const raw = read(rel);
+      expect(raw).not.toMatch(/\/Users\/[a-zA-Z0-9._-]+/);
+      const parsed = Bun.TOML.parse(raw);
+      expect(Object.keys(parsed).sort()).toEqual(["schedules", "telemetry"]);
+      for (const key of Object.keys(parsed.telemetry)) {
+        expect(allowedTelemetryKeys.has(key)).toBe(true);
+      }
+      for (const key of Object.keys(parsed.schedules)) {
+        expect(allowedScheduleKeys.has(key)).toBe(true);
+      }
+      expect(parsed.telemetry.enabled).toBe(true);
+      expect(parsed.schedules.enabled).toBe(true);
+      expect(parsed.schedules.launchd).toBe(true);
+      for (const category of Object.values(parsed.schedules.categories ?? {})) {
+        expect(allowedCategories.has(category)).toBe(true);
+      }
+    });
+  }
+});

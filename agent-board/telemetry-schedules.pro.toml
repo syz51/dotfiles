@@ -1,0 +1,34 @@
+# Optional `[telemetry]` and `[schedules]` snippet for Pro (`~/.local/share/agent-board/config.toml`).
+# Streamed automatically every 60s by `board watch` and on demand via `POST /v1/health/refresh`.
+
+[telemetry]
+enabled = true
+interval_secs = 60
+ttl_secs = 300
+tailscale = true
+launchd_services = [
+  "dev.agent-board.watch",
+  "com.syz51.sai-storage.serve",
+  "ninja.kunobi.kache",
+]
+
+[telemetry.version_probes]
+t3code = ["defaults", "read", "/Applications/T3 Code (Beta).app/Contents/Info.plist", "CFBundleShortVersionString"]
+
+[schedules]
+enabled = true
+launchd = true
+# Replace <HOME> with your local $HOME path when copying into ~/.local/share/agent-board/config.toml.
+t3_state_db = "<HOME>/.t3/userdata/statev2.sqlite"
+launchd_include = ["com.syz51.", "com.mtgakb.", "sh.brew.seventeenlands"]
+launchd_exclude = ["com.syz51.sai-storage.serve"]
+
+[schedules.categories]
+"sai-storage.replicate" = "backup"
+"sai-storage.prune" = "backup"
+"agent-skills" = "agent_ops"
+"config-sync" = "sync"
+"disk-space" = "monitoring"
+"gnotebook-monitor" = "research"
+"log-archiver" = "app"
+"seventeenlands" = "app"
