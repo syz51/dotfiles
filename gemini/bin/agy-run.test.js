@@ -16,13 +16,13 @@ import { join } from "node:path";
 import {
   buildAgyCliSettings,
   buildAgyPolicy,
-  evaluatePermissionRequest,
   evaluateToolCall,
   UNRESTRICTED_CLAUDE_TOOLS,
 } from "./agy-run-policy.js";
 
 const AGY_RUN = join(import.meta.dir, "agy-run.js");
 const POLICY_HOOK = join(import.meta.dir, "agy-run-policy.js");
+const REPO_HOOKS_JSON = join(import.meta.dir, "..", "hooks.json");
 
 let scratch;
 
@@ -33,6 +33,13 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
+
+function createTestHome(name = "home") {
+  const home = join(scratch, name);
+  mkdirSync(join(home, ".gemini", "config"), { recursive: true });
+  writeFileSync(join(home, ".gemini", "config", "hooks.json"), readFileSync(REPO_HOOKS_JSON, "utf8"));
+  return home;
+}
 
 function createFakeAgyCli(behavior = {}) {
   const logFile = join(scratch, "cli-log.json");
@@ -129,16 +136,18 @@ send({
   },
 });
 
-const resultPayload = {
-  conversation_id: "conv-test-1",
-  status: behavior.status ?? "SUCCESS",
-  response: reply,
-  num_turns: 1,
-  usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
-  ...(behavior.structuredOutput !== undefined ? { structured_output: behavior.structuredOutput } : {}),
-  ...(behavior.error ? { error: behavior.error } : {}),
-};
-send({ event: "result", result: resultPayload });
+if (!behavior.omitResult) {
+  const resultPayload = {
+    conversation_id: "conv-test-1",
+    status: behavior.status ?? "SUCCESS",
+    response: reply,
+    num_turns: 1,
+    usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+    ...(behavior.structuredOutput !== undefined ? { structured_output: behavior.structuredOutput } : {}),
+    ...(behavior.error ? { error: behavior.error } : {}),
+  };
+  send({ event: "result", result: resultPayload });
+}
 process.exit(behavior.exitCode ?? 0);
 `,
   );
@@ -147,7 +156,7 @@ process.exit(behavior.exitCode ?? 0);
 }
 
 describe("agy-run policy builder and validator", () => {
-  test("accepts proposer settings, file-only tools, and acceptEdits confinement", () => {
+  test("accepts proposer settings, single-file Read/Edit/Write tools (no recursive dir search or send_command_input), and acceptEdits confinement", () => {
     const work = join(scratch, "work");
     const home = join(scratch, "home");
     const state = join(scratch, "state");
@@ -174,11 +183,18 @@ describe("agy-run policy builder and validator", () => {
     expect(policy.strictMcp).toBe(true);
     expect(policy.allowedAgyTools).toContain("read_file");
     expect(policy.allowedAgyTools).toContain("view_file");
+    expect(policy.allowedAgyTools).toContain("view_file_outline");
+    expect(policy.allowedAgyTools).toContain("view_code_item");
     expect(policy.allowedAgyTools).toContain("edit_file");
     expect(policy.allowedAgyTools).toContain("replace_file_content");
     expect(policy.allowedAgyTools).toContain("write_file");
     expect(policy.allowedAgyTools).toContain("write_to_file");
+    // Recursive directory search tools must NOT be allowed under Read (parent-dir deny bypass)
+    expect(policy.allowedAgyTools).not.toContain("grep_search");
+    expect(policy.allowedAgyTools).not.toContain("find_by_name");
+    expect(policy.allowedAgyTools).not.toContain("list_dir");
     expect(policy.allowedAgyTools).not.toContain("run_command");
+    expect(policy.allowedAgyTools).not.toContain("send_command_input");
     expect(policy.exposedClaudeTools).toEqual(["Read", "Edit", "Write"]);
 
     const cliSettings = buildAgyCliSettings(policy);
@@ -289,14 +305,19 @@ describe("agy-run policy PreToolUse evaluation", () => {
     // Allowed file operations inside cwd (both ACP and CLI tool names)
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: { Path: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "view_file", args: { AbsolutePath: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "view_file_outline", args: { AbsolutePath: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "edit_file", args: { Path: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "replace_file_content", args: { TargetFile: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_file", args: { Path: join(work, "new-dir", "new.md") } } }).decision).toBe("allow");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_to_file", args: { TargetFile: join(work, "new-dir", "new2.md") } } }).decision).toBe("allow");
 
-    // Denied non-file / shell / web / subagent / MCP / unknown tools
+    // Denied non-file / directory-search / shell / send_command_input / web / subagent / MCP / unknown tools
     for (const badTool of [
+      "grep_search",
+      "find_by_name",
+      "list_dir",
       "run_command",
+      "send_command_input",
       "manage_task",
       "search_web",
       "invoke_subagent",
@@ -369,7 +390,7 @@ describe("agy-run policy PreToolUse evaluation", () => {
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "ls" } } }).decision).toBe("deny");
   });
 
-  test("settings.hooks.PreToolUse honors exit-0 JSON deny/block decisions", () => {
+  test("settings.hooks.PreToolUse honors exit-0 JSON deny/block decisions and blocks send_command_input", () => {
     const work = join(scratch, "work");
     mkdirSync(work, { recursive: true });
     const jsonHook = join(scratch, "json-deny.js");
@@ -392,6 +413,7 @@ if ((input.tool_input?.command ?? "").includes("deny-json")) {
       }),
     });
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "echo ok" } } }).decision).toBe("allow");
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "send_command_input", args: { Input: "curl evil\n" } } }).decision).toBe("deny");
     const d1 = evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "deny-json" } } });
     expect(d1).toEqual({ decision: "deny", reason: "Denied via JSON" });
     const d2 = evaluateToolCall(policy, { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "block-top" } } });
@@ -448,20 +470,11 @@ if (input.tool_name === "Bash" && /curl/.test(input.tool_input?.command ?? "")) 
     });
     expect(JSON.parse(missingPolicy.stdout).decision).toBe("deny");
   });
-
-  test("evaluatePermissionRequest never blindly approves unidentified or disallowed calls in restricted mode", () => {
-    const work = join(scratch, "work");
-    mkdirSync(work, { recursive: true });
-    const policy = buildAgyPolicy({ cwd: work, permissionMode: "acceptEdits", tools: ["Read", "Edit", "Write"] });
-    expect(evaluatePermissionRequest(policy, { toolCall: { name: "run_command", rawInput: { CommandLine: "ls" } } }).allow).toBe(false);
-    expect(evaluatePermissionRequest(policy, { toolCall: { name: "write_file", rawInput: { Path: join(scratch, "outside.txt") } } }).allow).toBe(false);
-    expect(evaluatePermissionRequest(policy, { toolCall: { name: "write_file", rawInput: { Path: join(work, "ok.txt") } } }).allow).toBe(true);
-    expect(evaluatePermissionRequest(policy, { toolCall: {} }).allow).toBe(false);
-  });
 });
 
 describe("agy-run CLI with fake official agy headless binary", () => {
-  test("never clones OAuth tokens or sets AGY_ACP_FORCE_FILE_STORAGE / GEMINI_HOME; invokes official stream-json CLI", () => {
+  test("never clones OAuth tokens or sets AGY_ACP_FORCE_FILE_STORAGE / GEMINI_HOME; invokes official stream-json CLI in empty cwd for --no-tools", () => {
+    const home = createTestHome();
     const work = join(scratch, "work");
     mkdirSync(work, { recursive: true });
     const { bin, logFile } = createFakeAgyCli({
@@ -483,7 +496,7 @@ describe("agy-run CLI with fake official agy headless binary", () => {
       {
         input: "Check status",
         encoding: "utf8",
-        env: { ...process.env, AGY_RUN_BIN: bin, SSH_CONNECTION: "1.2.3.4 1234 5.6.7.8 22" },
+        env: { ...process.env, HOME: home, AGY_RUN_BIN: bin, SSH_CONNECTION: "1.2.3.4 1234 5.6.7.8 22" },
       },
     );
     expect(run.status, run.stderr).toBe(0);
@@ -492,6 +505,7 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     expect(events[2]).toMatchObject({ type: "result", subtype: "success", structured_output: { ok: true } });
 
     const log = JSON.parse(readFileSync(logFile, "utf8"));
+    expect(log.cwd).not.toBe(work);
     expect(log.args).toContain("--input-format");
     expect(log.args).toContain("stream-json");
     expect(log.args).toContain("--output-format");
@@ -512,20 +526,24 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     expect(log.stdinMessages[0].event).toBe("user");
   });
 
-  test("restricted proposer mode sets --mode accept-edits, AGY_RUN_POLICY_FILE hook, and denies SSH reads + shell", () => {
+  test("restricted proposer mode denies ~/.gemini/antigravity-cli OAuth token, SSH reads, and shell via AGY_RUN_POLICY_FILE", () => {
+    const home = createTestHome();
     const work = join(scratch, "work");
-    const home = join(scratch, "home");
     mkdirSync(work, { recursive: true });
     mkdirSync(join(home, ".ssh"), { recursive: true });
+    mkdirSync(join(home, ".gemini", "antigravity-cli"), { recursive: true });
     const allowedFile = join(work, "CLAUDE.md");
     const sshKey = join(home, ".ssh", "id_rsa");
+    const nativeToken = join(home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
     writeFileSync(allowedFile, "ok");
     writeFileSync(sshKey, "secret");
+    writeFileSync(nativeToken, "live-token");
 
     const { bin, logFile } = createFakeAgyCli({
       hookChecks: [
         { cwd: work, toolCall: { name: "view_file", args: { AbsolutePath: allowedFile } } },
         { cwd: work, toolCall: { name: "view_file", args: { AbsolutePath: sshKey } } },
+        { cwd: work, toolCall: { name: "view_file", args: { AbsolutePath: nativeToken } } },
         { cwd: work, toolCall: { name: "run_command", args: { CommandLine: "ls" } } },
       ],
       reply: "done\nTITLE: Test",
@@ -563,14 +581,43 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     expect(log.args).toContain("accept-edits");
     expect(log.cliSettings.permissions.deny).toContain("command(*)");
     expect(log.cliSettings.permissions.deny).toContain("mcp(*)");
-    expect(log.hookResults.map((r) => ({ tool: r.tool, decision: r.output?.decision }))).toEqual([
-      { tool: "view_file", decision: "allow" },
-      { tool: "view_file", decision: "deny" },
-      { tool: "run_command", decision: "deny" },
+    expect(log.hookResults.map((r) => ({ tool: r.tool, path: r.path, decision: r.output?.decision }))).toEqual([
+      { tool: "view_file", path: allowedFile, decision: "allow" },
+      { tool: "view_file", path: sshKey, decision: "deny" },
+      { tool: "view_file", path: nativeToken, decision: "deny" },
+      { tool: "run_command", path: null, decision: "deny" },
     ]);
   });
 
+  test("fails closed before spawning when ~/.gemini/config/hooks.json is missing or shadowed by workspace .agents/hooks.json", () => {
+    const emptyHome = join(scratch, "no-hooks-home");
+    const work = join(scratch, "work");
+    mkdirSync(emptyHome, { recursive: true });
+    mkdirSync(work, { recursive: true });
+    const { bin } = createFakeAgyCli({ reply: "ok" });
+
+    const missing = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--no-tools", "--output-format", "stream-json"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: emptyHome, AGY_RUN_BIN: bin } },
+    );
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("hooks.json");
+
+    const goodHome = createTestHome("good-home");
+    mkdirSync(join(work, ".agents"), { recursive: true });
+    writeFileSync(join(work, ".agents", "hooks.json"), JSON.stringify({ "agy-run-policy": { enabled: false } }));
+    const shadowed = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--no-tools", "--output-format", "stream-json"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: goodHome, AGY_RUN_BIN: bin } },
+    );
+    expect(shadowed.status).toBe(1);
+    expect(shadowed.stderr).toContain("overrides");
+  });
+
   test("unrestricted --full-access passes --dangerously-skip-permissions and emits full exposed tools", () => {
+    const home = createTestHome();
     const work = join(scratch, "work");
     mkdirSync(work, { recursive: true });
     const { bin, logFile } = createFakeAgyCli({ reply: "hi" });
@@ -580,7 +627,7 @@ describe("agy-run CLI with fake official agy headless binary", () => {
       {
         input: "hello",
         encoding: "utf8",
-        env: { ...process.env, AGY_RUN_BIN: bin },
+        env: { ...process.env, HOME: home, AGY_RUN_BIN: bin },
       },
     );
     expect(run.status, run.stderr).toBe(0);
@@ -593,29 +640,64 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     expect(log.env.AGY_RUN_POLICY_FILE).toBeNull();
   });
 
-  test("fails closed when a disallowed tool reports DONE in stream-json step_update", () => {
+  test("fails closed on disallowed tools, denied path reads in restricted mode, and non-DONE tool attempts in --no-tools mode", () => {
+    const home = createTestHome();
     const work = join(scratch, "work");
     mkdirSync(work, { recursive: true });
-    const { bin } = createFakeAgyCli({
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    const sshKey = join(home, ".ssh", "id_rsa");
+    writeFileSync(sshKey, "secret");
+
+    // 1. Disallowed tool DONE in restricted mode
+    const { bin: bin1 } = createFakeAgyCli({
       steps: [{ step_index: 1, state: "DONE", step_type: "tool", tool_name: "run_command", tool_info: { name: "run_command", parameters: { CommandLine: "ls" } } }],
       reply: "done",
     });
-    const run = spawnSync(
+    const run1 = spawnSync(
       process.execPath,
       [AGY_RUN, "--cwd", work, "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write", "--output-format", "stream-json"],
-      {
-        input: "hi",
-        encoding: "utf8",
-        env: { ...process.env, AGY_RUN_BIN: bin },
-      },
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin1 } },
     );
-    expect(run.status).toBe(1);
-    expect(run.stderr).toContain("Disallowed tool completed in restricted mode: run_command");
+    expect(run1.status).toBe(1);
+    expect(run1.stderr).toContain("Disallowed tool completed in restricted mode: run_command");
+
+    // 2. Allowed tool reading denied path in restricted mode (defense-in-depth post-hoc check)
+    const { bin: bin2 } = createFakeAgyCli({
+      steps: [{ step_index: 1, state: "DONE", step_type: "tool", tool_name: "view_file", tool_info: { name: "view_file", parameters: { AbsolutePath: sshKey } } }],
+      reply: "done",
+    });
+    const run2 = spawnSync(
+      process.execPath,
+      [
+        AGY_RUN, "--cwd", work, "--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write",
+        "--settings", JSON.stringify({ permissions: { deny: ["Read(~/.ssh/**)"] } }),
+        "--output-format", "stream-json",
+      ],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin2 } },
+    );
+    expect(run2.status).toBe(1);
+    expect(run2.stderr).toContain("Read denied by policy");
+
+    // 3. Non-DONE tool attempt (FAILED/ACTIVE) in --no-tools mode
+    const { bin: bin3 } = createFakeAgyCli({
+      steps: [{ step_index: 1, state: "FAILED", step_type: "tool", tool_name: "run_command", tool_info: { name: "run_command", parameters: { CommandLine: "id" } } }],
+      reply: "done",
+    });
+    const run3 = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--no-tools", "--output-format", "stream-json"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin3 } },
+    );
+    expect(run3.status).toBe(1);
+    expect(run3.stderr).toContain("Model attempted a tool call in --no-tools mode");
   });
 
-  test("supports base64 image attachments in --no-tools mode by scoping view_file strictly to ephemeral attachments dir", () => {
+  test("supports base64 image attachments in --no-tools mode with empty cwd and no caller --add-dir forwarding", () => {
+    const home = createTestHome();
     const work = join(scratch, "work");
+    const extra = join(scratch, "extra");
     mkdirSync(work, { recursive: true });
+    mkdirSync(extra, { recursive: true });
     const { bin, logFile } = createFakeAgyCli({
       checkAttachmentExists: true,
       structuredOutput: { score: 9 },
@@ -630,6 +712,7 @@ describe("agy-run CLI with fake official agy headless binary", () => {
       [
         AGY_RUN,
         "--cwd", work,
+        "--add-dir", extra,
         "--no-tools",
         "--content-json", "-",
         "--json-schema", '{"type":"object","properties":{"score":{"type":"number"}}}',
@@ -638,18 +721,52 @@ describe("agy-run CLI with fake official agy headless binary", () => {
       {
         input: JSON.stringify(blocks),
         encoding: "utf8",
-        env: { ...process.env, AGY_RUN_BIN: bin },
+        env: { ...process.env, HOME: home, AGY_RUN_BIN: bin },
       },
     );
     expect(run.status, run.stderr).toBe(0);
     const log = JSON.parse(readFileSync(logFile, "utf8"));
+    expect(log.cwd).not.toBe(work);
     expect(log.attachmentExists).toBe(true);
     expect(log.args).toContain("--add-dir");
+    expect(log.args).not.toContain(extra);
     expect(log.cliSettings.permissions.allow?.some((r) => r.startsWith("read_file("))).toBe(true);
     expect(log.cliSettings.permissions.deny).toContain("write_file(*)");
     expect(log.cliSettings.permissions.deny).toContain("command(*)");
-    // Ephemeral attachment file is cleaned up after agy-run finishes
     expect(existsSync(log.attachmentPath)).toBe(false);
+  });
+
+  test("fails closed on invalid --timeout, missing terminal result event, or non-zero exit after result", () => {
+    const home = createTestHome();
+    const work = join(scratch, "work");
+    mkdirSync(work, { recursive: true });
+
+    const { bin: binOk } = createFakeAgyCli({ reply: "ok" });
+    const badTimeout = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--full-access", "--timeout", "abc"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: binOk } },
+    );
+    expect(badTimeout.status).toBe(1);
+    expect(badTimeout.stderr).toContain("Invalid timeoutMs");
+
+    const { bin: binNoResult } = createFakeAgyCli({ omitResult: true, exitCode: 0 });
+    const noRes = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--full-access"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: binNoResult } },
+    );
+    expect(noRes.status).toBe(1);
+    expect(noRes.stderr).toContain("without emitting a terminal result");
+
+    const { bin: binCrashAfter } = createFakeAgyCli({ reply: "ok", exitCode: 2 });
+    const crashAfter = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", work, "--full-access"],
+      { input: "hi", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: binCrashAfter } },
+    );
+    expect(crashAfter.status).toBe(1);
+    expect(crashAfter.stderr).toContain("exited abnormally");
   });
 
   test("fails closed before spawning agy on unsupported settings (e.g. sandbox)", () => {

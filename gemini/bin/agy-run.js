@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { delimiter, extname, join, resolve } from "node:path";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   buildAgyCliSettings,
@@ -181,6 +181,77 @@ function materializePromptAndAttachments(prompt, contentBlocks, tempRoot) {
   };
 }
 
+const WORKSPACE_HOOK_SUBPATHS = [
+  join(".agents", "hooks.json"),
+  join(".agent", "hooks.json"),
+  join("_agents", "hooks.json"),
+  join("_agent", "hooks.json"),
+];
+
+/**
+ * Verifies fail-closed that global `~/.gemini/config/hooks.json` wires `agy-run-policy`
+ * on PreToolUse matcher `*`, and that no workspace hooks.json between `workDir` and the
+ * repository root shadows or disables `agy-run-policy`.
+ */
+export function verifyPolicyHookInstalled(home, workDir) {
+  const globalHooksPath = join(home, ".gemini", "config", "hooks.json");
+  if (!existsSync(globalHooksPath)) {
+    throw new Error(
+      `Restricted agy-run requires agy-run-policy PreToolUse hook in ${globalHooksPath}, but the file is missing.`,
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(globalHooksPath, "utf8"));
+  } catch (err) {
+    throw new Error(`Invalid JSON in ${globalHooksPath}: ${err.message}`);
+  }
+  const policyGroup = parsed?.["agy-run-policy"];
+  const preEntries = Array.isArray(policyGroup?.PreToolUse) ? policyGroup.PreToolUse : [];
+  const validHook =
+    policyGroup?.enabled !== false &&
+    preEntries.some(
+      (entry) =>
+        entry?.matcher === "*" &&
+        Array.isArray(entry?.hooks) &&
+        entry.hooks.some(
+          (h) =>
+            typeof h?.command === "string" &&
+            h.command.includes("AGY_RUN_POLICY_FILE") &&
+            h.command.includes("agy-run-policy.js"),
+        ),
+    );
+  if (!validHook) {
+    throw new Error(
+      `Restricted agy-run requires an enabled "agy-run-policy" PreToolUse (matcher "*") hook in ${globalHooksPath}.`,
+    );
+  }
+
+  // Check workspace hook overrides walking up to the git root (if any).
+  let cur = resolve(workDir);
+  for (let depth = 0; depth < 64; depth++) {
+    for (const rel of WORKSPACE_HOOK_SUBPATHS) {
+      const candidate = join(cur, rel);
+      if (!existsSync(candidate)) continue;
+      let wsHooks;
+      try {
+        wsHooks = JSON.parse(readFileSync(candidate, "utf8"));
+      } catch (err) {
+        throw new Error(`Invalid workspace hooks file ${candidate}: ${err.message}`);
+      }
+      if (wsHooks && typeof wsHooks === "object" && Object.hasOwn(wsHooks, "agy-run-policy")) {
+        throw new Error(
+          `Workspace hooks file ${candidate} overrides "agy-run-policy"; refusing to run restricted session.`,
+        );
+      }
+    }
+    if (existsSync(join(cur, ".git"))) break;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+}
+
 export async function runAgyPrompt({
   prompt,
   contentBlocks,
@@ -199,13 +270,16 @@ export async function runAgyPrompt({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   env = process.env,
 }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`Invalid timeoutMs for agy-run: ${timeoutMs}`);
+  }
   const startedAt = Date.now();
   const home = env.HOME || homedir();
   const callerBase = cwd ? resolve(cwd) : process.cwd();
   const resolvedAddDirs = (addDirs || []).map((dir) => resolve(callerBase, expandHome(dir, home)));
 
   // Validate restrictions up front (fail closed before spawning or touching temp files).
-  buildAgyPolicy({
+  const preflightPolicy = buildAgyPolicy({
     cwd: callerBase,
     home,
     noTools,
@@ -217,14 +291,24 @@ export async function runAgyPrompt({
     addDirs: resolvedAddDirs,
   });
 
+  if (preflightPolicy.enforceHook) {
+    verifyPolicyHookInstalled(home, callerBase);
+  }
+
   const binary = resolveAgyBinary(env);
   const tempRoot = mkdtempSync(join(tmpdir(), "agy-run-"));
 
   let proc;
   let timer;
   try {
-    const workDir = cwd ? resolve(cwd) : join(tempRoot, "work");
-    if (!cwd) mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    const workDir = preflightPolicy.noTools
+      ? join(tempRoot, "empty-work")
+      : cwd
+        ? resolve(cwd)
+        : join(tempRoot, "work");
+    if (preflightPolicy.noTools || !cwd) {
+      mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    }
 
     const { userText, attachmentDir, attachmentPaths } = materializePromptAndAttachments(
       prompt,
@@ -242,6 +326,8 @@ export async function runAgyPrompt({
       policyPath,
       cliSettingsPath,
       ...(schemaPath ? [schemaPath] : []),
+      join(home, ".gemini", "antigravity-cli"),
+      join(home, ".gemini", "config"),
       join(home, ".t3", "userdata", "providers", "antigravity"),
     ];
 
@@ -254,7 +340,7 @@ export async function runAgyPrompt({
       tools,
       settings,
       strictMcp,
-      addDirs: resolvedAddDirs,
+      addDirs: preflightPolicy.noTools ? [] : resolvedAddDirs,
       internalDenyPaths,
       attachmentReadRoots: attachmentDir ? [attachmentDir] : [],
     });
@@ -303,7 +389,7 @@ export async function runAgyPrompt({
       }
     }
 
-    const extraDirs = new Set(policy.allowedWriteRoots.slice(1));
+    const extraDirs = new Set(policy.noTools ? [] : policy.allowedWriteRoots.slice(1));
     if (attachmentDir) extraDirs.add(attachmentDir);
     for (const extraDir of extraDirs) {
       cliArgs.push("--add-dir", extraDir);
@@ -381,7 +467,7 @@ export async function runAgyPrompt({
         if (step.step_type === "agent_response" && typeof step.text_delta === "string") {
           collectedText += step.text_delta;
         }
-        if (step.step_type === "tool" && step.state === "DONE") {
+        if (step.step_type === "tool") {
           const toolName = step.tool_name || step.tool_info?.name || "";
           const toolArgs = step.tool_info?.parameters ?? {};
           const failed = Boolean(step.tool_info?.error);
@@ -391,13 +477,15 @@ export async function runAgyPrompt({
               toolCall: { name: toolName, args: toolArgs },
             });
             if (verdict.decision !== "allow") {
-              toolViolation = `Model attempted a tool call in --no-tools mode: ${toolName || "unknown"}`;
+              toolViolation = `Model attempted a tool call in --no-tools mode: ${toolName || "unknown"} (${verdict.reason})`;
             }
-          } else if (policy.restricted && !failed) {
-            if (!toolName) {
-              toolViolation = "Unidentified tool completed in restricted mode";
-            } else if (!policy.allowedAgyTools.includes(toolName)) {
-              toolViolation = `Disallowed tool completed in restricted mode: ${toolName}`;
+          } else if (policy.restricted && step.state === "DONE" && !failed) {
+            const verdict = evaluateToolCall(policy, {
+              cwd: workDir,
+              toolCall: { name: toolName, args: toolArgs },
+            });
+            if (verdict.decision !== "allow") {
+              toolViolation = `Disallowed tool completed in restricted mode: ${toolName || "unknown"} (${verdict.reason})`;
             }
           }
         }
@@ -437,11 +525,10 @@ export async function runAgyPrompt({
       parseLines(false);
     });
 
-    // Write the single NDJSON user turn and close stdin so `agy` exits cleanly after the turn.
-    proc.stdin.write(`${JSON.stringify({ event: "user", message: { content: fullPrompt } })}\n`);
-    proc.stdin.end();
+    // Attach error/close handlers before writing stdin so early-exit EPIPE never goes unhandled.
+    proc.stdin.on("error", () => {});
 
-    const completed = await new Promise((resolveDone, rejectDone) => {
+    const completionPromise = new Promise((resolveDone, rejectDone) => {
       timer = setTimeout(() => {
         try {
           proc.kill("SIGTERM");
@@ -456,18 +543,30 @@ export async function runAgyPrompt({
       });
     });
 
+    // Write the single NDJSON user turn and close stdin so `agy` exits cleanly after the turn.
+    proc.stdin.write(`${JSON.stringify({ event: "user", message: { content: fullPrompt } })}\n`);
+    proc.stdin.end();
+
+    const completed = await completionPromise;
+
     if (toolViolation) {
       throw new Error(toolViolation);
     }
 
-    if (terminalResult && terminalResult.status && terminalResult.status !== "SUCCESS") {
-      const detail = terminalResult.error || stderrBuf.trim().slice(-800) || `status=${terminalResult.status}`;
-      throw new Error(`agy failed (${terminalResult.status}): ${detail}`);
+    if (!terminalResult) {
+      throw new Error(
+        `agy exited without emitting a terminal result (code=${completed.code} signal=${completed.signal}): ${stderrBuf.trim().slice(-800)}`,
+      );
     }
 
-    if (completed.code !== 0 && !terminalResult) {
+    if (terminalResult.status !== "SUCCESS") {
+      const detail = terminalResult.error || stderrBuf.trim().slice(-800) || `status=${terminalResult.status}`;
+      throw new Error(`agy failed (${terminalResult.status || "unknown"}): ${detail}`);
+    }
+
+    if (completed.code !== 0 || completed.signal) {
       throw new Error(
-        `agy exited with code=${completed.code} signal=${completed.signal}: ${stderrBuf.trim().slice(-800)}`,
+        `agy exited abnormally after result (code=${completed.code} signal=${completed.signal}): ${stderrBuf.trim().slice(-800)}`,
       );
     }
 

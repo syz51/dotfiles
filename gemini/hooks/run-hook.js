@@ -771,8 +771,8 @@ export function runAdaptedHook(
   agyInput,
   { hooksDir = HOOKS_DIR, bunBin = process.execPath, runners = {} } = {},
 ) {
-  if (process.env.AGY_RUN_ACTIVE === "1") {
-    return event === "pre-tool-use" || event === "stop" ? { decision: "allow" } : {};
+  if (process.env.AGY_RUN_ACTIVE === "1" && (event === "session-start" || event === "stop")) {
+    return event === "stop" ? { decision: "allow" } : {};
   }
   if (event === "post-tool-use" && agyInput?.error) {
     return {};

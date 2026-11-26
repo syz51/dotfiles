@@ -14,12 +14,12 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const CLAUDE_TO_AGY = {
-  Read: ["read_file", "view_file", "list_dir", "find_by_name", "grep_search"],
+  Read: ["read_file", "view_file", "view_file_outline", "view_code_item"],
   Edit: ["edit_file", "replace_file_content", "multi_replace_file_content", "sed_file"],
   Write: ["write_file", "write_to_file"],
   Glob: [],
   Grep: [],
-  Bash: ["run_command", "command_status", "send_command_input", "manage_task"],
+  Bash: ["run_command", "command_status", "manage_task"],
   WebSearch: ["search_web"],
   WebFetch: ["read_url", "read_url_content"],
   Agent: ["invoke_subagent", "define_subagent", "manage_subagents", "send_message", "swarm"],
@@ -45,15 +45,14 @@ export const UNRESTRICTED_CLAUDE_TOOLS = [
 const ACCEPT_EDITS_CLAUDE_TOOLS = new Set(["Read", "Edit", "Write"]);
 const VALID_PERMISSION_MODES = new Set(["bypassPermissions", "acceptEdits", "default"]);
 const MCP_TOOLS = new Set(["call_mcp_tool", "list_resources", "read_resource"]);
-const READ_TOOLS = new Set(["read_file", "view_file", "list_dir", "find_by_name", "grep_search"]);
+const READ_TOOLS = new Set(["read_file", "view_file", "view_file_outline", "view_code_item"]);
 const EDIT_TOOLS = new Set(["edit_file", "replace_file_content", "multi_replace_file_content", "sed_file"]);
 const WRITE_TOOLS = new Set(["write_file", "write_to_file"]);
 const AGY_TO_CLAUDE = {
   read_file: "Read",
   view_file: "Read",
-  list_dir: "Read",
-  find_by_name: "Read",
-  grep_search: "Read",
+  view_file_outline: "Read",
+  view_code_item: "Read",
   edit_file: "Edit",
   replace_file_content: "Edit",
   multi_replace_file_content: "Edit",
@@ -62,7 +61,6 @@ const AGY_TO_CLAUDE = {
   write_to_file: "Write",
   run_command: "Bash",
   command_status: "Bash",
-  send_command_input: "Bash",
   manage_task: "Bash",
   search_web: "WebSearch",
   read_url: "WebFetch",
@@ -460,7 +458,8 @@ export function parseToolsInput(toolsInput) {
 
 /**
  * Validates all restriction options and builds the serializable policy object shared by
- * agy-run.js (for ACP permissions, init.tools, and violation checks) and the PreToolUse hook.
+ * agy-run.js (for CLI --settings permissions, init.tools, and stream-json violation checks)
+ * and the env-gated PreToolUse hook.
  */
 export function buildAgyPolicy({
   cwd,
@@ -606,7 +605,16 @@ function isMcpToolName(name) {
 
 function extractPathArg(args) {
   if (!args || typeof args !== "object") return null;
-  for (const key of ["Path", "path", "file_path", "AbsolutePath", "TargetFile", "DirectoryPath", "SearchPath"]) {
+  for (const key of [
+    "Path",
+    "path",
+    "file_path",
+    "AbsolutePath",
+    "TargetFile",
+    "DirectoryPath",
+    "SearchPath",
+    "SearchDirectory",
+  ]) {
     if (typeof args[key] === "string" && args[key].trim()) return args[key];
   }
   return null;
@@ -774,33 +782,6 @@ export function evaluateToolCall(policy, agyInput) {
   } catch (err) {
     return { decision: "deny", reason: `Policy evaluation failed closed: ${err.message}` };
   }
-}
-
-/**
- * Evaluates an ACP session/request_permission payload as defense-in-depth alongside PreToolUse.
- * Accepts an optional trackedCall ({ name, args, kind }) correlated by toolCallId from earlier
- * session/update tool_call events when the ACP permission request omits toolCall.name.
- */
-export function evaluatePermissionRequest(policy, params, trackedCall = null) {
-  if (!policy || policy.noTools || policy.permissionMode === "default") {
-    return { allow: false, reason: "Permissions disabled in this mode" };
-  }
-  const toolCall = params?.toolCall;
-  const toolName = toolCall?.name ?? trackedCall?.name;
-  const args = toolCall?.rawInput ?? toolCall?.args ?? trackedCall?.args;
-  if (policy.restricted) {
-    if (typeof toolName === "string" && toolName) {
-      const check = evaluateToolCall(policy, { cwd: policy.cwd, toolCall: { name: toolName, args } });
-      return check.decision === "allow"
-        ? { allow: true }
-        : { allow: false, reason: check.reason };
-    }
-    // In acceptEdits or restricted mode, never blindly approve an unidentified permission request.
-    return { allow: false, reason: "Unidentified tool in restricted session/request_permission" };
-  }
-  return policy.permissionMode === "bypassPermissions"
-    ? { allow: true }
-    : { allow: false, reason: "Permission denied outside bypassPermissions" };
 }
 
 if (import.meta.main) {
