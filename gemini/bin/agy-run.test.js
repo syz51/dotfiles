@@ -42,6 +42,7 @@ function createFakeAcpEnv(behavior = {}) {
   writeFileSync(
     bin,
     `#!/usr/bin/env bun
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -49,15 +50,33 @@ const behavior = ${JSON.stringify(behavior)};
 const args = process.argv.slice(2);
 const geminiDir = args[args.indexOf("--gemini-dir") + 1];
 const hooksPath = join(geminiDir, "config", "hooks.json");
+const hooks = existsSync(hooksPath) ? JSON.parse(readFileSync(hooksPath, "utf8")) : null;
 const log = {
   args,
   cwd: process.cwd(),
   hooksExists: existsSync(hooksPath),
-  hooks: existsSync(hooksPath) ? JSON.parse(readFileSync(hooksPath, "utf8")) : null,
+  hooks,
+  hookResults: [],
   configUpdates: [],
   permissionResponses: [],
   prompts: [],
 };
+const hookCmd = hooks?.["agy-run-policy"]?.PreToolUse?.[0]?.hooks?.[0]?.command ?? null;
+if (hookCmd && Array.isArray(behavior.hookChecks)) {
+  for (const payload of behavior.hookChecks) {
+    const res = spawnSync("/bin/sh", ["-c", hookCmd], {
+      cwd: process.cwd(),
+      input: JSON.stringify(payload),
+      encoding: "utf8",
+    });
+    log.hookResults.push({
+      tool: payload.toolCall?.name ?? null,
+      path: payload.toolCall?.args?.Path ?? null,
+      status: res.status,
+      output: res.stdout.trim() ? JSON.parse(res.stdout.trim()) : null,
+    });
+  }
+}
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
 let nextServerId = 100;
@@ -602,5 +621,81 @@ describe("agy-run CLI with fake Antigravity ACP server", () => {
     );
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("sandbox");
+  });
+
+  test("denies read_file, edit_file, and write_file under sourceProfile via internalDenyPaths", () => {
+    const work = join(scratch, "work");
+    const profile = join(scratch, "profile");
+    const oauthToken = join(profile, "antigravity-acp", "antigravity-oauth-token");
+    const acpToken = join(profile, "antigravity-acp", "acp_token.json");
+    const transcript = join(profile, "antigravity-acp", "brain", "conv-1", ".system_generated", "logs", "transcript.jsonl");
+    const allowedFile = join(work, "CLAUDE.md");
+    const tokenLink = join(work, "token-link");
+    mkdirSync(work, { recursive: true });
+    mkdirSync(join(profile, "antigravity-acp", "brain", "conv-1", ".system_generated", "logs"), { recursive: true });
+    writeFileSync(allowedFile, "ok");
+    writeFileSync(acpToken, '{"token":"secret"}');
+    writeFileSync(transcript, '{"type":"USER_INPUT","content":"private"}\n');
+
+    const { bin, logFile } = createFakeAcpEnv({
+      hookChecks: [
+        { cwd: work, toolCall: { name: "read_file", args: { Path: allowedFile } } },
+        { cwd: work, toolCall: { name: "read_file", args: { Path: oauthToken } } },
+        { cwd: work, toolCall: { name: "read_file", args: { Path: acpToken } } },
+        { cwd: work, toolCall: { name: "read_file", args: { Path: transcript } } },
+        { cwd: work, toolCall: { name: "read_file", args: { Path: tokenLink } } },
+        { cwd: work, toolCall: { name: "write_file", args: { Path: join(profile, "antigravity-acp", "settings.json") } } },
+        { cwd: work, toolCall: { name: "edit_file", args: { Path: join(profile, "antigravity-acp", "settings.json") } } },
+      ],
+      permissionRequests: [
+        {
+          toolCall: { name: "read_file", rawInput: { Path: oauthToken } },
+          options: [{ optionId: "allow_once", kind: "allow_once" }],
+        },
+        {
+          toolCall: { name: "read_file", rawInput: { Path: transcript } },
+          options: [{ optionId: "allow_once", kind: "allow_once" }],
+        },
+        {
+          toolCall: { name: "read_file", rawInput: { Path: allowedFile } },
+          options: [{ optionId: "allow_once", kind: "allow_once" }],
+        },
+      ],
+      reply: "done",
+    });
+    symlinkSync(oauthToken, tokenLink);
+
+    const run = spawnSync(
+      process.execPath,
+      [
+        AGY_RUN,
+        "--cwd", work,
+        "--permission-mode", "acceptEdits",
+        "--tools", "Read,Edit,Write,Glob,Grep",
+        "--strict-mcp-config",
+        "--output-format", "stream-json",
+      ],
+      {
+        input: "check",
+        encoding: "utf8",
+        env: { ...process.env, AGY_RUN_BIN: bin, AGY_RUN_GEMINI_HOME: profile },
+      },
+    );
+    expect(run.status, run.stderr).toBe(0);
+    const log = JSON.parse(readFileSync(logFile, "utf8"));
+    expect(log.hookResults.map((r) => ({ tool: r.tool, path: r.path, decision: r.output?.decision }))).toEqual([
+      { tool: "read_file", path: allowedFile, decision: "allow" },
+      { tool: "read_file", path: oauthToken, decision: "deny" },
+      { tool: "read_file", path: acpToken, decision: "deny" },
+      { tool: "read_file", path: transcript, decision: "deny" },
+      { tool: "read_file", path: tokenLink, decision: "deny" },
+      { tool: "write_file", path: join(profile, "antigravity-acp", "settings.json"), decision: "deny" },
+      { tool: "edit_file", path: join(profile, "antigravity-acp", "settings.json"), decision: "deny" },
+    ]);
+    expect(log.permissionResponses).toEqual([
+      { tool: "read_file", outcome: { outcome: "cancelled" } },
+      { tool: "read_file", outcome: { outcome: "cancelled" } },
+      { tool: "read_file", outcome: { outcome: "selected", optionId: "allow_once" } },
+    ]);
   });
 });
