@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -955,6 +955,70 @@ describe("Antigravity hook adapter", () => {
     expect(createRe.test("call_mcp_tool")).toBe(true);
     expect(createRe.test("read_file")).toBe(false);
     expect(mcpCreate.hooks.some((h) => h.command.includes("auto-merge") && h.timeout >= 60)).toBe(true);
+  });
+
+  test("Stop open-items checks Antigravity transcripts for missing or unfiled Open items labels", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agy-open-items-"));
+    const script = join(import.meta.dir, "run-hook.js");
+    try {
+      const fakeBoard = join(dir, "board");
+      writeFileSync(
+        fakeBoard,
+        '#!/bin/sh\nif [ "$1" = boards ]; then printf \'[{"slug":"dotfiles"}]\n\'; else printf \'{"board":{"slug":"dotfiles"}}\n\'; fi\n',
+      );
+      chmodSync(fakeBoard, 0o755);
+
+      const runStop = (lines, extra = {}) => {
+        const transcriptPath = join(dir, "transcript.jsonl");
+        writeFileSync(transcriptPath, `${lines.map((r) => JSON.stringify(r)).join("\n")}\n`);
+        const res = spawnSync(process.execPath, [script, "stop", "open-items"], {
+          input: JSON.stringify({ cwd: dir, transcriptPath, ...extra }),
+          encoding: "utf8",
+          env: { ...process.env, AGENT_BOARD_HOOKS: "", BOARD_BIN: fakeBoard },
+        });
+        expect(res.status).toBe(0);
+        return JSON.parse(res.stdout);
+      };
+
+      const toolMissing = runStop([
+        { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+        { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+        { type: "GENERIC", content: "ok" },
+        { type: "PLANNER_RESPONSE", content: "Done." },
+      ]);
+      expect(toolMissing.decision).toBe("continue");
+      expect(toolMissing.reason).toContain("Open items:");
+
+      expect(
+        runStop(
+          [
+            { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+            { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+            { type: "GENERIC", content: "ok" },
+            { type: "PLANNER_RESPONSE", content: "Done." },
+          ],
+          { continuationActive: true },
+        ),
+      ).toEqual({ decision: "allow" });
+
+      expect(
+        runStop([
+          { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+          { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+          { type: "GENERIC", content: "ok" },
+          { type: "PLANNER_RESPONSE", content: "Done.\n\nOpen items: none." },
+        ]),
+      ).toEqual({ decision: "allow" });
+
+      expect(
+        runStop([
+          { type: "USER_INPUT", source: "USER_EXPLICIT", content: "What does X mean?" },
+          { type: "PLANNER_RESPONSE", content: "X means Y." },
+        ]),
+      ).toEqual({ decision: "allow" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("run-hook.js CLI fails closed on malformed, empty, or non-object stdin JSON when guard-pr-merge is active", () => {
