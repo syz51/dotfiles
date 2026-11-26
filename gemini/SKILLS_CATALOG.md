@@ -47,7 +47,7 @@ Packaged in `gemini/skills/` for upload to the Gemini App `技能` tab (not syml
 
 | Skill | Repo Path | Transport | Purpose |
 | --- | --- | --- | --- |
-| `board-ops` | `gemini/skills/board-ops/SKILL.md` | Cloud MCP (`https://board-mcp.syzroy.com/mcp`) | 24/7 mobile/web fleet ops, `board-feedback` triage, non-code research/planning, backlog grooming, and scheduled digests on the separate Gemini Ultra pool. See `gemini/docs/gemini-board-workflow.md`. |
+| `board-ops` | `gemini/skills/board-ops/SKILL.md` (template; live host copy in `~/.config/local/skills/board-ops/SKILL.md` when present) | Cloud MCP (`https://<your-board-mcp-host>/mcp`) | 24/7 mobile/web fleet ops, `board-feedback` triage, non-code research/planning, backlog grooming, and scheduled digests on the separate Gemini Ultra pool. See `gemini/docs/gemini-board-workflow.md`. |
 
 ## Exposure & Sync Health
 

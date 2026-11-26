@@ -3,9 +3,9 @@ name: board-ops
 description: Manage the agent-board fleet, triage board-feedback and asks, run non-code research and backlog grooming, and deliver mobile-first digests via the Cloud MCP gateway on the Gemini Ultra pool.
 ---
 
-# Board Ops (`agent-board` Fleet Operations)
+# Board Ops (`agent-board` Fleet Operations Template)
 
-Use this skill whenever managing work boards, triaging `board-feedback`, answering asks, steering runs, grooming backlogs, or offloading non-code research and planning via the `agent-board` Cloud MCP gateway (`https://board-mcp.syzroy.com/mcp`).
+Use this skill whenever managing work boards, triaging `board-feedback`, answering asks, steering runs, grooming backlogs, or offloading non-code research and planning via the `agent-board` Cloud MCP gateway (`https://<your-board-mcp-host>/mcp`).
 
 ## Response Style (Mobile-First)
 
@@ -19,11 +19,11 @@ Use this skill whenever managing work boards, triaging `board-feedback`, answeri
 - Start every status check, fleet review, morning/evening digest, or open-ended ops question with a single **`fleet_overview`** call.
 - Only drill down (`board_status`, `tasks_list`, `task_show`, `asks_list`, `ask_show`, `runs_list`, `run_events`, `updates_list`, `stats_show`) into the specific boards, tasks, asks, or runs that need attention.
 
-## Fleet Topology
+## Fleet Topology (Replace Placeholders in Private Copy)
 
-- **`sunmacbook-air`**: Always-online light/general runner (default workhorse for routine coding tasks, docs, PR fixes, and maintenance).
-- **`yizhemacbook-pro`**: Heavy runner when awake (large builds, CPU/memory-intensive runs, heavy data/research computation; may be offline while asleep).
-- **`sai`**: 24/7 VPS control-plane host running `agent-board`, the `board-mcp` Cloud MCP gateway (`https://board-mcp.syzroy.com/mcp`), shared storage pool, CI runners, and Supabase.
+- **`<primary-mac>`**: Always-online light/general runner (default workhorse for routine coding tasks, docs, PR fixes, and maintenance).
+- **`<heavy-mac>`**: Heavy runner when awake (large builds, CPU/memory-intensive runs, heavy data/research computation; may be offline while asleep).
+- **`<control-plane-vps>`**: 24/7 VPS control-plane host running `agent-board`, the `board-mcp` Cloud MCP gateway (`https://<your-board-mcp-host>/mcp`), shared storage pool, and CI runners.
 
 ## Complete 26-Tool Reference
 
@@ -37,7 +37,7 @@ Use this skill whenever managing work boards, triaging `board-feedback`, answeri
 - `asks_list`: List open or recently answered asks across boards.
 - `ask_show`: Inspect full options, context, and recommendation for a single ask.
 - `updates_list`: List unseen board updates, completed tasks, and notable state transitions.
-- `devices_list`: Inspect registered runner devices (`sunmacbook-air`, `yizhemacbook-pro`, etc.), online state, capacity, roles, weights, and taints.
+- `devices_list`: Inspect registered runner devices (`<primary-mac>`, `<heavy-mac>`, etc.), online state, capacity, roles, weights, and taints.
 - `runs_list`: List managed/interactive runs across all devices (`active` defaults to `true`, returning only non-terminal runs; pass `active: false` to inspect completed, failed, or orphaned runs).
 - `run_events`: Inspect structured live/recent events for a single run (progress, errors, stalls).
 - `usage_status`: Check latest account usage readings, weekly pace, and board auto-stop thresholds.
@@ -74,7 +74,7 @@ Use the separate Google AI Ultra Gemini pool for **non-code work that does not r
    - Search the target repo's board (`tasks_list`) to deduplicate: if a covering task exists, append evidence via `task_note`; otherwise file a `Proposal:` (`task_add` with `auto=false`, stating problem, evidence without secrets, proposed change, and size `S`/`M`/`L`).
    - Close only unowned, fully routed feedback items with `feedback_resolve` and summarize routed IDs.
 3. **Non-Code Research, Deep Research & Design Synthesis**
-   - Handle web/literature research, Deep Research runs, architecture trade-offs, spec/design drafts, and domain synthesis (for example `guwen`, `research-factory`, `riemann`, or new system proposals) directly in Gemini Ultra.
+   - Handle web/literature research, Deep Research runs, architecture trade-offs, spec/design drafts, and domain synthesis (for example `<research-project>`, `research-factory`, `riemann`, or new system proposals) directly in Gemini Ultra.
    - Persist sourced conclusions on the relevant board task via `task_note(kind="finding")` and design choices via `task_note(kind="decision")`.
    - Convert approved designs into concrete, self-contained coding tasks via `task_add(auto=true)` with explicit, observable acceptance checks so the Antigravity fleet can implement without re-researching.
 4. **Backlog Grooming, Proposal Pre-Review & Prioritization**

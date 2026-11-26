@@ -26,4 +26,4 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, W
 
 ## Gemini-first Offloading
 
-- **Gemini-first offloading**: Gemini App (separate Ultra pool via Cloud MCP + `board-ops` skill; `~/.config/gemini/docs/gemini-board-workflow.md`) handles complementary non-code web research, digests, backlog grooming, and additive user/feedback triage without altering or interfering with board judge or autopilot pipelines. Keep non-code findings, asks, and proposals cleanly structured on the board; reserve Antigravity Mac quota for local code, builds, tests, git, and deploys.
+- **Gemini-first offloading**: Gemini App (separate Ultra pool via Cloud MCP + `board-ops` skill; live fleet config in `~/.config/local/gemini-board-workflow.md` when present, generic template in `~/.config/gemini/docs/gemini-board-workflow.md`) handles complementary non-code web research, digests, backlog grooming, and additive user/feedback triage without altering or interfering with board judge or autopilot pipelines. Keep non-code findings, asks, and proposals cleanly structured on the board; reserve Antigravity Mac quota for local code, builds, tests, git, and deploys.

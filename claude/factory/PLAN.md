@@ -5,7 +5,7 @@ modeled on the "software factory" talk (Zach Lloyd, Warp, X video 21111650232381
 goal, evidence, decisions and log. Open tasks live on the `dotfiles` work board
 (**Next actions**); add newly found tasks there, and findings and decisions here.
 
-Started 2026-11-05 on `sunmacbook-air` (this Mac is also the agent-skills maintainer).
+Started 2026-11-05 on the primary Mac (this Mac is also the agent-skills maintainer).
 
 **This repository is public.** Keep server addresses, logins, private repository
 contents, transcript text and personal data out of every tracked file, this one included.
@@ -25,7 +25,7 @@ tests and at least one real end-to-end run:
    audit the interactive posture.
 
 Out of scope for now (user decision): moving work off the laptops. See **Deferred: daily
-review on sai** for the feasibility notes the user asked about.
+review on remote VPS** for the feasibility notes the user asked about.
 
 ## Evidence this plan rests on (checked 2026-11-05)
 
@@ -608,22 +608,22 @@ Review docs on code.claude.com, read 2026-11-07.
   their current state. Their instruction changes go to `claude/CLAUDE.md`, and
   `codex/AGENTS.md` follows only what dotfiles-109 keeps of Codex.
 
-## Deferred: daily review on sai
+## Deferred: daily review on remote VPS
 
-The user asked whether the daily codex-skills review could run on `sai` (the user's
-Dokploy VPS). Feasible, with this split:
+The user asked whether the daily codex-skills review could run on a remote VPS (the user's
+Dokploy host). Feasible, with this split:
 
 - **Stays on each Mac**: hourly capture, source checks and corrections (they need the local
   transcripts), upload to the host inbox branch, and deployment of skill releases.
-- **Moves to sai**: daily collect from both inbox branches, review, investigations, publish
+- **Moves to remote VPS**: daily collect from both inbox branches, review, investigations, publish
   to `main`, prompt review, and the public export.
-- **Needed on sai**: Claude Code with a long-lived token (`claude setup-token`), a deploy
+- **Needed on remote VPS**: Claude Code with a long-lived token (`claude setup-token`), a deploy
   key with write access to codex-skills, uv, Python 3.12, Rust for the exporter checks; a
   systemd timer instead of launchd; an alert channel instead of macOS notifications; the
   health monitor reading status over SSH or from the repo.
 - **Loses**: investigations that snapshot registered local projects on the Macs (they would
   need clones from GitHub or would stay blocked).
-- **Risk**: sai runs production apps. Run the review as a dedicated non-root user, in a
+- **Risk**: the VPS runs production apps. Run the review as a dedicated non-root user, in a
   container, with the Claude Code sandbox on (bubblewrap on Linux), never as root.
 
 ## Next actions
