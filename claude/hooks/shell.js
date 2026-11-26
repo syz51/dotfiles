@@ -245,9 +245,10 @@ function substitutionsIn(text) {
  */
 export function parseScript(source) {
   const commands = [];
-  const fresh = () => ({ argv: [], inputs: [], substitutions: [], processSubs: [], opens: 0, closes: 0 });
+  const fresh = () => ({ argv: [], quoted: [], inputs: [], substitutions: [], processSubs: [], opens: 0, closes: 0 });
   let current = fresh();
   let word;
+  let wordQuoted = false;
   let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
   let heredocs = [];
   // Open `case` statements and `(` subshells, innermost last, so the `)` that ends a case
@@ -256,24 +257,27 @@ export function parseScript(source) {
   const nesting = [];
   let pattern;
   const firstWord = (argv) => argv.find((arg) => !SHELL_KEYWORDS.has(arg));
-  // Whether a case pattern is being read; a pending `esac` word ends the case instead.
+  // Whether a case pattern is being read; a pending unquoted `esac` word ends the case instead.
   const inPattern = () => nesting.at(-1) === "case" && pattern !== undefined
-    && !(word === "esac" && destination === "argv" && firstWord(current.argv) === undefined);
+    && !(!wordQuoted && word === "esac" && destination === "argv" && firstWord(current.argv) === undefined);
 
   const endWord = () => {
     if (word === undefined) return;
     if (destination === "argv") {
       current.argv.push(word);
+      current.quoted.push(wordQuoted);
       const first = firstWord(current.argv);
-      if (word === "{" && first === "function") {
+      if (!wordQuoted && word === "{" && first === "function") {
         // `function NAME … { …; }` defines a function, and zsh's `function { …; }` runs one
         // at once. Drop the keyword and names so the body reads as a `{ …; }` group, checked
         // like the body of `NAME() { …; }`.
-        current.argv.splice(current.argv.indexOf("function"), Infinity, "{");
-      } else if (word === "in" && first === "case" && current.argv.length === current.argv.indexOf("case") + 3) {
+        const start = current.argv.indexOf("function");
+        current.argv.splice(start, Infinity, "{");
+        current.quoted.splice(start, Infinity, false);
+      } else if (!wordQuoted && word === "in" && first === "case" && current.argv.length === current.argv.indexOf("case") + 3) {
         nesting.push("case");
         pattern = current.argv.length;
-      } else if (word === "esac" && first === "esac" && nesting.at(-1) === "case") {
+      } else if (!wordQuoted && word === "esac" && first === "esac" && nesting.at(-1) === "case") {
         nesting.pop();
         pattern = undefined;
       }
@@ -284,6 +288,7 @@ export function parseScript(source) {
     }
     destination = "argv";
     word = undefined;
+    wordQuoted = false;
   };
   const endCommand = (next) => {
     endWord();
@@ -337,17 +342,23 @@ export function parseScript(source) {
       const close = source.indexOf("'", i + 1);
       const stop = close === -1 ? source.length : close;
       word = (word ?? "") + source.slice(i + 1, stop);
+      wordQuoted = true;
       i = stop + 1;
     } else if (c === '"') {
       const { text, end } = doubleQuote(source, i, current.substitutions);
       word = (word ?? "") + text;
+      wordQuoted = true;
       i = end;
     } else if (c === "\\") {
-      if (source[i + 1] !== "\n") word = (word ?? "") + (source[i + 1] ?? "");
+      if (source[i + 1] !== "\n") {
+        word = (word ?? "") + (source[i + 1] ?? "");
+        wordQuoted = true;
+      }
       i += 2;
     } else if (c === "$" && source[i + 1] === "'") {
       const { text, end } = ansiCQuote(source, i);
       word = (word ?? "") + text;
+      wordQuoted = true;
       i = end;
     } else if (c === "$" && source[i + 1] === "{") {
       const { end } = parameterExpansion(source, i, false, current.substitutions);
@@ -384,6 +395,7 @@ export function parseScript(source) {
       // The end of a case pattern: drop the pattern's words, and run what follows as a command.
       endWord();
       current.argv.length = Math.min(current.argv.length, pattern);
+      current.quoted.length = current.argv.length;
       endCommand(";");
       pattern = undefined;
       i += 1;
@@ -409,11 +421,18 @@ export function parseScript(source) {
       endCommand(c);
       i += 1;
     } else if (c === "<" || c === ">") {
-      if (word !== undefined && /^\d+$/.test(word)) word = undefined; // descriptor number, as in 2>
-      else endWord();
+      if (word !== undefined && /^\d+$/.test(word)) {
+        word = undefined; // descriptor number, as in 2>
+        wordQuoted = false;
+      } else endWord();
       let operator = c;
       i += 1;
-      while (i < source.length && "<>|".includes(source[i])) operator += source[i++];
+      // Leave the `<` or `>` of a no-space process substitution (`>>(cmd)`, `>>>(cmd)`, `>|>(cmd)`,
+      // `<<(cmd)`) for the process-substitution branch, while keeping `<<<` as a here-string.
+      while (i < source.length && "<>|".includes(source[i])
+        && !(operator !== "<<" && (source[i] === "<" || source[i] === ">") && source[i + 1] === "(")) {
+        operator += source[i++];
+      }
       if (source[i] === "&") {
         // >&2 and <&0 duplicate a descriptor and take no file word.
         i += 1;
@@ -854,14 +873,16 @@ function analyzeCommands(commands, inheritedPiped, inheritedBg) {
     let coprocHere = false;
     let coprocPos = -1;
     let j = 0;
+    const unquoted = (idx) => !command.quoted?.[idx];
     while (j < command.argv.length) {
       const word = command.argv[j];
+      if (!unquoted(j)) break;
       if (basename(word) === "coproc") {
         coprocHere = true;
         coprocPos = j;
         bg[i] = true;
         const next2 = command.argv[j + 2];
-        j += next2 === "{" || Object.hasOwn(COMPOUND_OPEN, next2) ? 2 : 1;
+        j += unquoted(j + 2) && (next2 === "{" || Object.hasOwn(COMPOUND_OPEN, next2)) ? 2 : 1;
         continue;
       }
       if (word === "{") {
@@ -877,10 +898,10 @@ function analyzeCommands(commands, inheritedPiped, inheritedBg) {
     if (coprocHere && command.next === "(" && command.argv.length - coprocPos <= 2) {
       pendingCoprocSubshell = true;
     }
-    if (command.argv[0] === "}" && braceStack.length > 0 && braceStack.at(-1).subshellDepth === subStack.length) {
+    if (unquoted(0) && command.argv[0] === "}" && braceStack.length > 0 && braceStack.at(-1).subshellDepth === subStack.length) {
       const open = braceStack.pop();
       spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
-    } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
+    } else if (unquoted(0) && command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
       && compoundStack.at(-1)?.close === command.argv[0] && compoundStack.at(-1).subshellDepth === subStack.length) {
       const open = compoundStack.pop();
       spans.push({ start: open.start, end: i, outerDepth: open.outerDepth, coproc: open.coproc });
@@ -1001,17 +1022,19 @@ function inspect(source, state, visit, depth, tooDeep) {
     const command = commands[idx];
     const meta = cmdMeta[idx];
     for (let k = 0; k < command.opens; k += 1) subshells.push(snapshot());
-    for (const word of command.argv) {
+    for (let j = 0; j < command.argv.length; j += 1) {
+      const word = command.argv[j];
+      if (command.quoted?.[j]) break;
       if (word === "{") braces.push({ ...snapshot(), subshellDepth: subshells.length });
       else if (Object.hasOwn(COMPOUND_OPEN, word)) {
         compounds.push({ close: COMPOUND_OPEN[word], before: snapshot(), subshellDepth: subshells.length });
       }
       if (word !== "time" && !SHELL_KEYWORDS.has(word)) break;
     }
-    if (command.argv[0] === "}" && braces.length > 0 && braces.at(-1).subshellDepth === subshells.length) {
+    if (!command.quoted?.[0] && command.argv[0] === "}" && braces.length > 0 && braces.at(-1).subshellDepth === subshells.length) {
       const before = braces.pop();
       if (["|", "|&", "&"].includes(command.next)) restore(before);
-    } else if (command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
+    } else if (!command.quoted?.[0] && command.argv.length === 1 && COMPOUND_CLOSE.has(command.argv[0])
       && compounds.at(-1)?.close === command.argv[0] && compounds.at(-1).subshellDepth === subshells.length) {
       const entry = compounds.pop();
       if (!here && ["|", "|&", "&"].includes(command.next) && state.cdCount > entry.before.cdCount) {
@@ -1019,11 +1042,11 @@ function inspect(source, state, visit, depth, tooDeep) {
       }
     }
     const run = program(command.argv, state.dir, here, state.dirs);
-    for (let k = 0; k < command.opens + (command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
+    for (let k = 0; k < command.opens + (!command.quoted?.[0] && command.argv[0] === "{" ? 1 : 0); k += 1) groups.push([]);
     const text = run.words.length > 0 ? printed(run.words) : undefined;
     run.printed = text === undefined ? [] : [text];
     groups.at(-1)?.push(...run.printed);
-    for (let k = 0; k < command.closes + (command.argv[0] === "}" ? 1 : 0) && groups.length > 0; k += 1) {
+    for (let k = 0; k < command.closes + (!command.quoted?.[0] && command.argv[0] === "}" ? 1 : 0) && groups.length > 0; k += 1) {
       run.printed = groups.pop();
       groups.at(-1)?.push(...run.printed);
     }

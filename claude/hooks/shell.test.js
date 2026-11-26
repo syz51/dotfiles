@@ -690,4 +690,16 @@ test("visit reports topLevel, piped, and background execution context (dotfiles-
     ["b", false, false, false],
     ["a", true, false, false],
   ]);
+  // no-space zsh redirections to process substitutions (>>(...), >>>(...), >|>(...), <<(...))
+  for (const source of ["a >>(b)", "a >>>(b)", "a >|>(b)", "a 2>>(b)", "a 2>|>(b)", "a <<(b)"]) {
+    expect(ctx(source), source).toEqual([
+      ["b", false, true, true],
+      ["a", true, false, false],
+    ]);
+  }
+  // quoted closing keywords do not close an enclosing loop, conditional, or brace group
+  expect(ctx('for i in 1 2; do echo ok; "done"; a; b; done').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, false]);
+  expect(ctx('{ echo ok; "}"; a; b; }').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, false]);
+  expect(ctx('if true; then echo ok; "fi"; a; b; fi').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, false]);
+  expect(ctx('{ a; "}"; echo ok; } & c').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, true]);
 });

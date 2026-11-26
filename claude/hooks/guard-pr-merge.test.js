@@ -946,7 +946,19 @@ describe("chained commands with a pinned or top-level merge (dotfiles-756)", () 
     [`> >(git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
     [`cat <(gh pr merge 12 --squash --match-head-commit ${HEAD}) && git push`, "in a pipeline or background job"],
     [`echo hi > >(gh pr merge 12 --squash --match-head-commit ${HEAD}) && git push`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} >>(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} >>>(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} >|>(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} 2>>(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} 2>|>(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} <<(git push)`, "in a pipeline or background job"],
     [`gh pr merge 12 --squash --match-head-commit ${HEAD} < =(gh pr edit 12 --base develop)`, "also runs `gh pr edit 12 --base develop`"],
+    // quoted closing keywords inside loops, functions, conditionals, or backgrounded brace groups
+    [`for i in 1 2; do echo ok; "done"; gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; done`, "inside a loop, function or group"],
+    [`{ echo ok; "}"; gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; }`, "inside a loop, function or group"],
+    [`f() { echo ok; "}"; gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; }; f`, "inside a loop, function or group"],
+    [`if true; then echo ok; "fi"; gh pr merge 12 --squash --match-head-commit ${HEAD}; git push; fi`, "inside a loop, function or group"],
+    [`{ git push; "}"; echo ok; } & gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
   ])("refuses %s", (command, reason) => {
     const calls = [];
     const violation = verdict(command, { calls });
