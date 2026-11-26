@@ -14,14 +14,14 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 export const CLAUDE_TO_AGY = {
-  Read: ["read_file"],
-  Edit: ["edit_file"],
-  Write: ["write_file"],
+  Read: ["read_file", "view_file", "view_file_outline", "view_code_item"],
+  Edit: ["edit_file", "replace_file_content", "multi_replace_file_content", "sed_file"],
+  Write: ["write_file", "write_to_file"],
   Glob: [],
   Grep: [],
-  Bash: ["run_command", "manage_task"],
+  Bash: ["run_command", "command_status", "manage_task"],
   WebSearch: ["search_web"],
-  WebFetch: ["read_url"],
+  WebFetch: ["read_url", "read_url_content"],
   Agent: ["invoke_subagent", "define_subagent", "manage_subagents", "send_message", "swarm"],
   Task: ["invoke_subagent", "define_subagent", "manage_subagents", "send_message", "swarm"],
   Workflow: ["run_workflow"],
@@ -45,14 +45,26 @@ export const UNRESTRICTED_CLAUDE_TOOLS = [
 const ACCEPT_EDITS_CLAUDE_TOOLS = new Set(["Read", "Edit", "Write"]);
 const VALID_PERMISSION_MODES = new Set(["bypassPermissions", "acceptEdits", "default"]);
 const MCP_TOOLS = new Set(["call_mcp_tool", "list_resources", "read_resource"]);
+const READ_TOOLS = new Set(["read_file", "view_file", "view_file_outline", "view_code_item"]);
+const EDIT_TOOLS = new Set(["edit_file", "replace_file_content", "multi_replace_file_content", "sed_file"]);
+const WRITE_TOOLS = new Set(["write_file", "write_to_file"]);
 const AGY_TO_CLAUDE = {
   read_file: "Read",
+  view_file: "Read",
+  view_file_outline: "Read",
+  view_code_item: "Read",
   edit_file: "Edit",
+  replace_file_content: "Edit",
+  multi_replace_file_content: "Edit",
+  sed_file: "Edit",
   write_file: "Write",
+  write_to_file: "Write",
   run_command: "Bash",
+  command_status: "Bash",
   manage_task: "Bash",
   search_web: "WebSearch",
   read_url: "WebFetch",
+  read_url_content: "WebFetch",
   invoke_subagent: "Agent",
   define_subagent: "Agent",
   manage_subagents: "Agent",
@@ -446,7 +458,8 @@ export function parseToolsInput(toolsInput) {
 
 /**
  * Validates all restriction options and builds the serializable policy object shared by
- * agy-run.js (for ACP permissions, init.tools, and violation checks) and the PreToolUse hook.
+ * agy-run.js (for CLI --settings permissions, init.tools, and stream-json violation checks)
+ * and the env-gated PreToolUse hook.
  */
 export function buildAgyPolicy({
   cwd,
@@ -459,6 +472,7 @@ export function buildAgyPolicy({
   strictMcp = false,
   addDirs = [],
   internalDenyPaths = [],
+  attachmentReadRoots = [],
 } = {}) {
   const workDir = resolve(cwd || process.cwd());
   if (fullAccess && permissionMode && permissionMode !== "bypassPermissions") {
@@ -503,6 +517,9 @@ export function buildAgyPolicy({
 
   const rawRoots = [workDir, ...(addDirs || []), ...parsedSettings.additionalDirectories];
   const allowedWriteRoots = [...new Set(rawRoots.map((dir) => resolveRealPath(resolve(workDir, expandHome(dir, home)))))];
+  const resolvedAttachmentReadRoots = [
+    ...new Set((attachmentReadRoots || []).filter(Boolean).map((dir) => resolveRealPath(resolve(workDir, expandHome(dir, home))))),
+  ];
 
   const internalPatterns = (internalDenyPaths || [])
     .filter(Boolean)
@@ -518,6 +535,7 @@ export function buildAgyPolicy({
     strictMcp: Boolean(strictMcp) || restricted,
     confineWrites,
     allowedWriteRoots,
+    attachmentReadRoots: resolvedAttachmentReadRoots,
     allowedAgyTools,
     exposedClaudeTools,
     denyReadPatterns: [...parsedSettings.denyReadPatterns, ...internalPatterns],
@@ -527,13 +545,76 @@ export function buildAgyPolicy({
   };
 }
 
+/**
+ * Builds an official Antigravity CLI `--settings` JSON object enforcing coarse native
+ * permission boundaries alongside the fine-grained PreToolUse policy hook.
+ */
+export function buildAgyCliSettings(policy) {
+  const allow = [];
+  const deny = [];
+  const hasAttachments = Array.isArray(policy.attachmentReadRoots) && policy.attachmentReadRoots.length > 0;
+
+  if (policy.noTools) {
+    if (hasAttachments) {
+      for (const root of policy.attachmentReadRoots) {
+        allow.push(`read_file(${root})`);
+      }
+      deny.push("write_file(*)", "read_url(*)", "execute_url(*)", "download_url(*)", "command(*)", "mcp(*)");
+    } else {
+      deny.push("read_file(*)", "write_file(*)", "read_url(*)", "execute_url(*)", "download_url(*)", "command(*)", "mcp(*)");
+    }
+    return {
+      toolPermission: "strict",
+      allowNonWorkspaceAccess: false,
+      permissions: { ...(allow.length ? { allow } : {}), deny },
+    };
+  }
+
+  const allowed = new Set(policy.allowedAgyTools || []);
+  const allowRead = [...READ_TOOLS].some((t) => allowed.has(t));
+  const allowWrite = [...EDIT_TOOLS, ...WRITE_TOOLS].some((t) => allowed.has(t));
+  const allowCommand = allowed.has("run_command");
+  const allowWeb = allowed.has("read_url") || allowed.has("read_url_content");
+
+  if (!allowRead) deny.push("read_file(*)");
+  if (!allowWrite) deny.push("write_file(*)");
+  if (!allowCommand) deny.push("command(*)");
+  if (!allowWeb) deny.push("read_url(*)", "execute_url(*)", "download_url(*)");
+  if (policy.strictMcp) deny.push("mcp(*)");
+
+  if (policy.permissionMode === "acceptEdits") {
+    for (const root of policy.allowedWriteRoots || []) {
+      if (allowRead) allow.push(`read_file(${root})`);
+      if (allowWrite) allow.push(`write_file(${root})`);
+    }
+  }
+
+  return {
+    toolPermission: policy.permissionMode === "default" ? "strict" : "request-review",
+    allowNonWorkspaceAccess: !policy.confineWrites,
+    permissions: {
+      ...(allow.length ? { allow } : {}),
+      ...(deny.length ? { deny } : {}),
+    },
+  };
+}
+
 function isMcpToolName(name) {
   return MCP_TOOLS.has(name) || name.startsWith("mcp_") || name.startsWith("mcp__");
 }
 
 function extractPathArg(args) {
   if (!args || typeof args !== "object") return null;
-  for (const key of ["Path", "path", "file_path", "AbsolutePath", "TargetFile"]) {
+  for (const key of [
+    "Path",
+    "path",
+    "file_path",
+    "AbsolutePath",
+    "TargetFile",
+    "DirectoryPath",
+    "SearchPath",
+    "SearchDirectory",
+  ]) {
     if (typeof args[key] === "string" && args[key].trim()) return args[key];
   }
   return null;
@@ -549,19 +630,19 @@ function translateToClaudePreToolUse(toolName, args, cwd) {
         : "";
     return { cwd, tool_name: "Bash", tool_input: { command } };
   }
-  if (toolName === "read_file") {
+  if (READ_TOOLS.has(toolName)) {
     return { cwd, tool_name: "Read", tool_input: { file_path: extractPathArg(safeArgs) ?? "" } };
   }
-  if (toolName === "edit_file") {
+  if (EDIT_TOOLS.has(toolName)) {
     return { cwd, tool_name: "Edit", tool_input: { file_path: extractPathArg(safeArgs) ?? "" } };
   }
-  if (toolName === "write_file") {
+  if (WRITE_TOOLS.has(toolName)) {
     return { cwd, tool_name: "Write", tool_input: { file_path: extractPathArg(safeArgs) ?? "" } };
   }
   if (toolName === "search_web") {
     return { cwd, tool_name: "WebSearch", tool_input: { query: safeArgs.query ?? "" } };
   }
-  if (toolName === "read_url") {
+  if (toolName === "read_url" || toolName === "read_url_content") {
     return { cwd, tool_name: "WebFetch", tool_input: { url: safeArgs.url ?? safeArgs.Url ?? "" } };
   }
   return { cwd, tool_name: AGY_TO_CLAUDE[toolName] ?? toolName, tool_input: safeArgs };
@@ -640,6 +721,17 @@ export function evaluateToolCall(policy, agyInput) {
       return { decision: "deny", reason: "Missing toolCall.name in PreToolUse payload" };
     }
     if (policy.noTools) {
+      if (
+        (toolName === "read_file" || toolName === "view_file") &&
+        Array.isArray(policy.attachmentReadRoots) &&
+        policy.attachmentReadRoots.length > 0
+      ) {
+        const rawPath = extractPathArg(args);
+        const paths = resolveCandidatePaths(rawPath, { cwd, home: policy.home });
+        if (isWithinAllowedRoots(paths, policy.attachmentReadRoots)) {
+          return { decision: "allow" };
+        }
+      }
       return { decision: "deny", reason: `Tools are disabled (--no-tools): ${toolName}` };
     }
     if (policy.strictMcp && isMcpToolName(toolName)) {
@@ -652,7 +744,7 @@ export function evaluateToolCall(policy, agyInput) {
       };
     }
 
-    if (toolName === "read_file") {
+    if (READ_TOOLS.has(toolName)) {
       const rawPath = extractPathArg(args);
       const paths = resolveCandidatePaths(rawPath, { cwd, home: policy.home });
       const compiled = (policy.denyReadPatterns || []).flatMap((pat) =>
@@ -663,7 +755,7 @@ export function evaluateToolCall(policy, agyInput) {
       }
     }
 
-    if (toolName === "edit_file" || toolName === "write_file") {
+    if (EDIT_TOOLS.has(toolName) || WRITE_TOOLS.has(toolName)) {
       const rawPath = extractPathArg(args);
       const paths = resolveCandidatePaths(rawPath, { cwd, home: policy.home });
       if (policy.confineWrites && !isWithinAllowedRoots(paths, policy.allowedWriteRoots || [])) {
@@ -672,7 +764,7 @@ export function evaluateToolCall(policy, agyInput) {
           reason: `Write/edit outside allowed workspace directories denied for path: ${rawPath}`,
         };
       }
-      const denyPatterns = toolName === "edit_file" ? policy.denyEditPatterns : policy.denyWritePatterns;
+      const denyPatterns = EDIT_TOOLS.has(toolName) ? policy.denyEditPatterns : policy.denyWritePatterns;
       const compiled = (denyPatterns || []).flatMap((pat) =>
         compilePathPattern(pat, { cwd: policy.cwd, home: policy.home }),
       );
@@ -690,33 +782,6 @@ export function evaluateToolCall(policy, agyInput) {
   } catch (err) {
     return { decision: "deny", reason: `Policy evaluation failed closed: ${err.message}` };
   }
-}
-
-/**
- * Evaluates an ACP session/request_permission payload as defense-in-depth alongside PreToolUse.
- * Accepts an optional trackedCall ({ name, args, kind }) correlated by toolCallId from earlier
- * session/update tool_call events when the ACP permission request omits toolCall.name.
- */
-export function evaluatePermissionRequest(policy, params, trackedCall = null) {
-  if (!policy || policy.noTools || policy.permissionMode === "default") {
-    return { allow: false, reason: "Permissions disabled in this mode" };
-  }
-  const toolCall = params?.toolCall;
-  const toolName = toolCall?.name ?? trackedCall?.name;
-  const args = toolCall?.rawInput ?? toolCall?.args ?? trackedCall?.args;
-  if (policy.restricted) {
-    if (typeof toolName === "string" && toolName) {
-      const check = evaluateToolCall(policy, { cwd: policy.cwd, toolCall: { name: toolName, args } });
-      return check.decision === "allow"
-        ? { allow: true }
-        : { allow: false, reason: check.reason };
-    }
-    // In acceptEdits or restricted mode, never blindly approve an unidentified permission request.
-    return { allow: false, reason: "Unidentified tool in restricted session/request_permission" };
-  }
-  return policy.permissionMode === "bypassPermissions"
-    ? { allow: true }
-    : { allow: false, reason: "Permission denied outside bypassPermissions" };
 }
 
 if (import.meta.main) {

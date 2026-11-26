@@ -1,20 +1,18 @@
 #!/usr/bin/env bun
 /**
- * agy-run: Headless Antigravity ACP runner that reuses T3 Code's existing Google OAuth login.
+ * agy-run: Headless Antigravity CLI runner backed by the official first-party `agy`
+ * headless mode (`agy --input-format stream-json --output-format stream-json`).
  *
- * Designed as the Gemini 4 Neon replacement for unattended `claude -p` calls across:
- *   - claude/factory (friction capture, scoring, proposals, ui-climb judges)
+ * Uses `agy`'s own native sign-in (macOS Keychain / native CLI auth) — never extracts or
+ * copies OAuth tokens from T3 Code or any other application, and never wraps `agy acp`.
+ *
+ * Provides Claude-CLI-compatible flags and stream-json output for:
+ *   - claude/factory (friction capture, scoring, proposals, weekly reviews, ui-climb judges)
  *   - agent-skills (extract, verify, correct, weekly maintainer review)
  *   - ad-hoc headless prompts
- *
- * Uses an isolated temporary GEMINI_HOME containing a copy of T3's OAuth token and settings
- * so headless calls never trigger global hooks/MCP, never pollute T3 session history, and leave
- * zero leftover files behind.
  */
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -22,46 +20,34 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { arch, homedir, platform, tmpdir } from "node:os";
-import { dirname, extname, join, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  buildAgyCliSettings,
   buildAgyPolicy,
-  evaluatePermissionRequest,
+  evaluateToolCall,
   expandHome,
 } from "./agy-run-policy.js";
 
-const POLICY_HOOK_SCRIPT = join(dirname(import.meta.path), "agy-run-policy.js");
-
-const DEFAULT_INSTANCE = "antigravity";
 const DEFAULT_MODEL = "gemini-4-neon";
 const DEFAULT_EFFORT = "low";
 const DEFAULT_TIMEOUT_MS = 240_000;
 
 export function resolveAgyBinary(env = process.env) {
   if (env.AGY_RUN_BIN) return env.AGY_RUN_BIN;
-  const home = env.HOME || homedir();
-  const t3Home = env.T3CODE_HOME || join(home, ".t3");
-  const platArch = `${platform()}-${arch()}`;
-  const base = join(t3Home, "tools", "antigravity-acp", platArch);
-  const activePath = join(base, "active.json");
-  if (existsSync(activePath)) {
-    const active = JSON.parse(readFileSync(activePath, "utf8"));
-    if (active?.releaseId) {
-      const bin = join(base, "versions", active.releaseId, "antigravity");
-      if (existsSync(bin)) return bin;
-    }
+  const pathEnv = env.PATH || "";
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, "agy");
+    if (existsSync(candidate)) return candidate;
   }
-  throw new Error(`Could not find T3 Antigravity binary under ${base}; set AGY_RUN_BIN`);
-}
-
-export function resolveT3ProfileDir(env = process.env) {
-  if (env.AGY_RUN_GEMINI_HOME) return env.AGY_RUN_GEMINI_HOME;
   const home = env.HOME || homedir();
-  const t3Home = env.T3CODE_HOME || join(home, ".t3");
-  const instance = env.AGY_RUN_INSTANCE || DEFAULT_INSTANCE;
-  const hash = createHash("sha256").update(instance).digest("hex");
-  return join(t3Home, "userdata", "providers", "antigravity", hash);
+  const localAgy = join(home, ".local", "bin", "agy");
+  if (existsSync(localAgy)) return localAgy;
+  throw new Error(
+    "Could not find official `agy` CLI (~/.local/bin/agy). Install it via `curl -fsSL https://antigravity.google/cli/install.sh | bash` and run `agy` once to sign in, or set AGY_RUN_BIN.",
+  );
 }
 
 function cleanBaseEnv(env = process.env) {
@@ -76,8 +62,13 @@ function cleanBaseEnv(env = process.env) {
     "GEMINI_HOME",
     "ELECTRON_RUN_AS_NODE",
     "CHROME_CRASHPAD_PIPE_NAME",
+    "SSH_CLIENT",
+    "SSH_CONNECTION",
+    "SSH_TTY",
+    "AGY_RUN_POLICY_FILE",
+    "AGY_RUN_ACTIVE",
   ]);
-  const dropPrefix = ["CLAUDE_", "T3CODE_", "T3_"];
+  const dropPrefix = ["CLAUDE_", "T3CODE_", "T3_", "AGY_ACP_"];
   const out = {};
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
@@ -85,37 +76,16 @@ function cleanBaseEnv(env = process.env) {
     out[k] = v;
   }
   out.AGENT_BOARD_HOOKS = "off";
+  out.AGY_RUN_ACTIVE = "1";
   return out;
 }
 
-function prepareIsolatedProfile(sourceProfileDir, tempRoot) {
-  const isolated = join(tempRoot, "gemini-home");
-  const acpSrc = join(sourceProfileDir, "antigravity-acp");
-  const acpDst = join(isolated, "antigravity-acp");
-  const cfgDst = join(isolated, "config");
-  const tmpDst = join(tempRoot, "runtime-tmp");
-  mkdirSync(acpDst, { recursive: true, mode: 0o700 });
-  mkdirSync(cfgDst, { recursive: true, mode: 0o700 });
-  mkdirSync(tmpDst, { recursive: true, mode: 0o700 });
-
-  const tokenFiles = [
-    "antigravity-oauth-token",
-    "acp_token.json",
-    "settings.json",
-    "installation_id",
-  ];
-  let copiedAnyToken = false;
-  for (const file of tokenFiles) {
-    const src = join(acpSrc, file);
-    if (existsSync(src)) {
-      copyFileSync(src, join(acpDst, file));
-      if (file.includes("token")) copiedAnyToken = true;
-    }
-  }
-  if (!copiedAnyToken) {
-    throw new Error(`No Antigravity OAuth token found in ${acpSrc}`);
-  }
-  return { geminiHome: isolated, runtimeTmp: tmpDst };
+function extForMime(mimeType) {
+  const m = String(mimeType || "").toLowerCase();
+  if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
+  if (m.includes("webp")) return ".webp";
+  if (m.includes("gif")) return ".gif";
+  return ".png";
 }
 
 function mimeForPath(filePath) {
@@ -129,16 +99,13 @@ function mimeForPath(filePath) {
 
 export function extractJsonFromText(text) {
   const trimmed = text.trim();
-  // Try raw parse first
   try {
     return JSON.parse(trimmed);
   } catch {
-    // Strip ```json ... ``` fences
     const fence = /```(?:json)?\s*\n?([\s\S]*?)\n?```/i.exec(trimmed);
     if (fence) {
       return JSON.parse(fence[1].trim());
     }
-    // Try substring between first {/[ and last }/]
     const firstObj = trimmed.indexOf("{");
     const firstArr = trimmed.indexOf("[");
     let start = -1;
@@ -171,37 +138,118 @@ export function normalizeModel(model) {
   if (!model) return DEFAULT_MODEL;
   const m = model.toLowerCase();
   if (m.startsWith("gemini-")) return model;
-  // Map legacy Claude aliases/models to Gemini 4 Neon
   if (m.includes("claude") || m === "opus" || m === "haiku" || m === "sonnet" || m === "fable") {
     return DEFAULT_MODEL;
   }
   return model;
 }
 
-const shellQuote = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+function materializePromptAndAttachments(prompt, contentBlocks, tempRoot) {
+  const textParts = [];
+  const attachmentPaths = [];
+  let attachmentDir = null;
 
-function installPolicyHook(geminiHome, policyPath, policy) {
-  writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`, { mode: 0o600 });
-  const hookCommand = `${shellQuote(process.execPath)} ${shellQuote(POLICY_HOOK_SCRIPT)} --policy ${shellQuote(policyPath)}`;
-  const hooksConfig = {
-    "agy-run-policy": {
-      PreToolUse: [
-        {
-          matcher: "*",
-          hooks: [
-            {
-              type: "command",
-              command: hookCommand,
-              timeout: 45,
-            },
-          ],
-        },
-      ],
-    },
+  if (Array.isArray(contentBlocks) && contentBlocks.length > 0) {
+    let imgIdx = 0;
+    for (const block of contentBlocks) {
+      if (block.type === "text" && typeof block.text === "string") {
+        textParts.push(block.text);
+      } else if (block.type === "image") {
+        const b64 = block.source?.type === "base64" ? block.source.data : block.data;
+        const mime = block.source?.media_type || block.mimeType || "image/png";
+        if (typeof b64 === "string" && b64.length > 0) {
+          if (!attachmentDir) {
+            attachmentDir = join(tempRoot, "attachments");
+            mkdirSync(attachmentDir, { recursive: true, mode: 0o700 });
+          }
+          imgIdx += 1;
+          const filePath = join(attachmentDir, `image-${imgIdx}${extForMime(mime)}`);
+          writeFileSync(filePath, Buffer.from(b64, "base64"), { mode: 0o600 });
+          attachmentPaths.push(filePath);
+          textParts.push(`[Attached image ${imgIdx}: inspect ${filePath} using view_file]`);
+        }
+      }
+    }
+  } else if (prompt) {
+    textParts.push(prompt);
+  }
+
+  return {
+    userText: textParts.join("\n\n"),
+    attachmentDir,
+    attachmentPaths,
   };
-  writeFileSync(join(geminiHome, "config", "hooks.json"), `${JSON.stringify(hooksConfig, null, 2)}\n`, {
-    mode: 0o600,
-  });
+}
+
+const WORKSPACE_HOOK_SUBPATHS = [
+  join(".agents", "hooks.json"),
+  join(".agent", "hooks.json"),
+  join("_agents", "hooks.json"),
+  join("_agent", "hooks.json"),
+];
+
+/**
+ * Verifies fail-closed that global `~/.gemini/config/hooks.json` wires `agy-run-policy`
+ * on PreToolUse matcher `*`, and that no workspace hooks.json between `workDir` and the
+ * repository root shadows or disables `agy-run-policy`.
+ */
+export function verifyPolicyHookInstalled(home, workDir) {
+  const globalHooksPath = join(home, ".gemini", "config", "hooks.json");
+  if (!existsSync(globalHooksPath)) {
+    throw new Error(
+      `Restricted agy-run requires agy-run-policy PreToolUse hook in ${globalHooksPath}, but the file is missing.`,
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(globalHooksPath, "utf8"));
+  } catch (err) {
+    throw new Error(`Invalid JSON in ${globalHooksPath}: ${err.message}`);
+  }
+  const policyGroup = parsed?.["agy-run-policy"];
+  const preEntries = Array.isArray(policyGroup?.PreToolUse) ? policyGroup.PreToolUse : [];
+  const validHook =
+    policyGroup?.enabled !== false &&
+    preEntries.some(
+      (entry) =>
+        entry?.matcher === "*" &&
+        Array.isArray(entry?.hooks) &&
+        entry.hooks.some(
+          (h) =>
+            typeof h?.command === "string" &&
+            h.command.includes("AGY_RUN_POLICY_FILE") &&
+            h.command.includes("agy-run-policy.js"),
+        ),
+    );
+  if (!validHook) {
+    throw new Error(
+      `Restricted agy-run requires an enabled "agy-run-policy" PreToolUse (matcher "*") hook in ${globalHooksPath}.`,
+    );
+  }
+
+  // Check workspace hook overrides walking up to the git root (if any).
+  let cur = resolve(workDir);
+  for (let depth = 0; depth < 64; depth++) {
+    for (const rel of WORKSPACE_HOOK_SUBPATHS) {
+      const candidate = join(cur, rel);
+      if (!existsSync(candidate)) continue;
+      let wsHooks;
+      try {
+        wsHooks = JSON.parse(readFileSync(candidate, "utf8"));
+      } catch (err) {
+        throw new Error(`Invalid workspace hooks file ${candidate}: ${err.message}`);
+      }
+      if (wsHooks && typeof wsHooks === "object" && Object.hasOwn(wsHooks, "agy-run-policy")) {
+        throw new Error(
+          `Workspace hooks file ${candidate} overrides "agy-run-policy"; refusing to run restricted session.`,
+        );
+      }
+    }
+    if (existsSync(join(cur, ".git"))) break;
+    const parent = dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
 }
 
 export async function runAgyPrompt({
@@ -222,12 +270,16 @@ export async function runAgyPrompt({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   env = process.env,
 }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`Invalid timeoutMs for agy-run: ${timeoutMs}`);
+  }
   const startedAt = Date.now();
   const home = env.HOME || homedir();
   const callerBase = cwd ? resolve(cwd) : process.cwd();
   const resolvedAddDirs = (addDirs || []).map((dir) => resolve(callerBase, expandHome(dir, home)));
-  // Validate restrictions up front (fail closed before spawning or touching profiles).
-  buildAgyPolicy({
+
+  // Validate restrictions up front (fail closed before spawning or touching temp files).
+  const preflightPolicy = buildAgyPolicy({
     cwd: callerBase,
     home,
     noTools,
@@ -239,18 +291,46 @@ export async function runAgyPrompt({
     addDirs: resolvedAddDirs,
   });
 
+  if (preflightPolicy.enforceHook) {
+    verifyPolicyHookInstalled(home, callerBase);
+  }
+
   const binary = resolveAgyBinary(env);
-  const sourceProfile = resolveT3ProfileDir(env);
   const tempRoot = mkdtempSync(join(tmpdir(), "agy-run-"));
 
   let proc;
   let timer;
   try {
-    const workDir = cwd ? resolve(cwd) : join(tempRoot, "work");
-    if (!cwd) mkdirSync(workDir, { recursive: true });
+    const workDir = preflightPolicy.noTools
+      ? join(tempRoot, "empty-work")
+      : cwd
+        ? resolve(cwd)
+        : join(tempRoot, "work");
+    if (preflightPolicy.noTools || !cwd) {
+      mkdirSync(workDir, { recursive: true, mode: 0o700 });
+    }
 
-    const { geminiHome, runtimeTmp } = prepareIsolatedProfile(sourceProfile, tempRoot);
+    const { userText, attachmentDir, attachmentPaths } = materializePromptAndAttachments(
+      prompt,
+      contentBlocks,
+      tempRoot,
+    );
+
     const policyPath = join(tempRoot, "policy.json");
+    const cliSettingsPath = join(tempRoot, "cli-settings.json");
+    const schemaPath = schema ? join(tempRoot, "schema.json") : null;
+    const runtimeTmp = join(tempRoot, "runtime-tmp");
+    mkdirSync(runtimeTmp, { recursive: true, mode: 0o700 });
+
+    const internalDenyPaths = [
+      policyPath,
+      cliSettingsPath,
+      ...(schemaPath ? [schemaPath] : []),
+      join(home, ".gemini", "antigravity-cli"),
+      join(home, ".gemini", "config"),
+      join(home, ".t3", "userdata", "providers", "antigravity"),
+    ];
+
     const policy = buildAgyPolicy({
       cwd: workDir,
       home,
@@ -260,30 +340,100 @@ export async function runAgyPrompt({
       tools,
       settings,
       strictMcp,
-      addDirs: resolvedAddDirs,
-      internalDenyPaths: [geminiHome, sourceProfile, policyPath],
+      addDirs: preflightPolicy.noTools ? [] : resolvedAddDirs,
+      internalDenyPaths,
+      attachmentReadRoots: attachmentDir ? [attachmentDir] : [],
     });
 
     if (policy.enforceHook) {
-      installPolicyHook(geminiHome, policyPath, policy);
+      writeFileSync(policyPath, `${JSON.stringify(policy, null, 2)}\n`, { mode: 0o600 });
+    }
+
+    const cliSettings = buildAgyCliSettings(policy);
+    writeFileSync(cliSettingsPath, `${JSON.stringify(cliSettings, null, 2)}\n`, { mode: 0o600 });
+
+    if (schemaPath) {
+      const schemaObj = typeof schema === "string" ? JSON.parse(schema) : schema;
+      writeFileSync(schemaPath, `${JSON.stringify(schemaObj, null, 2)}\n`, { mode: 0o600 });
     }
 
     const resolvedModel = normalizeModel(model);
     const resolvedEffort = mapEffort(effort);
+    const timeoutSecs = Math.max(1, Math.ceil(timeoutMs / 1000));
+
+    const cliArgs = [
+      "--input-format",
+      "stream-json",
+      "--output-format",
+      "stream-json",
+      "--model",
+      resolvedModel,
+      "--effort",
+      resolvedEffort,
+      "--disable-slash-commands",
+      "--print-timeout",
+      `${timeoutSecs}s`,
+      "--settings",
+      cliSettingsPath,
+    ];
+
+    if (schemaPath) {
+      cliArgs.push("--json-schema", schemaPath);
+    }
+
+    if (!policy.noTools) {
+      if (policy.permissionMode === "acceptEdits") {
+        cliArgs.push("--mode", "accept-edits");
+      } else if (policy.permissionMode === "bypassPermissions") {
+        cliArgs.push("--dangerously-skip-permissions");
+      }
+    }
+
+    const extraDirs = new Set(policy.noTools ? [] : policy.allowedWriteRoots.slice(1));
+    if (attachmentDir) extraDirs.add(attachmentDir);
+    for (const extraDir of extraDirs) {
+      cliArgs.push("--add-dir", extraDir);
+    }
 
     const childEnv = {
       ...cleanBaseEnv(env),
-      GEMINI_HOME: geminiHome,
-      AGY_ACP_FORCE_FILE_STORAGE: "1",
       PYTHONUNBUFFERED: "1",
       TMPDIR: runtimeTmp,
+      ...(policy.enforceHook ? { AGY_RUN_POLICY_FILE: policyPath } : {}),
     };
 
-    const acpArgs = ["acp", "--gemini-dir", geminiHome, "--app-data-dir", "antigravity-acp"];
-    for (const extraDir of policy.allowedWriteRoots.slice(1)) {
-      acpArgs.push("--add-dir", extraDir);
+    const preambleParts = [];
+    if (policy.noTools) {
+      if (attachmentPaths.length > 0) {
+        preambleParts.push(
+          `Use only the input and attached image files below (${attachmentPaths.join(", ")}). You may call view_file ONLY on those attached image files; do not use any other tools, read other files, write files, run commands, or ask questions.`,
+        );
+      } else {
+        preambleParts.push(
+          "Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.",
+        );
+      }
+    } else if (policy.restricted) {
+      const allowedList = policy.allowedAgyTools.join(", ") || "none";
+      const notes = [`Restricted session: only these tools are permitted: ${allowedList}.`];
+      if (policy.confineWrites) {
+        notes.push("File edits and writes are confined to the working directory.");
+      }
+      preambleParts.push(notes.join(" "));
     }
-    proc = spawn(binary, acpArgs, {
+    if (system) {
+      preambleParts.push(system);
+    }
+    if (schema) {
+      const schemaStr = typeof schema === "string" ? schema : JSON.stringify(schema);
+      preambleParts.push(
+        `Return ONLY valid JSON matching this JSON Schema (no prose, no markdown fences):\n${schemaStr}`,
+      );
+    }
+
+    const fullPrompt = [...preambleParts, userText].filter(Boolean).join("\n\n");
+
+    proc = spawn(binary, cliArgs, {
       cwd: workDir,
       env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
@@ -295,297 +445,159 @@ export async function runAgyPrompt({
       if (stderrBuf.length > 32_000) stderrBuf = stderrBuf.slice(-32_000);
     });
 
-    let nextId = 1;
-    const pending = new Map();
-    const toolCallsById = new Map();
     let collectedText = "";
+    let conversationId = null;
+    let terminalResult = null;
     let toolViolation = null;
-    let sessionId = null;
+    let stdoutLineBuf = "";
 
-    const sendRaw = (obj) => {
-      proc.stdin.write(`${JSON.stringify(obj)}\n`);
-    };
-
-    const request = (method, params) =>
-      new Promise((resolveReq, rejectReq) => {
-        const id = nextId++;
-        pending.set(id, { resolve: resolveReq, reject: rejectReq, method });
-        sendRaw({ jsonrpc: "2.0", id, method, params });
-      });
-
-    const handleServerRequest = (msg) => {
-      const { id, method, params } = msg;
-      if (method === "session/request_permission") {
-        if (policy.noTools) {
-          toolViolation = `Tool permission requested in --no-tools mode: ${JSON.stringify(params?.toolCall?.title || params?.toolCall?.kind || "unknown")}`;
-          sendRaw({ jsonrpc: "2.0", id, result: { outcome: { outcome: "cancelled" } } });
-          return;
-        }
-        const trackedCall = params?.toolCall?.toolCallId
-          ? toolCallsById.get(params.toolCall.toolCallId) ?? null
-          : null;
-        const decision = evaluatePermissionRequest(policy, params, trackedCall);
-        const options = params?.options || [];
-        const allow = policy.restricted
-          ? options.find((o) => o.kind === "allow_once")
-          : options.find((o) => o.kind === "allow_always") ||
-            options.find((o) => o.kind === "allow_once");
-        if (decision.allow && allow?.optionId) {
-          sendRaw({
-            jsonrpc: "2.0",
-            id,
-            result: { outcome: { outcome: "selected", optionId: allow.optionId } },
-          });
-        } else {
-          sendRaw({ jsonrpc: "2.0", id, result: { outcome: { outcome: "cancelled" } } });
+    const handleStreamEvent = (msg) => {
+      if (msg.event === "init") {
+        if (typeof msg.conversation_id === "string" && msg.conversation_id) {
+          conversationId = msg.conversation_id;
         }
         return;
       }
-      // Reject client fs/terminal/elicitation requests in headless mode
-      sendRaw({
-        jsonrpc: "2.0",
-        id,
-        error: { code: -32601, message: `Unsupported client method in headless mode: ${method}` },
-      });
+
+      if (msg.event === "step_update" && msg.step_update) {
+        const step = msg.step_update;
+        if (!conversationId && typeof step.conversation_id === "string" && step.conversation_id) {
+          conversationId = step.conversation_id;
+        }
+        if (step.step_type === "agent_response" && typeof step.text_delta === "string") {
+          collectedText += step.text_delta;
+        }
+        if (step.step_type === "tool") {
+          const toolName = step.tool_name || step.tool_info?.name || "";
+          const toolArgs = step.tool_info?.parameters ?? {};
+          const failed = Boolean(step.tool_info?.error);
+          if (policy.noTools) {
+            const verdict = evaluateToolCall(policy, {
+              cwd: workDir,
+              toolCall: { name: toolName, args: toolArgs },
+            });
+            if (verdict.decision !== "allow") {
+              toolViolation = `Model attempted a tool call in --no-tools mode: ${toolName || "unknown"} (${verdict.reason})`;
+            }
+          } else if (policy.restricted && step.state === "DONE" && !failed) {
+            const verdict = evaluateToolCall(policy, {
+              cwd: workDir,
+              toolCall: { name: toolName, args: toolArgs },
+            });
+            if (verdict.decision !== "allow") {
+              toolViolation = `Disallowed tool completed in restricted mode: ${toolName || "unknown"} (${verdict.reason})`;
+            }
+          }
+        }
+        return;
+      }
+
+      if (msg.event === "result" && msg.result) {
+        terminalResult = msg.result;
+        if (!conversationId && typeof msg.result.conversation_id === "string" && msg.result.conversation_id) {
+          conversationId = msg.result.conversation_id;
+        }
+      }
     };
 
-    let stdoutLineBuf = "";
-    proc.stdout.on("data", (chunk) => {
-      stdoutLineBuf += chunk.toString("utf8");
+    const parseLines = (flush = false) => {
       let nl;
       while ((nl = stdoutLineBuf.indexOf("\n")) !== -1) {
         const line = stdoutLineBuf.slice(0, nl).trim();
         stdoutLineBuf = stdoutLineBuf.slice(nl + 1);
         if (!line || !line.startsWith("{")) continue;
-        let msg;
         try {
-          msg = JSON.parse(line);
+          handleStreamEvent(JSON.parse(line));
         } catch {
-          continue;
-        }
-        // Response to our request
-        if (msg.id !== undefined && !msg.method) {
-          const entry = pending.get(msg.id);
-          if (entry) {
-            pending.delete(msg.id);
-            if (msg.error) {
-              entry.reject(
-                new Error(`ACP ${entry.method} error (${msg.error.code}): ${msg.error.message}`),
-              );
-            } else {
-              entry.resolve(msg.result);
-            }
-          }
-          continue;
-        }
-        // Server-to-client request
-        if (msg.id !== undefined && msg.method) {
-          handleServerRequest(msg);
-          continue;
-        }
-        // Notification
-        if (msg.method === "session/update") {
-          const update = msg.params?.update;
-          if (!update) continue;
-          if (
-            (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") &&
-            update.toolCallId
-          ) {
-            const prev = toolCallsById.get(update.toolCallId) || {};
-            toolCallsById.set(update.toolCallId, {
-              name: typeof update.name === "string" && update.name ? update.name : prev.name,
-              args: update.args ?? update.rawInput ?? prev.args,
-              kind: update.kind ?? prev.kind,
-            });
-          }
-          if (
-            policy.noTools &&
-            (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update")
-          ) {
-            toolViolation = `Model attempted a tool call in --no-tools mode: ${update.title || update.toolCallId || "tool"}`;
-          } else if (
-            policy.restricted &&
-            update.sessionUpdate === "tool_call_update" &&
-            update.status === "completed"
-          ) {
-            const resolvedName =
-              (typeof update.name === "string" && update.name) ||
-              (update.toolCallId ? toolCallsById.get(update.toolCallId)?.name : null);
-            if (!resolvedName) {
-              toolViolation = `Unidentified tool completed in restricted mode (toolCallId=${update.toolCallId || "unknown"})`;
-            } else if (!policy.allowedAgyTools.includes(resolvedName)) {
-              toolViolation = `Disallowed tool completed in restricted mode: ${resolvedName}`;
-            }
-          }
-          if (
-            update.sessionUpdate === "agent_message_chunk" &&
-            update.content?.type === "text" &&
-            typeof update.content.text === "string"
-          ) {
-            collectedText += update.content.text;
-          }
+          // Ignore non-JSON notice lines
         }
       }
+      if (flush && stdoutLineBuf.trim().startsWith("{")) {
+        try {
+          handleStreamEvent(JSON.parse(stdoutLineBuf.trim()));
+        } catch {}
+        stdoutLineBuf = "";
+      }
+    };
+
+    proc.stdout.on("data", (chunk) => {
+      stdoutLineBuf += chunk.toString("utf8");
+      parseLines(false);
     });
 
-    const exitPromise = new Promise((_, rejectExit) => {
-      proc.on("error", (err) => rejectExit(err));
-      proc.on("exit", (code, signal) => {
-        for (const [, entry] of pending) {
-          entry.reject(
-            new Error(`antigravity acp exited prematurely (code=${code}, signal=${signal}): ${stderrBuf.slice(-800)}`),
-          );
-        }
-        pending.clear();
-      });
-    });
+    // Attach error/close handlers before writing stdin so early-exit EPIPE never goes unhandled.
+    proc.stdin.on("error", () => {});
 
-    const timeoutPromise = new Promise((_, rejectTimeout) => {
+    const completionPromise = new Promise((resolveDone, rejectDone) => {
       timer = setTimeout(() => {
         try {
           proc.kill("SIGTERM");
         } catch {}
-        rejectTimeout(new Error(`agy-run timed out after ${timeoutMs}ms`));
+        rejectDone(new Error(`agy-run timed out after ${timeoutMs}ms`));
       }, timeoutMs);
+
+      proc.on("error", (err) => rejectDone(err));
+      proc.on("close", (code, signal) => {
+        parseLines(true);
+        resolveDone({ code, signal });
+      });
     });
 
-    const run = async () => {
-      await request("initialize", {
-        protocolVersion: 1,
-        clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
-        },
-        clientInfo: { name: "t3-code", title: "T3 Code", version: "0.1.12" },
-      });
+    // Write the single NDJSON user turn and close stdin so `agy` exits cleanly after the turn.
+    proc.stdin.write(`${JSON.stringify({ event: "user", message: { content: fullPrompt } })}\n`);
+    proc.stdin.end();
 
-      await request("authenticate", { methodId: "oauth-personal" });
+    const completed = await completionPromise;
 
-      const newSession = await request("session/new", {
-        cwd: workDir,
-        mcpServers: [],
-      });
-      sessionId = newSession.sessionId;
-      const configOptions = newSession.configOptions || [];
+    if (toolViolation) {
+      throw new Error(toolViolation);
+    }
 
-      const modelOption = configOptions.find((o) => o.id === "model");
-      if (modelOption && resolvedModel) {
-        await request("session/set_config_option", {
-          sessionId,
-          configId: "model",
-          value: resolvedModel,
-        });
-      }
-
-      const thoughtOption = configOptions.find(
-        (o) => o.category === "thought_level" || o.id === "thought_level",
+    if (!terminalResult) {
+      throw new Error(
+        `agy exited without emitting a terminal result (code=${completed.code} signal=${completed.signal}): ${stderrBuf.trim().slice(-800)}`,
       );
-      if (thoughtOption && resolvedEffort) {
-        try {
-          await request("session/set_config_option", {
-            sessionId,
-            configId: thoughtOption.id,
-            value: resolvedEffort,
-          });
-        } catch {
-          // Some models may not support every thought_level
-        }
-      }
+    }
 
-      if (policy.permissionMode === "acceptEdits") {
-        const modeOption = configOptions.find(
-          (o) => o.category === "mode" || o.id === "mode",
-        );
-        if (modeOption) {
-          try {
-            await request("session/set_config_option", {
-              sessionId,
-              configId: modeOption.id,
-              value: "accept-edits",
-            });
-          } catch {
-            // Fall back to default mode; PreToolUse hook still enforces confinement.
-          }
-        }
-      }
+    if (terminalResult.status !== "SUCCESS") {
+      const detail = terminalResult.error || stderrBuf.trim().slice(-800) || `status=${terminalResult.status}`;
+      throw new Error(`agy failed (${terminalResult.status || "unknown"}): ${detail}`);
+    }
 
-      const blocks = [];
-      const preambleParts = [];
-      if (policy.noTools) {
-        preambleParts.push(
-          "Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.",
-        );
-      } else if (policy.restricted) {
-        const allowedList = policy.allowedAgyTools.join(", ") || "none";
-        const notes = [`Restricted session: only these tools are permitted: ${allowedList}.`];
-        if (policy.confineWrites) {
-          notes.push("File edits and writes are confined to the working directory.");
-        }
-        preambleParts.push(notes.join(" "));
-      }
-      if (system) {
-        preambleParts.push(system);
-      }
-      if (schema) {
-        const schemaStr = typeof schema === "string" ? schema : JSON.stringify(schema);
-        preambleParts.push(
-          `Return ONLY valid JSON matching this JSON Schema (no prose, no markdown fences):\n${schemaStr}`,
-        );
-      }
-      if (preambleParts.length > 0) {
-        blocks.push({ type: "text", text: preambleParts.join("\n\n") });
-      }
-      if (Array.isArray(contentBlocks) && contentBlocks.length > 0) {
-        for (const block of contentBlocks) {
-          if (block.type === "text") {
-            blocks.push({ type: "text", text: block.text });
-          } else if (block.type === "image" && block.source?.type === "base64") {
-            blocks.push({
-              type: "image",
-              data: block.source.data,
-              mimeType: block.source.media_type || "image/png",
-            });
-          } else if (block.type === "image" && block.data) {
-            blocks.push({
-              type: "image",
-              data: block.data,
-              mimeType: block.mimeType || "image/png",
-            });
-          }
-        }
-      } else if (prompt) {
-        blocks.push({ type: "text", text: prompt });
-      }
+    if (completed.code !== 0 || completed.signal) {
+      throw new Error(
+        `agy exited abnormally after result (code=${completed.code} signal=${completed.signal}): ${stderrBuf.trim().slice(-800)}`,
+      );
+    }
 
-      const promptResult = await request("session/prompt", {
-        sessionId,
-        prompt: blocks,
-      });
+    let structuredOutput = undefined;
+    let text = (typeof terminalResult?.response === "string" && terminalResult.response.trim()
+      ? terminalResult.response
+      : collectedText
+    ).trim();
 
-      if (toolViolation) {
-        throw new Error(toolViolation);
-      }
-
-      const text = collectedText.trim();
-      let structuredOutput = undefined;
-      if (schema) {
+    if (schema) {
+      if (terminalResult?.structured_output !== undefined && terminalResult?.structured_output !== null) {
+        structuredOutput = terminalResult.structured_output;
+        text = JSON.stringify(structuredOutput);
+      } else {
         structuredOutput = extractJsonFromText(text);
       }
+    }
 
-      return {
-        text,
-        structured_output: structuredOutput,
-        model: resolvedModel,
-        effort: resolvedEffort,
-        tools: policy.exposedClaudeTools,
-        stop_reason: promptResult?.stopReason || "end_turn",
-        duration_ms: Date.now() - startedAt,
-        cost_usd: 0,
-        session_id: sessionId,
-      };
+    return {
+      text,
+      structured_output: structuredOutput,
+      model: resolvedModel,
+      effort: resolvedEffort,
+      tools: policy.exposedClaudeTools,
+      stop_reason: terminalResult?.status === "SUCCESS" ? "end_turn" : (terminalResult?.status || "end_turn"),
+      duration_ms: Date.now() - startedAt,
+      num_turns: terminalResult?.num_turns ?? 1,
+      usage: terminalResult?.usage ?? undefined,
+      cost_usd: 0,
+      session_id: conversationId || terminalResult?.conversation_id || "",
     };
-
-    return await Promise.race([run(), exitPromise, timeoutPromise]);
   } finally {
     if (timer) clearTimeout(timer);
     if (proc && !proc.killed) {
@@ -647,7 +659,7 @@ if (import.meta.main) {
   });
 
   if (values.version) {
-    console.log("agy-run 1.0.0 (Antigravity ACP / gemini-4-neon)");
+    console.log("agy-run 2.0.0 (official agy headless CLI / gemini-4-neon)");
     process.exit(0);
   }
 
@@ -766,6 +778,7 @@ if (import.meta.main) {
         subtype: "success",
         is_error: false,
         duration_ms: res.duration_ms,
+        num_turns: res.num_turns,
         result: res.text,
         structured_output: res.structured_output,
         total_cost_usd: 0,
