@@ -21,7 +21,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, W
   - Out-of-scope work as a proposal (`auto=false`, body starting `Proposal:` with problem, evidence without secrets, change, and size `S`/`M`/`L`) on that repo's board (or this one if it has none), naming the task where you found it.
   - User decisions/actions as a task with `auto=false`, setting `blocked` only once its `ask_user` is accepted.
 - Keep your task open until every acceptance check passes.
-- In your reply, every open item (a limit needing work, follow-up, suggestion, or step waiting on the user) must name its task or ask id, or state why it needs no work (`no action: <reason>` — an agent's verdict alone is not a reason). If filing fails, report the item instead. Never ask before filing. A handoff's `next` holds only your claimed task's first action. The `open-items` stop hook enforces this.
+- End each tool-using reply with an `Open items:` label (every turn, also after `task_done`, no-task threads and delegated children): each entry names its task or ask id, or says `none` or `no action: <reason>` (an agent's cut or verdict is no reason and not the user's decision). If filing fails, report the item instead. Never ask before filing. A handoff's `next` holds only your claimed task's first action. The `open-items` stop hook enforces this.
 - Read-only work (reviews, investigations) files on the board too unless asked not to touch the board. `invoke_subagent` subagents share your board identity and never file — they report findings to you, and you file each real item you do not fix. Separate T3 threads (`delegate_task`, `t3_thread_launch`) file for themselves.
 
 ## Gemini-first Offloading
