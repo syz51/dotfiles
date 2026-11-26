@@ -64,11 +64,13 @@ const POINTERS = {
   delegation: ["Delegation", "- Before you start a subagent or a delegate, read `~/.claude/reference/delegation.md`: how to split tracks and choose their agents, what a brief holds, worktrees for tracks, and checking results."],
   "t3-delegation": ["Delegation", "- Before a `delegate_task` or `t3_thread_launch` call, read `~/.claude/reference/t3-delegation.md`: the fields T3 drops or refuses, and the route for a board task whose code is in another repository."],
   // The settle check runs once, at the end of a T3 thread's work: 949 characters (dotfiles-513).
-  "t3-settle": ["Workflow", "- In a T3 thread, before you end the turn that finishes your work, read `~/.claude/reference/t3-settle.md`: the final check, and when to settle the thread."],
+  "t3-settle": ["Workflow", "- In a T3 thread, before you end the turn that finishes your work, read `~/.claude/reference/t3-settle.md`: filing the session's setup and tool problems or missing tools, the final check, and when to settle the thread."],
   // Triggered only when continuing a branch another worktree holds or writing reports/drafts (dotfiles-113).
   "held-branch": ["Workflow", "- Before continuing a branch another worktree holds, read `~/.claude/reference/held-branch.md`."],
   writing: ["Workflow", "- Before writing a report or a non-Chinese draft/translation, read `~/.claude/reference/writing.md`: Simple Technical English and Chinese-meaning rules."],
   storage: ["Storage", "- Keep work that another machine or a later session may read on the shared storage through `storagectl`, not only in a local folder: downloads, datasets, run outputs and handoff files. Before you use `storagectl` or split work across machines, read `~/.claude/reference/storage.md`. Report what got in the way as Feedback with `about` `storage`."],
+  // Filing feedback runs only when a setup gets in the way: 1,003 characters moved out (dotfiles-772).
+  feedback: ["Feedback", "- When a setup gets in your way (the board, these instructions, an agent definition, a skill, a hook, a tool or its configuration, storage, T3, or a project's own setup), read `~/.claude/reference/feedback.md`: how to report it once with `feedback` (even after a workaround) and what stays out of feedback."],
   // Running the reviewer, deciding on findings and recording them all follow starting it;
   // review-findings.md joined this file (dotfiles-513).
   review: ["Review", "- Before you start the `reviewer` agent, read `~/.claude/reference/review.md`: how to run it in the background, decide on its findings and record their outcomes."],
@@ -1118,8 +1120,14 @@ describe("storage rule", () => {
 });
 
 describe("feedback rule", () => {
-  test("reports setup friction once through the feedback tool, then continues", () => {
+  test("the instructions keep when to report setup friction and point at the rest", () => {
     const rule = section("Feedback");
+    expect(rule).toContain(POINTERS.feedback[1]);
+    expect(rule).toContain("even after a workaround");
+  });
+
+  test("reports setup friction once through the feedback tool, then continues", () => {
+    const rule = referenceRules("feedback");
     expect(rule).toContain("report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <activity> '<what happened>'` where the tool is missing, then continue with a workaround");
     // The board's activities, which have no verify.
     expect(rule).toContain("(`explore`, `research`, `design`, `plan`, `build`, `review`, `operate` or `other`)");
@@ -1138,7 +1146,7 @@ describe("feedback rule", () => {
   });
 
   test("Codex gets the same rule, and Feedback follows Storage in both", () => {
-    expect(read("codex/AGENTS.md")).toContain(`## Feedback\n${section("Feedback").trimEnd()}\n`);
+    expect(read("codex/AGENTS.md")).toContain(`## Feedback\n\n${referenceRules("feedback").trimEnd()}\n`);
     for (const path of ["claude/CLAUDE.md", "codex/AGENTS.md"]) expect(read(path)).toMatch(/\n## Storage\n(?:(?!\n## )[\s\S])*\n\n## Feedback\n/);
   });
 });

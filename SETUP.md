@@ -532,7 +532,7 @@ Do not replace an existing tool home without backing up its local data.
 
 Every request of every session and subagent carries `claude/CLAUDE.md`, so it holds only
 what most turns need. Procedures that few turns need are in `claude/reference/`, each
-behind one pointer line in the section it belongs to: `storage.md`, `review.md`,
+behind one pointer line in the section it belongs to: `storage.md`, `feedback.md`, `review.md`,
 `merge.md`, `delegation.md`, `t3-delegation.md`, `t3-settle.md`, `writing.md` and `held-branch.md`. A session reads one
 through `~/.claude/reference/<name>.md` when its pointer applies. Each file keeps its
 rules word for word and states that they have the instructions' force. The comment above

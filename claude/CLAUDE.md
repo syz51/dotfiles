@@ -25,7 +25,7 @@
 - Keep tool output small, since each result stays in context for every later turn. Pipe long command output through `head` or `tail`, or to a scratch file that you search; limit `grep` output; run `git diff --stat` before a full diff; read files and logs in ranges; do not read a file again after you edit it; read only the latest messages of a T3 thread.
 - Keep temporary files in the session scratchpad if there is one, otherwise in one task directory under `$TMPDIR`; a subagent uses its own subdirectory there. Before finishing, remove only temporary files you created, stop the background commands and processes you started, and confirm none still runs, unless I asked to keep them running. Do not delete and reinstall tools between steps.
 - Start long-lived servers and other processes that run `claude` through `no-session-env`, which drops this session's variables so their `claude` starts fresh.
-- In a T3 thread, before you end the turn that finishes your work, read `~/.claude/reference/t3-settle.md`: the final check, and when to settle the thread.
+- In a T3 thread, before you end the turn that finishes your work, read `~/.claude/reference/t3-settle.md`: filing the session's setup and tool problems or missing tools, the final check, and when to settle the thread.
 - Prefer dedicated tools. Inspect UI with the `headless-browser` skill; use the in-app browser only when I ask for it.
 - A repository's main checkout is shared by every thread that starts in it. Read there freely, but change files, commits or branches only in your own worktree (EnterWorktree, or a T3 worktree thread), unless I asked for that change in that checkout. A `--ff-only` merge or pull to its upstream or a commit I approved may run there, as may a clean switch back to its default branch. A hook enforces this; when it refuses a change I asked for there, run the route its message gives yourself, never hand it back to me.
 - Enter a worktree before you start subagents. In a worktree-isolated session (after EnterWorktree, or in a subagent with worktree isolation), Claude Code refuses each Bash command it cannot verify stays in the worktree, and a hook lists the refused forms when isolation starts; write around them. Pass long text that may mention git, such as a PR body, through MCP tools (such as `task_add`) or a file.
@@ -78,8 +78,7 @@
 
 ## Feedback
 
-- When a setup gets in your way (the board, these instructions, an agent definition, a skill, a hook, a tool or its configuration, storage, T3, or a project's own setup), report it once with the `feedback` MCP tool, or `board feedback --about <setup> --activity <activity> '<what happened>'` where the tool is missing, then continue with a workaround; a problem you got past still needs its report. Name the setup (an id from `~/.config/setups.toml`, `other` when unsure), what you were doing (`explore`, `research`, `design`, `plan`, `build`, `review`, `operate` or `other`), the error or cost, and the workaround. A report makes a task; repeats add to it; triage routes it to the setup's owner, so don't follow it up. Report it in your reply instead when filing fails; subagents report it to their parent, which files it.
-- Report friction with the setup, not defects in the work itself: a project's bugs stay on its board, and a skill's guidance problems go through that skill's own feedback capture.
+- When a setup gets in your way (the board, these instructions, an agent definition, a skill, a hook, a tool or its configuration, storage, T3, or a project's own setup), read `~/.claude/reference/feedback.md`: how to report it once with `feedback` (even after a workaround) and what stays out of feedback.
 
 ## Review
 
