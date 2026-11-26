@@ -1066,11 +1066,11 @@ describe("storage rule", () => {
     expect(rule).toContain("Report what got in the way as Feedback with `about` `storage`.");
   });
 
-  test("names every destination, the entry command and where problems go", () => {
+  test("names generic destinations, private overlay pointer, entry command and where problems go", () => {
     const rule = referenceRules("storage");
-    for (const name of ["cloud", "sai", "pro", "air", "svps"]) expect(rule).toContain(`\`${name}\``);
+    for (const name of ["cloud", "pro", "air"]) expect(rule).toContain(`\`${name}\``);
+    expect(rule).toContain("~/.config/local/fleet-and-storage.md");
     expect(rule).toContain("`storagectl dests`");
-    expect(rule).toMatch(/root login shells/);
     // The owner's rule of 16 November 2026 (dotfiles-526): archives go to cloud, air holds work in progress.
     expect(rule).toContain("goes to `cloud:archive/<repository name>/`, not to `air`; large data still goes to `pro`");
     expect(rule).toContain("`air` (small) only for work in progress, never for an archive");
@@ -1084,10 +1084,10 @@ describe("storage rule", () => {
   test("says how to split work across machines and where that feedback goes", () => {
     const rule = referenceRules("storage");
     expect(rule).toMatch(/Split work across machines/);
-    expect(rule).toContain("`storagectl run --on sai|pro --to <dest>:<path> [--stage <file or dir>] -- <command>`");
+    expect(rule).toContain("`storagectl run --on <machine> --to <dest>:<path> [--stage <file or dir>] -- <command>`");
     expect(rule).toContain("`$STORAGE_OUT`");
     expect(rule).toContain("`storagectl status|logs|cancel <id>`");
-    expect(rule).toMatch(/never run workloads as root on sai or svps; svps runs no jobs/i);
+    expect(rule).toMatch(/never run workloads as root on remote VPS hosts/i);
     expect(rule).not.toContain("`vps-46`");
     expect(rule).not.toContain("`vps-45`");
     expect(rule).not.toContain("`vps-247`");
@@ -1940,8 +1940,7 @@ describe("agent-board telemetry and schedules templates", () => {
   ]);
 
   for (const rel of [
-    "agent-board/telemetry-schedules.air.toml",
-    "agent-board/telemetry-schedules.pro.toml",
+    "agent-board/telemetry-schedules.example.toml",
   ]) {
     test(`${rel} parses with valid agent-board config keys and no personal paths`, () => {
       const raw = read(rel);

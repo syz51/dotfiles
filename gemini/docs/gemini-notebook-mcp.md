@@ -19,9 +19,9 @@ If this exits `0`, credentials are valid (Antigravity refreshes access tokens au
 Google blocks `gcloud`'s shared default OAuth client for the `notebook` scope (`This app is blocked`), so re-authentication must pass `--client-id-file` with the personal Desktop OAuth client JSON:
 
 - Local path (`0600`): `~/.config/gcloud/gemini-notebook-oauth-client.json`
-- HashiCorp Vault backup (`svps`, KV v2): `kv/data/hosts/mac/gemini-notebook-oauth-client` (field `client_secret_json`)
+- Secret-store backup: see `~/.config/local/fleet-and-storage.md` (when present) for your private Vault/secret-manager path.
 
-If the local file is missing, restore it from Vault using operator access (`~/Developer/vps/docs/vault.md#operator-access`) with `umask 077` so permissions stay `0600` (and revoke the Vault token afterward).
+If the local file is missing, restore it from your secret store with `umask 077` so permissions stay `0600` (and revoke any temporary Vault token afterward).
 
 ## 3. Refresh ADC credentials
 

@@ -54,7 +54,7 @@
 
 ## Storage, Remote Hosts, Vault & Desktop
 
-- Keep shared files on `storagectl` (`cloud:archive/<repo>/` archives, `pro` large data, `air` active-only). See `~/.config/gemini/docs/storage-remote-desktop.md` for `storagectl`, Pro T3/cross-Mac reads, VPS/Mac SSH/Vault (`~/.ssh/config.d/`), `desktop` MCP, and `gemini-notebook` MCP/`gnotebook`.
+- Use `storagectl` (`cloud:archive/<repo>/`, `pro` big data, `air` active-only). See `~/.config/gemini/docs/storage-remote-desktop.md` (`~/.config/local/fleet-and-storage.md` if present) for `storagectl`, Pro/Air T3, SSH/Vault (`~/.ssh/config.d/`), `desktop` MCP, `gemini-notebook` MCP/`gnotebook`.
 
 ## Feedback
 
