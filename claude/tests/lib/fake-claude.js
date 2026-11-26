@@ -346,6 +346,43 @@ if (mode === "article-claim") {
   skill("content-research-writer");
   answer = "I drafted the article and saved it as article.md.";
 }
+if (mode.startsWith("explorer-report-")) {
+  const prompt = args[args.indexOf("-p") + 1];
+  const reportFile = /to (\S+\/report\.txt)\b/.exec(prompt)?.[1];
+  const explorer = Bun.YAML.parse(/^---\n([\s\S]*?)\n---/.exec(readFileSync(join(import.meta.dir, "..", "..", "agents", "explorer.md"), "utf8"))[1]);
+  const explorerRuntime = { model: explorer.model === "inherit" ? option("--model") : `claude-${explorer.model}-5-5`, effort: explorer.effort };
+  const spawn = tool("Agent", { subagent_type: "explorer", prompt: `Read audit.txt and write report to ${reportFile}.` }, () => ({ text: "Done." }));
+  agentRuntime.set(spawn, explorerRuntime);
+  readFile(join(cwd, "audit.txt"), spawn);
+  const token = /token=([^\s]+)/.exec(readFileSync(join(cwd, "audit.txt"), "utf8"))?.[1] ?? "";
+  if (mode === "explorer-report-ask") {
+    tool("mcp__board__ask_user", { question: "Markdown or JSON?" }, () => ({ text: "Asked." }), spawn);
+  }
+  if (mode !== "explorer-report-missing" && reportFile) {
+    bash(`printf 'token=%s\\n' '${token}' > "${reportFile}"`, spawn);
+  }
+  answer = `Found token=${token}.`;
+}
+if (mode.startsWith("worker-scratch-")) {
+  const prompt = args[args.indexOf("-p") + 1];
+  const workerScratch = /own scratch subfolder is (\S+)\./.exec(prompt)?.[1];
+  const parentSibling = /must not delete: (\S+)\./.exec(prompt)?.[1];
+  const worker = Bun.YAML.parse(/^---\n([\s\S]*?)\n---/.exec(readFileSync(join(import.meta.dir, "..", "..", "agents", "worker.md"), "utf8"))[1]);
+  const workerRuntime = { model: worker.model === "inherit" ? option("--model") : `claude-${worker.model}-5-5`, effort: worker.effort };
+  const spawn = tool("Agent", { subagent_type: "worker", prompt: `Update output.txt using ${workerScratch}; keep ${parentSibling}.` }, () => ({ text: "Done." }));
+  agentRuntime.set(spawn, workerRuntime);
+  readFile(join(cwd, "input.txt"), spawn);
+  const marker = JSON.parse(readFileSync(join(parentSibling, "train.json"), "utf8")).marker;
+  const tmpFile = join(workerScratch, "work.tmp");
+  write(tmpFile, `42:${marker}\n`, spawn);
+  write(join(cwd, "output.txt"), `42:${marker}\n`, spawn);
+  if (mode === "worker-scratch-deletes-sibling") {
+    bash(`rm -rf "${tmpFile}" "${parentSibling}"`, spawn);
+  } else {
+    bash(`rm -f "${tmpFile}"`, spawn);
+  }
+  answer = `Wrote 42:${marker} to output.txt.`;
+}
 
 emit({ type: "result", subtype: "success", is_error: false, result: answer, total_cost_usd: 0.001, num_turns: counter + 1 });
 for (const event of events) console.log(JSON.stringify(event));

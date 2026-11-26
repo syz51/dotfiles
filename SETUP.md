@@ -551,7 +551,11 @@ place. The factory reads the instructions too: the judge in
 `claude/factory/board/proposal.js` requires the Work board section to be identical in
 both files, so no Work board rule moves. The three agents in `claude/agents/` deny the tools no subagent uses
 (`ReportFindings`, `ListAgents`, the claude.ai connectors, and computer use for the two
-read-only agents), which shortens each subagent request.
+read-only agents), which shortens each subagent request. `explorer` and `worker` also
+deny `mcp__t3-code__request_secret`, `mcp__t3-code__delegate_task`,
+`mcp__t3-code__create_threads`, the `mcp__t3-code__t3_thread_*` tools and the
+`mcp__board__*` write tools, keeping asks, board writes and thread/secret calls in the
+parent session.
 
 Six skills live here: `headless-browser`; `cheat-sheets`; `ui-climb`; `diff-review`, the
 recipe of the `reviewer` agent that the Review section of `claude/CLAUDE.md` starts;
@@ -1446,6 +1450,9 @@ RUN_CLAUDE_LIVE=1 bun test claude/tests/live-policy.test.js -t "Python checks ru
   the worker edits only its authorized files, a worker isolated in a worktree starts
   from the local `HEAD` and receives the main checkout's uncommitted input while the
   checkout stays untouched, and two explorers run in parallel in the shared checkout.
+  An explorer writes a requested scratch report file in its own scratch subfolder without
+  calling `ask_user` or deleting parent scratch paths, and a worker's cleanup leaves a
+  parent's sibling scratch folder intact.
   A session started in one project cites a file in another by its absolute path.
   Two parallel tracks go to one worker each, in its own worktree: each worker finds its
   module's bug, fixes it, updates and runs the module's check, and gets the code only
