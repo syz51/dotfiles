@@ -175,6 +175,59 @@ test("closing lines after an Open items list or entry are not read as entries", 
   const trailingNote = "Open items:\n- Recheck after deploy: dotfiles-1.\n\nAll local tests passed.";
   expect(openItems(trailingNote, config)).toEqual(["Recheck after deploy: dotfiles-1."]);
   expect(check(trailingNote)).toEqual([]);
+
+  // board-feedback-775 / 841 (dotfiles-462): multi-sentence cleanup/settle paragraphs after a list or exempt entry.
+  const feedback775 = [
+    "## Open items",
+    "",
+    "- Recheck after deploy: dotfiles-1.",
+    "",
+    "The scripts are at cloud:archive/x. I removed the scratch files.",
+    "",
+    "I settled this thread.",
+  ].join("\n");
+  expect(openItems(feedback775, config)).toEqual(["Recheck after deploy: dotfiles-1."]);
+  expect(check(feedback775)).toEqual([]);
+
+  const feedback775Limits = [
+    "## Limits and open items",
+    "",
+    "- Recheck after deploy: dotfiles-1.",
+    "",
+    "The scripts are at cloud:archive/x. I removed the scratch files.",
+    "",
+    "I settled this thread.",
+    "",
+    "Open items: none.",
+  ].join("\n");
+  expect(openItemsSection(feedback775Limits, config)).toEqual({ present: true, empty: false, items: [] });
+
+  const feedback841 = [
+    "## Open items",
+    "",
+    "- Recheck after deploy: dotfiles-1.",
+    "",
+    "Both worktrees and the scratch files are removed. This thread is settled.",
+  ].join("\n");
+  expect(openItems(feedback841, config)).toEqual(["Recheck after deploy: dotfiles-1."]);
+  expect(check(feedback841)).toEqual([]);
+
+  // Plain closing paragraphs after an exempt paragraph and blank line also close the section.
+  expect(openItemsSection(
+    "## Open items\n\nNone.\n\nBoth worktrees and the scratch files are removed. This thread is settled.",
+    config,
+  )).toEqual({ present: true, empty: false, items: [] });
+  expect(openItemsSection(
+    "Open items:\n\nNo action: all checks passed.\n\nThe scripts are at cloud:archive/x. I removed the scratch files.\n\nI settled this thread.",
+    config,
+  )).toEqual({ present: true, empty: false, items: [] });
+
+  // No regression: unfiled plain paragraphs directly under ## Open items (and bullets after None.) stay reported.
+  expect(check("## Open items\n\nThe helper has no tests.\n\nThe live suite did not run.")).toEqual([
+    "The helper has no tests.",
+    "The live suite did not run.",
+  ]);
+  expect(check("## Open items\n\nNone.\n\n- The helper has no tests.")).toEqual(["The helper has no tests."]);
 });
 
 test("intro lines, nested bullets, wrapped lines and section boundaries work inside Open items", () => {
