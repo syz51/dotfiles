@@ -261,7 +261,7 @@ export async function runAgyPrompt({
       settings,
       strictMcp,
       addDirs: resolvedAddDirs,
-      internalDenyPaths: [geminiHome, policyPath],
+      internalDenyPaths: [geminiHome, sourceProfile, policyPath],
     });
 
     if (policy.enforceHook) {
