@@ -19,6 +19,7 @@ import {
   evaluateToolCall,
   UNRESTRICTED_CLAUDE_TOOLS,
 } from "./agy-run-policy.js";
+import { extractJsonFromText } from "./agy-run.js";
 
 const AGY_RUN = join(import.meta.dir, "agy-run.js");
 const POLICY_HOOK = join(import.meta.dir, "agy-run-policy.js");
@@ -452,6 +453,37 @@ if (input.tool_name === "Bash" && /curl/.test(input.tool_input?.command ?? "")) 
     expect(blocked.decision).toBe("deny");
     expect(blocked.reason).toContain("Blocked curl");
     expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "write_to_file", args: { TargetFile: join(work, "a.js") } } }).decision).toBe("deny");
+  });
+
+  test("allows built-in finish tool ONLY when allowFinish (schema) is active, still runs caller hooks, and extracts prose-wrapped or concatenated JSON", () => {
+    const work = join(scratch, "work");
+    mkdirSync(work, { recursive: true });
+    const noSchemaPolicy = buildAgyPolicy({ cwd: work, noTools: true });
+    expect(evaluateToolCall(noSchemaPolicy, { cwd: work, toolCall: { name: "finish", args: {} } }).decision).toBe("deny");
+
+    const schemaNoTools = buildAgyPolicy({ cwd: work, noTools: true, allowFinish: true });
+    const schemaRestricted = buildAgyPolicy({ cwd: work, permissionMode: "acceptEdits", tools: ["Read"], allowFinish: true });
+    expect(evaluateToolCall(schemaNoTools, { cwd: work, toolCall: { name: "finish", args: { output: '{"ok":true}' } } }).decision).toBe("allow");
+    expect(evaluateToolCall(schemaRestricted, { cwd: work, toolCall: { name: "finish", args: { output: '{"ok":true}' } } }).decision).toBe("allow");
+
+    // Caller settings.hooks.PreToolUse must still run on finish
+    const denyHook = join(scratch, "deny-finish.js");
+    writeFileSync(denyHook, 'console.error("Blocked finish"); process.exit(2);\n');
+    const hookedPolicy = buildAgyPolicy({
+      cwd: work,
+      noTools: true,
+      allowFinish: true,
+      settings: JSON.stringify({
+        hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: `"${process.execPath}" "${denyHook}"` }] }] },
+      }),
+    });
+    expect(evaluateToolCall(hookedPolicy, { cwd: work, toolCall: { name: "finish", args: {} } }).decision).toBe("deny");
+
+    // extractJsonFromText preserves full outer multi-line JSON wrapped in prose, and handles concatenated JSON
+    expect(extractJsonFromText('Done!\n[\n  {"id": 1},\n  {"id": 2}\n]')).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(extractJsonFromText('{"ok":false}\n{"ok":true}\n')).toEqual({ ok: true });
+    expect(extractJsonFromText('{"ok":false}{"ok":true}')).toEqual({ ok: true });
+    expect(extractJsonFromText('{\n  "ok": false\n}\n{\n  "ok": true\n}')).toEqual({ ok: true });
   });
 
   test("standalone hook CLI fails closed on malformed stdin or missing policy", () => {

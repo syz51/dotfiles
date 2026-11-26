@@ -97,6 +97,49 @@ function mimeForPath(filePath) {
   return "application/octet-stream";
 }
 
+function extractLastBalancedJson(text) {
+  let lastParsed;
+  let found = false;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let start = -1;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}" || ch === "]") {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start !== -1) {
+          try {
+            lastParsed = JSON.parse(text.slice(start, i + 1));
+            found = true;
+          } catch {}
+          start = -1;
+        }
+      }
+    }
+  }
+  return found ? { found: true, value: lastParsed } : { found: false };
+}
+
 export function extractJsonFromText(text) {
   const trimmed = text.trim();
   try {
@@ -120,8 +163,16 @@ export function extractJsonFromText(text) {
     if (start !== -1) {
       const end = trimmed.lastIndexOf(endChar);
       if (end > start) {
-        return JSON.parse(trimmed.slice(start, end + 1));
+        try {
+          return JSON.parse(trimmed.slice(start, end + 1));
+        } catch {
+          // Fall through to balanced top-level JSON scanner (e.g. concatenated multi-turn outputs)
+        }
       }
+    }
+    const balanced = extractLastBalancedJson(trimmed);
+    if (balanced.found) {
+      return balanced.value;
     }
     throw new Error(`Could not extract JSON from model output: ${trimmed.slice(0, 300)}`);
   }
@@ -343,6 +394,7 @@ export async function runAgyPrompt({
       addDirs: preflightPolicy.noTools ? [] : resolvedAddDirs,
       internalDenyPaths,
       attachmentReadRoots: attachmentDir ? [attachmentDir] : [],
+      allowFinish: Boolean(schema),
     });
 
     if (policy.enforceHook) {
