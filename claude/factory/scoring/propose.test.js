@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { git as proposalGit } from "../lib/proposal.js";
+import { buildAgyPolicy, evaluateToolCall } from "../../../gemini/bin/agy-run-policy.js";
+import { git as proposalGit, proposerSettings } from "../lib/proposal.js";
 import { appendJsonl, readJsonl } from "../lib/state.js";
 import { RUBRIC } from "./rubric.js";
 import { allowedPath, alreadyProposed, failureGroups, leakedEvidence, readDenies, run } from "./propose.js";
@@ -150,10 +151,55 @@ describe("proposal rules", () => {
 
   test("the proposer may not read private sources: a folder gets its absolute rule, and its ~/ rule under home", () => {
     const denies = readDenies(["/home/me/.local/share/claude-factory", "/srv/state", "/home/me/.claude/projects"], "/home/me");
-    expect(denies).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.claude/projects/**)", "Read(~/.codex/**)", "Read(~/.local/share/agent-skills/skill-feedback/**)",
+    expect(denies).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.claude/projects/**)", "Read(~/.codex/**)", "Read(~/.t3/userdata/providers/antigravity/**)", "Read(~/.local/share/agent-skills/skill-feedback/**)",
       "Read(//home/me/.local/share/claude-factory/**)", "Read(~/.local/share/claude-factory/**)", "Read(//srv/state/**)", "Read(//home/me/.claude/projects/**)"]));
     expect(denies.filter((rule) => rule === "Read(~/.claude/projects/**)")).toHaveLength(1);
     expect(denies.some((rule) => rule.startsWith("Read(~/") && rule.includes("srv"))).toBe(false);
+  });
+
+  test("proposerSettings denies Antigravity provider data and antigravityBrainRoots(), and agy-run policy blocks read_file", () => {
+    const customBrain = join(scratch, "custom-brain");
+    const t3Home = join(scratch, "t3-home");
+    const t3Providers = join(t3Home, "userdata", "providers", "antigravity");
+    const t3Brain = join(t3Providers, "abc123", "antigravity-acp", "brain");
+    const work = join(scratch, "work");
+    mkdirSync(customBrain, { recursive: true });
+    mkdirSync(t3Brain, { recursive: true });
+    mkdirSync(work, { recursive: true });
+    writeFileSync(join(work, "CLAUDE.md"), "ok");
+
+    setEnv({ AGY_BRAIN_ROOT: customBrain, T3CODE_HOME: undefined });
+    const withBrainOverride = JSON.parse(proposerSettings());
+    expect(withBrainOverride.permissions.deny).toEqual(
+      expect.arrayContaining(["Read(~/.t3/userdata/providers/antigravity/**)", `Read(/${customBrain}/**)`]),
+    );
+
+    setEnv({ AGY_BRAIN_ROOT: undefined, T3CODE_HOME: t3Home });
+    const rawSettings = proposerSettings();
+    const withT3Home = JSON.parse(rawSettings);
+    expect(withT3Home.permissions.deny).toEqual(
+      expect.arrayContaining([
+        "Read(~/.t3/userdata/providers/antigravity/**)",
+        `Read(/${t3Brain}/**)`,
+        `Read(/${t3Providers}/**)`,
+      ]),
+    );
+
+    const policy = buildAgyPolicy({
+      cwd: work,
+      permissionMode: "acceptEdits",
+      tools: ["Read", "Edit", "Write", "Glob", "Grep"],
+      strictMcp: true,
+      settings: rawSettings,
+    });
+    expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: { Path: join(work, "CLAUDE.md") } } }).decision).toBe("allow");
+    for (const deniedPath of [
+      "~/.t3/userdata/providers/antigravity/hash/antigravity-acp/antigravity-oauth-token",
+      join(t3Brain, "conv-1", ".system_generated", "logs", "transcript.jsonl"),
+      join(t3Providers, "abc123", "antigravity-acp", "acp_token.json"),
+    ]) {
+      expect(evaluateToolCall(policy, { cwd: work, toolCall: { name: "read_file", args: { Path: deniedPath } } }).decision, deniedPath).toBe("deny");
+    }
   });
 
   test("a leak is a verbatim run of 40 characters of evidence that the repository did not already hold", () => {
@@ -227,7 +273,7 @@ describe("propose command", () => {
     // user's settings allow; an absolute path is written //path.
     const settings = JSON.parse(proposer.args[proposer.args.indexOf("--settings") + 1]);
     expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)", "Read(~/.netrc)", "Read(~/.claude.json)", "Read(~/.docker/config.json)",
-      "Read(~/.claude/projects/**)", "Read(~/.codex/**)", `Read(/${join(scratch, "state")}/**)`]));
+      "Read(~/.claude/projects/**)", "Read(~/.codex/**)", "Read(~/.t3/userdata/providers/antigravity/**)", `Read(/${join(scratch, "state")}/**)`]));
     expect(proposer.stdin).toContain("- Stay in scope (Gemini).");
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
@@ -338,7 +384,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(call.args).not.toContain("--full-access");
     expect(call.args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits", "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config"]));
     const settings = JSON.parse(call.args[call.args.indexOf("--settings") + 1]);
-    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", `Read(/${join(scratch, "state")}/**)`]));
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(~/.ssh/**)", "Read(~/.t3/userdata/providers/antigravity/**)", `Read(/${join(scratch, "state")}/**)`]));
   }, 45_000);
 
   test.each([
