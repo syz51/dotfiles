@@ -15,7 +15,7 @@ import { completed, cost, parseStream, partialEvents, resultEvent, retryRefused 
 import { projectsRoot, readRecords } from "./transcripts.js";
 
 export const STRUCTURED_TOOL = "StructuredOutput";
-// By default the Antigravity ACP runner (reusing T3 Code's Google OAuth login with Gemini 4 Neon).
+// By default the standalone Antigravity CLI runner (agy-run via ~/.local/bin/agy with Gemini 4 Neon).
 // Falls back to claude-api only when CLAUDE_FACTORY_PROVIDER=claude or CLAUDE_FACTORY_BIN is explicitly set.
 export const AGY_RUN = join(import.meta.dir, "..", "..", "..", "gemini", "bin", "agy-run");
 export const agyBin = () => process.env.CLAUDE_FACTORY_AGY_BIN || AGY_RUN;
