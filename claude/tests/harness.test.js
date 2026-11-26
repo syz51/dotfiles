@@ -390,6 +390,40 @@ test("a claimed artifact that was never saved fails the full skill run", async (
   assertCleanedUp();
 }, HARNESS_TIMEOUT);
 
+describe("explorer scratch report and worker sibling scratch scenarios", () => {
+  test("explorer scratch report passes when the report is written without asks", async () => {
+    const run = await runLive("live.test.js", "explorer writes a requested scratch report file", "explorer-report-pass");
+    expect(run.code, output(run)).toBe(0);
+    expect(output(run)).toMatch(/1 pass/);
+    assertCleanedUp();
+  }, HARNESS_TIMEOUT);
+
+  for (const [mode, message] of [
+    ["explorer-report-ask", "the explorer called a disallowed ask, board-write or T3 tool"],
+    ["explorer-report-missing", "explorer did not write or keep"],
+  ])
+    test(`${mode} fails`, async () => {
+      const run = await runLive("live.test.js", "explorer writes a requested scratch report file", mode);
+      expect(run.code).not.toBe(0);
+      expect(output(run)).toContain(message);
+      assertCleanedUp();
+    }, HARNESS_TIMEOUT);
+
+  test("worker sibling scratch passes when cleanup stays inside its own subfolder", async () => {
+    const run = await runLive("live.test.js", "worker keeps a parent's sibling scratch folder intact", "worker-scratch-pass");
+    expect(run.code, output(run)).toBe(0);
+    expect(output(run)).toMatch(/1 pass/);
+    assertCleanedUp();
+  }, HARNESS_TIMEOUT);
+
+  test("worker sibling scratch fails when cleanup deletes the parent's sibling folder", async () => {
+    const run = await runLive("live.test.js", "worker keeps a parent's sibling scratch folder intact", "worker-scratch-deletes-sibling");
+    expect(run.code).not.toBe(0);
+    expect(output(run)).toContain("the worker deleted the parent's sibling scratch folder");
+    assertCleanedUp();
+  }, HARNESS_TIMEOUT);
+});
+
 describe("reports", () => {
   test("record a failure, then clean up", async () => {
     const reports = join(root, "tmp", "reports");
