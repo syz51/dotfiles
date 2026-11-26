@@ -14,7 +14,7 @@ import { attemptBoard, BOARD_ID, BOARD_REPO, boardCandidate, newBoardRecord, rea
 import { runTask } from "../lib/claude.js";
 import { addedLines, changedPaths, clip, cloneRepository, gitState, leakedEvidence, originalText, proposerReply, proposerSettings, publish, readDenies, retryable, runTests, stagedPatch, stamp, today, toolRejection, TOOLS, writePatch } from "../lib/proposal.js";
 import { appendJsonl, readJsonl, statePath } from "../lib/state.js";
-import { REPO_ROOT, RUBRIC, section } from "./rubric.js";
+import { GEMINI_REFERENCE_FILES, REPO_ROOT, RUBRIC, section } from "./rubric.js";
 import { scoresFile } from "./score.js";
 
 export { leakedEvidence, readDenies };
@@ -47,11 +47,18 @@ const EVIDENCE_ITEMS = 25;
 
 export const proposalsFile = () => statePath("proposals.jsonl");
 
+const GEMINI_REFERENCE_PATHS = new Set(GEMINI_REFERENCE_FILES.map((name) => `gemini/docs/${name}`));
+
 // Whether a repository path may change in a proposal: the global instructions
-// (gemini/GEMINI.md and claude/CLAUDE.md), the rules claude/CLAUDE.md points at in
+// (gemini/GEMINI.md and claude/CLAUDE.md), the rules they point at in gemini/docs and
 // claude/reference, their Codex copy (whose Work board section must stay identical) and
 // the agent definitions. Tests are code the suite would run, so a person updates them.
-export const allowedPath = (path) => path === "gemini/GEMINI.md" || path === "claude/CLAUDE.md" || path === "codex/AGENTS.md" || /^claude\/(agents|reference)\/[^/]+\.md$/.test(path);
+export const allowedPath = (path) =>
+  path === "gemini/GEMINI.md"
+  || GEMINI_REFERENCE_PATHS.has(path)
+  || path === "claude/CLAUDE.md"
+  || path === "codex/AGENTS.md"
+  || /^claude\/(agents|reference)\/[^/]+\.md$/.test(path);
 
 // Failing sessions per dimension, from the latest record of each session: the latest
 // judged record for judge dimensions, the latest record for detectors. Only records of
@@ -110,6 +117,7 @@ export function proposerPrompt({ group, instructions, geminiInstructions = null 
   }
   const evidence = shownFailures(group).map((failure) =>
     `- session ${failure.sessionId} (${failure.project ?? "?"}):\n${failure.evidence.map((line) => `  - ${line}`).join("\n")}`);
+  const geminiDocsList = GEMINI_REFERENCE_FILES.map((name) => `gemini/docs/${name}`).join(", ");
   return `You maintain the coding agent configuration in this repository: the Antigravity/Gemini 4 Neon global instructions gemini/GEMINI.md (installed as ~/.gemini/GEMINI.md), the Claude Code global instructions claude/CLAUDE.md (installed as ~/.claude/CLAUDE.md), the subagent definitions claude/agents/*.md, and the offline tests in claude/tests that pin them.
 
 A scoring tool found the same failure in ${group.failures.length} distinct real sessions:
@@ -123,9 +131,9 @@ Evidence (the judge's or detector's words, not raw transcripts; it may be wrong)
 ${evidence.join("\n")}${group.failures.length > EVIDENCE_ITEMS ? `\n- … and ${group.failures.length - EVIDENCE_ITEMS} more sessions` : ""}
 
 Your task:
-1. Read gemini/GEMINI.md, claude/CLAUDE.md, the files in claude/reference that claude/CLAUDE.md points at (rules that few turns need, with the same force), the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
+1. Read gemini/GEMINI.md, the Gemini instruction reference docs it points at (${geminiDocsList}), claude/CLAUDE.md, the files in claude/reference that claude/CLAUDE.md points at (rules that few turns need, with the same force), the agent files and claude/tests/config.test.js. Decide what in the instructions causes or fails to prevent these failures: a rule that is missing, unclear, contradicted elsewhere, buried, or worded so the agent reads it differently. If the evidence does not support a change in the instructions (the judge misread the sessions, or the agent broke a clear rule that wording cannot fix), change nothing and say why.
 2. Otherwise make the smallest change that fixes that cause. Prefer clarifying, replacing or deleting existing text over adding a new rule; keep each file's concise style and do not repeat rules.
-3. Edit only gemini/GEMINI.md, claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
+3. Edit only gemini/GEMINI.md, its instruction reference docs (${geminiDocsList}), claude/CLAUDE.md, claude/reference/*.md (change a rule that lives in a reference file there; do not copy it back) and claude/agents/*.md, plus codex/AGENTS.md when you change the Work board section: Codex reads the same section there, and it must stay identical. Do not create or change any other file, tests included; any other change is rejected. You cannot run commands; the tool runs the tests after you finish, and if your change breaks a test that pins rule text, a person updates that test.
 4. The repository is public. Write the change in general terms: never copy the evidence, commands, paths, URLs or project names into it. A change that repeats the evidence verbatim is rejected.
 
 Reply with a short paragraph on the cause and the change, then a last line "TITLE: <imperative summary under 70 characters>". The paragraph stays private for the reviewer; the title becomes the public commit message and pull request title, so it must not quote the evidence either.`;

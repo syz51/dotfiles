@@ -7,7 +7,7 @@ import { readJsonl } from "../lib/state.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import * as transcripts from "../lib/transcripts.js";
 import { DETECTORS } from "./detectors.js";
-import { GEMINI_INSTRUCTIONS, GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
+import { GEMINI_INSTRUCTIONS, GEMINI_REFERENCE_DIR, GEMINI_REFERENCE_FILES, GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, section, validateJudgement } from "./rubric.js";
 import { isCorrection } from "../metrics/corrections.js";
 import { failureGroups } from "./propose.js";
 import * as score from "./score.js";
@@ -507,14 +507,22 @@ describe("score command", () => {
     expect(await run(["--session", "zzz"]).catch((error) => error.message)).toContain("matches 0 sessions");
   }, SCORE_TIMEOUT);
 
-  test("Antigravity sessions are graded against gemini/GEMINI.md without claude/reference", async () => {
+  test("Antigravity sessions are graded against gemini/GEMINI.md with gemini/docs references and without claude/reference", async () => {
     const agyGlobal = score.loadGlobalInstructions("antigravity");
     const claudeGlobal = score.loadGlobalInstructions("claude");
+    const geminiCore = readFileSync(GEMINI_INSTRUCTIONS, "utf8").trimEnd();
     expect(agyGlobal.file).toBe(GEMINI_INSTRUCTIONS);
-    expect(agyGlobal.text).toBe(readFileSync(GEMINI_INSTRUCTIONS, "utf8").trimEnd());
+    expect(agyGlobal.text.startsWith(geminiCore)).toBe(true);
+    for (const name of GEMINI_REFERENCE_FILES) {
+      expect(geminiCore, name).toContain(`~/.config/gemini/docs/${name}`);
+      expect(agyGlobal.text, name).toContain(`<reference file="~/.config/gemini/docs/${name}">\n${readFileSync(join(GEMINI_REFERENCE_DIR, name), "utf8").trimEnd()}\n</reference>`);
+    }
     expect(agyGlobal.text).not.toContain('<reference file="~/.claude/reference/');
+    expect(agyGlobal.text).not.toContain('<reference file="~/.config/gemini/docs/gemini-board-workflow.md">');
+    expect(agyGlobal.text).not.toContain('<reference file="~/.config/gemini/docs/gemini-notebook-mcp.md">');
     expect(claudeGlobal.file).toBe(GLOBAL_INSTRUCTIONS);
     expect(claudeGlobal.text).toContain('<reference file="~/.claude/reference/merge.md">');
+    expect(claudeGlobal.text).not.toContain('<reference file="~/.config/gemini/docs/');
 
     const brainRoot = join(scratch, "agy-brain");
     const convId = "agy-session-0001";
@@ -539,8 +547,13 @@ describe("score command", () => {
     const [call] = calls();
     expect(systemOf(call)).toContain("You audit one Antigravity session");
     expect(systemOf(call)).toContain("Global instructions (~/.gemini/GEMINI.md;");
-    expect(systemOf(call)).toContain(readFileSync(GEMINI_INSTRUCTIONS, "utf8").trim());
+    expect(systemOf(call)).toContain(geminiCore);
+    for (const name of GEMINI_REFERENCE_FILES) {
+      expect(systemOf(call), name).toContain(`<reference file="~/.config/gemini/docs/${name}">\n${readFileSync(join(GEMINI_REFERENCE_DIR, name), "utf8").trimEnd()}\n</reference>`);
+    }
     expect(systemOf(call)).not.toContain('<reference file="~/.claude/reference/');
+    expect(systemOf(call)).not.toContain('<reference file="~/.config/gemini/docs/gemini-board-workflow.md">');
+    expect(systemOf(call)).not.toContain('<reference file="~/.config/gemini/docs/gemini-notebook-mcp.md">');
     expect(call.stdin).toContain(`# Session ${convId}`);
     expect(call.stdin).toMatch(/\[P1\] PROMPT \(user, [^)]*\):\nFix the factory scorer\n/);
     expect(call.stdin).not.toContain("<user_request>");

@@ -142,9 +142,26 @@ const CLEARER = "# Rules\n\n## Workflow\n\n- Stay in the requested scope; report
 describe("proposal rules", () => {
   // codex/AGENTS.md carries the same Work board section, which a test keeps identical, so a
   // proposal for that section must be able to change both copies.
-  test("only the global instructions, their Codex copy and agent definitions may change: text, never code", () => {
-    for (const path of ["gemini/GEMINI.md", "claude/CLAUDE.md", "codex/AGENTS.md", "claude/agents/worker.md", "claude/reference/storage.md"]) expect(allowedPath(path), path).toBe(true);
-    for (const path of ["claude/reference/x/y.md", "claude/reference/storage.js"]) expect(allowedPath(path), path).toBe(false);
+  test("only the global instructions, their reference docs, Codex copy and agent definitions may change: text, never code", () => {
+    for (const path of [
+      "gemini/GEMINI.md",
+      "gemini/docs/delegation-and-t3.md",
+      "gemini/docs/storage-remote-desktop.md",
+      "gemini/docs/work-board-reference.md",
+      "claude/CLAUDE.md",
+      "codex/AGENTS.md",
+      "claude/agents/worker.md",
+      "claude/reference/storage.md",
+    ]) expect(allowedPath(path), path).toBe(true);
+    for (const path of [
+      "gemini/docs/gemini-board-workflow.md",
+      "gemini/docs/gemini-notebook-mcp.md",
+      "gemini/docs/other.md",
+      "gemini/docs/x/y.md",
+      "gemini/docs/storage-remote-desktop.js",
+      "claude/reference/x/y.md",
+      "claude/reference/storage.js",
+    ]) expect(allowedPath(path), path).toBe(false);
     for (const path of ["claude/tests/config.test.js", "claude/tests/lib/new.js", "claude/settings.json", "claude/hooks/guard-git-push.js", "claude/agents/x/y.md", "claude/agents/worker.json", "CLAUDE.md", "GEMINI.md", "gemini/GEMINI.md.bak", "gemini/hooks.json", "gemini/bin/agy-run", "claude/tests/../settings.json", "claude/factory/scoring/rubric.json", ".env.test", "codex/hooks.json", "codex/trust-hooks.js", "codex/AGENTS.md.bak"])
       expect(allowedPath(path), path).toBe(false);
   });
@@ -278,7 +295,8 @@ describe("propose command", () => {
     expect(proposer.stdin).toContain("- Stay in scope.");
     expect(proposer.stdin).toContain("[T3] edited unrelated file in s2");
     expect(proposer.stdin).toContain("Prefer clarifying, replacing or deleting");
-    expect(proposer.stdin).toContain("Edit only gemini/GEMINI.md, claude/CLAUDE.md, claude/reference/*.md (change a rule that lives there in its file; do not copy it back) and claude/agents/*.md");
+    expect(proposer.stdin).toContain("Read gemini/GEMINI.md, the Gemini instruction reference docs it points at (gemini/docs/delegation-and-t3.md, gemini/docs/storage-remote-desktop.md, gemini/docs/work-board-reference.md), claude/CLAUDE.md");
+    expect(proposer.stdin).toContain("Edit only gemini/GEMINI.md, its instruction reference docs (gemini/docs/delegation-and-t3.md, gemini/docs/storage-remote-desktop.md, gemini/docs/work-board-reference.md), claude/CLAUDE.md, claude/reference/*.md (change a rule that lives in a reference file there; do not copy it back) and claude/agents/*.md");
     expect(existsSync(proposer.cwd)).toBe(false);
 
     expect(remoteBranches(remote).sort()).toEqual([branchName, "factory", "main"].sort());
@@ -311,14 +329,18 @@ describe("propose command", () => {
     expect(output.join("\n")).toMatch(/scope-creep\s+3 failing sessions\s+already proposed/);
   }, 45_000);
 
-  test("proposes edits to gemini/GEMINI.md and prints gemini-4-neon default in --help", async () => {
+  test("proposes edits to gemini/GEMINI.md and gemini/docs instruction references and prints gemini-4-neon default in --help", async () => {
     const { remote, source } = repository();
     scores(["s1", "s2", "s3"].map((id) => record(id)));
-    edits({ "gemini/GEMINI.md": "# Rules\n\n## Workflow\n\n- Stay strictly in the requested scope.\n\n## Delegation\n\n- Delegate rarely.\n" });
+    edits({
+      "gemini/GEMINI.md": "# Rules\n\n## Workflow\n\n- Stay strictly in the requested scope.\n\n## Delegation\n\n- Delegate rarely.\n",
+      "gemini/docs/delegation-and-t3.md": "# Delegation Reference\n\n- Keep subagent prompts lean.\n",
+    });
     expect(await run(["--repo", source], { now: NOW })).toBe(0);
     const [entry] = proposals();
-    expect(entry).toMatchObject({ status: "proposed", paths: ["gemini/GEMINI.md"], pushed: true });
+    expect(entry).toMatchObject({ status: "proposed", paths: ["gemini/GEMINI.md", "gemini/docs/delegation-and-t3.md"], pushed: true });
     expect(git(remote, "show", `${branchName}:gemini/GEMINI.md`)).toContain("Stay strictly in the requested scope.");
+    expect(git(remote, "show", `${branchName}:gemini/docs/delegation-and-t3.md`)).toContain("Keep subagent prompts lean.");
     output.length = 0;
     expect(await run(["--help"])).toBe(0);
     expect(output.join("\n")).toContain("proposer model (default gemini-4-neon)");

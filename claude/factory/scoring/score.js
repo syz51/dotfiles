@@ -14,7 +14,7 @@ import { loadSessionsParallel } from "../lib/transcripts.js";
 import { countCorrections } from "../metrics/corrections.js";
 import { runDetectors, sessionRecords } from "./detectors.js";
 import { buildDigest, DIGEST_CHARS } from "./digest.js";
-import { GEMINI_INSTRUCTIONS, GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
+import { GEMINI_INSTRUCTIONS, GEMINI_REFERENCE_DIR, GEMINI_REFERENCE_FILES, GLOBAL_INSTRUCTIONS, REFERENCE_DIR, judgeDimensions, judgeSchema, RUBRIC, validateJudgement } from "./rubric.js";
 
 const USAGE = `Usage: bun ~/.claude/factory/cli.js score [options]
 
@@ -150,20 +150,22 @@ export function instructionsRevision(file, text) {
   return { file, sha256: sha256(text), commit, modified: status === null ? null : status !== "" };
 }
 
-// The global instructions as the judge reads them: for Claude Code, claude/CLAUDE.md
-// followed by each reference file it points at (since a session reads those on need and
-// the judge cannot); for Antigravity, the self-contained gemini/GEMINI.md. The revision
-// stays that of the global instructions file alone.
-export function withReferences(globalInstructions, dir = REFERENCE_DIR) {
-  const files = readdirSync(dir).filter((name) => name.endsWith(".md")).sort();
-  return [globalInstructions.trimEnd(), ...files.map((name) => `<reference file="~/.claude/reference/${name}">\n${readFileSync(join(dir, name), "utf8").trimEnd()}\n</reference>`)].join("\n\n");
+// The global instructions as the judge reads them: claude/CLAUDE.md followed by each
+// reference file in claude/reference, or gemini/GEMINI.md followed by the instruction
+// reference docs it points at in gemini/docs (since a session reads those on need and
+// the judge cannot). The revision stays that of the global instructions file alone.
+export function withReferences(globalInstructions, dir = REFERENCE_DIR, { prefix = "~/.claude/reference", files = null } = {}) {
+  const names = (files ?? readdirSync(dir).filter((name) => name.endsWith(".md"))).slice().sort();
+  return [globalInstructions.trimEnd(), ...names.map((name) => `<reference file="${prefix}/${name}">\n${readFileSync(join(dir, name), "utf8").trimEnd()}\n</reference>`)].join("\n\n");
 }
 
 export function loadGlobalInstructions(harness = "claude") {
   const isAntigravity = harness === "antigravity";
   const file = isAntigravity ? GEMINI_INSTRUCTIONS : GLOBAL_INSTRUCTIONS;
   const raw = readFileSync(file, "utf8");
-  const text = isAntigravity ? raw.trimEnd() : withReferences(raw);
+  const text = isAntigravity
+    ? withReferences(raw, GEMINI_REFERENCE_DIR, { prefix: "~/.config/gemini/docs", files: GEMINI_REFERENCE_FILES })
+    : withReferences(raw);
   return { file, text, revision: instructionsRevision(file, raw) };
 }
 
