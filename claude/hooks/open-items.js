@@ -101,6 +101,7 @@ export function openItemsSection(message, config) {
 
   let mode = "none"; // "none" | "block" | "inline"
   let seenBullet = false;
+  let seenExempt = false;
   let current = null;
   let fenced = false;
 
@@ -113,7 +114,11 @@ export function openItemsSection(message, config) {
       if (!isExempt(entry.text) && /[:：]\s*$/.test(entry.text.replace(/[*_`]+$/, "").trim())) return;
     }
     hasEntry = true;
-    if (!isExempt(entry.text)) items.push(entry.text);
+    if (isExempt(entry.text)) {
+      seenExempt = true;
+    } else {
+      items.push(entry.text);
+    }
   };
 
   for (const line of message.split(/\r?\n/)) {
@@ -145,6 +150,7 @@ export function openItemsSection(message, config) {
       flush();
       present = true;
       seenBullet = false;
+      seenExempt = false;
       const rawInline = (headingMatch ? (headingMatch[1] ?? headingMatch[2] ?? headingMatch[3] ?? "") : (labelMatch[1] ?? "")).trim();
       if (rawInline === "") {
         mode = "block";
@@ -199,8 +205,8 @@ export function openItemsSection(message, config) {
       continue;
     }
     if (!current) {
-      // After a bullet list and a blank line, a plain paragraph is a closing line, not an entry.
-      if (seenBullet) {
+      // After a bullet list or an exempt entry and a blank line, a plain paragraph is a closing line, not an entry.
+      if (seenBullet || seenExempt) {
         mode = "none";
         continue;
       }
