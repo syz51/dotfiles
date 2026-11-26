@@ -77,6 +77,12 @@ uv
 /ghostty/config.local
 /t3/
 /muse
+/agent-board/upgrade.conf
+/masters/
+
+# Python bytecode caches.
+__pycache__/
+*.py[cod]
 
 # Container registry login stores and local environment credentials.
 /containers/auth.json
