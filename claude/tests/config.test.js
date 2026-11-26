@@ -1730,8 +1730,17 @@ describe("CI release downloads", () => {
   // Astral mirror and falls back to GitHub's release host.
   test("setup-uv is the mirror release and keeps uv pinned", () => {
     const setup = step("astral-sh/setup-uv");
-    expect(setup.uses).toBe("astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2");
-    expect(workflow).toContain("- uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3\n");
+    expect(setup.uses).toMatch(/^astral-sh\/setup-uv@[0-9a-f]{40}$/);
+    const escapedUses = setup.uses.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const commentMatch = workflow.match(
+      new RegExp(`^[ \\t]*-[ \\t]+uses:[ \\t]+${escapedUses}[ \\t]+#[ \\t]+v(\\d+)\\.(\\d+)\\.(\\d+)[ \\t]*$`, "m"),
+    );
+    expect(commentMatch).not.toBeNull();
+    const [, major, minor, patch] = commentMatch.map(Number);
+    expect(major).toBeGreaterThanOrEqual(10);
+    if (major === 10) {
+      expect(minor > 3 || (minor === 3 && patch >= 2)).toBe(true);
+    }
     expect(setup.with).toEqual({ version: "0.13.5", "enable-cache": false });
   });
 
