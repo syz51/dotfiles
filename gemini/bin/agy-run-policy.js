@@ -473,6 +473,7 @@ export function buildAgyPolicy({
   addDirs = [],
   internalDenyPaths = [],
   attachmentReadRoots = [],
+  allowFinish = false,
 } = {}) {
   const workDir = resolve(cwd || process.cwd());
   if (fullAccess && permissionMode && permissionMode !== "bypassPermissions") {
@@ -529,6 +530,7 @@ export function buildAgyPolicy({
     cwd: workDir,
     home,
     noTools: effectiveNoTools,
+    allowFinish: Boolean(allowFinish),
     permissionMode: effectiveMode,
     restricted,
     enforceHook: restricted,
@@ -719,6 +721,13 @@ export function evaluateToolCall(policy, agyInput) {
 
     if (typeof toolName !== "string" || !toolName) {
       return { decision: "deny", reason: "Missing toolCall.name in PreToolUse payload" };
+    }
+    // Antigravity CLI's built-in `finish` tool emits structured output for `--json-schema`
+    // (equivalent to Claude Code's `StructuredOutput`) and has no external side effects.
+    // Allowed only when `--json-schema` is active, and still subject to caller PreToolUse hooks.
+    if (toolName === "finish" && policy.allowFinish) {
+      const hookDeny = runSettingsPreToolUseHooks(policy, toolName, args, cwd);
+      return hookDeny ? { decision: "deny", reason: hookDeny } : { decision: "allow" };
     }
     if (policy.noTools) {
       if (
