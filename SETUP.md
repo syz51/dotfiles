@@ -712,14 +712,19 @@ agent with `board feedback --source capture --about <id> --activity <stage>`, in
 factual lines quoting at most one error line and naming the session, turn and project
 folder. The board merges reports with the same signature, by default the setup and title,
 so the same friction seen in many turns is one item. Titles differ between turns, so the
-judge also sees the items already filed: those capture reported to in the last 7 days and
-the board's live `board-feedback` items (`board ls --live`, falling back to `--open` on an
-older server), newest 200 first, by setup. It names the
-item a finding repeats. Capture then files the report with that item's `--signature`, so
-the board adds it to the item while it is live (unresolved, declined, or routed to open
-work), or files a new item that recurs it. A finding whose item was fixed, or whose work
-was done, after its turn ended is skipped as a `skipped` record: the fix, such as a raised
-limit, came later. Records stay in `friction.jsonl` and the cursor in
+judge also sees the items already filed: `# Known items` lists the board's live
+`board-feedback` items (`board ls --live`, falling back to `--open` on an older server,
+where capture's recent items only fill remaining slots so closed history never evicts live
+items), newest 200 first, by setup. Capture's recently closed items from the last 7 days
+(excluding those already superseded by a live recurrence) are listed separately under
+`# Recently closed items` (up to 50), so the judge prefers any live match and uses closed
+items only when no live item reports the problem. It names the
+item a finding repeats. Capture follows duplicate links to the canonical item's signature
+and files the report with `--signature`, so the board adds it to the item while it is live
+(unresolved, declined, or routed to open work), redirects to an existing live recurrence
+when one already exists for a closed item, or files a new item that recurs it. A finding
+whose item was fixed, or whose work was done, after its turn ended is skipped as a
+`skipped` record: the fix, such as a raised limit, came later. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
