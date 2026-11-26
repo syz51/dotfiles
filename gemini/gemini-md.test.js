@@ -137,9 +137,13 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
   });
 
   test("all repo-tracked ~/.config/ paths referenced in GEMINI.md and reference docs exist in the repository", () => {
+    const gitignore = read(".gitignore");
+    expect(gitignore).toMatch(/^\/local$/m);
     const matches = [...allGeminiInstructions.matchAll(/~\/\.config\/([A-Za-z0-9._/-]+)/g)];
     expect(matches.length).toBeGreaterThan(0);
     for (const [, rel] of matches) {
+      // ~/.config/local/ is the gitignored private agent-ops overlay symlinked on local Macs.
+      if (rel === "local" || rel.startsWith("local/")) continue;
       expect(existsSync(join(REPO, rel)), `~/.config/${rel}`).toBe(true);
     }
   });
