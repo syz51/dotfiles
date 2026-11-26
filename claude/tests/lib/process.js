@@ -140,17 +140,20 @@ export async function stopLeftovers(dir, { graceMs = 3000, pollMs = 100, killMs 
 }
 
 // Runs argv in its own process group. Resolves with the exit status and UTF-8 output;
-// rejects on a spawn error, on the deadline or when stdout and stderr together exceed
-// maxBytes, killing every descendant and the whole group, so processes in nested groups
-// and those that outlive the leader die too.
+// rejects on a spawn error, on the deadline, on signal abort or when stdout and stderr
+// together exceed maxBytes, killing every descendant (including tracked detached ones)
+// and their whole process groups, so processes in nested groups and those that outlive
+// their intermediate parent die too.
 // A rejection carries the output captured so far as error.stdout and error.stderr.
 // input, when given, is written to stdin, which is then closed; otherwise stdin is empty.
 // interact, instead, holds stdin open for a conversation: it is called once with stdin and
 // returns a listener that gets stdout as text, chunk by chunk; it must end stdin itself.
 // track, a Map, gets the child's descendants every trackMs while it runs (see
-// trackDescendants), so those that outlive it can be waited for.
-export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input, interact, track, trackMs = 250 } = {}) {
+// trackDescendants), so those that outlive it can be waited for or killed on abort.
+export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 1024 * 1024, input, interact, track, trackMs = 250, signal } = {}) {
   if (input !== undefined && interact) throw new Error("runProcess takes input or interact, not both");
+  const abortError = () => (signal.reason instanceof Error ? signal.reason : new Error(`Process aborted: ${argv[0]}`));
+  if (signal?.aborted) return Promise.reject(Object.assign(abortError(), { stdout: "", stderr: "" }));
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const piped = input !== undefined || !!interact;
@@ -166,26 +169,61 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
         if (error.code !== "EPIPE") failure ??= error;
       });
     if (input !== undefined) child.stdin.end(input);
-    // Kills once: later chunks past the bound must not rescan the process table. A
-    // descendant that is gone (ESRCH) or not ours to signal (EPERM, such as a pid reused by
-    // another user since the snapshot) is skipped, so the group kill below always runs.
+    // Kills once: later chunks past the bound must not rescan the process table. Kills
+    // child's process group, every current descendant and its process group, and every
+    // live tracked descendant (including detached ones whose intermediate parent exited)
+    // and its process group. A target that is gone (ESRCH) or not ours to signal (EPERM,
+    // such as a pid reused by another user since the snapshot) is skipped, so the
+    // remaining kills always run.
     let killed = false;
+    let timer;
+    let tracker;
     const kill = () => {
       if (killed) return;
       killed = true;
-      for (const pid of descendants(child.pid))
+      clearTimeout(timer);
+      clearInterval(tracker);
+      let table;
+      try {
+        table = processTable();
+      } catch {
+        // Fall through to killing the child's own process group below.
+      }
+      const targets = new Set();
+      const groups = new Set();
+      if (table) {
+        const ownGroup = table.get(process.pid)?.pgid;
+        if (child.pid) for (const pid of below(table, [child.pid])) targets.add(pid);
+        if (track) {
+          const live = [...track].filter(([id, started]) => table.get(id)?.started === started).map(([id]) => id);
+          for (const pid of [...live, ...below(table, live)]) targets.add(pid);
+        }
+        targets.delete(process.pid);
+        for (const pid of targets) {
+          const pgid = table.get(pid)?.pgid;
+          if (pgid && pgid > 1 && pgid !== ownGroup && pgid !== child.pid) groups.add(pgid);
+        }
+      }
+      if (child.pid)
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      for (const pgid of groups)
+        try {
+          process.kill(-pgid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
+        }
+      for (const pid of targets)
         try {
           process.kill(pid, "SIGKILL");
         } catch (error) {
           if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
         }
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        child.kill("SIGKILL");
-      }
     };
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       failure ??= new Error(`Process timeout after ${timeout} ms: ${argv[0]}`);
       kill();
     }, timeout);
@@ -197,8 +235,13 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
         kill();
       }
     };
-    const tracker = track && child.pid && setInterval(poll, trackMs);
+    tracker = track && child.pid && setInterval(poll, trackMs);
     if (tracker) poll();
+    const onAbort = () => {
+      failure ??= abortError();
+      kill();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     // A listener, or an interact call, that throws fails the run like any other failure;
     // once the run has failed, the listener gets no more output.
     let listen;
@@ -230,15 +273,17 @@ export function runProcess(argv, { cwd, env, timeout = 180_000, maxBytes = 32 * 
     child.on("error", (error) => {
       clearTimeout(timer);
       clearInterval(tracker);
+      signal?.removeEventListener("abort", onAbort);
       reject(error);
     });
-    child.on("close", (code, signal) => {
+    child.on("close", (code, signalName) => {
       clearTimeout(timer);
       clearInterval(tracker);
+      signal?.removeEventListener("abort", onAbort);
       const stdout = Buffer.concat(out).toString("utf8");
       const stderr = Buffer.concat(err).toString("utf8");
       if (failure) reject(Object.assign(failure, { stdout, stderr }));
-      else resolve({ code, signal, stdout, stderr, durationMs: Date.now() - started });
+      else resolve({ code, signal: signalName, stdout, stderr, durationMs: Date.now() - started });
     });
   });
 }

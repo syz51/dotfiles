@@ -2,11 +2,12 @@
 // lib/fake-claude.js in a synthetic HOME and checks that failures fail, a clean run
 // passes, and cleanup removes the sessions' own entries but nothing else.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configuredEffort, holdConfigSync, toolDirectories } from "./lib/live.js";
-import { childEnv, processesUnder, runProcess } from "./lib/process.js";
+import { childEnv, processesUnder, runProcess, stopLeftovers } from "./lib/process.js";
 
 const TESTS = import.meta.dir;
 
@@ -19,11 +20,34 @@ const GLOBAL = "# Synthetic global instructions\n";
 let root;
 let home;
 let projects;
+let tracked;
+let lingerLog;
+
+function readLingerPids(path) {
+  if (!path || !existsSync(path)) return [];
+  const entries = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const { pid, started } = JSON.parse(line);
+      if (Number.isInteger(pid) && typeof started === "string" && started) entries.push({ pid, started });
+    } catch {
+      // A process killed mid-write may leave a partial line; tracked descendants still cover it.
+    }
+  }
+  return entries;
+}
+
+function mergeLingerPids(target, path = lingerLog) {
+  for (const { pid, started } of readLingerPids(path)) target.set(pid, started);
+}
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "harness-test-")));
   home = join(root, "home");
   projects = join(home, ".claude", "projects");
+  tracked = new Map();
+  lingerLog = join(root, "linger.jsonl");
   mkdirSync(join(projects, "-preexisting"), { recursive: true });
   writeFileSync(join(projects, "-preexisting", "kept.jsonl"), "kept\n");
   writeFileSync(join(home, ".claude", "CLAUDE.md"), GLOBAL);
@@ -59,24 +83,47 @@ beforeEach(() => {
   mkdirSync(join(root, "tmp"));
 });
 
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(async () => {
+  if (!root) return;
+  try {
+    mergeLingerPids(tracked);
+    if (tracked.size) await stopLeftovers(root, { graceMs: 0, tracked });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const HARNESS_TIMEOUT = 65_000;
 const LINGER_TIMEOUT = 90_000;
 
-// Runs the named test of a live suite file with the fake CLI. Returns bun's result.
-function runLive(file, name, mode, extra = {}, { timeout = 60_000 } = {}) {
+function liveEnv(mode, extra = {}) {
   const env = childEnv(process.env, {
     HOME: home,
     TMPDIR: join(root, "tmp"),
     RUN_CLAUDE_LIVE: "1",
     CLAUDE_LIVE_BIN: join(root, "bin", "claude"),
     FAKE_MODE: mode,
+    FAKE_LINGER_LOG: lingerLog,
     ...extra,
   });
   delete env.CLAUDE_LIVE_MODEL;
   delete env.CLAUDE_LIVE_EFFORT;
-  return runProcess([process.execPath, "test", join(TESTS, file), "-t", name], { cwd: TESTS, env, timeout });
+  return env;
+}
+
+// Runs the named test of a live suite file with the fake CLI. Returns bun's result.
+async function runLive(file, name, mode, extra = {}, { timeout = 60_000, signal } = {}) {
+  const env = liveEnv(mode, extra);
+  try {
+    return await runProcess([process.execPath, "test", join(TESTS, file), "-t", name], {
+      cwd: TESTS, env, timeout, track: tracked, trackMs: extra.FAKE_LINGER ? 100 : 250, signal,
+    });
+  } catch (error) {
+    // On timeout or abort, also sweep any detached FAKE_LINGER writers recorded before fake-claude exited.
+    mergeLingerPids(tracked);
+    await stopLeftovers(root, { graceMs: 0, tracked });
+    throw error;
+  }
 }
 
 // Cleanup removed every entry the fake wrote for its fixture, kept the others, and left
@@ -249,12 +296,97 @@ describe("teardown waits for the sessions' leftover processes", () => {
     const run = await runLive("live-policy.test.js", "Python checks", "python-clean", { FAKE_LINGER: "busy", CLAUDE_LIVE_SETTLE_MS: "1500" }, { timeout: 80_000 });
     expect(run.code, output(run)).not.toBe(0);
     expect(output(run)).toMatch(/Session processes still ran 1500 ms after the suite's sessions; killed them, then removed /);
-    expect(output(run)).toMatch(/^\d+ sh -c for loop in .*; wait$/m);
+    expect(output(run)).toMatch(/^\d+ sh -c for loop in .*; sleep \d+; kill -KILL -- -\$\$$/m);
     expect(output(run)).not.toContain("The suite root remains after teardown");
     await Bun.sleep(500);
     expect(processesUnder(root)).toEqual([]);
     assertCleanedUp();
   }, LINGER_TIMEOUT);
+
+  // If the outer test runner times out after fake-claude exits (so the detached writer
+  // already has ppid=1), runProcess + runLive teardown still kill its entire process group.
+  test("timing out a FAKE_LINGER run kills its detached process group and leaves no writer alive", async () => {
+    const error = await runLive(
+      "live-policy.test.js",
+      "Python checks",
+      "python-clean",
+      { FAKE_LINGER: "busy", CLAUDE_LIVE_SETTLE_MS: "30000" },
+      { timeout: 3500 },
+    ).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain("timeout");
+    const recorded = readLingerPids(lingerLog);
+    expect(recorded.length).toBeGreaterThan(0);
+    await Bun.sleep(200);
+    expect(processesUnder(root, { tracked })).toEqual([]);
+    for (const { pid } of recorded) {
+      let groupAlive = true;
+      try {
+        process.kill(-pid, 0);
+      } catch (err) {
+        if (err.code !== "ESRCH") throw err;
+        groupAlive = false;
+      }
+      expect(groupAlive).toBe(false);
+    }
+  }, LINGER_TIMEOUT);
+
+  // Even if bun test is SIGKILLed mid-run so neither suite teardown nor harness teardown
+  // can run, both stuck and busy FAKE_LINGER groups self-terminate within their bounded TTL.
+  for (const mode of ["stuck", "busy"])
+    test(`a SIGKILLed FAKE_LINGER=${mode} run self-terminates within its bounded TTL`, async () => {
+      const env = liveEnv("python-clean", {
+        FAKE_LINGER: mode,
+        FAKE_LINGER_TTL_S: "3",
+        CLAUDE_LIVE_SETTLE_MS: "30000",
+      });
+      const runner = spawn(process.execPath, ["test", join(TESTS, "live-policy.test.js"), "-t", "Python checks"], {
+        cwd: TESTS,
+        env,
+        detached: true,
+        stdio: "ignore",
+      });
+      let lingerEntry;
+      try {
+        for (const deadline = Date.now() + 15_000; Date.now() < deadline; await Bun.sleep(100)) {
+          [lingerEntry] = readLingerPids(lingerLog);
+          if (lingerEntry) break;
+        }
+        expect(lingerEntry).toBeDefined();
+        const orphan = new Map([[lingerEntry.pid, lingerEntry.started]]);
+        // Kill the test runner with SIGKILL so no teardown hook can run.
+        const exited = new Promise((resolve) => runner.once("close", resolve));
+        process.kill(-runner.pid, "SIGKILL");
+        await exited;
+        // Confirm the detached FAKE_LINGER process genuinely outlived the SIGKILLed runner.
+        expect(processesUnder(root, { tracked: orphan }).length).toBeGreaterThan(0);
+        // Wait for the bounded self-destruct deadline to terminate the leader and all subshells.
+        let remaining = processesUnder(root, { tracked: orphan });
+        for (const deadline = Date.now() + 10_000; remaining.length && Date.now() < deadline; await Bun.sleep(200))
+          remaining = processesUnder(root, { tracked: orphan });
+        expect(remaining).toEqual([]);
+        let groupAlive = true;
+        try {
+          process.kill(-lingerEntry.pid, 0);
+        } catch (err) {
+          if (err.code !== "ESRCH") throw err;
+          groupAlive = false;
+        }
+        expect(groupAlive).toBe(false);
+      } finally {
+        try {
+          process.kill(-runner.pid, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+        if (lingerEntry)
+          try {
+            process.kill(-lingerEntry.pid, "SIGKILL");
+          } catch {
+            // Already gone.
+          }
+      }
+    }, LINGER_TIMEOUT);
 });
 
 describe("guidance scope covers subagents", () => {

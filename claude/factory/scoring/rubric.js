@@ -12,6 +12,12 @@ export const GLOBAL_INSTRUCTIONS = join(REPO_ROOT, "claude", "CLAUDE.md");
 export const GEMINI_INSTRUCTIONS = join(REPO_ROOT, "gemini", "GEMINI.md");
 // Rules that few turns need, which the global instructions point at and sessions read on need.
 export const REFERENCE_DIR = join(REPO_ROOT, "claude", "reference");
+export const GEMINI_REFERENCE_DIR = join(REPO_ROOT, "gemini", "docs");
+export const GEMINI_REFERENCE_FILES = [
+  "delegation-and-t3.md",
+  "storage-remote-desktop.md",
+  "work-board-reference.md",
+];
 
 export const RUBRIC = JSON.parse(readFileSync(join(import.meta.dir, "rubric.json"), "utf8"));
 
