@@ -237,14 +237,15 @@ function substitutionsIn(text) {
 /**
  * Splits shell source into simple commands. Each command has its argv, the heredoc bodies and
  * here-strings it reads (`inputs`), the scripts of the command substitutions in its words
- * (`substitutions`), which run first, the operator that ended it (`next`, "|" within a
- * pipeline), and how many `(` open just before it (`opens`) and `)` close just after it
- * (`closes`); the operator after a `)` ends the command that `)` closed. A substitution stays
- * in its word unexpanded, as in `$(cat ref)`.
+ * (`substitutions`), which run first, the scripts of the `<(…)` and `>(…)` process substitutions
+ * in its words (`processSubs`), which run concurrently over pipes, the operator that ended it
+ * (`next`, "|" within a pipeline), and how many `(` open just before it (`opens`) and `)` close
+ * just after it (`closes`); the operator after a `)` ends the command that `)` closed. A
+ * substitution stays in its word unexpanded, as in `$(cat ref)`.
  */
 export function parseScript(source) {
   const commands = [];
-  const fresh = () => ({ argv: [], inputs: [], substitutions: [], opens: 0, closes: 0 });
+  const fresh = () => ({ argv: [], inputs: [], substitutions: [], processSubs: [], opens: 0, closes: 0 });
   let current = fresh();
   let word;
   let destination = "argv"; // where the next word goes: argv, drop (a redirection target), or input
@@ -294,9 +295,11 @@ export function parseScript(source) {
     } else if (commands.at(-1)?.next === ")") {
       // Words after `)`, such as a redirection target, belong to the subshell it closed.
       commands.at(-1).substitutions.push(...current.substitutions);
+      commands.at(-1).processSubs.push(...current.processSubs);
       current.substitutions = [];
+      current.processSubs = [];
       commands.at(-1).next = next;
-    } else if (current.substitutions.length > 0) {
+    } else if (current.substitutions.length > 0 || current.processSubs.length > 0) {
       commands.push({ ...current, next });
       current = fresh();
     } else if (next !== "\n" && next !== "(" && next !== ")") {
@@ -350,9 +353,10 @@ export function parseScript(source) {
       const { end } = parameterExpansion(source, i, false, current.substitutions);
       word = (word ?? "") + source.slice(i, end);
       i = end;
-    } else if (((c === "$" || (word === undefined && (c === "<" || c === "="))) && source[i + 1] === "(") || c === "`") {
+    } else if (((c === "$" || c === "<" || c === ">" || (word === undefined && c === "=")) && source[i + 1] === "(") || c === "`") {
       const { body, end } = substitution(source, i);
-      current.substitutions.push(body);
+      if (c === "<" || c === ">") current.processSubs.push(body);
+      else current.substitutions.push(body);
       word = (word ?? "") + source.slice(i, end);
       i = end;
     } else if (c === "|" && inPattern()) {
@@ -1038,16 +1042,18 @@ function inspect(source, state, visit, depth, tooDeep) {
     const background = pipeline.at(-1).command.next === "&";
     const readerInShell = reader !== -1 && !background && reader === pipeline.length - 1 && !here
       && sourceTarget(pipeline[reader].run.words) !== undefined;
-    for (const [index, { command: { argv, inputs, substitutions }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
+    for (const [index, { command: { argv, inputs, substitutions, processSubs }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       const lastInShell = !background && index === pipeline.length - 1 && !here;
       const topLevel = depth === 0 && !grouped && !piped && !inBackground;
-      // Its substitutions, which the shell running it expands first, scripts this command runs
+      // Its substitutions, which the shell running it expands first, process substitutions
+      // (`<(…)` and `>(…)`), which run concurrently over pipes, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
       // run on the remote host; its local options' commands run here. The words xargs adds to
       // ssh or watch join the script they run.
       const scripts = [
         ...substitutions.map((script) => ({ script, dir: before, dirs: beforeDirs, remote: here })),
+        ...processSubs.map((script) => ({ script, dir: before, dirs: beforeDirs, remote: here, piped: true, background: true })),
         ...nested.map((script) => ({ script, dir, dirs, remote: here || Boolean(remote), appended })),
         ...(local ?? []).map((entry) => ({ ...entry, remote: here })),
       ];
@@ -1073,15 +1079,15 @@ function inspect(source, state, visit, depth, tooDeep) {
           sameShell: readerInShell,
         })));
       }
-      for (const { script, dir: where, dirs: whereDirs, remote: onRemote, appended: adds, sameShell } of scripts) {
+      for (const { script, dir: where, dirs: whereDirs, remote: onRemote, appended: adds, sameShell, piped: scriptPiped, background: scriptBg } of scripts) {
         if (script === undefined) continue;
         const child = {
           dir: where,
           dirs: whereDirs ? [...whereDirs] : undefined,
           remote: onRemote,
           appended: added || adds === true,
-          piped,
-          background: inBackground,
+          piped: piped || scriptPiped === true,
+          background: inBackground || scriptBg === true,
           cdCount: 0,
           cdTargets: [],
         };
@@ -1144,7 +1150,7 @@ function inspect(source, state, visit, depth, tooDeep) {
  * `remote` says that it runs on another host over `ssh`. `topLevel` says that the command runs directly
  * in the top-level sequential list (not nested inside a loop, function body, group, subshell, pipeline,
  * background job, or inner script); `piped` and `background` say whether the command (or an enclosing
- * group or script) is in a pipeline or backgrounded. `opaque` says that the words xargs adds may run
+ * group, process substitution, or script) is in a pipeline or backgrounded. `opaque` says that the words xargs adds may run
  * a command the guard cannot see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or
  * `xargs find`; then `words` are the xargs command's own words, and the command they name is visited too.
  * A word that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.

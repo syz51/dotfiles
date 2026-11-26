@@ -654,4 +654,40 @@ test("visit reports topLevel, piped, and background execution context (dotfiles-
   expect(ctx("for i in 1; do a; done && b").at(-1)).toEqual(["b", true, false, false]);
   expect(ctx("f() { a; }; b").at(-1)).toEqual(["b", true, false, false]);
   expect(ctx("x=(); b").at(-1)).toEqual(["b", true, false, false]);
+  // process substitutions <(...) and >(...) run concurrently over pipes (piped + background)
+  expect(ctx("a > >(b)")).toEqual([
+    ["b", false, true, true],
+    ["a", true, false, false],
+  ]);
+  expect(ctx("a 2> >(b)")).toEqual([
+    ["b", false, true, true],
+    ["a", true, false, false],
+  ]);
+  expect(ctx("a < <(b)")).toEqual([
+    ["b", false, true, true],
+    ["a", true, false, false],
+  ]);
+  expect(ctx("a --file=<(b)")).toEqual([
+    ["b", false, true, true],
+    ["a --file=<(b)", true, false, false],
+  ]);
+  expect(ctx("echo hi > >(b) && c")).toEqual([
+    ["b", false, true, true],
+    ["echo hi", true, false, false],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("(a) > >(b) && c")).toEqual([
+    ["b", false, true, true],
+    ["a", false, false, false],
+    ["c", true, false, false],
+  ]);
+  expect(ctx("> >(b) && c")).toEqual([
+    ["b", false, true, true],
+    ["c", true, false, false],
+  ]);
+  // zsh =(...) runs synchronously into a temporary file, so it is nested but not piped/background
+  expect(ctx("a < =(b)")).toEqual([
+    ["b", false, false, false],
+    ["a", true, false, false],
+  ]);
 });

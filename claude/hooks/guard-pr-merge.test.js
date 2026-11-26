@@ -832,6 +832,8 @@ describe("chained commands with a pinned or top-level merge (dotfiles-756)", () 
     [`gh pr update-branch 12 && gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
     // a closed loop or function before a top-level merge does not prevent post-merge pass
     [`for i in 1; do echo ok; done && gh pr merge 12 --squash --match-head-commit ${HEAD} && git push origin --delete feat`, {}],
+    // a benign process substitution with no mover still passes
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} > >(cat)`, {}],
   ])("allows %s", (command, options) => {
     expect(verdict(command, options)).toBeUndefined();
   });
@@ -928,6 +930,23 @@ describe("chained commands with a pinned or top-level merge (dotfiles-756)", () 
     [`coproc NAME (echo ok; git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
     [`gh pr merge 12 --squash --match-head-commit ${HEAD} && coproc (echo ok; git push)`, "in a pipeline or background job"],
     [`coproc for i in 1; do git push; done && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    // process substitutions >(...) and <(...) run concurrently via pipe, and =(...) still checks pre-merge allowlist
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} > >(gh pr edit 12 --base develop)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} 2> >(gh api -X PATCH repos/o/r/pulls/12 -f base=develop)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} > >(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} &> >(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} >> >(gh repo edit)`, "in a pipeline or background job"],
+    [`gh pr merge --squash --match-head-commit ${HEAD} > >(git switch other)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} < <(git push)`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} --body-file=<(gh pr edit 12 --base develop)`, "in a pipeline or background job"],
+    [`echo hi > >(git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`echo hi < <(git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} && echo hi > >(git push)`, "in a pipeline or background job"],
+    [`(echo hi) > >(git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`> >(git push) && gh pr merge 12 --squash --match-head-commit ${HEAD}`, "in a pipeline or background job"],
+    [`cat <(gh pr merge 12 --squash --match-head-commit ${HEAD}) && git push`, "in a pipeline or background job"],
+    [`echo hi > >(gh pr merge 12 --squash --match-head-commit ${HEAD}) && git push`, "in a pipeline or background job"],
+    [`gh pr merge 12 --squash --match-head-commit ${HEAD} < =(gh pr edit 12 --base develop)`, "also runs `gh pr edit 12 --base develop`"],
   ])("refuses %s", (command, reason) => {
     const calls = [];
     const violation = verdict(command, { calls });
