@@ -21,7 +21,7 @@ Google blocks `gcloud`'s shared default OAuth client for the `notebook` scope (`
 - Local path (`0600`): `~/.config/gcloud/gemini-notebook-oauth-client.json`
 - HashiCorp Vault backup (`svps`, KV v2): `kv/data/hosts/mac/gemini-notebook-oauth-client` (field `client_secret_json`)
 
-If the local file is missing, restore it from Vault using operator access (`~/Documents/vps/docs/vault.md#operator-access`) with `umask 077` so permissions stay `0600` (and revoke the Vault token afterward).
+If the local file is missing, restore it from Vault using operator access (`~/Developer/vps/docs/vault.md#operator-access`) with `umask 077` so permissions stay `0600` (and revoke the Vault token afterward).
 
 ## 3. Refresh ADC credentials
 

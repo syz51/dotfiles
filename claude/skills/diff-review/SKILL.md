@@ -1,13 +1,15 @@
 ---
 name: diff-review
-description: Review one git diff for defects and return typed findings as JSON. Preloaded on the `reviewer` agent and usable directly in Antigravity or Claude Code to review any pushed or merged change. The target is a range such as `origin/main...<SHA>`.
-argument-hint: <base>...<commit>
+description: Review one git diff for defects and return typed findings as JSON. Preloaded on the `reviewer` agent and usable directly in Antigravity or Claude Code to review any pushed or merged change. The target is a range such as `origin/main...<SHA>`, optionally with a checkout path `<path> <range>` for another repository or worktree.
+argument-hint: "[<path>] <base>...<commit>"
 ---
 
 # Diff review
 
 The target is the range in your prompt or in the arguments, such as
-`origin/main...<SHA>`.
+`origin/main...<SHA>`. When the prompt also gives a checkout path (`<path>`), run every
+`git` command in that checkout with `git -C <path>` (and search or read files under
+`<path>`).
 
 Review this diff once and report its defects. Your reply is the review's whole result.
 Change nothing: no edits, no commits, no pushes, no board or network writes. Do every
@@ -15,15 +17,17 @@ step yourself, without agents.
 
 ## 1. Read the diff
 
-- Run `git diff <target>`. With no target, review `git diff origin/HEAD...HEAD`, and add
-  `git diff HEAD` when the working tree has changes.
+- Run `git diff <target>` (or `git -C <path> diff <target>` when a checkout path is
+  given). With no target, review `git diff origin/HEAD...HEAD`, and add `git diff HEAD`
+  when the working tree has changes.
 - The diff is the scope. The target pins a commit, so when the working tree differs from
-  it, read a file as the commit has it: `git show <commit>:<path>`.
+  it, read a file as the commit has it: `git show <commit>:<path>` (with `-C <checkout>`
+  when reviewing another checkout).
 - Read the function around each hunk, not only the hunk. A defect in an unchanged line of
   a changed function is in scope.
-- Read the branch's commit messages with `git log --right-only --format=%B <target>`
-  (and `gh pr view` when a PR exists) when checking whether a weakened guarantee carries
-  a `Loosens:` line.
+- Read the branch's commit messages with `git log --right-only --format=%B <target>` (with
+  `-C <path>` when reviewing another checkout, and `gh pr view` in that repository when a
+  PR exists) when checking whether a weakened guarantee carries a `Loosens:` line.
 
 ## 2. Look from each angle
 

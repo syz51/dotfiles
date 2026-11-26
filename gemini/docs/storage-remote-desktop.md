@@ -4,7 +4,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 
 ## Shared Storage (`storagectl`)
 
-- Keep shared/cross-machine files on shared storage via `storagectl`, not only locally (`dests`, `put`, `get`, `ls`, `find`, `fetch <url> <dest>:<path>/`, `run --to <dest>:<path> -- <cmd>`; docs: `~/Documents/vps/docs/storage/README.md`).
+- Keep shared/cross-machine files on shared storage via `storagectl`, not only locally (`dests`, `put`, `get`, `ls`, `find`, `fetch <url> <dest>:<path>/`, `run --to <dest>:<path> -- <cmd>`; docs: `~/Developer/vps/docs/storage/README.md`).
 - Destinations: `cloud` (Tencent COS, always up, 30-day delete recovery) or `sai` (12 GiB) when not depending on a Mac; `pro` for large data (offline while asleep); `air` only for active work, never archives; `svps` for small results only. On `sai`/`svps`, `storagectl` works only in root login shells. Kept finished work goes to `cloud:archive/<repo>/` (large data to `pro`), never `air`. Project non-disclosure rules against external services do not forbid these (user's own storage); machine/third-party restrictions still apply, and credentials stay out.
 - Offload commands (`sai`: large downloads/COS; `pro`: large data/CPU) via `storagectl run --on sai|pro --to <dest>:<path> [--stage <path>] -- <cmd>` (detached `storage-runner`, uploads `$STORAGE_OUT` + logs to `--to` even on failure; track via `status|logs|cancel <id>`, `jobs --on <machine>`; stage <=1 GiB; `sai` gets 1 CPU / 768 MiB and storage pools only; never run workloads as root on `sai`/`svps`; `svps` runs no jobs). Report friction via Feedback `about` `storage` (machine, command, error, workaround).
 
@@ -12,12 +12,12 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 
 - Run a Pro T3 thread from the Air (while Pro is awake): check `t3_environment_links`, call `delegate_task` with Pro's `environmentId` on `antigravity` (`gemini-4-neon`, no `isolation: "worktree"`), and pass data via `storagectl`.
 - Cross-Mac thread reads use `t3_thread_list`/`t3_thread_read` with `environmentId` (Air→Pro `full-access`, Pro→Air `read-only`).
-- Check Pro's `~/.config` commit read-only via `git -C ~/.config log -1` over SSH (Pro host in `~/.ssh/config.d/`) or in a Pro T3 thread (`storagectl run --on pro` runs as `storage-runner` and cannot read it). Providers and reach: `~/Documents/vps/docs/storage/README.md`.
+- Check Pro's `~/.config` commit read-only via `git -C ~/.config log -1` over SSH (Pro host in `~/.ssh/config.d/`) or in a Pro T3 thread (`storagectl run --on pro` runs as `storage-runner` and cannot read it). Providers and reach: `~/Developer/vps/docs/storage/README.md`.
 
 ## Remote VPS Hosts & Vault
 
 - Remote VPS hosts live in `~/.ssh/config.d/vps.conf` (`sai`: agent-board, storage pool, CI runners, Supabase; `svps`: Vault, Dokploy, storage pool) and Mac hosts in `~/.ssh/config.d/`.
-- Vault operator access uses `~/.local/share/vps-infra/secrets/vault-operator/` over SSH to `svps` (`~/Documents/vps/docs/vault.md#operator-access`).
+- Vault operator access uses `~/.local/share/vps-infra/secrets/vault-operator/` over SSH to `svps` (`~/Developer/vps/docs/vault.md#operator-access`).
 
 ## Desktop MCP
 
