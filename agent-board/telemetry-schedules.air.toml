@@ -20,7 +20,8 @@ t3code = ["defaults", "read", "/Applications/T3 Code (Beta).app/Contents/Info.pl
 [schedules]
 enabled = true
 launchd = true
-t3_state_db = "/Users/sunyizhe/.t3/userdata/statev2.sqlite"
+# Replace <HOME> with your local $HOME path when copying into ~/.local/share/agent-board/config.toml.
+t3_state_db = "<HOME>/.t3/userdata/statev2.sqlite"
 launchd_exclude = [
   "dev.agent-board.watch",
   "com.syz51.t3code.desktop",

@@ -18,7 +18,8 @@ t3code = ["defaults", "read", "/Applications/T3 Code (Beta).app/Contents/Info.pl
 [schedules]
 enabled = true
 launchd = true
-t3_state_db = "/Users/roy/.t3/userdata/statev2.sqlite"
+# Replace <HOME> with your local $HOME path when copying into ~/.local/share/agent-board/config.toml.
+t3_state_db = "<HOME>/.t3/userdata/statev2.sqlite"
 launchd_include = ["com.syz51.", "com.mtgakb.", "sh.brew.seventeenlands"]
 launchd_exclude = ["com.syz51.sai-storage.serve"]
 
