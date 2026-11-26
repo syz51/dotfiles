@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -8,6 +8,8 @@ import {
   extractLastAssistantMessage,
   extractMcpPrCreateInput,
   extractMcpPrMergeInput,
+  extractPrCreateTargets,
+  resolveCreatedPrStdout,
   runAdaptedHook,
   translateInput,
   translateOutput,
@@ -160,6 +162,283 @@ describe("Antigravity hook adapter", () => {
         toolCall: { id: "p1", name: "run_command", args: { CommandLine: "git status" } },
       }),
     ).toEqual({});
+  });
+
+  test("extractPrCreateTargets resolves cd, wrappers, -R/--repo, --head, and skips unknown or non-creating targets", () => {
+    const cwd = "/work/repo-a";
+
+    // Plain create & alias `new`
+    expect(extractPrCreateTargets("gh pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: undefined, head: undefined },
+    ]);
+    expect(extractPrCreateTargets("gh pr new --title 'Ship' --body 'Details'", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: undefined, head: undefined },
+    ]);
+
+    // Absolute/relative cd, env -C, sh -c, and subshell isolation
+    expect(extractPrCreateTargets("cd /work/repo-b && gh pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: undefined },
+    ]);
+    expect(extractPrCreateTargets("cd ../repo-b && gh pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: undefined },
+    ]);
+    expect(extractPrCreateTargets("env -C /work/repo-b gh pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: undefined },
+    ]);
+    expect(extractPrCreateTargets("sh -c 'cd /work/repo-b && gh pr create --fill'", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: undefined },
+    ]);
+    expect(extractPrCreateTargets("(cd /work/repo-b && gh pr create --fill) && gh pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: undefined },
+      { dir: "/work/repo-a", repo: undefined, head: undefined },
+    ]);
+
+    // -R/--repo and -H/--head in all pflag spellings (before and after subcommand, short clusters)
+    expect(extractPrCreateTargets("gh -R syz51/repo-b pr create --fill", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: undefined },
+    ]);
+    expect(extractPrCreateTargets("gh pr -R syz51/repo-b create --head=feat/x", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: "feat/x" },
+    ]);
+    expect(extractPrCreateTargets("gh pr create --repo=syz51/repo-b -H user:feat --fill", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: "user:feat" },
+    ]);
+    expect(extractPrCreateTargets("gh pr create -fRsyz51/repo-b -Hfeat", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: "feat" },
+    ]);
+    expect(extractPrCreateTargets("gh pr create -fH feat -R=syz51/repo-b --draft=false", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: "feat" },
+    ]);
+
+    // Flag values containing -R/--head or env var names/expansions are not misparsed
+    expect(
+      extractPrCreateTargets(
+        'gh pr create -t "-R fake/repo Fix GH_REPO" --body "--head fake and $(cat /tmp/b) $VAR GH_HOST=x GIT_DIR=y"',
+        cwd,
+      ),
+    ).toEqual([{ dir: "/work/repo-a", repo: undefined, head: undefined }]);
+
+    // Unknown dir with BOTH literal -R and --head is still resolvable
+    expect(extractPrCreateTargets('cd "$TARGET" && gh pr create -R syz51/repo-b --head feat --fill', cwd)).toEqual([
+      { dir: undefined, repo: "syz51/repo-b", head: "feat" },
+    ]);
+    // Explicit -R overrides GH_REPO; explicit -R + --head overrides GIT_DIR
+    expect(extractPrCreateTargets("GH_REPO=syz51/other gh pr create -R syz51/explicit --fill", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/explicit", head: undefined },
+    ]);
+    expect(extractPrCreateTargets("GIT_DIR=/other/.git gh pr create -R syz51/repo-b --head feat --fill", cwd)).toEqual([
+      { dir: "/work/repo-a", repo: "syz51/repo-b", head: "feat" },
+    ]);
+
+    // Unknown or unsafe targets are skipped instead of falling back to cwd
+    for (const cmd of [
+      'cd "$TARGET" && gh pr create --fill',
+      "cd - && gh pr create --fill",
+      "popd && gh pr create --fill",
+      "cd repo-* && gh pr create --fill",
+      'cd "$TARGET" && gh pr create -R syz51/repo-b --fill',
+      'cd "$TARGET" && gh pr create --head feat --fill',
+      'gh pr create -R "$REPO" --fill',
+      'gh pr create --head "$BRANCH" --fill',
+      "gh pr create -R syz51/* --fill",
+      "gh pr create --repo",
+      "gh pr create --repo=",
+      "gh pr create --head=",
+      "gh pr create $FLAGS",
+      "gh pr create --unknown-flag",
+      "ssh host 'gh pr create --fill'",
+      "echo --fill | xargs gh pr create",
+      "GH_REPO=syz51/other gh pr create --fill",
+      "export GH_REPO=syz51/other && gh pr create --fill",
+      "sh -c 'GH_REPO=syz51/other gh pr create --fill'",
+      "GH_HOST=ghe.example.com gh pr create --fill",
+      "GIT_DIR=/other/.git gh pr create --fill",
+      "gh pr create --draft --fill",
+      "gh pr create -fd",
+      "gh pr create --dry-run --fill",
+      "gh pr create --web",
+      "gh pr create --help",
+    ]) {
+      expect(extractPrCreateTargets(cmd, cwd), cmd).toEqual([]);
+    }
+
+    // Post-create branch switch invalidates branch-dependent targets in that directory only
+    expect(extractPrCreateTargets("cd /work/repo-b && gh pr create --fill && git switch main", cwd)).toEqual([]);
+    expect(extractPrCreateTargets("cd /work/repo-b && gh pr create --head feat --fill && git switch main", cwd)).toEqual([
+      { dir: "/work/repo-b", repo: undefined, head: "feat" },
+    ]);
+    expect(
+      extractPrCreateTargets("(cd /work/repo-b && gh pr create --fill) && git switch main", cwd),
+    ).toEqual([{ dir: "/work/repo-b", repo: undefined, head: undefined }]);
+    expect(
+      extractPrCreateTargets("cd /work/repo-b && gh pr create --fill && git checkout -- README.md", cwd),
+    ).toEqual([{ dir: "/work/repo-b", repo: undefined, head: undefined }]);
+  });
+
+  test("PostToolUse auto-merge resolves Bash gh pr create/new PR URLs in the command's target dir/repo/head", () => {
+    const URL_B = "https://github.com/syz51/repo-b/pull/42";
+    const URL_C = "https://github.com/syz51/repo-c/pull/7";
+    const ok = (value) => ({ code: 0, stdout: typeof value === "string" ? value : JSON.stringify(value), stderr: "" });
+    const makeGh = (urlByCall, calls = []) => (dir, args) => {
+      calls.push({ dir, args });
+      if (args[0] === "pr" && args[1] === "view" && args.includes("-q")) {
+        const resolved = urlByCall(dir, args);
+        return resolved ? ok(`${resolved}\n`) : { code: 1, stdout: "", stderr: "no pull requests found" };
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        const url = args[2];
+        const id = url === URL_B ? "PR_node42" : "PR_node7";
+        return ok({
+          id,
+          state: "OPEN",
+          isDraft: false,
+          baseRefName: "main",
+          mergeStateStatus: "BLOCKED",
+          autoMergeRequest: null,
+        });
+      }
+      const path = args[3];
+      if (path === "graphql") return ok({ data: {} });
+      if (path.endsWith("/protection")) {
+        return ok({
+          required_status_checks: { contexts: ["Portable tests"], checks: [{ context: "Portable tests" }] },
+          required_pull_request_reviews: { required_approving_review_count: 0 },
+        });
+      }
+      if (path.includes("/rules/branches/")) return ok([]);
+      if (/^repos\/[^/]+\/[^/]+$/.test(path)) {
+        return ok({ allow_auto_merge: true, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: true });
+      }
+      throw new Error(`unexpected gh call: ${args.join(" ")}`);
+    };
+
+    // `cd /work/repo-b && gh pr create --fill` from repo-a queries repo-b, never repo-a
+    const cdCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        {
+          cwd: "/work/repo-a",
+          toolCall: { id: "b1", name: "run_command", args: { CommandLine: "cd /work/repo-b && gh pr create --fill" } },
+        },
+        {
+          runners: {
+            gh: makeGh((dir) => (dir === "/work/repo-b" ? URL_B : "https://github.com/syz51/repo-a/pull/99"), cdCalls),
+          },
+        },
+      ),
+    ).toEqual({});
+    expect(cdCalls[0]).toEqual({ dir: "/work/repo-b", args: ["pr", "view", "--json", "url", "-q", ".url"] });
+    const cdMutation = cdCalls.find((c) => c.args[3] === "graphql");
+    expect(cdMutation?.args).toContain("id=PR_node42");
+
+    // Multiple creates across dirs/repos/heads resolve each target and enable auto-merge on both
+    const multiCalls = [];
+    expect(
+      runAdaptedHook(
+        "post-tool-use",
+        "auto-merge",
+        {
+          cwd: "/work/repo-a",
+          toolCall: {
+            id: "b2",
+            name: "run_command",
+            args: {
+              CommandLine:
+                "(cd /work/repo-b && gh pr create --fill) && gh pr new -R syz51/repo-c --head feat-c --fill",
+            },
+          },
+        },
+        {
+          runners: {
+            gh: makeGh((dir, args) => {
+              if (dir === "/work/repo-b" && !args.includes("--repo")) return URL_B;
+              if (args.includes("feat-c") && args.includes("--repo") && args.includes("syz51/repo-c")) return URL_C;
+              return undefined;
+            }, multiCalls),
+          },
+        },
+      ),
+    ).toEqual({});
+    expect(multiCalls[0]).toEqual({ dir: "/work/repo-b", args: ["pr", "view", "--json", "url", "-q", ".url"] });
+    expect(multiCalls[1]).toEqual({
+      dir: "/work/repo-a",
+      args: ["pr", "view", "feat-c", "--repo", "syz51/repo-c", "--json", "url", "-q", ".url"],
+    });
+    const mutatedIds = multiCalls
+      .filter((c) => c.args[3] === "graphql")
+      .map((c) => c.args.find((a) => a.startsWith("id=")));
+    expect(mutatedIds).toEqual(["id=PR_node42", "id=PR_node7"]);
+
+    // Unknown directory or draft skips gh entirely so an unrelated open PR in repo-a is never touched
+    for (const cmd of ['cd "$TARGET" && gh pr create --fill', "cd /work/repo-b && gh pr create --draft --fill"]) {
+      const skipCalls = [];
+      expect(
+        runAdaptedHook(
+          "post-tool-use",
+          "auto-merge",
+          { cwd: "/work/repo-a", toolCall: { id: "b3", name: "run_command", args: { CommandLine: cmd } } },
+          { runners: { gh: makeGh(() => "https://github.com/syz51/repo-a/pull/99", skipCalls) } },
+        ),
+      ).toEqual({});
+      expect(skipCalls).toEqual([]);
+    }
+
+    // translateInput uses the same target-aware resolution
+    const translateCalls = [];
+    const translated = translateInput(
+      "post-tool-use",
+      "auto-merge",
+      {
+        cwd: "/work/repo-a",
+        toolCall: {
+          name: "run_command",
+          args: { CommandLine: "cd /work/repo-b && gh pr create -R syz51/repo-b --head feat-b --fill" },
+        },
+      },
+      {
+        runners: {
+          gh: (dir, args) => {
+            translateCalls.push({ dir, args });
+            return ok(`${URL_B}\n`);
+          },
+        },
+      },
+    );
+    expect(translateCalls).toEqual([
+      { dir: "/work/repo-b", args: ["pr", "view", "feat-b", "--repo", "syz51/repo-b", "--json", "url", "-q", ".url"] },
+    ]);
+    expect(translated.tool_response.stdout).toBe(`${URL_B}\n`);
+
+    const unknownTranslated = translateInput(
+      "post-tool-use",
+      "auto-merge",
+      {
+        cwd: "/work/repo-a",
+        toolCall: { name: "run_command", args: { CommandLine: 'cd "$DIR" && gh pr create --fill' } },
+      },
+      {
+        runners: {
+          gh: () => {
+            throw new Error("gh should not be called for unknown dir");
+          },
+        },
+      },
+    );
+    expect(unknownTranslated.tool_response.stdout).toBe("");
+
+    // resolveCreatedPrStdout tolerates a throwing gh call on one target and still resolves others
+    expect(
+      resolveCreatedPrStdout(
+        "(cd /work/missing && gh pr create --fill) && (cd /work/repo-b && gh pr create --fill)",
+        "/work/repo-a",
+        (dir) => {
+          if (dir === "/work/missing") throw new Error("ENOENT");
+          return ok(`${URL_B}\n`);
+        },
+      ),
+    ).toBe(`${URL_B}\n`);
   });
 
   test("PreToolUse guard-asks blocks ask without Reason and allows listed Reason on eager mcp_board_ask_user", () => {
@@ -955,6 +1234,70 @@ describe("Antigravity hook adapter", () => {
     expect(createRe.test("call_mcp_tool")).toBe(true);
     expect(createRe.test("read_file")).toBe(false);
     expect(mcpCreate.hooks.some((h) => h.command.includes("auto-merge") && h.timeout >= 60)).toBe(true);
+  });
+
+  test("Stop open-items checks Antigravity transcripts for missing or unfiled Open items labels", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agy-open-items-"));
+    const script = join(import.meta.dir, "run-hook.js");
+    try {
+      const fakeBoard = join(dir, "board");
+      writeFileSync(
+        fakeBoard,
+        '#!/bin/sh\nif [ "$1" = boards ]; then printf \'[{"slug":"dotfiles"}]\n\'; else printf \'{"board":{"slug":"dotfiles"}}\n\'; fi\n',
+      );
+      chmodSync(fakeBoard, 0o755);
+
+      const runStop = (lines, extra = {}) => {
+        const transcriptPath = join(dir, "transcript.jsonl");
+        writeFileSync(transcriptPath, `${lines.map((r) => JSON.stringify(r)).join("\n")}\n`);
+        const res = spawnSync(process.execPath, [script, "stop", "open-items"], {
+          input: JSON.stringify({ cwd: dir, transcriptPath, ...extra }),
+          encoding: "utf8",
+          env: { ...process.env, AGENT_BOARD_HOOKS: "", BOARD_BIN: fakeBoard },
+        });
+        expect(res.status).toBe(0);
+        return JSON.parse(res.stdout);
+      };
+
+      const toolMissing = runStop([
+        { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+        { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+        { type: "GENERIC", content: "ok" },
+        { type: "PLANNER_RESPONSE", content: "Done." },
+      ]);
+      expect(toolMissing.decision).toBe("continue");
+      expect(toolMissing.reason).toContain("Open items:");
+
+      expect(
+        runStop(
+          [
+            { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+            { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+            { type: "GENERIC", content: "ok" },
+            { type: "PLANNER_RESPONSE", content: "Done." },
+          ],
+          { continuationActive: true },
+        ),
+      ).toEqual({ decision: "allow" });
+
+      expect(
+        runStop([
+          { type: "USER_INPUT", source: "USER_EXPLICIT", content: "Fix it" },
+          { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: "bun test" } }] },
+          { type: "GENERIC", content: "ok" },
+          { type: "PLANNER_RESPONSE", content: "Done.\n\nOpen items: none." },
+        ]),
+      ).toEqual({ decision: "allow" });
+
+      expect(
+        runStop([
+          { type: "USER_INPUT", source: "USER_EXPLICIT", content: "What does X mean?" },
+          { type: "PLANNER_RESPONSE", content: "X means Y." },
+        ]),
+      ).toEqual({ decision: "allow" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("run-hook.js CLI fails closed on malformed, empty, or non-object stdin JSON when guard-pr-merge is active", () => {

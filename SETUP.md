@@ -450,14 +450,16 @@ instead. Edit the JSON file to change the reasons. Claude Code (`claude/settings
 only the MCP `ask_user` tool (not the `board ask` CLI); Antigravity (`gemini/hooks.json`) checks
 both lazy/eager MCP `ask_user` calls (`call_mcp_tool`, `mcp_board_ask_user`) and `board ask` CLI
 invocations through `run_command`.
-open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
-work board, it blocks the stop once when an item under an open-item heading, such as
-"Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no
-work. This is the Work board rule of `claude/CLAUDE.md` that each open item of a reply names
-the task or ask that holds it. The board's own Stop reminder fires only after `task_done` or
-a release. The hook is a reminder: the next stop passes. Edit
-`claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
-to `false` to turn it off.
+open-items (Claude Code and Antigravity via `gemini/hooks/run-hook.js`) runs at `Stop` and
+reads the reply. In a repository with a work board, it checks the reply's `Open items:` label
+section (no heading scan or lead-label scan): it blocks the stop once when a tool-using turn
+(read from the transcript) has no `Open items:` label or an empty one, or when an entry under
+`Open items:` names no task or ask and no reason why it needs no work (`none` or
+`no action: <reason>`). This enforces the Work board rule of `claude/CLAUDE.md` and
+`gemini/GEMINI.md` across every turn, including after `task_done`, no-task threads and
+delegated children. The board's own Stop reminder fires only after `task_done` or a release.
+The hook is a reminder: the next stop passes. Edit `claude/hooks/open-items.json` to change
+the exempt patterns, or set `enabled` to `false` to turn it off.
 deck-view (Claude Code only) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
 renders a deck with LibreOffice (`soffice`) and `pdftoppm` into one HTML page that shows
 one slide at a time, with Prev and Next buttons and the arrow keys. It prints the page's
@@ -706,14 +708,19 @@ agent with `board feedback --source capture --about <id> --activity <stage>`, in
 factual lines quoting at most one error line and naming the session, turn and project
 folder. The board merges reports with the same signature, by default the setup and title,
 so the same friction seen in many turns is one item. Titles differ between turns, so the
-judge also sees the items already filed: those capture reported to in the last 7 days and
-the board's live `board-feedback` items (`board ls --live`, falling back to `--open` on an
-older server), newest 200 first, by setup. It names the
-item a finding repeats. Capture then files the report with that item's `--signature`, so
-the board adds it to the item while it is live (unresolved, declined, or routed to open
-work), or files a new item that recurs it. A finding whose item was fixed, or whose work
-was done, after its turn ended is skipped as a `skipped` record: the fix, such as a raised
-limit, came later. Records stay in `friction.jsonl` and the cursor in
+judge also sees the items already filed: `# Known items` lists the board's live
+`board-feedback` items (`board ls --live`, falling back to `--open` on an older server,
+where capture's recent items only fill remaining slots so closed history never evicts live
+items), newest 200 first, by setup. Capture's recently closed items from the last 7 days
+(excluding those already superseded by a live recurrence) are listed separately under
+`# Recently closed items` (up to 50), so the judge prefers any live match and uses closed
+items only when no live item reports the problem. It names the
+item a finding repeats. Capture follows duplicate links to the canonical item's signature
+and files the report with `--signature`, so the board adds it to the item while it is live
+(unresolved, declined, or routed to open work), redirects to an existing live recurrence
+when one already exists for a closed item, or files a new item that recurs it. A finding
+whose item was fixed, or whose work was done, after its turn ended is skipped as a
+`skipped` record: the fix, such as a raised limit, came later. Records stay in `friction.jsonl` and the cursor in
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
