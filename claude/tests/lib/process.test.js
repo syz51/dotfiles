@@ -300,3 +300,55 @@ test("processesUnder retries once on a transient empty-stderr ps failure and rep
     rmSync(root, { recursive: true, force: true });
   }
 }, SCAN_TIMEOUT);
+
+test("timeout and abort kill tracked detached descendants and their whole process groups after their parent exits", async () => {
+  for (const mode of ["timeout", "abort"]) {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), `process-detached-${mode}-`)));
+    const pidFile = join(root, "pids.json");
+    const tracked = new Map();
+    let leaderPid;
+    let memberPid;
+    try {
+      // Child spawns an intermediate helper that launches a detached process group
+      // (leader + background member) and exits, reparenting the detached group to PID 1
+      // before the deadline or abort fires.
+      const helper = `const {spawn}=require("node:child_process");const fs=require("node:fs");`
+        + `const c=spawn("sh",["-c","(cd / && exec sleep 30) & echo $!; exec sleep 30"],{cwd:"/",detached:true,stdio:["ignore","pipe","ignore"]});`
+        + `c.stdout.once("data",(chunk)=>{fs.writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({leader:c.pid,member:Number(String(chunk).trim())}));c.unref();setTimeout(()=>process.exit(0),500);});`;
+      const outer = `const {spawn}=require("node:child_process");spawn(${JSON.stringify(bun)},["-e",${JSON.stringify(helper)}],{stdio:"ignore"});setInterval(()=>{},1000);`;
+      const controller = new AbortController();
+      const abortTimer = mode === "abort" ? setTimeout(() => controller.abort(new Error("cancelled")), 1200) : null;
+      const error = await runProcess([bun, "-e", outer], {
+        timeout: mode === "timeout" ? 1500 : 15_000,
+        track: tracked,
+        trackMs: 100,
+        signal: mode === "abort" ? controller.signal : undefined,
+      }).catch((e) => e);
+      if (abortTimer) clearTimeout(abortTimer);
+      expect(error.message).toContain(mode === "timeout" ? "timeout" : "cancelled");
+      ({ leader: leaderPid, member: memberPid } = JSON.parse(readFileSync(pidFile, "utf8")));
+      await Bun.sleep(200);
+      for (const pid of [leaderPid, memberPid]) {
+        let alive = true;
+        try {
+          process.kill(pid, 0);
+        } catch (err) {
+          if (err.code !== "ESRCH") throw err;
+          alive = false;
+        }
+        if (alive) expect((await runProcess(["ps", "-o", "stat=", "-p", String(pid)])).stdout.trim()).toMatch(/^Z/);
+      }
+      expect(processesUnder(root, { tracked })).toEqual([]);
+    } finally {
+      for (const target of [leaderPid ? -leaderPid : 0, leaderPid, memberPid]) {
+        if (!target) continue;
+        try {
+          process.kill(target, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}, SCAN_TIMEOUT);
