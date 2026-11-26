@@ -1,0 +1,39 @@
+# Optional `[telemetry]` and `[schedules]` snippet for Air (`~/.local/share/agent-board/config.toml`).
+# Streamed automatically every 60s by `board watch` and on demand via `POST /v1/health/refresh`.
+
+[telemetry]
+enabled = true
+interval_secs = 60
+ttl_secs = 300
+tailscale = true
+launchd_services = [
+  "dev.agent-board.watch",
+  "com.syz51.t3code.desktop",
+  "com.syz51.sai-storage.serve",
+  "com.email-agent.test-postgres",
+  "ninja.kunobi.kache",
+]
+
+[telemetry.version_probes]
+t3code = ["defaults", "read", "/Applications/T3 Code (Beta).app/Contents/Info.plist", "CFBundleShortVersionString"]
+
+[schedules]
+enabled = true
+launchd = true
+t3_state_db = "/Users/sunyizhe/.t3/userdata/statev2.sqlite"
+launchd_exclude = [
+  "dev.agent-board.watch",
+  "com.syz51.t3code.desktop",
+  "com.syz51.sai-storage.serve",
+  "com.email-agent.test-postgres",
+  "ninja.kunobi.kache",
+]
+
+[schedules.categories]
+"sai-storage.backup" = "backup"
+"claude-factory.friction" = "agent_ops"
+"claude-factory.weekly" = "agent_ops"
+"agent-skills" = "agent_ops"
+"config-sync" = "sync"
+"disk-space" = "monitoring"
+"gnotebook-monitor" = "research"

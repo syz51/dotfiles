@@ -920,7 +920,11 @@ replaces the list, in order of preference):
 
 The server URL and device name stay in `~/.local/share/agent-board/config.toml` and the
 token in the macOS Keychain or, where `board login` fell back to it, the token file beside
-it, outside this repository. When a hook finds the server
+it, outside this repository. To report host health, LaunchAgents, and read-only T3
+scheduled tasks into the `/health` and `/schedules` web dashboards, append the matching
+`[telemetry]` and `[schedules]` blocks from `agent-board/telemetry-schedules.air.toml` or
+`agent-board/telemetry-schedules.pro.toml` to `~/.local/share/agent-board/config.toml` and
+restart `board watch`. When a hook finds the server
 unreachable it waits at most about 1.5 seconds, and the Mac's hooks then use their cache
 without trying the server for a minute.
 
