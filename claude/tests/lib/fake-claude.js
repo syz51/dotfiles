@@ -105,19 +105,40 @@ if (process.env.FAKE_REFUSE_ONCE && !existsSync(process.env.FAKE_REFUSE_ONCE)) {
 // after 2 s ("late"), every 200 ms until killed ("stuck"), or back to back until killed
 // ("busy"). Eight busy loops fork subshells of writes so often that one nearly always
 // starts after the harness lists the processes, and it keeps writing for a while if only
-// the processes listed die. It
-// works outside the fixture and does not name it, so only the processes tracked during
-// the session lead to it.
+// the processes listed die. Each mode has a hard self-terminating deadline (default 30 s,
+// capped at 60 s via FAKE_LINGER_TTL_S) so a SIGKILLed runner can never leave a runaway
+// process behind. It works outside the fixture and does not name it, so only the
+// processes tracked during the session lead to it.
 if (process.env.FAKE_LINGER) {
+  const DEFAULT_LINGER_TTL_S = 30;
+  const MAX_LINGER_TTL_S = 60;
+  const rawTtl = Number(process.env.FAKE_LINGER_TTL_S);
+  const ttlSeconds = Number.isFinite(rawTtl) && rawTtl > 0
+    ? Math.min(MAX_LINGER_TTL_S, Math.max(1, Math.ceil(rawTtl)))
+    : DEFAULT_LINGER_TTL_S;
+  const nowSeconds = Math.ceil(Date.now() / 1000);
+  const stuckEnd = nowSeconds + ttlSeconds;
+  const busyEnd = nowSeconds + ttlSeconds + 1;
   const write = 'mkdir -p "$CLAUDE_CODE_TMPDIR/claude-$(id -u)/late-task/tasks"';
-  const script = {
+  const scripts = {
     late: `sleep 2; ${write}; sleep 0.3`,
-    stuck: `while :; do ${write}; sleep 0.2; done`,
-    busy: `for loop in 1 2 3 4 5 6 7 8; do (while :; do (for i in 1 2 3 4 5 6 7 8 9 10; do ${write}; done); done) & done; wait`,
-  }[process.env.FAKE_LINGER];
-  spawn("sh", ["-c", script], { cwd: "/", detached: true, stdio: "ignore" }).unref();
+    stuck: `while [ "$(date +%s)" -lt ${stuckEnd} ]; do ${write}; sleep 0.2; done`,
+    busy: `for loop in 1 2 3 4 5 6 7 8; do (while [ "$(date +%s)" -lt ${busyEnd} ]; do (for i in 1 2 3 4 5 6 7 8 9 10; do ${write}; done); done) & done; sleep ${ttlSeconds}; kill -KILL -- -$$`,
+  };
+  const script = scripts[process.env.FAKE_LINGER];
+  if (!script) throw new Error(`Unknown FAKE_LINGER mode: ${process.env.FAKE_LINGER}`);
+  const linger = spawn("sh", ["-c", script], { cwd: "/", detached: true, stdio: "ignore" });
+  if (process.env.FAKE_LINGER_LOG && linger.pid) {
+    const readStarted = () => spawnSync("ps", ["-o", "lstart=", "-p", String(linger.pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+    }).stdout?.trim();
+    const started = readStarted() || readStarted();
+    if (started) appendFileSync(process.env.FAKE_LINGER_LOG, `${JSON.stringify({ pid: linger.pid, started })}\n`);
+  }
+  linger.unref();
   // Long enough for the harness to see the task while the session runs.
-  await Bun.sleep(800);
+  await Bun.sleep(1000);
 }
 if (mode === "incomplete") {
   console.log(JSON.stringify(events[0]));
