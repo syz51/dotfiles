@@ -704,6 +704,25 @@ const REVIEW_SKILL = /^(?:[\w.-]+:)?code-review$/;
 const REVIEW_COMMAND = /^\/(?:[\w.-]+:)?(?:code-)?review$/;
 const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.name === "Skill" && REVIEW_SKILL.test(String(call.input.skill)) && call.ok !== false);
 
+// Optional T3 Code banner prepended to tool-originated thread messages.
+const T3_TOOL_NOTICE = /^\s*\[T3 Code:[^\n]*\]\s*/;
+// The brief agent-board's daemon dispatcher starts every managed worker session with
+// (agent-board/prompts/worker.md): `# Worker` followed by the dispatcher worktree opener.
+const MANAGED_WORKER_HEADER = /^\s*# Worker[ \t]*\r?\n+/;
+const MANAGED_WORKER_OPENER = /\bThe board's dispatcher started you in\s+your own\s+worktree\b/;
+
+// Whether the session is a daemon-dispatched managed worker. Its PR always receives an
+// independent managed Review judge, so the Review rule exempts it from spawning an
+// internal reviewer subagent.
+export function isManagedWorker(actions) {
+  const first = actions.prompts?.[0]?.text;
+  if (typeof first !== "string") return false;
+  const body = first.replace(T3_TOOL_NOTICE, "");
+  if (!MANAGED_WORKER_HEADER.test(body)) return false;
+  const intro = body.replace(MANAGED_WORKER_HEADER, "").split(/\r?\n[ \t]*\r?\n/, 1)[0];
+  return MANAGED_WORKER_OPENER.test(intro);
+}
+
 // Pushes and merges of changes with no review, which is a `reviewer` agent run or a
 // /code-review: a session edited a file in any repository that is not on the trivial
 // list (review-scope.toml), then pushed or merged with no review started since the
@@ -715,9 +734,11 @@ const isReview = (call) => isReviewerRun(call) || isCodeReview(call) || (call.na
 // or every repository's when the folder is unknown; a review counts for every
 // repository. Edits by subagents count, through Bash too, including the deletes, moves,
 // copies and patches shellChanges finds; files git ignores do not. Writes through MCP
-// tools and pushes other than `git push` and `gh pr merge` are not seen. na when the
-// session pushed no edit that needs a review.
+// tools and pushes other than `git push` and `gh pr merge` are not seen. na for
+// daemon-dispatched managed workers (which receive an independent managed Review judge)
+// and when the session pushed no edit that needs a review.
 export function reviewSkipped(actions, context) {
+  if (isManagedWorker(actions)) return verdictOf(false, []);
   const events = [];
   for (const call of actions.calls) {
     if (call.name !== "Bash" || typeof call.input.command !== "string") continue;
