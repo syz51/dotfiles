@@ -85,11 +85,11 @@ class Sandbox(unittest.TestCase):
         git(self.upstream, "push", "origin", "HEAD:main")
         return git(self.upstream, "rev-parse", "HEAD")
 
-    def check(self, runner, now=NOW, board="board"):
+    def check(self, runner, now=NOW, board="board", repos_file=None):
         """Runs a check; what it printed is in self.stdout and self.stderr."""
         self.stdout, self.stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stderr):
-            return sync.check(self.repo, self.state, runner, board, now, "mac")
+            return sync.check(self.repo, self.state, runner, board, now, "mac", repos_file=repos_file)
 
     def head(self):
         return git(self.repo, "rev-parse", "HEAD")
@@ -594,6 +594,294 @@ class InstallTests(unittest.TestCase):
             (Path.home() / ".local/bin/gnotebook-monitor", Path("/r/gemini/bin/gnotebook-monitor")),
             (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")),
         ])
+
+
+class ExtraReposTests(Sandbox):
+    """Host-local extra main checkouts listed in repos.txt (dotfiles-458)."""
+
+    def make_extra(self, name, branch="main"):
+        root = Path(self.temp.name) / "extras" / name
+        origin = root / "origin.git"
+        upstream = root / "upstream"
+        checkout = root / name
+        root.mkdir(parents=True)
+        git(root, "init", "--bare", "-b", branch, str(origin))
+        git(root, "clone", str(origin), str(upstream))
+        (upstream / "README.md").write_text(f"{name}\n")
+        git(upstream, "add", ".")
+        git(upstream, "commit", "-m", "first")
+        git(upstream, "push", "origin", f"HEAD:{branch}")
+        git(root, "clone", str(origin), str(checkout))
+        return {"name": name, "branch": branch, "origin": origin, "upstream": upstream, "checkout": checkout}
+
+    def advance_extra(self, extra, filename="next"):
+        (extra["upstream"] / f"{filename}.txt").write_text(filename)
+        git(extra["upstream"], "add", ".")
+        git(extra["upstream"], "commit", "-m", filename)
+        git(extra["upstream"], "push", "origin", f"HEAD:{extra['branch']}")
+        return git(extra["upstream"], "rev-parse", "HEAD")
+
+    def extra_head(self, extra):
+        return git(extra["checkout"], "rev-parse", "HEAD")
+
+    def write_repos(self, *lines, path=None):
+        target = path or (self.state / "repos.txt")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("\n".join(str(line) for line in lines) + "\n")
+        return target
+
+    def events(self):
+        path = self.state / "events.jsonl"
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_missing_repos_file_means_no_extra_checkouts(self):
+        target = self.advance()
+        runner = Runner()
+        self.assertEqual(self.check(runner), 0)
+        self.assertEqual(self.head(), target)
+        self.assertEqual(runner.reports(), [])
+        self.assertEqual(self.state_json()["repos"], {})
+
+    def test_clean_extra_checkout_fast_forwards_and_logs_event(self):
+        papers = self.make_extra("papers")
+        self.write_repos(papers["checkout"])
+        target = self.advance_extra(papers)
+        runner = Runner()
+        self.assertEqual(self.check(runner), 0)
+        self.assertEqual(self.extra_head(papers), target)
+        self.assertEqual(runner.reports(), [])
+        self.assertIn("pulled ", self.stdout.getvalue())
+        events = self.events()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["repo"], sync.short(papers["checkout"]))
+        self.assertEqual(events[0]["pulled"][1], target)
+        self.assertEqual(self.state_json()["repos"][sync.short(papers["checkout"])]["head"], target)
+
+    def test_untracked_file_in_extra_checkout_does_not_block_fast_forward(self):
+        rf = self.make_extra("research-factory")
+        self.write_repos(rf["checkout"])
+        (rf["checkout"] / ".research").mkdir()
+        (rf["checkout"] / ".research" / "scratch.txt").write_text("local")
+        target = self.advance_extra(rf)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(rf), target)
+        self.assertEqual((rf["checkout"] / ".research" / "scratch.txt").read_text(), "local")
+        self.assertEqual(runner.reports(), [])
+
+    def test_clashing_untracked_file_in_extra_checkout_reports_pull_failed(self):
+        rf = self.make_extra("research-factory")
+        self.write_repos(rf["checkout"])
+        before = self.extra_head(rf)
+        self.advance_extra(rf, "clash")
+        (rf["checkout"] / "clash.txt").write_text("mine")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(rf), before)
+        self.assertEqual((rf["checkout"] / "clash.txt").read_text(), "mine")
+        reports = runner.reports()
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0][9], "config-sync:research-factory:pull-failed")
+        self.assertIn("- pull-failed:", reports[0][11])
+
+    def test_dirty_extra_checkout_is_left_unchanged_and_reported_without_settings_restore(self):
+        # Extra repos never run ~/.config's claude/settings.json reformat restore.
+        extra = self.make_extra("guwen")
+        (extra["upstream"] / "claude").mkdir()
+        (extra["upstream"] / "claude" / "settings.json").write_text('{"a": 1, "b": 2}\n')
+        git(extra["upstream"], "add", ".")
+        git(extra["upstream"], "commit", "-m", "settings")
+        git(extra["upstream"], "push", "origin", "HEAD:main")
+        git(extra["checkout"], "pull", "-q", "--ff-only")
+        self.write_repos(extra["checkout"])
+        primary_target = self.advance()
+        before = self.extra_head(extra)
+        self.advance_extra(extra)
+        (extra["checkout"] / "claude" / "settings.json").write_text('{"b": 2,\n  "a": 1}\n')
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.head(), primary_target)
+        self.assertEqual(self.extra_head(extra), before)
+        self.assertEqual((extra["checkout"] / "claude" / "settings.json").read_text(), '{"b": 2,\n  "a": 1}\n')
+        reports = runner.reports()
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0][9], "config-sync:guwen:dirty")
+        self.assertIn("- dirty:", reports[0][11])
+        self.assertIn("claude/settings.json", reports[0][11])
+        self.assertIn("Nothing was changed;", reports[0][11])
+
+    def test_staged_change_in_extra_checkout_is_reported_as_dirty(self):
+        extra = self.make_extra("prov")
+        self.write_repos(extra["checkout"])
+        before = self.extra_head(extra)
+        self.advance_extra(extra)
+        (extra["checkout"] / "README.md").write_text("staged\n")
+        git(extra["checkout"], "add", "README.md")
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(extra), before)
+        reports = runner.reports()
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0][9], "config-sync:prov:dirty")
+
+    def test_local_commits_and_diverged_extra_checkout_are_reported_and_kept(self):
+        ahead_only = self.make_extra("claimcheck")
+        diverged = self.make_extra("ireval")
+        self.write_repos(ahead_only["checkout"], diverged["checkout"])
+        for extra in (ahead_only, diverged):
+            (extra["checkout"] / "local.txt").write_text("local")
+            git(extra["checkout"], "add", ".")
+            git(extra["checkout"], "commit", "-q", "-m", "local")
+        before_ahead = self.extra_head(ahead_only)
+        before_diverged = self.extra_head(diverged)
+        self.advance_extra(diverged)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(ahead_only), before_ahead)
+        self.assertEqual(self.extra_head(diverged), before_diverged)
+        reports = runner.reports()
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[0][9], "config-sync:claimcheck:diverged")
+        self.assertIn("1 local commit(s) are not on origin/main", reports[0][11])
+        self.assertEqual(reports[1][9], "config-sync:ireval:diverged")
+        self.assertIn("1 local commit(s) are not on origin/main", reports[1][11])
+
+    def test_off_branch_and_non_main_default_branch_extra_checkouts(self):
+        on_main = self.make_extra("papers", branch="main")
+        on_fork = self.make_extra("t3code", branch="fork")
+        detached = self.make_extra("agentprof", branch="main")
+        self.write_repos(on_main["checkout"], on_fork["checkout"], detached["checkout"])
+        # Clean t3code on its default branch (`fork`) fast-forwards.
+        fork_target = self.advance_extra(on_fork)
+        git(on_main["checkout"], "checkout", "-q", "-b", "feature")
+        git(detached["checkout"], "checkout", "-q", "--detach", "HEAD")
+        before_main = self.extra_head(on_main)
+        before_detached = self.extra_head(detached)
+        self.advance_extra(on_main)
+        self.advance_extra(detached)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(on_fork), fork_target)
+        self.assertEqual(self.extra_head(on_main), before_main)
+        self.assertEqual(self.extra_head(detached), before_detached)
+        reports = runner.reports()
+        self.assertEqual(len(reports), 2)
+        self.assertEqual(reports[0][9], "config-sync:papers:off-main")
+        self.assertIn("on feature, not main", reports[0][11])
+        self.assertEqual(reports[1][9], "config-sync:agentprof:off-main")
+        self.assertIn("on a detached HEAD, not main", reports[1][11])
+        # Moving t3code off its `fork` default branch reports `off-branch`.
+        git(on_fork["checkout"], "checkout", "-q", "-b", "main")
+        before_fork = self.extra_head(on_fork)
+        self.advance_extra(on_fork, "later")
+        runner2 = Runner()
+        self.check(runner2)
+        self.assertEqual(self.extra_head(on_fork), before_fork)
+        self.assertEqual(len(runner2.reports()), 1)
+        self.assertEqual(runner2.reports()[0][9], "config-sync:t3code:off-branch")
+        self.assertIn("on main, not fork", runner2.reports()[0][11])
+
+    def test_extra_checkout_without_origin_head_resolves_default_branch_via_ls_remote(self):
+        extra = self.make_extra("t3code", branch="fork")
+        git(extra["checkout"], "remote", "set-head", "origin", "-d")
+        self.write_repos(extra["checkout"])
+        target = self.advance_extra(extra)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(extra), target)
+        self.assertEqual(runner.reports(), [])
+
+    def test_repos_file_ignores_comments_blanks_duplicates_and_primary(self):
+        extra = self.make_extra("guwen")
+        self.write_repos(
+            "# Host-local checkouts",
+            "",
+            self.repo,
+            f"  {extra['checkout']}  ",
+            f"{extra['checkout']}/",
+            "# end",
+        )
+        target = self.advance_extra(extra)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(extra), target)
+        self.assertEqual(list(self.state_json()["repos"].keys()), [sync.short(extra["checkout"])])
+
+    def test_missing_and_non_repo_entries_report_without_blocking_valid_repos(self):
+        valid = self.make_extra("papers")
+        missing = Path(self.temp.name) / "gone-repo"
+        non_repo = Path(self.temp.name) / "plain-dir"
+        non_repo.mkdir()
+        self.write_repos(missing, non_repo, valid["checkout"])
+        target = self.advance_extra(valid)
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.extra_head(valid), target)
+        sigs = [call[9] for call in runner.reports()]
+        self.assertEqual(sigs, ["config-sync:gone-repo:missing", "config-sync:plain-dir:not-a-repo"])
+        # Repeat check deduplicates; removing from repos.txt prunes state.
+        self.check(runner, NOW + timedelta(hours=1))
+        self.assertEqual(len(runner.reports()), 2)
+        self.write_repos(valid["checkout"])
+        self.check(runner, NOW + timedelta(hours=2))
+        self.assertEqual(list(self.state_json()["repos"].keys()), [sync.short(valid["checkout"])])
+
+    def test_extra_repo_fetch_failure_respects_grace_period_independently(self):
+        extra = self.make_extra("papers")
+        url = git(extra["checkout"], "remote", "get-url", "origin")
+        git(extra["checkout"], "remote", "set-url", "origin", str(Path(self.temp.name) / "broken.git"))
+        self.write_repos(extra["checkout"])
+        runner = Runner()
+        self.check(runner)
+        self.check(runner, NOW + timedelta(hours=23))
+        self.assertEqual(runner.reports(), [])
+        self.assertIsNone(self.state_json()["fetch_failing_since"])
+        self.assertEqual(self.state_json()["repos"][sync.short(extra["checkout"])]["fetch_failing_since"], NOW.isoformat())
+        self.check(runner, NOW + timedelta(hours=24))
+        self.assertEqual(len(runner.reports()), 1)
+        self.assertEqual(runner.reports()[0][9], "config-sync:papers:fetch-failed")
+        # Recovery clears fetch_failing_since and reported state.
+        git(extra["checkout"], "remote", "set-url", "origin", url)
+        self.check(runner, NOW + timedelta(hours=25))
+        entry = self.state_json()["repos"][sync.short(extra["checkout"])]
+        self.assertIsNone(entry["fetch_failing_since"])
+        self.assertEqual(entry["reported"], [])
+
+    def test_extra_repo_dedup_reset_and_cli_repos_file_flag(self):
+        extra = self.make_extra("guwen")
+        custom = Path(self.temp.name) / "custom-repos.txt"
+        self.write_repos(extra["checkout"], path=custom)
+        (extra["checkout"] / "README.md").write_text("dirty\n")
+        runner = Runner()
+        self.check(runner, repos_file=custom)
+        self.check(runner, NOW + timedelta(hours=1), repos_file=custom)
+        self.assertEqual(len(runner.reports()), 1)
+        git(extra["checkout"], "checkout", "--", ".")
+        target = self.advance_extra(extra)
+        self.check(runner, NOW + timedelta(hours=2), repos_file=custom)
+        self.assertEqual(self.extra_head(extra), target)
+        self.assertEqual(self.state_json()["repos"][sync.short(extra["checkout"])]["reported"], [])
+        # Status prints repos_file and extra_repos.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(sync.main(["status", "--state-dir", str(self.state), "--repos-file", str(custom)], run=runner), 0)
+        status = json.loads(out.getvalue())
+        self.assertEqual(status["extra_repos"], [sync.short(extra["checkout"])])
+
+    def test_unreadable_repos_file_reports_without_stopping_primary(self):
+        extra = self.make_extra("papers")
+        self.write_repos(extra["checkout"])
+        self.check(Runner())
+        (self.state / "repos.txt").unlink()
+        (self.state / "repos.txt").mkdir()
+        target = self.advance()
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.head(), target)
+        self.assertEqual(len(runner.reports()), 1)
+        self.assertEqual(runner.reports()[0][9], "config-sync:repos-file")
+        # Previous extra repo state is preserved across transient read errors.
+        self.assertIn(sync.short(extra["checkout"]), self.state_json()["repos"])
 
 
 if __name__ == "__main__":

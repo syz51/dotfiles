@@ -64,6 +64,21 @@ age over 3 hours (a reused PID) is stale, and the check removes it, so a killed 
 not stop pulls.
 State is in `~/.local/state/config-sync/state.json`, each pull, restore, report or skip
 adds a line to `events.jsonl` there, and launchd writes to `launchd.log`.
+
+To keep additional main checkouts current on a host (such as the board repositories under
+`~/Developer` or `~/.t3/projects`), list their paths in the host-local file
+`~/.local/state/config-sync/repos.txt` outside this public repository (one path per line;
+`~` expands to `$HOME`; blank lines and `#` comments are ignored; override with
+`--repos-file`). A missing file means no extra checkouts. For each listed checkout, `check`
+resolves its default branch from `origin/HEAD` (falling back to `git ls-remote --symref
+origin HEAD`, then `main`/`master`), fetches it, and runs `git merge --ff-only` only when
+the checkout is on its default branch with no tracked changes and no local commits.
+Untracked files do not block a fast-forward unless Git refuses to overwrite one. Dirty,
+diverged, off-branch, missing, non-repository, or 24-hour fetch-failing checkouts are left
+unchanged and reported through the same Feedback channel (once per distinct problem set per
+checkout), without the `claude/settings.json` restore or instruction-link checks that apply
+only to `~/.config`.
+
 Install it on each Mac and check it:
 
 ```sh

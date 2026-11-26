@@ -1,31 +1,38 @@
 #!/usr/bin/env python3
-"""Keep this Mac's ~/.config checkout current with origin/main, and report what blocks it.
+"""Keep this Mac's ~/.config and listed main checkouts current with origin, and report what blocks them.
 
 A LaunchAgent runs `check` every 30 minutes. It fetches origin/main and fast-forwards
-the checkout when it is on main with no tracked changes and no commits of its own.
-It never stashes, resets or merges: a checkout that is off main, has tracked changes,
-has diverged or fails to fast-forward is left as it is and reported. Untracked files
+~/.config when it is on main with no tracked changes and no commits of its own.
+It never stashes, resets or merges: a checkout that is off its default branch, has tracked
+changes, has diverged or fails to fast-forward is left as it is and reported. Untracked files
 are left alone; one that a fast-forward would overwrite makes the pull fail, which is
-reported too. One change it undoes: a Claude Code plugin install, update or enable
-rewrites claude/settings.json in its own key order and layout. When that file is the
+reported too. One change it undoes in ~/.config: a Claude Code plugin install, update or
+enable rewrites claude/settings.json in its own key order and layout. When that file is the
 only tracked change, unstaged, on main, and parses to the same JSON as HEAD, it gets its
 committed text back, so the reformat does not block the pull.
 
-After every check it also verifies the links that install the instructions from this
-checkout (`~/.claude`, on a Mac with Claude Code, and Codex's AGENTS.md); a copy instead of
-a link stops pulls from reaching the agents.
+After every check of ~/.config it also verifies the links that install the instructions from
+this checkout (`~/.claude`, on a Mac with Claude Code, `~/.gemini/config` when present, and
+Codex's AGENTS.md); a copy instead of a link stops pulls from reaching the agents.
+
+A host-local list at `~/.local/state/config-sync/repos.txt` (outside this public repository;
+one path per line, `#` comments and blank lines ignored; missing means none) names additional
+main checkouts to keep current on each host. Each listed checkout is fetched and fast-forwarded
+on its own default branch (`origin/HEAD`, falling back to `ls-remote --symref origin HEAD` and
+`main`/`master`) with the same safety rules and problem reporting, without the
+`claude/settings.json` restore or instruction-link checks.
 
 A live suite run (`RUN_CLAUDE_LIVE=1 bun test claude/tests`) fails when ~/.claude changes
 under it, so each suite holds a lock: a file in `~/.local/state/config-sync/locks/` holding
 its PID. While a lock's process is alive, a check skips everything (the pull, the
-settings.json restore, which rewrites a file the run guards, and the link checks) and logs
-the skip; it looks again after the fetch, which can take minutes. A lock that cannot be
-read, whose text is not a PID, whose PID is dead, or older than MAX_HOLD (a reused PID) is
-stale and removed, so a killed run does not stop pulls.
+settings.json restore, which rewrites a file the run guards, the link checks, and extra
+checkouts) and logs the skip; it looks again after the fetch, which can take minutes. A lock
+that cannot be read, whose text is not a PID, whose PID is dead, or older than MAX_HOLD (a
+reused PID) is stale and removed, so a killed run does not stop pulls.
 
 A report goes to the board's feedback intake about the `config-sync` setup, once per
-distinct set of problems: `board feedback --about config-sync --activity operate`, or
-plain `board feedback` where the installed CLI lacks those options, or a macOS
+distinct set of problems per checkout: `board feedback --about config-sync --activity operate`,
+or plain `board feedback` where the installed CLI lacks those options, or a macOS
 notification when the board cannot be reached. A fetch that keeps failing (the Mac
 offline, say) is reported only after 24 hours.
 
@@ -56,6 +63,7 @@ FETCH_GRACE = timedelta(hours=24)
 COMMAND_TIMEOUT_SECONDS = 120
 DEFAULT_REPO = HOME / ".config"
 DEFAULT_STATE_DIR = HOME / ".local" / "state" / "config-sync"
+REPOS_FILE = "repos.txt"
 LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 REMOTE = "origin"
 BRANCH = "main"
@@ -73,8 +81,10 @@ Runner = Callable[[list], subprocess.CompletedProcess]
 
 
 def run_command(args: list) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env.setdefault("GIT_TERMINAL_PROMPT", "0")
     try:
-        return subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_SECONDS, check=False)
+        return subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT_SECONDS, check=False, env=env)
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, 124, "", f"timed out after {COMMAND_TIMEOUT_SECONDS}s")
     except OSError as error:
@@ -110,6 +120,7 @@ class State:
     fetch_failing_since: Optional[str] = None
     last_check: Optional[str] = None
     head: Optional[str] = None
+    repos: dict = field(default_factory=dict)
 
 
 def load_state(path: Path) -> State:
@@ -177,6 +188,54 @@ class Outcome:
     head: Optional[str] = None
     restored: list = field(default_factory=list)  # tracked paths put back to their committed text
     held: list = field(default_factory=list)  # live locks found after the fetch; nothing else ran
+    branch: str = BRANCH
+
+
+def load_repos(path: Path, primary: Path) -> tuple[list[Path], Optional[str]]:
+    """Read host-local extra checkout paths (one per line, `#` comments and blanks ignored).
+
+    A missing file means no extra checkouts. Duplicates and entries resolving to `primary`
+    are skipped while preserving order.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return [], None
+    except (OSError, UnicodeDecodeError) as error:
+        return [], f"could not read {short(path)}: {error}"
+    seen = {os.path.realpath(str(primary))}
+    repos = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        candidate = Path(line).expanduser()
+        real = os.path.realpath(str(candidate))
+        if real in seen:
+            continue
+        seen.add(real)
+        repos.append(candidate)
+    return repos, None
+
+
+def default_branch(repo: Path, run: Runner) -> str:
+    """Resolve `repo`'s default branch from origin/HEAD, falling back to ls-remote and main/master."""
+    git = lambda *args: run(["git", "-C", str(repo), *args])  # noqa: E731
+    prefix = f"refs/remotes/{REMOTE}/"
+    symref = git("symbolic-ref", "--quiet", f"{prefix}HEAD")
+    if symref.returncode == 0:
+        ref = symref.stdout.strip()
+        if ref.startswith(prefix):
+            return ref[len(prefix) :]
+    remote_head = git("ls-remote", "--symref", REMOTE, "HEAD")
+    if remote_head.returncode == 0:
+        for line in remote_head.stdout.splitlines():
+            if line.startswith("ref: refs/heads/") and line.endswith("\tHEAD"):
+                return line[len("ref: refs/heads/") : -len("\tHEAD")]
+    for candidate in (BRANCH, "master"):
+        if git("rev-parse", "--verify", "--quiet", f"{prefix}{candidate}").returncode == 0:
+            return candidate
+    return BRANCH
 
 
 def canonical(value):
@@ -212,26 +271,35 @@ def restore_reformat(path: Path, committed: str) -> bool:
         temp.unlink(missing_ok=True)
 
 
-def sync(repo: Path, run: Runner, held: Callable[[], list] = list) -> Outcome:
+def sync(
+    repo: Path,
+    run: Runner,
+    held: Callable[[], list] = list,
+    *,
+    branch: Optional[str] = BRANCH,
+    restore_settings: bool = True,
+    check_links: bool = True,
+) -> Outcome:
     """Fetch and fast-forward when safe; return the problems found. A fetch can take
     minutes, so a live run may take a lock meanwhile: held() is asked again after it."""
     git = lambda *args: run(["git", "-C", str(repo), *args])  # noqa: E731
+    target_branch = default_branch(repo, run) if branch is None else branch
     problems = []
-    fetched = git("fetch", "--quiet", REMOTE, BRANCH)
+    fetched = git("fetch", "--quiet", REMOTE, target_branch)
     fetch_failed = fetched.returncode != 0
     late = held()
     if late:
-        return Outcome([], fetch_failed=fetch_failed, held=late)
-    branch = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+        return Outcome([], fetch_failed=fetch_failed, held=late, branch=target_branch)
+    current = git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
     head = git("rev-parse", "HEAD").stdout.strip()
-    target = git("rev-parse", f"{REMOTE}/{BRANCH}").stdout.strip()
+    target = git("rev-parse", f"{REMOTE}/{target_branch}").stdout.strip()
     changed = [line for line in git("status", "--porcelain", "--untracked-files=no").stdout.splitlines() if line.strip()]
     restored = []
     # Claude Code rewrites claude/settings.json in its own key order and layout on a plugin
     # install, update or enable. When that unstaged rewrite is the only change and the parsed
     # JSON matches HEAD, put the committed text back so it does not stop pulls. Any other
     # change stays and is reported. Only this file: key order matters in others (package.json).
-    if branch == BRANCH and changed == [f" M {SETTINGS}"]:
+    if restore_settings and current == target_branch and changed == [f" M {SETTINGS}"]:
         committed = git("show", f"HEAD:{SETTINGS}")
         if committed.returncode != 0:
             problems.append(("restore-failed", f"git show HEAD:{SETTINGS} failed: {committed.stderr.strip()[:300]}"))
@@ -243,31 +311,45 @@ def sync(repo: Path, run: Runner, held: Callable[[], list] = list) -> Outcome:
             except OSError as error:
                 problems.append(("restore-failed", f"could not restore the committed text of {SETTINGS}: {error}"))
     changed = [line[3:] for line in changed]
-    if branch != BRANCH:
-        problems.append(("off-main", f"the checkout is on {branch or 'a detached HEAD'}, not {BRANCH}"))
+    if current != target_branch:
+        off_kind = "off-main" if target_branch == BRANCH else "off-branch"
+        problems.append((off_kind, f"the checkout is on {current or 'a detached HEAD'}, not {target_branch}"))
     if changed:
         listed = ", ".join(changed[:5]) + (f" and {len(changed) - 5} more" if len(changed) > 5 else "")
         problems.append(("dirty", f"{len(changed)} tracked file(s) changed: {listed}"))
     pulled = None
     if not problems and head and target and head != target:
-        if git("merge-base", "--is-ancestor", "HEAD", f"{REMOTE}/{BRANCH}").returncode == 0:
-            merged = git("merge", "--ff-only", "--quiet", f"{REMOTE}/{BRANCH}")
+        if git("merge-base", "--is-ancestor", "HEAD", f"{REMOTE}/{target_branch}").returncode == 0:
+            merged = git("merge", "--ff-only", "--quiet", f"{REMOTE}/{target_branch}")
             if merged.returncode == 0:
                 pulled = (head, target)
                 head = target
             else:
                 problems.append(("pull-failed", f"git merge --ff-only failed: {(merged.stderr or merged.stdout).strip()[:300]}"))
         else:
-            ahead = git("rev-list", "--count", f"{REMOTE}/{BRANCH}..HEAD").stdout.strip()
-            problems.append(("diverged", f"{ahead} local commit(s) are not on {REMOTE}/{BRANCH}"))
-    for link, target_path in links(repo):
-        if not target_path.exists():
-            continue
-        # The link may be the path itself or a folder above it (~/.codex linked whole).
-        if link.resolve() != target_path.resolve():
-            kind = "a copy" if link.exists() else "missing"
-            problems.append(("link", f"{short(link)} is {kind}, not a link to {short(target_path)}"))
-    return Outcome(problems, pulled, fetch_failed, head, restored)
+            ahead = git("rev-list", "--count", f"{REMOTE}/{target_branch}..HEAD").stdout.strip()
+            problems.append(("diverged", f"{ahead} local commit(s) are not on {REMOTE}/{target_branch}"))
+    if check_links:
+        for link, target_path in links(repo):
+            if not target_path.exists():
+                continue
+            # The link may be the path itself or a folder above it (~/.codex linked whole).
+            if link.resolve() != target_path.resolve():
+                kind = "a copy" if link.exists() else "missing"
+                problems.append(("link", f"{short(link)} is {kind}, not a link to {short(target_path)}"))
+    return Outcome(problems, pulled, fetch_failed, head, restored, branch=target_branch)
+
+
+def sync_extra(repo: Path, run: Runner) -> Outcome:
+    """Validate and sync one listed extra checkout on its default branch."""
+    if not repo.exists():
+        return Outcome([("missing", f"{short(repo)} does not exist")])
+    if not repo.is_dir():
+        return Outcome([("not-a-repo", f"{short(repo)} is not a directory")])
+    inside = run(["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"])
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return Outcome([("not-a-repo", f"{short(repo)} is not a git repository")])
+    return sync(repo, run, branch=None, restore_settings=False, check_links=False)
 
 
 def report_text(host: str, repo: Path, problems: list, restored: list) -> str:
@@ -292,7 +374,63 @@ def report(run: Runner, board: Optional[str], text: str, signature: str) -> str:
     return "notification"
 
 
-def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: datetime, host: str) -> int:
+def record_outcome(
+    repo: Path,
+    outcome: Outcome,
+    entry: dict,
+    state_dir: Path,
+    run: Runner,
+    board: Optional[str],
+    now: datetime,
+    host: str,
+    *,
+    primary: bool,
+    extra_problems: list = (),
+) -> None:
+    problems = list(outcome.problems) + list(extra_problems)
+    if outcome.fetch_failed:
+        since_str = entry.get("fetch_failing_since")
+        since = datetime.fromisoformat(since_str) if since_str else now
+        entry["fetch_failing_since"] = since.isoformat()
+        if now - since >= FETCH_GRACE:
+            problems.append(("fetch-failed", f"git fetch {REMOTE} {outcome.branch} has failed since {since:%Y-%m-%d %H:%M} UTC"))
+    else:
+        entry["fetch_failing_since"] = None
+    event = {"at": now.isoformat(), "head": outcome.head}
+    if not primary:
+        event["repo"] = short(repo)
+    if outcome.pulled:
+        event["pulled"] = list(outcome.pulled)
+    if outcome.restored:
+        event["restored"] = outcome.restored
+    signature = sorted({f"{kind}: {detail}" for kind, detail in problems})
+    if signature and signature != entry.get("reported", []):
+        kinds = "+".join(sorted({kind for kind, _ in problems}))
+        feedback_sig = f"config-sync:{kinds}" if primary else f"config-sync:{repo.name}:{kinds}"[:120]
+        event["reported"] = report(run, board, report_text(host, repo, problems, outcome.restored), feedback_sig)
+        event["problems"] = signature
+    entry["reported"] = signature
+    entry["head"] = outcome.head
+    if outcome.pulled or outcome.restored or "reported" in event:
+        append_event(state_dir, event)
+    prefix = "" if primary else f"{short(repo)}: "
+    for kind, detail in problems:
+        print(f"{prefix}{kind}: {detail}", file=sys.stderr)
+    for path in outcome.restored:
+        print(f"{prefix}restored the committed text of {path} (same JSON)")
+    if outcome.pulled:
+        print(f"{prefix}pulled {outcome.pulled[0][:12]}..{outcome.pulled[1][:12]}")
+
+
+def check(
+    repo: Path,
+    state_dir: Path,
+    run: Runner,
+    board: Optional[str],
+    now: datetime,
+    host: str,
+    repos_file: Optional[Path] = None,
+) -> int:
     state_path = state_dir / "state.json"
     state = load_state(state_path)
     held = holds(state_dir, now)
@@ -306,36 +444,30 @@ def check(repo: Path, state_dir: Path, run: Runner, board: Optional[str], now: d
         append_event(state_dir, {"at": now.isoformat(), "skipped": "a live suite run holds a lock", "locks": held})
         print(f"skipped: a live suite run holds {', '.join(held)}")
         return 0
-    problems = list(outcome.problems)
-    if outcome.fetch_failed:
-        since = datetime.fromisoformat(state.fetch_failing_since) if state.fetch_failing_since else now
-        state.fetch_failing_since = since.isoformat()
-        if now - since >= FETCH_GRACE:
-            problems.append(("fetch-failed", f"git fetch {REMOTE} {BRANCH} has failed since {since:%Y-%m-%d %H:%M} UTC"))
-    else:
-        state.fetch_failing_since = None
-    event = {"at": now.isoformat(), "head": outcome.head}
-    if outcome.pulled:
-        event["pulled"] = list(outcome.pulled)
-    if outcome.restored:
-        event["restored"] = outcome.restored
-    signature = sorted({f"{kind}: {detail}" for kind, detail in problems})
-    if signature and signature != state.reported:
-        kinds = "+".join(sorted({kind for kind, _ in problems}))
-        event["reported"] = report(run, board, report_text(host, repo, problems, outcome.restored), f"config-sync:{kinds}")
-        event["problems"] = signature
-    state.reported = signature
+    repos_path = repos_file if repos_file is not None else state_dir / REPOS_FILE
+    extra_repos, repos_error = load_repos(repos_path, repo)
+    extra_problems = [("repos-file", repos_error)] if repos_error else []
+    primary_entry = {
+        "reported": state.reported,
+        "fetch_failing_since": state.fetch_failing_since,
+        "head": state.head,
+    }
+    record_outcome(repo, outcome, primary_entry, state_dir, run, board, now, host, primary=True, extra_problems=extra_problems)
+    state.reported = primary_entry["reported"]
+    state.fetch_failing_since = primary_entry["fetch_failing_since"]
+    state.head = primary_entry["head"]
+    if repos_error is None:
+        new_repos_state = {}
+        for extra in extra_repos:
+            key = short(extra)
+            existing = state.repos.get(key)
+            entry = dict(existing) if isinstance(existing, dict) else {"reported": [], "fetch_failing_since": None, "head": None}
+            extra_outcome = sync_extra(extra, run)
+            record_outcome(extra, extra_outcome, entry, state_dir, run, board, now, host, primary=False)
+            new_repos_state[key] = entry
+        state.repos = new_repos_state
     state.last_check = now.isoformat()
-    state.head = outcome.head
     save_state(state_path, state)
-    if outcome.pulled or outcome.restored or "reported" in event:
-        append_event(state_dir, event)
-    for kind, detail in problems:
-        print(f"{kind}: {detail}", file=sys.stderr)
-    for path in outcome.restored:
-        print(f"restored the committed text of {path} (same JSON)")
-    if outcome.pulled:
-        print(f"pulled {outcome.pulled[0][:12]}..{outcome.pulled[1][:12]}")
     return 0
 
 
@@ -385,9 +517,19 @@ def run_uninstall(run: Runner) -> int:
     return 0
 
 
-def run_status(state_dir: Path, run: Runner) -> int:
+def run_status(state_dir: Path, run: Runner, repos_file: Optional[Path] = None) -> int:
     loaded = run(["launchctl", "print", f"gui/{os.getuid()}/{LABEL}"]).returncode == 0
-    print(json.dumps({"state": asdict(load_state(state_dir / "state.json")), "launch_agent_loaded": loaded}, indent=2))
+    repos_path = repos_file if repos_file is not None else state_dir / REPOS_FILE
+    extra_repos, repos_error = load_repos(repos_path, DEFAULT_REPO)
+    payload = {
+        "state": asdict(load_state(state_dir / "state.json")),
+        "repos_file": short(repos_path),
+        "extra_repos": [short(path) for path in extra_repos],
+        "launch_agent_loaded": loaded,
+    }
+    if repos_error:
+        payload["repos_error"] = repos_error
+    print(json.dumps(payload, indent=2))
     return 0
 
 
@@ -397,11 +539,13 @@ def parse_args(argv: list) -> argparse.Namespace:
     check_parser = commands.add_parser("check", help="fetch, fast-forward when safe, and report problems")
     check_parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     check_parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    check_parser.add_argument("--repos-file", type=Path, default=None, help=f"host-local extra checkouts list (default: <state-dir>/{REPOS_FILE})")
     install = commands.add_parser("install", help="write and load the LaunchAgent")
     install.add_argument("--dry-run", action="store_true", help="print the plist instead")
     commands.add_parser("uninstall", help="unload and remove the LaunchAgent")
     status = commands.add_parser("status", help="print the state and whether the agent is loaded")
     status.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    status.add_argument("--repos-file", type=Path, default=None, help=f"host-local extra checkouts list (default: <state-dir>/{REPOS_FILE})")
     return parser.parse_args(argv)
 
 
@@ -410,12 +554,14 @@ def main(argv: Optional[list] = None, run: Runner = run_command, now: Optional[d
     if args.command == "check":
         board = shutil.which("board", path=SEARCH_PATH)
         moment = now or datetime.now(timezone.utc)
-        return check(args.repo.expanduser(), args.state_dir.expanduser(), run, board, moment, socket.gethostname().split(".")[0])
+        repos_file = args.repos_file.expanduser() if args.repos_file is not None else None
+        return check(args.repo.expanduser(), args.state_dir.expanduser(), run, board, moment, socket.gethostname().split(".")[0], repos_file=repos_file)
     if args.command == "install":
         return run_install(run, args.dry_run)
     if args.command == "uninstall":
         return run_uninstall(run)
-    return run_status(args.state_dir.expanduser(), run)
+    repos_file = args.repos_file.expanduser() if args.repos_file is not None else None
+    return run_status(args.state_dir.expanduser(), run, repos_file=repos_file)
 
 
 if __name__ == "__main__":
