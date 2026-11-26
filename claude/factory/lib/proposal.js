@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { childEnv, runProcess } from "../../tests/lib/process.js";
 import { initEvent } from "../../tests/lib/stream.js";
+import { antigravityBrainRoots } from "./antigravity.js";
 import { stateDir } from "./state.js";
 import { projectsRoot } from "./transcripts.js";
 
@@ -16,7 +17,7 @@ const LEAK_RUN = 40;
 // The proposer runs with the user's configuration; whatever it allows, these stay unread:
 // credentials, and the private sources the leak check never sees (raw transcripts, the skill
 // feedback notes taken from them, the state folder with its scores and evidence files, the work board's local cache).
-const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**", "~/.local/share/agent-skills/skill-feedback/**", "~/.local/share/agent-board/**"];
+const DENY_READ = ["~/.ssh/**", "~/.aws/**", "~/.gnupg/**", "~/.config/gh/**", "~/.netrc", "~/.claude.json", "~/.docker/config.json", "~/.claude/projects/**", "~/.codex/**", "~/.t3/userdata/providers/antigravity/**", "~/.local/share/agent-skills/skill-feedback/**", "~/.local/share/agent-board/**"];
 
 // Read deny rules for DENY_READ and the given absolute folders. A rule takes an absolute
 // path as //path; a folder under home gets its ~/ form as well.
@@ -132,7 +133,17 @@ export async function publish(clone, { branch, base, title, body, onPushed }) {
 }
 
 // The board client keeps its token and cache in BOARD_HOME when that is set.
-export const proposerSettings = () => JSON.stringify({ permissions: { deny: readDenies([stateDir(), projectsRoot(), ...(process.env.BOARD_HOME ? [process.env.BOARD_HOME] : [])]) } });
+export const proposerSettings = () => JSON.stringify({
+  permissions: {
+    deny: readDenies([
+      stateDir(),
+      projectsRoot(),
+      ...antigravityBrainRoots(),
+      ...(process.env.T3CODE_HOME ? [join(process.env.T3CODE_HOME, "userdata", "providers", "antigravity")] : []),
+      ...(process.env.BOARD_HOME ? [process.env.BOARD_HOME] : []),
+    ]),
+  },
+});
 
 // Every file under a clone's .git with its size and modification time. Only the proposer
 // runs between two readings, so a difference means it wrote there: a hook or a config
