@@ -450,14 +450,16 @@ instead. Edit the JSON file to change the reasons. Claude Code (`claude/settings
 only the MCP `ask_user` tool (not the `board ask` CLI); Antigravity (`gemini/hooks.json`) checks
 both lazy/eager MCP `ask_user` calls (`call_mcp_tool`, `mcp_board_ask_user`) and `board ask` CLI
 invocations through `run_command`.
-open-items (Claude Code only) runs at `Stop` and reads the reply. In a repository with a
-work board, it blocks the stop once when an item under an open-item heading, such as
-"Limits", "Not verified" or "Next steps", names no task or ask and no reason why it needs no
-work. This is the Work board rule of `claude/CLAUDE.md` that each open item of a reply names
-the task or ask that holds it. The board's own Stop reminder fires only after `task_done` or
-a release. The hook is a reminder: the next stop passes. Edit
-`claude/hooks/open-items.json` to change the heading and exempt patterns, or set `enabled`
-to `false` to turn it off.
+open-items (Claude Code and Antigravity via `gemini/hooks/run-hook.js`) runs at `Stop` and
+reads the reply. In a repository with a work board, it checks the reply's `Open items:` label
+section (no heading scan or lead-label scan): it blocks the stop once when a tool-using turn
+(read from the transcript) has no `Open items:` label or an empty one, or when an entry under
+`Open items:` names no task or ask and no reason why it needs no work (`none` or
+`no action: <reason>`). This enforces the Work board rule of `claude/CLAUDE.md` and
+`gemini/GEMINI.md` across every turn, including after `task_done`, no-task threads and
+delegated children. The board's own Stop reminder fires only after `task_done` or a release.
+The hook is a reminder: the next stop passes. Edit `claude/hooks/open-items.json` to change
+the exempt patterns, or set `enabled` to `false` to turn it off.
 deck-view (Claude Code only) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
 renders a deck with LibreOffice (`soffice`) and `pdftoppm` into one HTML page that shows
 one slide at a time, with Prev and Next buttons and the arrow keys. It prints the page's

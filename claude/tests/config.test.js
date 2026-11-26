@@ -730,16 +730,18 @@ describe("settings", () => {
     expect(section("Autonomy")).toContain("Only an `only-me` ask may hand me an action. A hook checks board `ask_user` calls against these rules; follow them in the `board ask` CLI and in chat too.");
   });
 
-  // The open-items check covers a reply that lists unfinished work without a task_done, which the
-  // board's own Stop reminder never sees. It reads its patterns at run time.
+  // The open-items check covers every tool-using reply in a board repository, including turns
+  // after task_done, no-task threads and delegated children. It checks the Open items: label
+  // section (no heading scan) and reads its exempt patterns at run time (dotfiles-535).
   test("claude/settings.json runs the open-items check at Stop, and its patterns are tracked and valid", () => {
     const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
     expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/open-items.js"')).toHaveLength(1);
     expect(tracked("claude/hooks/open-items.json")).toBe(true);
     const config = JSON.parse(read("claude/hooks/open-items.json"));
     expect(config.enabled).toBe(true);
-    for (const source of [...config.headings, ...config.exempt]) expect(() => new RegExp(source, "i")).not.toThrow();
-    expect(config.headings.some((source) => new RegExp(source, "i").test("Limits"))).toBe(true);
+    expect(config.headings).toBeUndefined();
+    expect(config.exempt.length).toBeGreaterThan(0);
+    for (const source of config.exempt) expect(() => new RegExp(source, "i")).not.toThrow();
   });
 
   // The user asked to see each slide deck edit without asking (2026-11-19).
@@ -984,13 +986,16 @@ describe("work board", () => {
 
   // A report listed five items under "What still depends on you"; one had a task id, and
   // the other four had no task or ask until the user asked whether all was tracked
-  // (dotfiles-427). An id on each open item makes an unfiled one visible in the report.
+  // (dotfiles-427). A random audit of 108 closed tasks found 97 of 116 unfiled items in turns
+  // after task_done and 74 in prose with no heading; requiring an Open items: label on every
+  // tool-using reply replaces heading guessing (dotfiles-535).
   // A verdict judge cut "Chinese-language scholarship in general" from guwen-8, a part of an
   // agent's plan for the owner's topic. Nobody filed it; the survey said "No action: the
   // decision on guwen-8 cut" it, and the owner met a decision they never made (dotfiles-785).
-  test("each open item of a reply names the task or ask that holds it", () => {
-    const rule = "- In your reply, each open item (a limit that needs work, a follow-up, a suggestion, a step that waits on me) names its task or ask. File an item with no id, or state why it needs no work; an agent's cut or verdict is no reason and not my decision. When filing fails, report the item instead. Don't ask before filing. A handoff's `next` holds only your claimed task's first action.\n";
+  test("each tool-using reply ends with an Open items label naming ids, none or no action", () => {
+    const rule = "- End each tool-using reply with an `Open items:` label (every turn, also after `task_done`, no-task threads and delegated children): each entry names its task or ask id, or says `none` or `no action: <reason>` (an agent's cut or verdict is no reason and not my decision). When filing fails, report the item instead. Don't ask before filing. A handoff's `next` holds only your claimed task's first action.\n";
     expect(section("Work board")).toContain(rule);
+    expect(globalInstructions.match(/`Open items:`/g)).toHaveLength(1);
     expect(globalInstructions).not.toContain("Name what you filed in your reply");
   });
 
