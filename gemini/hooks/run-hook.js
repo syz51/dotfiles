@@ -5,7 +5,8 @@
  * Usage: bun run-hook.js <event> <hook-name[,hook-name,...]>
  *   event:     pre-tool-use | post-tool-use | session-start | stop
  *   hook-name: guard-git-push | guard-runtimes | guard-main-checkout | guard-pr-merge |
- *              guard-asks | auto-merge | stale-base | open-items | deck-view | guard-wakeup
+ *              guard-asks | board-launch | auto-merge | stale-base | open-items | deck-view |
+ *              guard-wakeup
  *
  * Hot-path command guards (guard-git-push, guard-runtimes, guard-main-checkout,
  * guard-pr-merge, guard-asks, auto-merge) execute in-process via their exported functions so a
@@ -516,6 +517,15 @@ function normalizeForPrefilter(command) {
 const DIRECT_ASK_TOOLS = new Set(["mcp_board_ask_user", "mcp__board__ask_user", "ask_user"]);
 const DIRECT_PR_MERGE_TOOLS = new Set(["mcp_t3-code_pull_request_merge", "mcp__t3-code__pull_request_merge"]);
 const DIRECT_PR_CREATE_TOOLS = new Set(["mcp_t3-code_pull_request_create", "mcp__t3-code__pull_request_create"]);
+const BOARD_LAUNCH_TOOLS = new Set(["delegate_task", "t3_thread_launch", "create_threads"]);
+const DIRECT_BOARD_LAUNCH_TOOLS = new Map([
+  ["mcp_t3-code_delegate_task", "delegate_task"],
+  ["mcp_t3-code_t3_thread_launch", "t3_thread_launch"],
+  ["mcp_t3-code_create_threads", "create_threads"],
+  ["mcp__t3-code__delegate_task", "delegate_task"],
+  ["mcp__t3-code__t3_thread_launch", "t3_thread_launch"],
+  ["mcp__t3-code__create_threads", "create_threads"],
+]);
 
 function unwrapMcpArgs(rawArgs, { failClosed = false } = {}) {
   if (rawArgs === undefined) return {};
@@ -575,6 +585,44 @@ export function extractMcpPrMergeInput(agyInput) {
  */
 export function extractMcpPrCreateInput(agyInput) {
   return extractMcpToolInput(agyInput, "t3-code", "pull_request_create", DIRECT_PR_CREATE_TOOLS);
+}
+
+/**
+ * Normalizes an Antigravity PreToolUse payload for a T3 thread launch tool (`delegate_task`,
+ * `t3_thread_launch`, or `create_threads`), unwrapping lazy `call_mcp_tool` invocations into the
+ * eager `mcp_t3-code_<tool>` shape expected by `board hook pre-tool-use --runtime antigravity`.
+ * Returns `null` when the tool call is not a T3 launch tool.
+ */
+export function normalizeBoardLaunchInput(agyInput) {
+  const toolName = agyInput?.toolCall?.name ?? "";
+  const args = agyInput?.toolCall?.args;
+  let canonicalTool = null;
+  let unwrappedArgs = null;
+
+  if (toolName === "call_mcp_tool") {
+    const serverName = args?.ServerName ?? args?.serverName;
+    const mcpToolName = args?.ToolName ?? args?.toolName;
+    if (serverName !== "t3-code" || !BOARD_LAUNCH_TOOLS.has(mcpToolName)) {
+      return null;
+    }
+    canonicalTool = mcpToolName;
+    const rawArgs = args?.Arguments !== undefined ? args.Arguments : args?.arguments;
+    unwrappedArgs = unwrapMcpArgs(rawArgs);
+  } else if (DIRECT_BOARD_LAUNCH_TOOLS.has(toolName)) {
+    canonicalTool = DIRECT_BOARD_LAUNCH_TOOLS.get(toolName);
+    unwrappedArgs = unwrapMcpArgs(args);
+  } else {
+    return null;
+  }
+
+  return {
+    ...(agyInput && typeof agyInput === "object" ? agyInput : {}),
+    toolCall: {
+      ...(agyInput?.toolCall && typeof agyInput.toolCall === "object" ? agyInput.toolCall : {}),
+      name: `mcp_t3-code_${canonicalTool}`,
+      args: unwrappedArgs,
+    },
+  };
 }
 
 function extractToolResponse(agyInput) {
@@ -742,6 +790,38 @@ function runInProcessGuardAsks(agyInput, command, cwd, runners = {}) {
   return { decision: "allow" };
 }
 
+function runBoardLaunchHook(agyInput, hooksDir, runners = {}) {
+  const normalized = normalizeBoardLaunchInput(agyInput);
+  if (normalized === null) return { decision: "allow" };
+  if (typeof runners.boardHook === "function") {
+    const res = runners.boardHook(normalized);
+    if (res && typeof res === "object" && !Array.isArray(res) && typeof res.decision === "string") {
+      return res;
+    }
+    return { decision: "allow" };
+  }
+  const scriptPath = join(hooksDir, "board-hook.sh");
+  if (!existsSync(scriptPath)) return { decision: "allow" };
+  const run = spawnSync("/bin/sh", [scriptPath, "pre-tool-use", "antigravity"], {
+    input: JSON.stringify(normalized),
+    encoding: "utf8",
+    timeout: 9_000,
+    env: process.env,
+  });
+  if (run.error || run.signal || run.status !== 0 || !run.stdout?.trim()) {
+    return { decision: "allow" };
+  }
+  try {
+    const parsed = JSON.parse(run.stdout.trim());
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && typeof parsed.decision === "string") {
+      return parsed;
+    }
+  } catch {
+    // Fail open on invalid JSON, matching board-hook.sh semantics.
+  }
+  return { decision: "allow" };
+}
+
 const IN_PROCESS_PRE = new Set([
   "guard-git-push",
   "guard-runtimes",
@@ -807,6 +887,11 @@ export function runAdaptedHook(
       // Isolate each guard so a crash in an earlier fail-open guard never skips later guards
       // (especially fail-closed guard-pr-merge).
       try {
+        if (hookName === "board-launch") {
+          const res = runBoardLaunchHook(agyInput, hooksDir, runners);
+          if (res && res.decision === "deny") return res;
+          continue;
+        }
         if (useInProcess && IN_PROCESS_PRE.has(hookName)) {
           if (hookName === "guard-asks") {
             const res = runInProcessGuardAsks(agyInput, command, cwd, runners);
