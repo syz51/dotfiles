@@ -22,7 +22,7 @@ there is no repository-wide installer.
 | `codex/`                 | Dormant example Codex configuration, hooks, and keybindings.                     |
 | `claude/`                | Shared Bash guards, six dotfiles-owned skills, and dormant Claude Code config.   |
 | `claude/factory/`        | Metrics, scoring, proposals, benchmarks, audit and friction capture for the setup. |
-| `agent-board/`           | Host telemetry/schedule example snippets and upgrade configuration.              |
+| `agent-board/`           | Host `[telemetry]` and `[schedules]` example snippet (`telemetry-schedules.example.toml`). |
 | `t3code/`                | T3 Code routines that settle idle subagent threads, prune finished branches, and sweep Dependabot PRs. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
 | `config-sync/`           | A LaunchAgent that fast-forwards each Mac's checkout to main and reports blockers. |

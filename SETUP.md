@@ -479,7 +479,7 @@ section (no heading scan or lead-label scan): it blocks the stop once when a too
 delegated children. The board's own Stop reminder fires only after `task_done` or a release.
 The hook is a reminder: the next stop passes. Edit `claude/hooks/open-items.json` to change
 the exempt patterns, or set `enabled` to `false` to turn it off.
-deck-view (Claude Code only) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
+deck-view (Claude Code and Antigravity via `gemini/hooks/run-hook.js`) also runs at `Stop`. `claude/bin/deck-view <deck.pptx>`
 renders a deck with LibreOffice (`soffice`) and `pdftoppm` into one HTML page that shows
 one slide at a time, with Prev and Next buttons and the arrow keys. It prints the page's
 path for the T3 `html_render` tool and records the deck's sha256 in
@@ -718,14 +718,14 @@ Most friction never gets reported, so `friction run` looks for it. It reads the 
 sessions of Antigravity (`~/.t3/userdata/providers/antigravity`), Claude Code and Codex turns that ended since its last run (at most 48 hours
 back), skipping automation, the factory's own runs and turns that ran the `feedback` tool
 or `board feedback`. A turn has ended at the next prompt, when Claude Code's Stop hooks let
-it end or Codex marks it complete; one with no such mark counts as ended after 6 hours
+it end, when Antigravity writes a non-empty `PLANNER_RESPONSE`, or when Codex marks it complete; one with no such mark counts as ended after 6 hours
 without activity, and until then holds the cursor. Turns with board or other failed calls
 (a search that found nothing does not count), hook blocks, retries of the same program, or
 phrases such as "workaround", "not relevant" or "不得不" in the agent's own text score
 points. A turn whose only friction is board errors the server counts itself scores
 nothing: answers with a server error code (`invalid: …`) and text the CLI refused before
 sending (`(not sent)`), which the board turns into `signal` items. Refusals no server saw,
-such as a runtime's schema check, still count. Up to 8 of those scoring at least 4 go to a restricted judge (Haiku by default,
+such as a runtime's schema check, still count. Up to 8 of those scoring at least 4 go to a restricted judge (`gemini-4-neon` at `low` effort by default,
 $0.05 per call, $0.30 per run). Each finding is filed once as the `claude:factory-friction`
 agent with `board feedback --source capture --about <id> --activity <stage>`, in a few
 factual lines quoting at most one error line and naming the session, turn and project
