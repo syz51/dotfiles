@@ -50,8 +50,9 @@ other change stays. Otherwise it leaves the checkout as it is and files one Feed
 report about `config-sync` per distinct set of problems: off `main`, tracked changes,
 diverged, a fast-forward that failed (an untracked file in the way, say), a failed
 restore, a fetch failing for over 24 hours, or an instruction link (`~/.claude`, Codex's
-`AGENTS.md`) that is a copy or missing. A Mac without the `claude` command, such as the
-Pro, needs no `~/.claude` link. It uses plain `board feedback` where the
+`AGENTS.md`) that is a copy or missing. A Mac without the `claude` command (and no `~/.claude`)
+needs no `~/.claude` link, and a Mac without the `codex` command (and no `$CODEX_HOME` / `~/.codex`)
+needs no Codex `AGENTS.md` link. It uses plain `board feedback` where the
 installed CLI lacks `--about`, and a macOS notification when the board is unreachable.
 A live suite run fails when `~/.claude` changes under it. So each live suite holds a lock
 from setup to teardown, renewed before each session:

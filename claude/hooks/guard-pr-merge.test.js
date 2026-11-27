@@ -87,6 +87,15 @@ describe("refuses", () => {
   test.each([
     ["gh pr merge 12 --admin", {}, "--admin bypasses"],
     ["gh pr merge 12 --squash --admin=true", {}, "--admin bypasses"],
+    // a short value flag with trailing `=` keeps `=` as its value in pflag and does not swallow the next word (dotfiles-874)
+    ["gh pr merge 12 -t= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -b= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -R= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -sdR= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -A= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -F= --admin", {}, "--admin bypasses"],
+    ["gh pr merge 12 -b= --unknown-flag", {}, "does not know the option"],
+    ["gh pr merge 12 -t= --unknown-flag", {}, "does not know the option"],
     // env -S puts its words first, so the words after the string are the merge's arguments (dotfiles-339)
     ["env -S 'gh pr' merge 12 -R o/r --admin", {}, "--admin bypasses"],
     ["env -S 'gh pr merge 12 -R o/r' --admin", {}, "--admin bypasses"],
@@ -332,6 +341,8 @@ describe("resolves the pull request", () => {
     ["gh pr merge --squash", ["pr", "view", ...json]],
     ["gh pr merge 12 -R o/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
     ["gh pr merge 12 -Ro/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
+    ["gh pr merge 12 -R=o/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
+    ["gh pr merge -t= 12", ["pr", "view", "12", ...json]],
     ["gh pr merge 12 --repo=o/r", ["pr", "view", "12", "--repo", "o/r", ...json]],
     ["gh pr -R o/r merge 12", ["pr", "view", "12", "--repo", "o/r", ...json]],
     ["gh pr merge -b 'body text' -t subject -- 12", ["pr", "view", "12", ...json]],
@@ -731,6 +742,14 @@ describe("CI that runs on every pull request", () => {
 test("parseMerge reads short option groups and values", () => {
   expect(parseMerge(["-sdR", "o/r", "12"])).toMatchObject({ repo: "o/r", selector: "12", admin: false });
   expect(parseMerge(["-b", "--admin", "12"])).toMatchObject({ admin: false, selector: "12" });
+  expect(parseMerge(["12", "-t=", "--admin"])).toMatchObject({ selector: "12", admin: true, unknown: undefined });
+  expect(parseMerge(["12", "-b=", "--unknown-flag"])).toMatchObject({ selector: "12", unknown: "--unknown-flag" });
+  expect(parseMerge(["12", "-R=", "--admin"])).toMatchObject({ selector: "12", repo: "=", admin: true });
+  expect(parseMerge(["-sdR=", "--admin", "12"])).toMatchObject({ selector: "12", repo: "=", admin: true });
+  expect(parseMerge(["12", "-R=o/r"])).toMatchObject({ selector: "12", repo: "o/r" });
+  expect(parseMerge(["12", "-R==o/r"])).toMatchObject({ selector: "12", repo: "=o/r" });
+  expect(parseMerge(["12", "-t=", "--match-head-commit", "abc"])).toMatchObject({ selector: "12", matchHead: "abc" });
+  expect(parseMerge(["-t=", "12"])).toMatchObject({ selector: "12", selectorIndex: 1 });
   expect(parseMerge(["--auto=false", "12"])).toMatchObject({ auto: false });
   expect(parseMerge(["12", "--match-head-commit", "abc"])).toMatchObject({ matchHead: "abc", selector: "12" });
   expect(parseMerge(["--match-head-commit=abc", "12"])).toMatchObject({ matchHead: "abc", selector: "12" });
@@ -742,6 +761,7 @@ describe("pins the merge to the head commit it checked", () => {
   test.each([
     [`gh pr merge 12 --squash --match-head-commit ${HEAD}`, {}],
     [`gh pr merge 12 --squash --match-head-commit=${HEAD}`, {}],
+    [`gh pr merge 12 -t= --match-head-commit ${HEAD}`, {}],
     [`cd /other && gh pr merge 12 -R o/r --match-head-commit ${HEAD} --delete-branch`, {}],
     // GitHub waits for the required checks of whatever head it merges, so this --auto needs no pin
     ["gh pr merge 12 --auto --squash", { branch: PROTECTED, view: { mergeStateStatus: "BLOCKED" } }],
