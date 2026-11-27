@@ -15,7 +15,7 @@ spec.loader.exec_module(machine)
 
 
 class MachineTests(unittest.TestCase):
-    def window(self, title='roy@laptop.local:~/.config', **extra):
+    def window(self, title='user@laptop.local:~/.config', **extra):
         return dict(success=True, focused=True, title=title, shell_pgid=10, **extra)
 
     def rows(self, ssh=False):
@@ -25,7 +25,7 @@ class MachineTests(unittest.TestCase):
             rows[20] = (10, 20, 20, 'ttys001', '/usr/bin/ssh')
         return rows
 
-    def render(self, title='roy@laptop.local:~/.config', ssh=False, command='ssh build.example.org'):
+    def render(self, title='user@laptop.local:~/.config', ssh=False, command='ssh build.example.org'):
         return machine.machine(self.window(title), self.rows(ssh), 'laptop.local', lambda _: command)
 
     def test_local_prompt_and_opaque_local_app(self):
@@ -34,13 +34,13 @@ class MachineTests(unittest.TestCase):
             self.assertEqual(self.render(title), 'laptop')
 
     def test_remote_prompt_preferred_to_alias(self):
-        self.assertEqual(self.render('roy@actual.example.org:/srv', True), 'ssh actual')
+        self.assertEqual(self.render('user@actual.example.org:/srv', True), 'ssh actual')
 
     def test_ssh_enter_editor_and_exit_have_no_cached_host(self):
         self.assertEqual(self.render(ssh=True), 'ssh build')  # local title still present
         self.assertEqual(self.render('nvim project', True), 'ssh build')
         self.assertEqual(self.render('nvim project'), 'laptop')
-        self.assertEqual(self.render('roy@build:/srv'), 'host ?')  # stale SSH title
+        self.assertEqual(self.render('user@build:/srv'), 'host ?')  # stale SSH title
         self.assertEqual(self.render(), 'laptop')
 
     def test_unknown_destination_never_claims_local(self):
@@ -85,7 +85,7 @@ class MachineTests(unittest.TestCase):
         self.assertEqual(machine.machine(window, self.rows(), 'laptop', lambda _: ''), 'host ?')
         self.assertEqual(machine.machine(self.window(), {}, 'laptop', lambda _: ''), 'host ?')
         # A newly focused pane is evaluated independently of the previous one.
-        second = self.window('roy@other:/srv')
+        second = self.window('user@other:/srv')
         second['shell_pgid'] = 99
         rows = {99: (1, 99, 100, 'ttys002', '/bin/zsh'),
                 100: (99, 100, 100, 'ttys002', '/usr/bin/ssh')}
@@ -95,8 +95,8 @@ class MachineTests(unittest.TestCase):
         for value in ('bad\x1b[31m', 'bad\nlabel', 'bad\x9b31m', '-option', 'a/b', '机器'):
             self.assertIsNone(machine.host(value))
             self.assertEqual(self.render('nvim', True, f'ssh "{value}"'), 'ssh ?')
-        self.assertEqual(self.render('roy@evil\x1b[31m:/tmp', True), 'ssh build')
-        value = self.render('roy@' + 'x' * 80 + ':/tmp', True)
+        self.assertEqual(self.render('user@evil\x1b[31m:/tmp', True), 'ssh build')
+        value = self.render('user@' + 'x' * 80 + ':/tmp', True)
         self.assertEqual(len(value), 24)
         self.assertTrue(value.endswith('…'))
         self.assertEqual(machine.label('10.0.0.2', True), 'ssh 10.0.0.2')
