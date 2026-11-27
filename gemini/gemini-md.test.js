@@ -204,6 +204,7 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(storageDoc).toContain("`desktop` MCP server");
     expect(storageDoc).toContain("~/.local/bin/desktop mcp");
     expect(storageDoc).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
+    expect(storageDoc).toContain("Feedback `about` `agent-desktop`");
   });
 
   test("configures official gemini-notebook remote MCP with ADC and no hardcoded headers", () => {

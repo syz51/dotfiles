@@ -27,6 +27,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 ## Desktop MCP
 
 - Desktop (`desktop` MCP server, lazy-loaded): runs `~/.local/bin/desktop mcp` (`agent-desktop` Rust client talking to `/Applications/AgentDesktop.app` `desktopd`; falls back to `~/.config/claude/marketplace/computer-use/server/desktop.js` on machines without `agent-desktop`). Prefer `snapshot`/`find` (Accessibility tree `@eN` refs) + batched `act` with `focus_mode: "background"` or `"auto"`, and call `session_end` when finished (`release` on the legacy `desktop.js` fallback).
+- Report friction, bugs, or missing capabilities in `desktop`/`desktopd` via Feedback `about` `agent-desktop` (host, tool/command, error or latency, workaround) so triage routes improvements to the `agent-desktop` board.
 
 ## Gemini Notebook MCP & `gnotebook`
 
