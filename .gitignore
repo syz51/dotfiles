@@ -75,6 +75,9 @@ uv
 /cursor/cli-config.json
 /television/config.toml
 /ghostty/config.local
+/rex/local.lua
+/rex/ssh_config
+/rex/terminfo-hosts
 /t3/
 /muse
 /agent-board/upgrade.conf

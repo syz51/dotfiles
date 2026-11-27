@@ -214,6 +214,23 @@ _uv; _uvx
         result = self.source(XDG_CACHE_HOME=str(unusable))
         self.assertIn('cache unavailable', result.stderr)
 
+    def test_rex_completions_are_cached_and_autoloaded(self):
+        rex_bin = self.generator('rex-one', 'rex', 'one')
+        (self.bin / 'rex').symlink_to(rex_bin.name)
+        script = '''typeset -gA _comps
+compdef() { _comps[$2]=$1; }
+source "$1"
+print -r -- "rex:${_comps[rex]}"
+print -r -- "deferred:${${functions[_rex]}[(w)1,(w)3]}"
+_rex
+'''
+        result = self.zsh(script, ROOT / 'completions.zsh')
+        self.assertIn('rex:_rex', result.stdout)
+        self.assertIn('deferred:builtin autoload -X', result.stdout)
+        self.assertIn('completed:rex:one', result.stdout)
+        self.assertEqual(result.stderr, '')
+        self.assertIn('_rex', {p.name for p in self.cache.iterdir()})
+
 
 class InitCacheTests(FixtureTest):
     """_shell_cache keys and the top-level semantics of sourcing its output."""
