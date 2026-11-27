@@ -18,15 +18,18 @@ there is no repository-wide installer.
 | `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
 | `mpv/`                   | Playback settings, uosc controls, thumbfast thumbnails, and bundled assets.      |
-| `codex/`                 | Example Codex configuration, hooks, and keybindings.                             |
-| `claude/`                | Claude Code instructions, subagents, settings, Bash guards, and six skills.      |
+| `gemini/`                | Antigravity / Gemini 4 Neon instructions, hooks adapter, MCP config, `agy-run` and `gnotebook`. |
+| `codex/`                 | Dormant example Codex configuration, hooks, and keybindings.                     |
+| `claude/`                | Shared Bash guards, six dotfiles-owned skills, and dormant Claude Code config.   |
 | `claude/factory/`        | Metrics, scoring, proposals, benchmarks, audit and friction capture for the setup. |
-| `t3code/`                | A T3 Code routine that settles idle subagent threads and prunes finished branches. |
+| `agent-board/`           | Host `[telemetry]` and `[schedules]` example snippet (`telemetry-schedules.example.toml`). |
+| `t3code/`                | T3 Code routines that settle idle subagent threads, prune finished branches, and sweep Dependabot PRs. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
 | `config-sync/`           | A LaunchAgent that fast-forwards each Mac's checkout to main and reports blockers. |
+| `cargo/` & `kache/`      | User-wide Cargo and Kache settings that shrink Rust builds and cache artifacts.  |
 | `git/`                   | Shared Git ignore patterns, and settings that `~/.gitconfig` includes.           |
 | `setups.toml`            | Every setup on both Macs, with its owner, for routing agents' friction reports.  |
-| `CLAUDE.md`              | Repository instructions for Claude Code.                                         |
+| `CLAUDE.md` / `AGENTS.md` | Repository instructions for coding agents (`AGENTS.md` links to `CLAUDE.md`).   |
 
 Original contributions are [MIT licensed](LICENSE). Bundled and adapted code
 retains its upstream terms; see [third-party notices](THIRD_PARTY_NOTICES.md).
