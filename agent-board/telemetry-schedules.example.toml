@@ -1,5 +1,6 @@
 # Example `[telemetry]` and `[schedules]` snippet for `~/.local/share/agent-board/config.toml`.
-# Copy and customize per host (private host snippets live in `~/.config/local/telemetry-schedules.<host>.toml` when present).
+# Copy and customize per host (private host snippets live in `~/.config/local/telemetry-schedules.<host>.toml` when present),
+# replacing `<HOME>` with your local `$HOME` path in both `[telemetry.version_probes]` and `[schedules]`.
 # Streamed automatically every 60s by `board watch` and on demand via `POST /v1/health/refresh`.
 
 [telemetry]
@@ -9,19 +10,21 @@ ttl_secs = 300
 tailscale = true
 launchd_services = [
   "dev.agent-board.watch",
+  "com.syz.agent-desktop",
   "ninja.kunobi.kache",
 ]
 
 [telemetry.version_probes]
 t3code = ["defaults", "read", "/Applications/T3 Code (Beta).app/Contents/Info.plist", "CFBundleShortVersionString"]
+agent_desktop = ["<HOME>/.local/bin/desktop", "--version"]
 
 [schedules]
 enabled = true
 launchd = true
-# Replace <HOME> with your local $HOME path when copying into ~/.local/share/agent-board/config.toml.
 t3_state_db = "<HOME>/.t3/userdata/statev2.sqlite"
 launchd_exclude = [
   "dev.agent-board.watch",
+  "com.syz.agent-desktop",
   "ninja.kunobi.kache",
 ]
 
