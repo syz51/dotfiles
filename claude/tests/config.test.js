@@ -1020,6 +1020,8 @@ describe("work board", () => {
     expect(setups.t3.owner).toEqual({ repo: "github.com/syz51/t3code", board: "t3code" });
     expect(setups.t3.covers.filter(isPath)).toEqual([]);
     expect(setups["t3-scripts"]).toMatchObject({ covers: ["t3code", "the thread cleanup and branch pruning routines kept in dotfiles, not the T3 Code app"], owner: { repo: "github.com/syz51/dotfiles", board: "dotfiles" } });
+    expect(setups["agent-desktop"].owner).toEqual({ repo: "github.com/syz51/agent-desktop", board: "agent-desktop" });
+    expect(setups["agent-desktop"].covers.filter(isPath)).toEqual([]);
   });
 
   // Filing is not a change to the work, so read-only work files too. Subagents run under
