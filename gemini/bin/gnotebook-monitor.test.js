@@ -1,12 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildLaunchAgentPlist,
   diffSnapshots,
+  FETCH_RETRY_DELAYS_MS,
+  fetchCurrentSnapshot,
   formatReleaseTask,
   loadState,
+  main,
   parseDiscoverySnapshot,
   parseMcpToolsHtml,
   parseMonitorCli,
@@ -213,7 +217,7 @@ describe("gnotebook-monitor parsers and diffing", () => {
     expect(task.body).toContain("Source.driveContent");
   });
 
-  test("buildLaunchAgentPlist produces valid escaped XML and parseMonitorCli validates flags", () => {
+  test("buildLaunchAgentPlist defaults to weekly StartCalendarInterval with RunAtLoad=false and parseMonitorCli validates flags", async () => {
     const plist = buildLaunchAgentPlist({
       bunPath: "/Users/test/.bun/bin/bun",
       scriptPath: "/Users/test/.config/gemini/bin/gnotebook-monitor.js",
@@ -221,13 +225,40 @@ describe("gnotebook-monitor parsers and diffing", () => {
       searchPath: "/Users/test/.cargo/bin:/Users/test/.bun/bin:/usr/bin",
     });
     expect(plist).toContain("<string>com.syz51.gnotebook-monitor</string>");
-    expect(plist).toContain("<integer>604800</integer>");
+    expect(plist).toContain("<key>StartCalendarInterval</key>");
+    expect(plist).toMatch(/<key>Weekday<\/key>\s*<integer>1<\/integer>/);
+    expect(plist).toMatch(/<key>Hour<\/key>\s*<integer>10<\/integer>/);
+    expect(plist).toMatch(/<key>Minute<\/key>\s*<integer>0<\/integer>/);
+    expect(plist).toMatch(/<key>RunAtLoad<\/key>\s*<false\/>/);
+    expect(plist).not.toContain("<key>StartInterval</key>");
+    expect(plist).not.toContain("<true/>");
     expect(plist).toContain("<string>check</string>");
     expect(plist).toContain("<string>--state-dir</string>");
     expect(plist).toContain("<string>/Users/test/.local/state/gnotebook-monitor</string>");
     expect(plist).toContain(".cargo/bin");
 
+    if (process.platform === "darwin") {
+      await withTempDir((dir) => {
+        const plistFile = join(dir, "test.plist");
+        writeFileSync(plistFile, plist);
+        const lint = spawnSync("/usr/bin/plutil", ["-lint", plistFile], { encoding: "utf8" });
+        expect(lint.status).toBe(0);
+      });
+    }
+
+    const intervalPlist = buildLaunchAgentPlist({
+      bunPath: "/Users/test/.bun/bin/bun",
+      scriptPath: "/Users/test/.config/gemini/bin/gnotebook-monitor.js",
+      stateDir: "/Users/test/.local/state/gnotebook-monitor",
+      intervalSeconds: 3600,
+    });
+    expect(intervalPlist).toMatch(/<key>StartInterval<\/key>\s*<integer>3600<\/integer>/);
+    expect(intervalPlist).toMatch(/<key>RunAtLoad<\/key>\s*<false\/>/);
+    expect(intervalPlist).not.toContain("<key>StartCalendarInterval</key>");
+
     expect(parseMonitorCli(["check", "--dry-run", "--json"]).opts.dryRun).toBe(true);
+    expect(parseMonitorCli(["install"]).opts.intervalSeconds).toBeNull();
+    expect(parseMonitorCli(["install", "--interval", "3600"]).opts.intervalSeconds).toBe(3600);
     expect(() => parseMonitorCli(["install", "--interval", "60"])).toThrow("at least 300");
     expect(() => parseMonitorCli(["check", "--state-dir"])).toThrow("--state-dir requires");
     expect(() => parseMonitorCli(["check", "--bogus"])).toThrow("Unknown flag");
@@ -376,9 +407,11 @@ describe("gnotebook-monitor end-to-end check lifecycle", () => {
         fetchImpl: makeMockFetch({ discoveryStatus: 503 }),
         runCommand: () => ({ status: 0, stdout: "", stderr: "" }),
         boardPath: "/bin/board",
+        sleep: async () => {},
       });
       expect(netErr.ok).toBe(false);
       expect(netErr.status).toBe("fetch-error");
+      expect(netErr.transient).toBe(true);
       expect(loadState(stateDir).snapshot.discovery.revision).toBe("20261121");
 
       // Board add failure does NOT advance baseline or mark reported
@@ -434,6 +467,7 @@ describe("gnotebook-monitor end-to-end check lifecycle", () => {
         fetchImpl: flakyFetch,
         runCommand: runner,
         boardPath: "/bin/board",
+        sleep: async () => {},
       });
       expect(rFlaky.status).toBe("unchanged");
       expect(rFlaky.warnings.some((w) => w.includes("probe v1beta: HTTP 503"))).toBe(true);
@@ -457,6 +491,217 @@ describe("gnotebook-monitor end-to-end check lifecycle", () => {
         expect(osaCall).toContain("on run argv");
         expect(osaCall).toContain("--");
       }
+    });
+  });
+
+  test("fetchCurrentSnapshot retries transient DNS ENOTFOUND and 503 with bounded backoff, but does not retry 404", async () => {
+    const baseFetch = makeMockFetch();
+    const sleeps = [];
+    let discoveryAttempts = 0;
+    const flakyDnsFetch = async (url, opts) => {
+      if (String(url).endsWith("$discovery/rest?version=v1")) {
+        discoveryAttempts += 1;
+        if (discoveryAttempts <= 2) {
+          const err = new Error("getaddrinfo ENOTFOUND notebook.googleapis.com");
+          err.code = "ENOTFOUND";
+          throw err;
+        }
+        if (discoveryAttempts === 3) {
+          return new Response("Unavailable", { status: 503 });
+        }
+      }
+      return baseFetch(url, opts);
+    };
+
+    const res = await fetchCurrentSnapshot(flakyDnsFetch, {
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+    });
+    expect(discoveryAttempts).toBe(4);
+    expect(sleeps).toEqual(FETCH_RETRY_DELAYS_MS.slice(0, 3));
+    expect(res.snapshot.discovery.revision).toBe("20261121");
+
+    // Exhausted retries propagate the error marked transient
+    const exhaustedSleeps = [];
+    let totalAttempts = 0;
+    const alwaysEnofound = async () => {
+      totalAttempts += 1;
+      const err = new Error("getaddrinfo ENOTFOUND notebook.googleapis.com");
+      err.code = "ENOTFOUND";
+      throw err;
+    };
+    let caught = null;
+    try {
+      await fetchCurrentSnapshot(alwaysEnofound, {
+        sleep: async (ms) => {
+          exhaustedSleeps.push(ms);
+        },
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeTruthy();
+    expect(caught.message).toContain("ENOTFOUND");
+    expect(caught.transient).toBe(true);
+    expect(totalAttempts).toBe(FETCH_RETRY_DELAYS_MS.length + 1);
+    expect(exhaustedSleeps).toEqual([...FETCH_RETRY_DELAYS_MS]);
+
+    // Non-transient HTTP 404 fails immediately without sleeping or retrying
+    const notFoundSleeps = [];
+    let notFoundAttempts = 0;
+    const always404 = async () => {
+      notFoundAttempts += 1;
+      return new Response("Not Found", { status: 404 });
+    };
+    let err404 = null;
+    try {
+      await fetchCurrentSnapshot(always404, {
+        sleep: async (ms) => {
+          notFoundSleeps.push(ms);
+        },
+      });
+    } catch (err) {
+      err404 = err;
+    }
+    expect(err404).toBeTruthy();
+    expect(err404.message).toContain("HTTP 404");
+    expect(err404.transient).toBeUndefined();
+    expect(notFoundAttempts).toBe(1);
+    expect(notFoundSleeps).toEqual([]);
+
+    // Mid-stream body read error on HTTP 200 is retried and succeeds once stream recovers
+    let bodyAttempts = 0;
+    const bodySleeps = [];
+    const flakyBodyFetch = async (url, opts) => {
+      if (String(url).endsWith("$discovery/rest?version=v1")) {
+        bodyAttempts += 1;
+        if (bodyAttempts === 1) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            body: {
+              getReader() {
+                return {
+                  async read() {
+                    throw new Error("ECONNRESET mid-stream");
+                  },
+                  releaseLock() {},
+                };
+              },
+            },
+          };
+        }
+      }
+      return baseFetch(url, opts);
+    };
+    const bodyRes = await fetchCurrentSnapshot(flakyBodyFetch, {
+      sleep: async (ms) => {
+        bodySleeps.push(ms);
+      },
+    });
+    expect(bodyAttempts).toBe(2);
+    expect(bodySleeps).toEqual([FETCH_RETRY_DELAYS_MS[0]]);
+    expect(bodyRes.snapshot.discovery.revision).toBe("20261121");
+  });
+
+  test("main() exits 0 for transient fetch errors within 24h grace, exits 1 when persistent, non-transient, or dry-run", async () => {
+    await withTempDir(async (stateDir) => {
+      const makeBuffer = () => {
+        let out = "";
+        return {
+          write(s) {
+            out += s;
+          },
+          text() {
+            return out;
+          },
+        };
+      };
+      const alwaysDnsFail = async () => {
+        const err = new Error("getaddrinfo ENOTFOUND notebook.googleapis.com");
+        err.code = "ENOTFOUND";
+        throw err;
+      };
+
+      // First transient DNS failure: within 24h grace -> exit 0, records fetchFailingSince, no events.jsonl entry
+      const err1 = makeBuffer();
+      const code1 = await main(["check", "--state-dir", stateDir], {
+        fetchImpl: alwaysDnsFail,
+        now: new Date("2026-11-27T09:00:00Z"),
+        retryDelaysMs: [10],
+        sleep: async () => {},
+        stdout: makeBuffer(),
+        stderr: err1,
+      });
+      expect(code1).toBe(0);
+      expect(err1.text()).toContain("within 24h grace");
+      expect(loadState(stateDir).fetchFailingSince).toBe("2026-11-27T09:00:00.000Z");
+
+      // Dry-run on transient failure still exits 1
+      const errDry = makeBuffer();
+      const codeDry = await main(["check", "--dry-run", "--state-dir", stateDir], {
+        fetchImpl: alwaysDnsFail,
+        now: new Date("2026-11-27T10:00:00Z"),
+        retryDelaysMs: [10],
+        sleep: async () => {},
+        stdout: makeBuffer(),
+        stderr: errDry,
+      });
+      expect(codeDry).toBe(1);
+
+      // Persistent failure >= 24h later -> exit 1 and writes fetch-error event
+      const err2 = makeBuffer();
+      const code2 = await main(["check", "--state-dir", stateDir], {
+        fetchImpl: alwaysDnsFail,
+        now: new Date("2026-11-28T10:00:00Z"),
+        retryDelaysMs: [10],
+        sleep: async () => {},
+        stdout: makeBuffer(),
+        stderr: err2,
+      });
+      expect(code2).toBe(1);
+      expect(err2.text()).toContain("gnotebook-monitor fetch-error: getaddrinfo ENOTFOUND");
+      const events = readFileSync(join(stateDir, "events.jsonl"), "utf8").trim().split("\n");
+      expect(events.length).toBe(1);
+      expect(JSON.parse(events[0]).event).toBe("fetch-error");
+
+      // Recovery clears fetchFailingSince and exits 0
+      const outOk = makeBuffer();
+      const codeOk = await main(["check", "--state-dir", stateDir], {
+        fetchImpl: makeMockFetch(),
+        now: new Date("2026-11-28T11:00:00Z"),
+        retryDelaysMs: [10],
+        sleep: async () => {},
+        stdout: outOk,
+        stderr: makeBuffer(),
+      });
+      expect(codeOk).toBe(0);
+      expect(loadState(stateDir).fetchFailingSince).toBeNull();
+
+      // Non-transient HTTP 404 exits 1 immediately even on first failure
+      const err404 = makeBuffer();
+      const code404 = await main(["check", "--state-dir", stateDir], {
+        fetchImpl: makeMockFetch({ discoveryStatus: 404 }),
+        now: new Date("2026-11-29T10:00:00Z"),
+        retryDelaysMs: [10],
+        sleep: async () => {},
+        stdout: makeBuffer(),
+        stderr: err404,
+      });
+      expect(code404).toBe(1);
+      expect(err404.text()).toContain("HTTP 404");
+
+      // main(["install", "--dry-run"]) writes the plist to injected stdout
+      const installOut = makeBuffer();
+      const codeInstall = await main(["install", "--dry-run", "--state-dir", stateDir], {
+        stdout: installOut,
+        stderr: makeBuffer(),
+      });
+      expect(codeInstall).toBe(0);
+      expect(installOut.text()).toContain("<key>StartCalendarInterval</key>");
+      expect(installOut.text()).toMatch(/<key>RunAtLoad<\/key>\s*<false\/>/);
     });
   });
 });
