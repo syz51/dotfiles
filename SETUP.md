@@ -337,9 +337,9 @@ the SHA and the command to rerun, with the pull request's URL in place of its se
 refusal of a `BEHIND` branch names `gh pr update-branch` with the pull
 request's URL. Where the base branch requires checks, it also says to rerun the merge with
 `--auto` in a separate command, so GitHub merges once they pass instead of the agent
-re-waiting each time the branch falls behind. A check run is pending until its status is
-`COMPLETED`; it fails with any
-conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
+re-waiting each time the branch falls behind. A check run is finished once it has a
+conclusion or its status is `COMPLETED` (otherwise it is pending); once finished, it
+fails with any conclusion but `SUCCESS`, `NEUTRAL` or `SKIPPED`. Runs of different workflow runs all count,
 also one with the name of a later run; within one Actions workflow run, which a re-run
 reuses, only the latest attempt of each job counts. GitHub records each Actions job it never
 started for billing as a failed check run with no steps and one failure-level annotation on
