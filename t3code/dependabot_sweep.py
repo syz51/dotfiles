@@ -204,17 +204,42 @@ def detect_major_bumps(
     return majors
 
 
+def _normalize_timestamp(value: Any) -> str:
+    ts = str(value or "").strip()
+    if not ts or ts.startswith("0001-"):
+        return ""
+    return ts
+
+
+def _is_pending_check(item: dict[str, Any]) -> bool:
+    status = str(item.get("status") or "").upper()
+    if status and status != "COMPLETED":
+        return True
+    verdict = str(item.get("conclusion") or item.get("state") or "").upper()
+    if verdict in FAILED_CONCLUSIONS or verdict == "SUCCESS" or verdict in BENIGN_CONCLUSIONS:
+        return False
+    return True
+
+
+def _check_run_rank(item: dict[str, Any], index: int) -> tuple[int, int, str, int]:
+    """Rank check runs so pending/unstarted re-runs supersede older completed runs."""
+    pending = 1 if _is_pending_check(item) else 0
+    timestamp = _normalize_timestamp(item.get("completedAt")) or _normalize_timestamp(item.get("startedAt"))
+    unstarted_pending = 1 if (pending and not timestamp) else 0
+    return (pending, unstarted_pending, timestamp, index)
+
+
 def _dedupe_check_runs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep the newest entry per check identity so re-run attempts supersede old failures."""
-    latest: dict[tuple[str, str], tuple[str, int, dict[str, Any]]] = {}
+    """Keep the newest entry per check identity so re-run attempts supersede old runs."""
+    latest: dict[tuple[str, str], tuple[tuple[int, int, str, int], int, dict[str, Any]]] = {}
     for index, item in enumerate(items):
         name = str(item.get("name") or item.get("context") or f"unknown-{index}")
         workflow = str(item.get("workflowName") or "")
         key = (workflow, name)
-        timestamp = str(item.get("completedAt") or item.get("startedAt") or "")
+        rank = _check_run_rank(item, index)
         prev = latest.get(key)
-        if prev is None or (timestamp, index) >= (prev[0], prev[1]):
-            latest[key] = (timestamp, index, item)
+        if prev is None or rank >= prev[0]:
+            latest[key] = (rank, index, item)
     return [entry[2] for entry in sorted(latest.values(), key=lambda pair: pair[1])]
 
 
