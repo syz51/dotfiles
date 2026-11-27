@@ -93,6 +93,9 @@ __pycache__/
 .env.*
 !.env.example
 
+# Local agent-desktop credentials, fleet configuration, and opt-in policy.
+/agent-desktop/
+
 # Claude Code subagent worktrees.
 /.claude/
 

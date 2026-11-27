@@ -1,8 +1,8 @@
 # computer-use plugin
 
 The `desktop` MCP server prefers `~/.local/bin/desktop mcp` (`agent-desktop`, talking to the
-signed `/Applications/AgentDesktop.app` LaunchAgent daemon; opt-in policy in
-`~/.config/agent-desktop/policy.toml`, default `open` with physical Esc stop) when installed,
+signed `/Applications/AgentDesktop.app` LaunchAgent daemon; local credentials, fleet config,
+and opt-in policy live in gitignored `~/.config/agent-desktop/`, default `open` with physical Esc stop) when installed,
 and falls back to the bundled `server/desktop.js` + `helper.swift` on machines without
 `agent-desktop`.
 
