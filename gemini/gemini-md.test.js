@@ -227,6 +227,31 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(allGeminiInstructions).not.toMatch(/`ssh [\w.-]+[\s`]/);
   });
 
+  test("defaults to egress-free storage routing, packed .tar.zst archives, sai COS offload, and local-replica restic checks", () => {
+    const storageDoc = docs["gemini/docs/storage-remote-desktop.md"];
+    for (const [name, text] of [
+      ["gemini/GEMINI.md", geminiMd],
+      ["gemini/docs/storage-remote-desktop.md", storageDoc],
+    ]) {
+      for (const needle of [
+        "COS Tokyo",
+        "¥0.46-0.75/GB",
+        "`pro:`",
+        "`sai:`",
+        "`svps:`",
+        "`169.254.0.47`",
+        "`tmp/`",
+        "`.tar.zst`",
+        "`storagectl run --on sai`",
+        "`restic check --read-data`",
+        "~/Library/Application Support/Sai Storage/replicas/...",
+        "`restic check`",
+      ]) {
+        expect(text, `${name} should contain ${needle}`).toContain(needle);
+      }
+    }
+  });
+
   test("documents Gemini-first offloading split and links gemini-board-workflow.md", () => {
     const boardDoc = docs["gemini/docs/work-board-reference.md"];
     expect(geminiMd).toContain("`board-ops`");
