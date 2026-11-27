@@ -38,13 +38,6 @@ after formatting and whitespace normalization; it is not byte-identical. It
 retains its MPL-2.0 source notice, with the complete
 [license text](mpv/LICENSES/thumbfast-MPL-2.0.txt) included.
 
-## Television patch
-
-`explore/patches/television-0.15.9-initial-batch.patch` includes context and
-adaptations from [Television 0.15.9](https://github.com/alexpasmantier/television/tree/0.15.9).
-Its upstream copyright and [MIT license](LICENSES/television-MIT.txt) are included.
-The installer downloads upstream source; that source is not otherwise vendored here.
-
 ## Neovim configuration
 
 The bootstrap and default configuration are adapted from the
