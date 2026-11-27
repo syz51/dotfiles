@@ -109,9 +109,13 @@ describe("refuses", () => {
     ["gh pr merge 12 --squash", { view: { mergeStateStatus: "BEHIND" }, branch: PROTECTED }, "Update it first (`gh pr update-branch https://github.com/o/r/pull/12`), then, in a separate command, rerun this merge with --auto and watch the pull request; GitHub merges it once main's required checks pass."],
     ["gh pr merge 12 -R o/r --squash", { view: { mergeStateStatus: "BEHIND" }, rules: [{ type: "required_status_checks" }] }, "`gh pr update-branch https://github.com/o/r/pull/12`), then, in a separate command, rerun this merge with --auto"],
     ["gh pr merge 12", { view: { mergeStateStatus: "DIRTY" } }, "conflicts with main"],
-    // an in-progress run has conclusion "", so its status decides
+    // a non-COMPLETED run without a conclusion is still running; one with a failing conclusion counts as failed
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "")] } }, "still running"],
+    ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", null)] } }, "still running"],
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "QUEUED", "")] } }, "still running"],
+    ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "IN_PROGRESS", "FAILURE")] } }, "checks failed"],
+    ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "QUEUED", "CANCELLED")] } }, "checks failed"],
+    ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "COMPLETED", "")] } }, "checks failed"],
     ["gh pr merge 12", { view: { statusCheckRollup: [...PASSING, context("ci/x", "PENDING")] } }, "still running"],
     ["gh pr merge 12", { view: { statusCheckRollup: [context("ci/x", "EXPECTED")] } }, "still running"],
     ["gh pr merge 12", { view: { statusCheckRollup: [run("Portable tests", "COMPLETED", "FAILURE")] } }, "checks failed"],
@@ -252,6 +256,8 @@ describe("allows", () => {
     ["gh pr merge 12 -sd", {}],
     ["gh pr merge 12 --admin=false", {}],
     ["gh pr merge 12", { view: { statusCheckRollup: [run("a", "COMPLETED", "SUCCESS"), run("b", "COMPLETED", "NEUTRAL"), run("c", "COMPLETED", "SKIPPED"), context("ci/x", "SUCCESS")] } }],
+    // a check run with a passing conclusion is finished even if GitHub left status non-COMPLETED (dotfiles-360)
+    ["gh pr merge 12", { view: { statusCheckRollup: [...PASSING, run("Changes", "IN_PROGRESS", "SUCCESS"), run("Docs", "QUEUED", "SKIPPED"), run("Info", "IN_PROGRESS", "NEUTRAL")] } }],
     // no checks where no CI runs on every pull request
     ["gh pr merge 12", { view: { statusCheckRollup: [] } }],
     // the Actions API lists a workflow as active that the head commit no longer has
@@ -314,6 +320,29 @@ describe("allows", () => {
     expect(classifyChecks([first, attempt("", "0001-01-01T00:00:00Z", 3, "QUEUED")]).pending).toEqual(["Checks / t"]);
     // a failed re-run still fails
     expect(classifyChecks([second, attempt("FAILURE", "2026-11-08T12:00:00Z", 4)]).failed).toEqual(["Checks / t (FAILURE)"]);
+  });
+
+  // GitHub can leave a check run at status IN_PROGRESS after recording a final conclusion (dotfiles-360).
+  test("treats a check run with a non-empty conclusion as finished regardless of status", () => {
+    const stuckSuccess = run("Changes", "IN_PROGRESS", "SUCCESS", { workflowName: "CI" });
+    expect(classifyChecks([...PASSING, stuckSuccess])).toEqual({ pending: [], failed: [], actionsFailed: 0 });
+    expect(verdict(pinned("gh pr merge 12"), { view: { statusCheckRollup: [...PASSING, stuckSuccess] } })).toBeUndefined();
+    expect(findMcpMergeViolation({ number: 12, expectedHeadSha: HEAD }, "/repo", fakeGh({ view: { statusCheckRollup: [...PASSING, stuckSuccess] } }))).toBeUndefined();
+
+    // non-COMPLETED with FAILURE counts as failed, not running, and counts toward actionsFailed when it is an Actions job
+    const stuckFail = run("Lint", "IN_PROGRESS", "FAILURE", { workflowName: "CI", detailsUrl: "https://github.com/o/r/actions/runs/7/job/31" });
+    expect(classifyChecks([...PASSING, stuckFail])).toEqual({ pending: [], failed: ["CI / Lint (FAILURE)"], actionsFailed: 1 });
+    const failViolation = verdict("gh pr merge 12", { view: { statusCheckRollup: [...PASSING, stuckFail] }, graphql: graph([]) });
+    expect(failViolation).toContain("checks failed");
+    expect(failViolation).not.toContain("still running");
+
+    // non-COMPLETED with no conclusion still blocks as running
+    for (const empty of ["", null, undefined, "   "]) {
+      expect(classifyChecks([run("Changes", "IN_PROGRESS", empty, { workflowName: "CI" })])).toEqual({ pending: ["CI / Changes"], failed: [], actionsFailed: 0 });
+    }
+
+    // COMPLETED with no conclusion stays failed, not pending
+    expect(classifyChecks([run("Changes", "COMPLETED", "", { workflowName: "CI" })])).toEqual({ pending: [], failed: ["CI / Changes (no conclusion)"], actionsFailed: 0 });
   });
 
   test("globMatches reads zsh's *, ? and [...]", () => {
@@ -495,6 +524,32 @@ describe("an Actions job GitHub never started for billing", () => {
       .toContain("checks are still running on pull request #12's head commit: ci/circleci: build.");
     expect(merge([BUILD, run("ci/other: build", "IN_PROGRESS", "", { workflowName: "", detailsUrl: "https://ci.example/3" })], graph([billingRun(11)])))
       .toContain("checks are still running on pull request #12's head commit: ci/other: build.");
+    expect(merge([BUILD, run("ci/other: build", "IN_PROGRESS", null, { workflowName: "", detailsUrl: "https://ci.example/3" })], graph([billingRun(11)])))
+      .toContain("checks are still running on pull request #12's head commit: ci/other: build.");
+  });
+
+  test("applies the same finished test to billing-skipped jobs and fallback check runs (dotfiles-360)", () => {
+    const stuckSkipped = run("build", "IN_PROGRESS", "FAILURE", { workflowName: "Checks", detailsUrl: "https://github.com/o/r/actions/runs/7/job/11" });
+    const stuckFallbackSuccess = run("ci/other: build", "IN_PROGRESS", "SUCCESS", { workflowName: "", detailsUrl: "https://ci.example/4" });
+    const stuckFallbackSkipped = run("ci/other: build", "IN_PROGRESS", "SKIPPED", { workflowName: "", detailsUrl: "https://ci.example/5" });
+    const stuckFallbackFailure = run("ci/other: build", "IN_PROGRESS", "FAILURE", { workflowName: "", detailsUrl: "https://ci.example/6" });
+
+    // billing-skipped job with non-COMPLETED status and FAILURE conclusion passes with a passing fallback
+    expect(merge([stuckSkipped, FALLBACKS[0]], graph([billingRun(11)]))).toBeUndefined();
+    // fallback CheckRun with non-COMPLETED status and SUCCESS conclusion counts as passed, not running
+    expect(merge([BUILD, stuckFallbackSuccess], graph([billingRun(11)]))).toBeUndefined();
+    expect(merge([stuckSkipped, stuckFallbackSuccess], graph([billingRun(11)]))).toBeUndefined();
+    // fallback CheckRun with non-COMPLETED status and non-SUCCESS conclusion counts as finished (not running), so the skipped job fails
+    expect(merge([BUILD, stuckFallbackSkipped], graph([billingRun(11)])))
+      .toContain("Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\")");
+    expect(classifyChecks([BUILD, stuckFallbackFailure], new Set(["11"]))).toEqual({
+      pending: [],
+      failed: [
+        "Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\")",
+        "ci/other: build (FAILURE)",
+      ],
+      actionsFailed: 0,
+    });
   });
 
   test("refuses a real failed Actions job next to a skipped one", () => {
