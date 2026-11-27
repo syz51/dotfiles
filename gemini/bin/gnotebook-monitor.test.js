@@ -569,6 +569,41 @@ describe("gnotebook-monitor end-to-end check lifecycle", () => {
     expect(err404.transient).toBeUndefined();
     expect(notFoundAttempts).toBe(1);
     expect(notFoundSleeps).toEqual([]);
+
+    // Mid-stream body read error on HTTP 200 is retried and succeeds once stream recovers
+    let bodyAttempts = 0;
+    const bodySleeps = [];
+    const flakyBodyFetch = async (url, opts) => {
+      if (String(url).endsWith("$discovery/rest?version=v1")) {
+        bodyAttempts += 1;
+        if (bodyAttempts === 1) {
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            body: {
+              getReader() {
+                return {
+                  async read() {
+                    throw new Error("ECONNRESET mid-stream");
+                  },
+                  releaseLock() {},
+                };
+              },
+            },
+          };
+        }
+      }
+      return baseFetch(url, opts);
+    };
+    const bodyRes = await fetchCurrentSnapshot(flakyBodyFetch, {
+      sleep: async (ms) => {
+        bodySleeps.push(ms);
+      },
+    });
+    expect(bodyAttempts).toBe(2);
+    expect(bodySleeps).toEqual([FETCH_RETRY_DELAYS_MS[0]]);
+    expect(bodyRes.snapshot.discovery.revision).toBe("20261121");
   });
 
   test("main() exits 0 for transient fetch errors within 24h grace, exits 1 when persistent, non-transient, or dry-run", async () => {
@@ -657,6 +692,16 @@ describe("gnotebook-monitor end-to-end check lifecycle", () => {
       });
       expect(code404).toBe(1);
       expect(err404.text()).toContain("HTTP 404");
+
+      // main(["install", "--dry-run"]) writes the plist to injected stdout
+      const installOut = makeBuffer();
+      const codeInstall = await main(["install", "--dry-run", "--state-dir", stateDir], {
+        stdout: installOut,
+        stderr: makeBuffer(),
+      });
+      expect(codeInstall).toBe(0);
+      expect(installOut.text()).toContain("<key>StartCalendarInterval</key>");
+      expect(installOut.text()).toMatch(/<key>RunAtLoad<\/key>\s*<false\/>/);
     });
   });
 });

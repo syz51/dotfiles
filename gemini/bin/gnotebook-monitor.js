@@ -28,7 +28,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const LABEL = "com.syz51.gnotebook-monitor";
-export const DEFAULT_INTERVAL_SECONDS = 604_800; // weekly (7 days), used when --interval is passed
 export const DEFAULT_CALENDAR_SCHEDULE = Object.freeze({ weekday: 1, hour: 10, minute: 0 }); // Monday 10:00 local time
 export const FETCH_TIMEOUT_MS = 20_000;
 export const FETCH_RETRY_DELAYS_MS = Object.freeze([2_000, 5_000, 10_000, 20_000, 30_000]);
@@ -406,15 +405,21 @@ export function formatReleaseTask(diff, prev, next) {
   return { title, body, acceptance };
 }
 
+function responseTooLargeError(message) {
+  const err = new Error(message);
+  err.code = "ERR_RESPONSE_TOO_LARGE";
+  return err;
+}
+
 export async function readBoundedText(resp, maxBytes = MAX_RESPONSE_BYTES) {
   const lenHeader = resp.headers?.get?.("content-length");
   if (lenHeader && Number.parseInt(lenHeader, 10) > maxBytes) {
-    throw new Error(`Response exceeds ${maxBytes} bytes (${lenHeader})`);
+    throw responseTooLargeError(`Response exceeds ${maxBytes} bytes (${lenHeader})`);
   }
   if (!resp.body || typeof resp.body.getReader !== "function") {
     const text = await resp.text();
     if (Buffer.byteLength(text, "utf8") > maxBytes) {
-      throw new Error(`Response exceeds ${maxBytes} bytes`);
+      throw responseTooLargeError(`Response exceeds ${maxBytes} bytes`);
     }
     return text;
   }
@@ -430,7 +435,7 @@ export async function readBoundedText(resp, maxBytes = MAX_RESPONSE_BYTES) {
         try {
           await reader.cancel();
         } catch {}
-        throw new Error(`Response exceeds ${maxBytes} bytes`);
+        throw responseTooLargeError(`Response exceeds ${maxBytes} bytes`);
       }
       chunks.push(value);
     }
@@ -453,7 +458,7 @@ export function isRetryableHttpStatus(status) {
 export function isRetryableFetchError(err) {
   if (!err || typeof err !== "object") return false;
   if (err instanceof SyntaxError || err instanceof RangeError) return false;
-  if (err.code === "ERR_INVALID_URL") return false;
+  if (err.code === "ERR_INVALID_URL" || err.code === "ERR_RESPONSE_TOO_LARGE") return false;
   return true;
 }
 
@@ -469,12 +474,13 @@ function markTransientError(err) {
   return wrapped;
 }
 
-export async function fetchWithRetry(
+export async function fetchTextWithRetry(
   fetchImpl,
   url,
   {
     headers,
     timeoutMs = FETCH_TIMEOUT_MS,
+    maxBytes = MAX_RESPONSE_BYTES,
     retryDelaysMs = FETCH_RETRY_DELAYS_MS,
     sleep = defaultSleep,
   } = {},
@@ -486,12 +492,19 @@ export async function fetchWithRetry(
         headers,
         signal: AbortSignal.timeout(timeoutMs),
       });
-      if (!isRetryableHttpStatus(resp.status) || attempt >= delays.length) {
-        return resp;
+      if (isRetryableHttpStatus(resp.status) && attempt < delays.length) {
+        try {
+          await resp.body?.cancel?.();
+        } catch {}
+      } else if (!resp.ok) {
+        try {
+          await resp.body?.cancel?.();
+        } catch {}
+        return { ok: false, status: resp.status, text: null };
+      } else {
+        const text = await readBoundedText(resp, maxBytes);
+        return { ok: true, status: resp.status, text };
       }
-      try {
-        await resp.body?.cancel?.();
-      } catch {}
     } catch (err) {
       if (!isRetryableFetchError(err)) {
         throw err;
@@ -514,8 +527,8 @@ export async function fetchCurrentSnapshot(
   const warnings = [];
   const secondaryRetryDelays = Array.isArray(retryDelaysMs) ? retryDelaysMs.slice(0, 2) : [];
 
-  // 1. Discovery v1 (authoritative, required) — retry transient DNS/network/5xx errors
-  const discResp = await fetchWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=v1`, {
+  // 1. Discovery v1 (authoritative, required) — retry transient DNS/network/stream/5xx errors
+  const discResp = await fetchTextWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=v1`, {
     headers,
     retryDelaysMs,
     sleep,
@@ -525,22 +538,21 @@ export async function fetchCurrentSnapshot(
     if (isRetryableHttpStatus(discResp.status)) err.transient = true;
     throw err;
   }
-  const discText = await readBoundedText(discResp);
-  const discovery = parseDiscoverySnapshot(JSON.parse(discText));
+  const discovery = parseDiscoverySnapshot(JSON.parse(discResp.text));
 
   // 2. Probe alternative versions concurrently (distinguish confirmed 404 vs transient errors)
   const probeEntries = await Promise.all(
     PROBE_VERSIONS.map(async (ver) => {
       try {
-        const res = await fetchWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=${encodeURIComponent(ver)}`, {
+        const res = await fetchTextWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=${encodeURIComponent(ver)}`, {
           headers,
+          maxBytes: 512 * 1024,
           retryDelaysMs: secondaryRetryDelays,
           sleep,
         });
         if (res.status === 200) {
           // Verify valid JSON discovery doc to avoid false positives on soft-200 error pages
-          const txt = await readBoundedText(res, 512 * 1024);
-          const parsed = JSON.parse(txt);
+          const parsed = JSON.parse(res.text);
           if (parsed && parsed.name === "notebook") {
             return { version: ver, status: "live" };
           }
@@ -564,13 +576,13 @@ export async function fetchCurrentSnapshot(
   // 3. Official MCP tools doc (best-effort; preserves null on error/layout shift)
   let mcpTools = null;
   try {
-    const mcpResp = await fetchWithRetry(fetchImpl, MCP_DOC_URL, {
+    const mcpResp = await fetchTextWithRetry(fetchImpl, MCP_DOC_URL, {
       headers,
       retryDelaysMs: secondaryRetryDelays,
       sleep,
     });
     if (mcpResp.ok) {
-      mcpTools = parseMcpToolsHtml(await readBoundedText(mcpResp));
+      mcpTools = parseMcpToolsHtml(mcpResp.text);
       if (!mcpTools) warnings.push("mcp doc: table not found");
     } else {
       warnings.push(`mcp doc: HTTP ${mcpResp.status}`);
@@ -582,13 +594,13 @@ export async function fetchCurrentSnapshot(
   // 4. Official Roadmap doc (best-effort)
   let roadmapItems = null;
   try {
-    const rmResp = await fetchWithRetry(fetchImpl, ROADMAP_DOC_URL, {
+    const rmResp = await fetchTextWithRetry(fetchImpl, ROADMAP_DOC_URL, {
       headers,
       retryDelaysMs: secondaryRetryDelays,
       sleep,
     });
     if (rmResp.ok) {
-      roadmapItems = parseRoadmapHtml(await readBoundedText(rmResp));
+      roadmapItems = parseRoadmapHtml(rmResp.text);
       if (!roadmapItems) warnings.push("roadmap doc: list not found");
     } else {
       warnings.push(`roadmap doc: HTTP ${rmResp.status}`);
@@ -1132,7 +1144,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
           }
         : null,
     };
-    process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+    stdout.write(JSON.stringify(out, null, 2) + "\n");
     return 0;
   }
 
@@ -1146,7 +1158,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       intervalSeconds: opts.intervalSeconds,
     });
     if (opts.dryRun) {
-      process.stdout.write(plist);
+      stdout.write(plist);
       return 0;
     }
     if (process.platform !== "darwin") {
@@ -1163,7 +1175,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     if (boot.status !== 0) {
       throw new Error(`launchctl bootstrap failed: ${boot.stderr.trim()}`);
     }
-    process.stdout.write(`Loaded ${LABEL} from ${targetPlist}\n`);
+    stdout.write(`Loaded ${LABEL} from ${targetPlist}\n`);
     return 0;
   }
 
@@ -1174,7 +1186,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     }
     const targetPlist = launchAgentPlistPath();
     if (existsSync(targetPlist)) unlinkSync(targetPlist);
-    process.stdout.write(`Removed ${LABEL}; state in ${stateDir} is kept.\n`);
+    stdout.write(`Removed ${LABEL}; state in ${stateDir} is kept.\n`);
     return 0;
   }
 
