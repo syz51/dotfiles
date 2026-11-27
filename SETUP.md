@@ -14,13 +14,11 @@ There is no repository-wide installer or complete dependency manifest.
 
 | Component | Prerequisites |
 | --- | --- |
-| Terminal | Ghostty, zsh, Git, Go for building the TUIOS fork, and Python for the launcher. The configured `drag-handle` setting requires a Ghostty development build. |
-| Dock machine label | uv at `~/.local/bin/uv` and an installed Python 3.11 or newer usable by uv offline. |
-| Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
+| Terminal | Rex (`Rex.app`) and zsh. |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
 | Agent tools | Antigravity / Gemini 4 Neon (`gemini/`) on both Macs as the active harness; dormant Claude Code (`claude/`, Air-only history — see [No Claude on the Pro](#no-claude-on-the-pro)) and Codex (`codex/`) configs remain tracked for shared hooks/factory/tests. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun`, `gemini/hooks/run-hook.js` (wrapping `claude/hooks/*.js`), and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
-| Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
+| Tests | Bun, uv, and Python 3.11 or newer. |
 
 ## Keep both Macs in sync
 
@@ -90,9 +88,9 @@ uv run --no-project --python 3.11 python -B ~/.config/config-sync/config_sync.py
 `install --dry-run` prints the plist, and `uninstall` unloads and removes it.
 
 Keep credentials and machine-specific settings in ignored local files, including
-`ghostty/config.local` and `codex/config.toml`; Git does not synchronize them.
-Installed applications and the separately built TUIOS fork also need to be
-installed or updated on each Mac using the instructions below.
+`rex/local.lua` and `codex/config.toml`; Git does not synchronize them.
+Installed applications also need to be installed or updated on each Mac using
+the instructions below.
 
 ### No Claude on the Pro
 
@@ -104,91 +102,6 @@ and runner, T3 Code (Antigravity), `board watch` (configured with Antigravity / 
 Neon), and `disk-space-alert` / `disk-space-daily` (`--low-gb 80 --critical-gb 40`). Only
 dormant Claude Code installs/plugins and the `claude-factory` `friction` and `weekly`
 LaunchAgents remain Air-only. The Pro's earlier Claude data is in `cloud:archive/pro-claude/`.
-
-## Terminal and dock
-
-The Ghostty launcher uses `/opt/homebrew/bin/python3` when available, otherwise
-`/usr/bin/python3`. It runs `~/.local/bin/tuios`, which the fork installer links
-to this repository's `tuios/bin/tuios` wrapper.
-
-The dock invokes **exactly** `~/.local/bin/uv` with `--offline`; merely having a
-Homebrew uv on `PATH` does not satisfy that command. Install uv and a compatible
-Python before starting TUIOS. For example, with Homebrew uv already installed:
-
-```sh
-mkdir -p "$HOME/.local/bin"
-if [ ! -e "$HOME/.local/bin/uv" ] && [ ! -L "$HOME/.local/bin/uv" ]; then
-  ln -s "$(command -v uv)" "$HOME/.local/bin/uv"
-fi
-"$HOME/.local/bin/uv" python install 3.11
-"$HOME/.local/bin/uv" run --offline --no-project --python 3.11 python --version
-```
-
-If the path already exists, inspect it rather than replacing it. The Python
-installation step needs network access. A missing compatible interpreter cannot
-be downloaded by the dock's offline command.
-
-The TUIOS installer builds the
-[`feat/divider-inset` branch of syz51/tuios](https://github.com/syz51/tuios/tree/feat/divider-inset)
-in `${XDG_DATA_HOME:-$HOME/.local/share}/tuios-fork` and installs it at
-`~/.local/opt/tuios-fork/tuios`. It moves an existing checkout from
-`${XDG_CACHE_HOME:-$HOME/.cache}/tuios-fork` to the new location automatically.
-Updates preserve local commits and require a clean checkout; divergent fork
-history needs an explicit merge in that checkout before rerunning the installer.
-It installs Go through Homebrew if Go is missing. To install or update:
-
-```sh
-GOMAXPROCS=4 GOFLAGS=-p=4 ~/.config/tuios/install-fork.sh
-```
-
-Before installing, move any existing regular file at `~/.local/bin/tuios` to a
-unique backup location yourself: the installer otherwise uses `tuios.bak`, which
-can replace an older backup.
-
-Add this at the end of `~/.zshrc` for Ghostty shell integration inside TUIOS:
-
-```zsh
-PROMPT_EOL_MARK=''
-
-if [[ -n ${TUIOS_SESSION:-} ]]; then
-  _tuios_zsh_integration="${GHOSTTY_RESOURCES_DIR:-/Applications/Ghostty.app/Contents/Resources/ghostty}/shell-integration/zsh/ghostty-integration"
-  [[ -r $_tuios_zsh_integration ]] && source "$_tuios_zsh_integration"
-  unset _tuios_zsh_integration
-fi
-```
-
-For Explore's shell handoff, also add this once to `~/.zshrc`:
-
-```zsh
-[[ -r "$HOME/.config/explore/explore.zsh" ]] && source "$HOME/.config/explore/explore.zsh"
-```
-
-Follow the [Explore installation and checks](explore/README.md#install) for the
-picker dependencies and optional patched Television build. The tracked TUIOS
-configuration already includes its keybinding; avoid adding duplicate entries.
-
-The running daemon keeps its current build until restarted. Save pane work, then
-run:
-
-```sh
-~/.local/bin/tuios restart-server
-```
-
-The command shows what it will stop and asks before restarting. A restart ends
-the programs running in its panes and recreates the pane shells.
-
-Ghostty launches TUIOS automatically. The launcher reuses the most recently active
-detached session, creates one when all existing sessions are attached, and
-attempts to restore saved sessions when the daemon is stopped. A file lock
-serializes session selection and attachment across simultaneous launches.
-
-Ghostty and TUIOS use Catppuccin Frappe. TUIOS starts tiled in terminal mode, with
-the dock at the bottom and sidebar hidden. The leader key is `Ctrl+Space`;
-follow it with `s` for the session switcher, uppercase `S` for scrollback, or
-`f` for Explore.
-
-Ghostty loads optional machine settings from `ghostty/config.local`, which Git
-ignores. For example, put `font-size = 17.0` there to override the shared size.
 
 ## Rex
 
@@ -315,8 +228,7 @@ recognizes its own earlier result, so the installer works on both Macs' layouts:
 `${XDG_CACHE_HOME:-$HOME/.cache}/shell-cache`, private to you, and regenerates an
 entry when the resolved executable, its arguments, a configuration file it reads
 or a setting it bakes in changes: Atuin's `config.toml` (in `$ATUIN_CONFIG_DIR`,
-`${ATUIN_HOME:-~/.atuin}` or `~/.config/atuin`) and `ATUIN_*` variables, and zoxide's
-`_ZO_*` variables, for the zoxide init in `explore/explore.zsh`. With Atuin's
+`${ATUIN_HOME:-~/.atuin}` or `~/.config/atuin`) and `ATUIN_*` variables. With Atuin's
 `[dotfiles]` enabled, its init also prints synced aliases, so it runs live. The
 cached output is sourced at the top level, exactly as `eval` ran it. An unusable
 cache falls back to live generation; an empty or truncated entry is regenerated. The uv, uvx, and rex completions are autoloaded
@@ -1416,8 +1328,6 @@ skip with a warning. It only downloads what is missing, and git ignores what it 
 ```sh
 sh claude/skills/headless-browser/scripts/setup.sh
 bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
-uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
-uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s rex/tests -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project python -B shell/test-vp-launcher.py -v
@@ -1593,13 +1503,3 @@ the raw stream of each scenario; the report lists each tool call with the direct
 started in, which the stream lacks. The live sandbox check writes a failed case's report
 and stream there too, or, without the variable, to `$TMPDIR/claude-live-failures`, and
 prints the path. Delete these folders when done: they hold transcripts.
-
-With Explore's dependencies installed, its additional integration suite is:
-
-```sh
-uv run --no-project --python 3.11 python -B -m unittest discover -s explore/tests -v
-```
-
-These tests do not prove a fresh-machine installation or the live terminal flow.
-Follow [Explore's end-to-end instructions](explore/README.md#tests) with a private
-daemon and scratch directories when checking the complete picker workflow.

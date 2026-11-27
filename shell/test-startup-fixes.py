@@ -1,7 +1,6 @@
 """Shell init cache, completion, PATH and installer boundary checks, using synthetic inputs."""
 import os
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 import sys
@@ -9,7 +8,6 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent
-EXPLORE = ROOT.parent / 'explore' / 'explore.zsh'
 # The layout the first installer targeted: compinit twice and live uv completions.
 ZSHRC = '''export KEEP_ME=unchanged
 source $ZSH/oh-my-zsh.sh
@@ -78,7 +76,7 @@ class FixtureTest(ScratchTest):
         self.mode = self.root / 'mode'
         self.mode.write_text('good')
         for name in list(self.env):
-            if name.startswith(('ATUIN_', '_ZO_')) or name == 'CLAUDECODE':
+            if name.startswith('ATUIN_') or name == 'CLAUDECODE':
                 del self.env[name]
         self.env.update(PATH=f'{self.bin}:/usr/bin:/bin',
                         XDG_CACHE_HOME=str(self.cache.parent),
@@ -396,32 +394,6 @@ eval 'g() { print -r -- helper; }; g' || print alias-blocked
         output = self.load(PATH=path, FPATH='/b:/a:/b')
         self.assertIn(f'path:{self.bin}:/usr/bin:/bin\n', output)
         self.assertIn('fpath:/b:/a\n', output)
-
-
-class ExploreZoxideTests(FixtureTest):
-    def setUp(self):
-        super().setUp()
-        self.script('zoxide', 'zoxide', '''printf 'typeset ZOXIDE_FAKE=%s\\n' "${_ZO_ECHO-0}"''')
-
-    def load(self, explore=EXPLORE, **env):
-        script = 'source "$1"; print -r -- "zoxide:$ZOXIDE_FAKE"'
-        return self.zsh(script, explore, interactive=True, **env).stdout
-
-    def test_zoxide_init_uses_dotfiles_cache(self):
-        self.assertIn('zoxide:0', self.load())
-        self.assertIn('zoxide:0', self.load())
-        self.assertEqual(self.calls('zoxide'), 1)
-        self.assertIn('zoxide:1', self.load(_ZO_ECHO='1'))
-        self.assertEqual(self.calls('zoxide'), 2)
-
-    def test_standalone_explore_initializes_zoxide_directly(self):
-        standalone = self.root / 'standalone' / 'explore'
-        standalone.mkdir(parents=True)
-        shutil.copy(EXPLORE, standalone / 'explore.zsh')
-        self.assertIn('zoxide:0', self.load(standalone / 'explore.zsh'))
-        self.assertIn('zoxide:0', self.load(standalone / 'explore.zsh'))
-        self.assertEqual(self.calls('zoxide'), 2)
-        self.assertFalse(self.cache.exists())
 
 
 class InstallerTests(ScratchTest):

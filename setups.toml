@@ -246,15 +246,6 @@ change = "A PR on dotfiles with tests"
 verify = ["uv run --no-project python -B shell/test-startup-fixes.py"]
 
 [[setup]]
-id = "ghostty"
-title = "Ghostty terminal and TUIOS launcher"
-covers = ["ghostty"]
-owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
-channel = "board"
-change = "A PR on dotfiles with tests"
-verify = ["uv run --no-project python -B ghostty/test-tuios-launcher.py"]
-
-[[setup]]
 id = "rex"
 title = "Rex terminal and multiplexer configuration"
 covers = ["rex"]
@@ -262,24 +253,6 @@ owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
 change = "A PR on dotfiles with tests"
 verify = ["uv run --no-project --python 3.11 python -B -m unittest discover -s rex/tests"]
-
-[[setup]]
-id = "tuios"
-title = "TUIOS and its dock"
-covers = ["tuios"]
-owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
-channel = "board"
-change = "A PR on dotfiles with tests"
-verify = ["uv run --no-project python -B -m unittest discover -s tuios/tests"]
-
-[[setup]]
-id = "tv-explore"
-title = "Television popup explorer"
-covers = ["explore"]
-owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
-channel = "board"
-change = "A PR on dotfiles with tests"
-verify = ["see explore/README.md"]
 
 [[setup]]
 id = "nvim"
