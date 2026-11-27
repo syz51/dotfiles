@@ -49,6 +49,8 @@ function repository() {
     "claude/tests/ok.test.js": 'import { expect, test } from "bun:test";\ntest("ok", () => expect(1).toBe(1));\n',
     // Pins rule text, as claude/tests/config.test.js does.
     "claude/tests/config.test.js": 'import { expect, test } from "bun:test";\nimport { readFileSync } from "node:fs";\ntest("delegation rule", () => expect(readFileSync("claude/CLAUDE.md", "utf8")).toContain("Delegate rarely."));\n',
+    // Pins Gemini rule text, as gemini/gemini-md.test.js does.
+    "gemini/gemini-md.test.js": 'import { expect, test } from "bun:test";\nimport { readFileSync } from "node:fs";\ntest("gemini delegation rule", () => expect(readFileSync("gemini/GEMINI.md", "utf8")).toContain("Delegate rarely."));\n',
   });
   git(source, "add", "-A");
   git(source, "commit", "--quiet", "-m", "init");
@@ -307,7 +309,7 @@ describe("propose command", () => {
     const [pr] = log("gh.jsonl");
     expect(pr.args.slice(0, 7)).toEqual(["pr", "create", "--draft", "--base", "main", "--head", branchName]);
     const body = pr.args[pr.args.indexOf("--body") + 1];
-    for (const text of ["`scope-creep`", "3 scored sessions", "- `s1`", "- `s3`", "Judge: claude-haiku-5-5 (medium)", "Tests: `bun test claude/tests`: 2 pass"]) expect(body).toContain(text);
+    for (const text of ["`scope-creep`", "3 scored sessions", "- `s1`", "- `s3`", "Judge: claude-haiku-5-5 (medium)", "Tests: `bun test claude/tests gemini`: 3 pass"]) expect(body).toContain(text);
     expect(body).not.toMatch(/Generated with|Co-Authored-By|\u{1F916}/u);
     // The proposer's reply and the evidence quote private transcripts: they stay local.
     expect(body).not.toContain("The scope rule was vague.");
@@ -432,9 +434,24 @@ console.log(JSON.stringify({ type: "result", subtype: "success", is_error: false
     expect(await run(["--repo", source], { now: NOW })).toBe(1);
     const [entry] = proposals();
     expect(entry.status).toBe("tests-failed");
-    expect(entry.tests).toMatchObject({ ok: false, command: "bun test claude/tests" });
+    expect(entry.tests).toMatchObject({ ok: false, command: "bun test claude/tests gemini" });
     expect(entry.tests.summary).toContain("1 fail");
     expect(entry.tests.tail).toContain("delegation rule");
+    expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Delegate when it pays off.");
+    expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
+    expect(log("gh.jsonl")).toHaveLength(0);
+  }, PROPOSE_TIMEOUT);
+
+  test("an edit to gemini/GEMINI.md that breaks gemini/gemini-md.test.js is recorded as failing tests, kept locally and not pushed", async () => {
+    const { remote, source } = repository();
+    scores(["s1", "s2", "s3"].map((id) => record(id)));
+    edits({ "gemini/GEMINI.md": "# Rules\n\n## Workflow\n\n- Stay in scope (Gemini).\n\n## Delegation\n\n- Delegate when it pays off.\n" });
+    expect(await run(["--repo", source], { now: NOW })).toBe(1);
+    const [entry] = proposals();
+    expect(entry.status).toBe("tests-failed");
+    expect(entry.tests).toMatchObject({ ok: false, command: "bun test claude/tests gemini" });
+    expect(entry.tests.summary).toContain("1 fail");
+    expect(entry.tests.tail).toContain("gemini delegation rule");
     expect(readFileSync(entry.patchFile, "utf8")).toContain("+- Delegate when it pays off.");
     expect(remoteBranches(remote).sort()).toEqual(["factory", "main"]);
     expect(log("gh.jsonl")).toHaveLength(0);

@@ -11,7 +11,7 @@ import { stateDir } from "./state.js";
 import { projectsRoot } from "./transcripts.js";
 
 export const TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
-const TEST_PATHS = ["claude/hooks", "claude/tests", "claude/factory"];
+const TEST_PATHS = ["claude/hooks", "claude/tests", "claude/factory", "gemini"];
 // A verbatim run this long from the evidence in a pushed change counts as a leak.
 const LEAK_RUN = 40;
 // The proposer runs with the user's configuration; whatever it allows, these stay unread:
