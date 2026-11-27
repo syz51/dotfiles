@@ -34,9 +34,10 @@ export const AGENT = "claude:factory-friction";
 const TITLE = 72;
 const DETAIL = 400;
 const ERROR_LINE = 160;
-// Items the judge may match: the board's live ones (newest first up to MATCH_ITEMS), and
-// separately capture's recently closed ones from this window (up to CLOSED_MATCH_ITEMS)
-// so they can skip pre-fix turns without shadowing or evicting live items.
+// Items the judge may match: the board's canonical live ones (excluding duplicate aliases
+// whose live target is already listed, newest first up to MATCH_ITEMS), and separately
+// capture's recently closed ones from this window (up to CLOSED_MATCH_ITEMS) so they can
+// skip pre-fix turns without shadowing or evicting live items.
 const MATCH_WINDOW = 7 * 24 * HOUR;
 const MATCH_ITEMS = 200;
 const CLOSED_MATCH_ITEMS = 50;
@@ -161,6 +162,8 @@ function feedbackItems(tasks, { openOnly = false } = {}) {
     if (openOnly && CLOSED.has(task?.status)) continue;
     if (typeof task?.id !== "string" || typeof task.title !== "string" || typeof task.feedback?.about !== "string")
       throw new Error(`board ls --board ${FEEDBACK_BOARD}: expected tasks with id, title and feedback.about`);
+    const resolution = task.feedback.resolution;
+    const duplicateOf = resolution?.kind === "duplicate" && typeof resolution.task === "string" ? resolution.task : undefined;
     items.set(task.id, {
       id: task.id,
       about: task.feedback.about,
@@ -168,6 +171,7 @@ function feedbackItems(tasks, { openOnly = false } = {}) {
       at: task.feedback.last_reported_at ?? task.created_at,
       ...(typeof task.feedback.signature === "string" ? { signature: task.feedback.signature } : {}),
       ...(typeof task.feedback.recurs === "string" ? { recurs: task.feedback.recurs } : {}),
+      ...(duplicateOf ? { duplicateOf } : {}),
     });
   }
   return items;
@@ -199,14 +203,30 @@ export async function liveItems() {
 
 const newest = (a, b) => Date.parse(b.at) - Date.parse(a.at);
 
-// Splits matchable items into `live` (offered in `# Known items`, at most MATCH_ITEMS) and
-// `closed` (capture's recent items absent from the board's live list and not superseded by
-// a live recurrence, offered separately in `# Recently closed items` up to
+// Follows duplicate links within `live` to the canonical live item, returning `item`
+// unchanged when it is not a duplicate of another live item or on a cycle.
+function canonicalLive(live, item) {
+  const seen = new Set([item.id]);
+  let current = item;
+  while (current.duplicateOf) {
+    if (seen.has(current.duplicateOf)) return item;
+    const target = live.get(current.duplicateOf);
+    if (!target) break;
+    seen.add(target.id);
+    current = target;
+  }
+  return current;
+}
+
+// Splits matchable items into `live` (canonical live items offered in `# Known items`,
+// excluding duplicate aliases whose live target is already in `live`, at most MATCH_ITEMS)
+// and `closed` (capture's recent items absent from the board's live list and not superseded
+// by a live recurrence, offered separately in `# Recently closed items` up to
 // CLOSED_MATCH_ITEMS so they never shadow or evict live items). When `liveFilter` is false
 // (fallback to `--open` or failed board listing), capture's items absent from `live` fill
 // only the slots left after `live`, so closed history still cannot evict live items.
 export function matchItems(filed, live, { liveFilter = true } = {}) {
-  const liveList = [...live.values()].sort(newest).slice(0, MATCH_ITEMS);
+  const liveList = [...live.values()].filter((item) => canonicalLive(live, item).id === item.id).sort(newest).slice(0, MATCH_ITEMS);
   const superseded = new Set([...live.values()].map((item) => item.recurs).filter(Boolean));
   const filedOnly = [...filed.values()].filter((item) => !live.has(item.id) && !superseded.has(item.id)).sort(newest);
   if (liveFilter) {
@@ -341,15 +361,16 @@ async function itemState(id, depth = 0) {
   return { id, ids: [id], signature, live: false, closedAt: Date.parse(resolution.at) };
 }
 
-// Finds an already-live item that continues a closed match: one whose `recurs` points to
-// any item in the match's duplicate chain, or one sharing the canonical signature.
+// Finds an already-live canonical item that continues a closed match: one whose `recurs`
+// points to any item in the match's duplicate chain, or one sharing the canonical signature.
 function findLiveRecurrence(live, state) {
   const chain = new Set(state.ids ?? [state.id]);
   let best = null;
   for (const item of live.values()) {
-    if (typeof item.signature !== "string") continue;
     if (!chain.has(item.recurs) && item.signature !== state.signature) continue;
-    if (!best || Date.parse(item.at) > Date.parse(best.at)) best = item;
+    const target = canonicalLive(live, item);
+    if (typeof target.signature !== "string") continue;
+    if (!best || Date.parse(target.at) > Date.parse(best.at)) best = target;
   }
   return best;
 }
