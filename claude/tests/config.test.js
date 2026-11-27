@@ -776,6 +776,24 @@ test.each([".claude/settings.local.json", ".claude/.cc-writes/file", "sub/.claud
   }
 });
 
+// ~/.config/agent-desktop/ holds machine-local bearer tokens (0600), fleet.toml, and opt-in
+// policy.toml inside the public dotfiles repo root (dotfiles-917). Keep it gitignored so
+// local credentials can never be staged or committed.
+test.each(["agent-desktop/token", "agent-desktop/fleet.toml", "agent-desktop/policy.toml"])(
+  "the repository .gitignore excludes %s",
+  (path) => {
+    expect(tracked(path)).toBe(false);
+    const result = spawnSync(
+      "git",
+      ["-c", "core.excludesFile=/dev/null", "check-ignore", "-v", "--", path],
+      { cwd: REPO, encoding: "utf8" },
+    );
+    if (result.error) throw result.error;
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^\.gitignore:\d+:\/agent-desktop\/\t/);
+  },
+);
+
 test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(lstatSync(join(REPO, "CLAUDE.md")).isFile()).toBe(true);
   const instructions = read("CLAUDE.md");
