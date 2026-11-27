@@ -751,6 +751,14 @@ describe("settings", () => {
     const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
     expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/deck-view.js"')).toHaveLength(1);
   });
+
+  // Catch phantom waits / dropped timers where a reply promises to check back or wake up
+  // automatically without any active timer, PR watch, delegate, subagent, or background task.
+  test("claude/settings.json runs the guard-wakeup check at Stop", () => {
+    const stops = settings.hooks.Stop.flatMap((group) => group.hooks);
+    expect(stops.filter((hook) => hook.command === '"$HOME/.bun/bin/bun" "$HOME/.claude/hooks/guard-wakeup.js"')).toHaveLength(1);
+    expect(tracked("claude/hooks/guard-wakeup.js")).toBe(true);
+  });
 });
 
 // git/ignore is the global excludes file (SETUP.md). Claude Code keeps per-checkout settings in
