@@ -1122,6 +1122,9 @@ describe("storage rule", () => {
     expect(rule).toContain("`t3_environment_links`");
     expect(rule).toContain("`delegate_task`");
     expect(rule).toContain("`t3_thread_read`");
+    expect(rule).toContain("`t3_thread_send`");
+    expect(rule).toContain("both Air → Pro and Pro → Air are `full-access`");
+    expect(rule).not.toContain("Pro → Air is `read-only`");
     expect(rule).toContain("`git -C ~/.config log -1`");
     expect(rule).toContain("~/.ssh/config.d/");
     expect(rule).not.toMatch(/`ssh [\w.-]+[\s`]/);
