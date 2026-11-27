@@ -303,6 +303,15 @@ exit "\${FAKE_EXIT:-0}"
       return error.code !== "ESRCH";
     }
   };
+  const killPidFiles = (files) => {
+    for (const file of files) {
+      if (!existsSync(file)) continue;
+      const pid = Number(readFileSync(file, "utf8").trim());
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, "SIGKILL"); } catch {}
+      }
+    }
+  };
 
   test("timeout kills the whole process group, stops the proxy, and reports the stderr tail", async () => {
     const hang = join(root, "hang-claude");
@@ -312,7 +321,7 @@ exit "\${FAKE_EXIT:-0}"
     const proxyFile = join(root, "proxy.url");
     writeFileSync(hang, `#!/bin/sh
 echo $$ > "${pidFile}"
-printf '%s' "$ANTHROPIC_BASE_URL" > "${proxyFile}"
+printf '%s' "$API_FIRST_PROXY_URL" > "${proxyFile}"
 sh -c 'trap "" TERM; echo $$ > "${grand1File}"; exec sleep 60' &
 sh -c 'trap "" TERM; echo $$ > "${grand2File}"; exec sleep 60' >/dev/null 2>&1 &
 while [ ! -s "${grand1File}" ] || [ ! -s "${grand2File}" ]; do sleep 0.02; done
@@ -327,10 +336,10 @@ exec sleep 60
 `);
     chmodSync(hang, 0o755);
     const lines = [];
-    const pids = [];
     try {
-      const result = await run(["--timeout", "0.4", "--system-prompt", "S"], {
-        env: env({ API_FIRST_REAL_BIN: hang }),
+      const result = await run(["--timeout", "0.8", "--system-prompt", "S"], {
+        env: env(),
+        wrapper: hang,
         input: "",
         killGraceMs: 150,
         stderr: null,
@@ -339,7 +348,7 @@ exec sleep 60
       expect(result.code).toBe(TIMED_OUT);
       expect(result.timedOut).toBe(true);
       expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain("timed out after 0.4s");
+      expect(lines[0]).toContain("timed out after 0.8s");
       expect(lines[0]).toContain(`exit ${TIMED_OUT}`);
       expect(lines[0]).toContain("stderr tail (truncated):");
       expect(lines[0]).toContain("FINAL_STDERR_TAIL");
@@ -349,71 +358,83 @@ exec sleep 60
       for (const file of [pidFile, grand1File, grand2File]) {
         const pid = Number(readFileSync(file, "utf8").trim());
         expect(pid).toBeGreaterThan(0);
-        pids.push(pid);
         expect(isAlive(pid)).toBe(false);
       }
 
       const proxyUrl = readFileSync(proxyFile, "utf8").trim();
       expect(proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(proxyUrl).not.toBe(`http://127.0.0.1:${upstream.port}`);
       await expect(fetch(`${proxyUrl}/v1/messages`, { method: "POST", body: "{}" })).rejects.toThrow();
     } finally {
-      for (const pid of pids) {
-        try { process.kill(pid, "SIGKILL"); } catch {}
-      }
+      killPidFiles([pidFile, grand1File, grand2File]);
     }
   });
 
   test("timeout notes when a hung child wrote nothing to stderr and propagates through preflight", async () => {
     const quietHang = join(root, "quiet-hang");
-    writeFileSync(quietHang, "#!/bin/sh\nexec sleep 60\n");
+    const pidFile = join(root, "quiet-hang.pid");
+    writeFileSync(quietHang, `#!/bin/sh
+echo $$ > "${pidFile}"
+exec sleep 60
+`);
     chmodSync(quietHang, 0o755);
     const lines = [];
-    const code = await preflight(["--timeout", "0.3", "--system-prompt", "S"], {
-      env: env({ API_FIRST_REAL_BIN: quietHang }),
-      killGraceMs: 100,
-      stderr: null,
-      report: (line) => lines.push(line),
-    });
-    expect(code).toBe(TIMED_OUT);
-    expect(lines[0]).toContain("timed out after 0.3s");
-    expect(lines[0]).toContain("child wrote nothing to stderr");
-    expect(lines[1]).toBe(`claude-experiment preflight: the canary run failed with exit ${TIMED_OUT}`);
+    try {
+      const code = await preflight(["--timeout", "0.5", "--system-prompt", "S"], {
+        env: env(),
+        wrapper: quietHang,
+        killGraceMs: 100,
+        stderr: null,
+        report: (line) => lines.push(line),
+      });
+      expect(code).toBe(TIMED_OUT);
+      expect(lines[0]).toContain("timed out after 0.5s");
+      expect(lines[0]).toContain("child wrote nothing to stderr");
+      expect(lines[1]).toBe(`claude-experiment preflight: the canary run failed with exit ${TIMED_OUT}`);
+      const pid = Number(readFileSync(pidFile, "utf8").trim());
+      expect(pid).toBeGreaterThan(0);
+      expect(isAlive(pid)).toBe(false);
+    } finally {
+      killPidFiles([pidFile]);
+    }
   });
 
-  test("the shell entry enforces --timeout end to end with a never-returning stub", () => {
+  test("the shell entry enforces --timeout end to end with a never-returning stub", async () => {
     const hang = join(root, "cli-hang");
     const pidFile = join(root, "cli-stub.pid");
     const childFile = join(root, "cli-child.pid");
+    const proxyFile = join(root, "cli-proxy.url");
     writeFileSync(hang, `#!/bin/sh
 echo $$ > "${pidFile}"
+printf '%s' "$ANTHROPIC_BASE_URL" > "${proxyFile}"
 sh -c 'echo $$ > "${childFile}"; exec sleep 60' &
 while [ ! -s "${childFile}" ]; do sleep 0.02; done
 printf 'waiting on upstream stream\\n' >&2
 exec sleep 60
 `);
     chmodSync(hang, 0o755);
-    const pids = [];
     try {
-      const result = spawnSync(join(BIN, "claude-experiment"), ["--timeout", "0.4", "--system-prompt", "S"], {
+      const result = spawnSync(join(BIN, "claude-experiment"), ["--timeout", "2.5", "--system-prompt", "S"], {
         env: env({ API_FIRST_REAL_BIN: hang }),
         input: "",
         encoding: "utf8",
         timeout: 15_000,
       });
       expect(result.status).toBe(TIMED_OUT);
-      expect(result.stderr).toContain("timed out after 0.4s");
+      expect(result.stderr).toContain("timed out after 2.5s");
       expect(result.stderr).toContain(`exit ${TIMED_OUT}`);
       expect(result.stderr).toContain("waiting on upstream stream");
       for (const file of [pidFile, childFile]) {
         const pid = Number(readFileSync(file, "utf8").trim());
         expect(pid).toBeGreaterThan(0);
-        pids.push(pid);
         expect(isAlive(pid)).toBe(false);
       }
+      const proxyUrl = readFileSync(proxyFile, "utf8").trim();
+      expect(proxyUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(proxyUrl).not.toBe(`http://127.0.0.1:${upstream.port}`);
+      await expect(fetch(`${proxyUrl}/v1/messages`, { method: "POST", body: "{}" })).rejects.toThrow();
     } finally {
-      for (const pid of pids) {
-        try { process.kill(pid, "SIGKILL"); } catch {}
-      }
+      killPidFiles([pidFile, childFile]);
     }
   });
 });
