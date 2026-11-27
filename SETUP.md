@@ -991,10 +991,13 @@ thread.
 ## Computer use
 
 Claude Code's built-in computer use runs only in interactive sessions, so it is off here.
-Antigravity wires the `desktop` MCP server (`claude/marketplace/computer-use/server/desktop.js`)
-directly in `gemini/mcp_config.json`, and the `computer-use` plugin in `claude/marketplace`
-provides the same screenshots, mouse and keyboard server for Claude Code sessions. Its MCP
-server is named `desktop`, because Claude Code reserves the name `computer-use`.
+Both `gemini/mcp_config.json` (Antigravity) and the `computer-use` plugin in
+`claude/marketplace` (Claude Code) run `~/.local/bin/desktop mcp` (`agent-desktop`, talking
+to `/Applications/AgentDesktop.app` `desktopd` with opt-in `~/.config/agent-desktop/policy.toml`,
+default `open` mode and physical Esc stop) when installed, and fall back to the bundled
+`claude/marketplace/computer-use/server/desktop.js` + `helper.swift` on machines without
+`agent-desktop`. Its MCP server is named `desktop`, because Claude Code reserves the name
+`computer-use`.
 
 `claude/settings.json` declares the `dotfiles` marketplace (`.claude-plugin/marketplace.json`
 on GitHub) and enables the plugin, so there is nothing to install. Claude Code clones the

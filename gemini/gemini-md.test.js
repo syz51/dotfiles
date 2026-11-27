@@ -194,11 +194,15 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(mcpConfig.mcpServers.board).toBeDefined();
     expect(mcpConfig.mcpServers.desktop).toBeDefined();
     expect(JSON.stringify(mcpConfig.mcpServers.desktop)).toContain(
+      "$HOME/.local/bin/desktop",
+    );
+    expect(JSON.stringify(mcpConfig.mcpServers.desktop)).toContain(
       "claude/marketplace/computer-use/server/desktop.js",
     );
     expect(geminiMd).toContain("`board` MCP server");
     expect(geminiMd).toContain("`desktop` MCP");
     expect(storageDoc).toContain("`desktop` MCP server");
+    expect(storageDoc).toContain("~/.local/bin/desktop mcp");
     expect(storageDoc).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
   });
 

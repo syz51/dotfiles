@@ -1,8 +1,13 @@
 # computer-use plugin
 
-The `desktop` MCP server gives Claude Code sessions screenshots, mouse and keyboard on this
-Mac. SETUP.md's "Computer use" section describes the safeguards. This file covers the
-approval policy and the one-time macOS grants.
+The `desktop` MCP server prefers `~/.local/bin/desktop mcp` (`agent-desktop`, talking to the
+signed `/Applications/AgentDesktop.app` LaunchAgent daemon; opt-in policy in
+`~/.config/agent-desktop/policy.toml`, default `open` with physical Esc stop) when installed,
+and falls back to the bundled `server/desktop.js` + `helper.swift` on machines without
+`agent-desktop`.
+
+The sections below describe the bundled `server/desktop.js` fallback's approval policy and
+one-time macOS grants (used when `~/.local/bin/desktop` is not installed).
 
 ## Approval policy
 

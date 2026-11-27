@@ -26,7 +26,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 
 ## Desktop MCP
 
-- Desktop (`desktop` MCP server, lazy-loaded, `~/.config/claude/marketplace/computer-use/server/desktop.js`): call `request_access` (auto-approved except `DIALOG_APPS` such as terminals, agent apps, editors, and System Settings which prompt, and finance/health/gov/password apps which refuse), respect the single-session lock, and `release` when done (`~/.config/claude/marketplace/computer-use/README.md`).
+- Desktop (`desktop` MCP server, lazy-loaded): runs `~/.local/bin/desktop mcp` (`agent-desktop` Rust client talking to `/Applications/AgentDesktop.app` `desktopd`; falls back to `~/.config/claude/marketplace/computer-use/server/desktop.js` on machines without `agent-desktop`). Prefer `snapshot`/`find` (Accessibility tree `@eN` refs) + batched `act` with `focus_mode: "background"` or `"auto"`, and call `session_end` when finished (`release` on the legacy `desktop.js` fallback).
 
 ## Gemini Notebook MCP & `gnotebook`
 
