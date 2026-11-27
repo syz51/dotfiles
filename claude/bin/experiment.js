@@ -40,14 +40,22 @@ import { join } from "node:path";
 
 export const CANARY = "Reply with the single word OK.";
 export const DEFAULT_CAP = 2000;
+export const DEFAULT_TIMEOUT = 120;
+export const STDERR_TAIL_CHARS = 2048;
 export const OVER_CAP = 3;
 export const LEAKED = 4;
+export const TIMED_OUT = 124;
+const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
 
-export const USAGE = `usage: claude-experiment <claude args>
-       claude-experiment preflight [--cap N] <claude args>
+export const USAGE = `usage: claude-experiment [--timeout SECONDS] <claude args>
+       claude-experiment preflight [--cap N] [--timeout SECONDS] <claude args>
 
 Runs \`claude -p\` so the model sees only the experiment's system prompt and input.
 Pass --system-prompt or --system-prompt-file; the run refuses without one.
+
+--timeout SECONDS limits each run (default ${DEFAULT_TIMEOUT}s). On expiry the wrapper kills
+the child's whole process group, stops its local proxy, prints the tail of the child's
+stderr and exits ${TIMED_OUT}. Runners must retry a timed-out call.
 
 Defaults, each added unless the caller passes that flag: -p, --tools "",
 --setting-sources "", --strict-mcp-config, --disable-slash-commands. Variables:
@@ -70,8 +78,8 @@ email address is") or the environment block (a "# Environment" line, "Primary wo
 directory:") anywhere, whatever the prompt's size; the proxy then refuses that request.
 A system prompt that itself holds those lines fails it too. It exits ${OVER_CAP} when a
 request's prompt tokens (input, cache creation and cache read) exceed the cap (default
-${DEFAULT_CAP}), and with claude's code when the canary run fails. It prints what the
-proxy removed.
+${DEFAULT_CAP}), ${TIMED_OUT} on timeout, and with claude's code when the canary run fails.
+It prints what the proxy removed.
 
 See SETUP.md, "Experiment calls".`;
 
@@ -254,43 +262,214 @@ export function startProxy({ upstream = UPSTREAM, usages = [], requests = [], al
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"];
 
+function parseTimeoutSeconds(value) {
+  if (value === undefined) throw new Error("--timeout requires a positive number of seconds");
+  const seconds = typeof value === "number" ? value : value.trim() === "" ? NaN : Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error(`--timeout takes a positive number of seconds, not ${value}`);
+  if (seconds > MAX_TIMEOUT_SECONDS) throw new Error(`--timeout must be at most ${MAX_TIMEOUT_SECONDS} seconds, not ${value}`);
+  return seconds;
+}
+
+// Extracts `--timeout <seconds>` / `--timeout=<seconds>` before any `--` marker.
+export function extractTimeout(argv, defaultTimeout = DEFAULT_TIMEOUT) {
+  let timeout = parseTimeoutSeconds(defaultTimeout);
+  const rest = [];
+  let after = false;
+  for (let index = 0; index < argv.length; index++) {
+    const arg = argv[index];
+    if (after) {
+      rest.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      after = true;
+      rest.push(arg);
+      continue;
+    }
+    if (arg === "--timeout" || arg.startsWith("--timeout=")) {
+      const value = arg === "--timeout" ? argv[++index] : arg.slice("--timeout=".length);
+      timeout = parseTimeoutSeconds(value);
+    } else {
+      rest.push(arg);
+    }
+  }
+  return { timeout, argv: rest };
+}
+
+function killGroup(child, signal) {
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH" && error.code !== "EPERM") throw error;
+    try {
+      child.kill(signal);
+    } catch (inner) {
+      if (inner.code !== "ESRCH") throw inner;
+    }
+  }
+}
+
+function groupAlive(pgid) {
+  if (!pgid) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
+async function ensureGroupDead(child, maxWaitMs = 1000) {
+  if (!child.pid || !groupAlive(child.pid)) return;
+  killGroup(child, "SIGKILL");
+  const deadline = Date.now() + maxWaitMs;
+  while (groupAlive(child.pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    if (groupAlive(child.pid)) killGroup(child, "SIGKILL");
+  }
+}
+
 // Runs claude-api with the route's arguments behind the proxy and resolves to its exit code,
 // the requests' usage and, with refuseMarks, their block marks. With input, claude reads it on stdin and its
-// output is dropped. refuseMarks goes to the proxy. A signal to this process goes on to claude.
-export async function run(argv, { env = process.env, input, refuseMarks = false, wrapper = join(import.meta.dir, "claude-api") } = {}) {
-  const args = experimentArgs(argv);
+// output is dropped. refuseMarks goes to the proxy. The child runs in its own process group so signals
+// and timeouts reach the whole process tree. On timeout, the process group is killed, the proxy is
+// stopped, the tail of the child's stderr is reported, and the exit code is TIMED_OUT.
+export async function run(
+  argv,
+  {
+    env = process.env,
+    input,
+    refuseMarks = false,
+    wrapper = join(import.meta.dir, "claude-api"),
+    timeout = DEFAULT_TIMEOUT,
+    killGraceMs = 1000,
+    report = (line) => console.error(line),
+    stderr = process.stderr,
+  } = {},
+) {
+  const { timeout: effectiveTimeout, argv: claudeArgv } = extractTimeout(argv, timeout);
+  const args = experimentArgs(claudeArgv);
   const proxy = startProxy({ upstream: env.ANTHROPIC_BASE_URL || UPSTREAM, allowReminders: env.EXPERIMENT_ALLOW_REMINDERS === "1", refuseMarks });
-  const stdio = input === undefined ? "inherit" : ["pipe", "ignore", "inherit"];
-  const child = spawn(wrapper, args, { env: { ...env, ...ENV, API_FIRST_PROXY_URL: proxy.url }, stdio });
-  if (input !== undefined) child.stdin.end(input);
-  const forward = (signal) => child.kill(signal);
-  for (const signal of SIGNALS) process.on(signal, forward);
-  const code = await new Promise((resolve, reject) => {
-    child.on("error", reject);
-    child.on("exit", (status, signal) => resolve(status ?? 128 + (constants.signals[signal] ?? 0)));
-  }).finally(() => {
-    for (const signal of SIGNALS) process.off(signal, forward);
+  let proxyStopped = false;
+  const stopProxy = () => {
+    if (proxyStopped) return;
+    proxyStopped = true;
     proxy.server.stop(true);
+  };
+  const stdio = input === undefined ? ["inherit", "inherit", "pipe"] : ["pipe", "ignore", "pipe"];
+  let child;
+  try {
+    child = spawn(wrapper, args, { env: { ...env, ...ENV, API_FIRST_PROXY_URL: proxy.url }, stdio, detached: true });
+  } catch (error) {
+    stopProxy();
+    throw error;
+  }
+  const stderrDecoder = new TextDecoder();
+  let stderrTail = "";
+  let stderrTruncated = false;
+  let stderrEndedWithNewline = true;
+  const appendStderrTail = (text) => {
+    if (!text) return;
+    stderrEndedWithNewline = text.endsWith("\n");
+    stderrTail += text;
+    if (stderrTail.length > STDERR_TAIL_CHARS) {
+      stderrTail = stderrTail.slice(-STDERR_TAIL_CHARS);
+      stderrTruncated = true;
+    }
+  };
+  child.stderr.on("data", (chunk) => {
+    stderr?.write(chunk);
+    appendStderrTail(stderrDecoder.decode(chunk, { stream: true }));
   });
-  return { code, usages: proxy.usages, requests: proxy.requests };
+  child.stderr.on("end", () => {
+    appendStderrTail(stderrDecoder.decode());
+  });
+
+  const forward = (signal) => killGroup(child, signal);
+  for (const signal of SIGNALS) process.on(signal, forward);
+
+  let timedOut = false;
+  let killTimer;
+  let destroyTimer;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stopProxy();
+    killGroup(child, "SIGTERM");
+    killTimer = setTimeout(() => {
+      killGroup(child, "SIGKILL");
+      destroyTimer = setTimeout(() => child.stderr?.destroy(), 500);
+    }, killGraceMs);
+  }, effectiveTimeout * 1000);
+
+  let exitStatus;
+  let exitSignal;
+  const code = await new Promise((resolve, reject) => {
+    if (input !== undefined) {
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE") reject(error);
+      });
+      child.stdin.end(input);
+    }
+    child.on("error", reject);
+    child.on("exit", (status, signal) => {
+      exitStatus = status;
+      exitSignal = signal;
+    });
+    child.on("close", (status, signal) => {
+      const finalStatus = status ?? exitStatus;
+      const finalSignal = signal ?? exitSignal;
+      resolve(timedOut ? TIMED_OUT : (finalStatus ?? 128 + (constants.signals[finalSignal] ?? 0)));
+    });
+  }).finally(async () => {
+    clearTimeout(timer);
+    clearTimeout(killTimer);
+    clearTimeout(destroyTimer);
+    for (const signal of SIGNALS) process.off(signal, forward);
+    stopProxy();
+    if (timedOut) await ensureGroupDead(child);
+  });
+
+  if (timedOut) {
+    const tail = stderrTail.trim();
+    if (stderr && !stderrEndedWithNewline) stderr.write("\n");
+    const detail = tail
+      ? `stderr tail${stderrTruncated ? " (truncated)" : ""}:\n${tail}`
+      : "child wrote nothing to stderr";
+    report(`claude-experiment: timed out after ${effectiveTimeout}s (exit ${TIMED_OUT}); killed process group ${child.pid}; ${detail}`);
+  }
+  return { code, timedOut, usages: proxy.usages, requests: proxy.requests };
 }
 
 // Sends the canary with the experiment's flags, checks that no request would still carry
 // Claude Code's blocks, then each request's prompt tokens against the cap. Resolves to an exit
-// code: LEAKED for a block left in a request or no request seen, claude's when the run
-// failed, OVER_CAP above the cap.
-export async function preflight(argv, { env = process.env, wrapper, report = (line) => console.error(line) } = {}) {
+// code: LEAKED for a block left in a request or no request seen, TIMED_OUT on timeout,
+// claude's when the run failed, OVER_CAP above the cap.
+export async function preflight(
+  argv,
+  { env = process.env, wrapper, timeout = DEFAULT_TIMEOUT, killGraceMs = 1000, report = (line) => console.error(line), stderr = process.stderr } = {},
+) {
   let cap = DEFAULT_CAP;
   const rest = [];
+  let after = false;
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
+    if (after) {
+      rest.push(arg);
+      continue;
+    }
+    if (arg === "--") {
+      after = true;
+      rest.push(arg);
+      continue;
+    }
     if (arg === "--cap" || arg.startsWith("--cap=")) {
       const value = arg === "--cap" ? argv[++index] : arg.slice("--cap=".length);
       cap = Number(value);
       if (!Number.isInteger(cap) || cap <= 0) throw new Error(`--cap takes a positive whole number, not ${value}`);
     } else rest.push(arg);
   }
-  const { code, usages, requests } = await run(rest, { env, input: CANARY, wrapper, refuseMarks: true });
+  const { code, usages, requests } = await run(rest, { env, input: CANARY, wrapper, refuseMarks: true, timeout, killGraceMs, report, stderr });
   const leaks = requests.flatMap(({ left }, index) => left.map(([block, path]) => `request ${index + 1}: ${block} at ${path}`));
   if (leaks.length > 0) {
     report(`claude-experiment preflight: LEAK: the canary request still carries Claude Code's context after the proxy (${leaks.join("; ")}); the proxy refused it. Do not run the batch: Claude Code changed the blocks' form, or the system prompt holds those lines`);
@@ -321,7 +500,12 @@ if (import.meta.main) {
     process.exit(argv.length === 0 ? 64 : 0);
   }
   try {
-    process.exit(argv[0] === "preflight" ? await preflight(argv.slice(1)) : (await run(argv)).code);
+    const { timeout, argv: rest } = extractTimeout(argv);
+    if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
+      console.log(USAGE);
+      process.exit(rest.length === 0 ? 64 : 0);
+    }
+    process.exit(rest[0] === "preflight" ? await preflight(rest.slice(1), { timeout }) : (await run(rest, { timeout })).code);
   } catch (error) {
     console.error(`claude-experiment: ${error.message}`);
     process.exit(64);
