@@ -1114,6 +1114,29 @@ describe("storage rule", () => {
     expect(read("codex/AGENTS.md")).toContain(`\n${rule}\n`);
   });
 
+  test("defaults to egress-free storage routing, packed .tar.zst archives, sai COS offload, and local-replica restic checks", () => {
+    const rule = referenceRules("storage");
+    for (const needle of [
+      "COS Tokyo",
+      "¥0.46-0.75/GB",
+      "`pro:`",
+      "`sai:`",
+      "`svps:`",
+      "`169.254.0.47`",
+      "Mac-to-Mac transfers",
+      "scratch/tmp staging",
+      "Never put disposable `tmp/` prefixes into versioned `cloud:`",
+      "`.tar.zst` + manifest",
+      "`storagectl run --on sai`",
+      "never by downloading GBs back to a Mac",
+      "`restic check --read-data`",
+      "~/Library/Application Support/Sai Storage/replicas/...",
+      "metadata-only `restic check` against COS",
+    ]) {
+      expect(rule, needle).toContain(needle);
+    }
+  });
+
   test("Codex gets the same rule", () => {
     expect(read("codex/AGENTS.md")).toContain(`## Storage\n\n${referenceRules("storage").trimEnd()}\n`);
   });
