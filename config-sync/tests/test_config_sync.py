@@ -549,10 +549,10 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(sync.main(["install", "--dry-run"], run=Runner()), 0)
         self.assertEqual(plistlib.loads(out.getvalue().encode())["Label"], "com.syz51.config-sync")
 
-    def links(self, *, lexists, which, gemini=False, codex_lexists=None, codex_which=None, codex_home="/codex"):
-        if codex_lexists is None:
+    def links(self, *, lexists, which, gemini=False, codex_lexists=..., codex_which=..., codex_home="/codex"):
+        if codex_lexists is ...:
             codex_lexists = lexists
-        if codex_which is None:
+        if codex_which is ...:
             codex_which = which
 
         def fake_lexists(path):
