@@ -8,7 +8,7 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "exec \"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/marketplace/computer-use/server/desktop.js\""
+        "if [ -f \"$HOME/.local/bin/desktop\" ] && [ -x \"$HOME/.local/bin/desktop\" ]; then exec \"$HOME/.local/bin/desktop\" mcp; else exec \"$HOME/.bun/bin/bun\" \"$HOME/.config/claude/marketplace/computer-use/server/desktop.js\"; fi"
       ]
     },
     "gemini-notebook": {

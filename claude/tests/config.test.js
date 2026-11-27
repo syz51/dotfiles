@@ -1652,14 +1652,67 @@ describe("computer-use plugin", () => {
 
   // No policy path from a checkout: agents edit tracked files and branch switches reset them.
   // The user's policy lives in the server's untracked state folder; the plugin's is the fallback.
-  test("its only MCP server is desktop, run by bun from the plugin, with the auto policy bundled", () => {
+  test("its only MCP server is desktop, preferring ~/.local/bin/desktop mcp with desktop.js fallback", () => {
     const servers = JSON.parse(read("claude/marketplace/computer-use/.mcp.json")).mcpServers;
     expect(Object.keys(servers)).toEqual(["desktop"]);
     expect(servers.desktop).toEqual({
-      command: "${HOME}/.bun/bin/bun",
-      args: ["${CLAUDE_PLUGIN_ROOT}/server/desktop.js"],
+      command: "/bin/sh",
+      args: [
+        "-c",
+        "if [ -f \"$HOME/.local/bin/desktop\" ] && [ -x \"$HOME/.local/bin/desktop\" ]; then exec \"$HOME/.local/bin/desktop\" mcp; else exec \"$HOME/.bun/bin/bun\" \"$1\"; fi",
+        "_",
+        "${CLAUDE_PLUGIN_ROOT}/server/desktop.js",
+      ],
     });
     expect(JSON.parse(read("claude/marketplace/computer-use/policy.json"))).toEqual({ approval: "auto" });
+
+    // Exercise the actual /bin/sh -c launcher across executable, missing, and directory cases.
+    const tmp = mkdtempSync(join(tmpdir(), "desktop-mcp-launcher-"));
+    try {
+      const bunBin = join(tmp, ".bun/bin");
+      const localBin = join(tmp, ".local/bin");
+      const pluginRoot = join(tmp, "plugin $weird dir");
+      mkdirSync(bunBin, { recursive: true });
+      mkdirSync(localBin, { recursive: true });
+      mkdirSync(join(pluginRoot, "server"), { recursive: true });
+      writeFileSync(join(bunBin, "bun"), "#!/bin/sh\nprintf 'BUN:%s' \"$1\"\n", { mode: 0o755 });
+
+      const runPlugin = () => Bun.spawnSync(
+        [
+          servers.desktop.command,
+          ...servers.desktop.args.map((a) => a.replace("${CLAUDE_PLUGIN_ROOT}", pluginRoot)),
+        ],
+        { env: { HOME: tmp, PATH: process.env.PATH } },
+      );
+
+      // 1. No ~/.local/bin/desktop -> falls back to bun with literal plugin root path.
+      const fallback = runPlugin();
+      expect(fallback.exitCode).toBe(0);
+      expect(fallback.stdout.toString()).toBe(`BUN:${pluginRoot}/server/desktop.js`);
+
+      // 2. ~/.local/bin/desktop is a directory -> still falls back safely instead of execing dir.
+      mkdirSync(join(localBin, "desktop"));
+      const dirCase = runPlugin();
+      expect(dirCase.exitCode).toBe(0);
+      expect(dirCase.stdout.toString()).toBe(`BUN:${pluginRoot}/server/desktop.js`);
+      rmSync(join(localBin, "desktop"), { recursive: true });
+
+      // 3. Executable ~/.local/bin/desktop file -> dispatches `desktop mcp`.
+      writeFileSync(join(localBin, "desktop"), "#!/bin/sh\nprintf 'DESKTOP:%s' \"$*\"\n", { mode: 0o755 });
+      const native = runPlugin();
+      expect(native.exitCode).toBe(0);
+      expect(native.stdout.toString()).toBe("DESKTOP:mcp");
+
+      // 4. gemini/mcp_config.json launcher dispatches identically.
+      const geminiDesktop = JSON.parse(read("gemini/mcp_config.json")).mcpServers.desktop;
+      const gNative = Bun.spawnSync([geminiDesktop.command, ...geminiDesktop.args], {
+        env: { HOME: tmp, PATH: process.env.PATH },
+      });
+      expect(gNative.exitCode).toBe(0);
+      expect(gNative.stdout.toString()).toBe("DESKTOP:mcp");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   test("its tests run in the verification suites and CI", () => {
