@@ -184,6 +184,122 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(result["checks"]["passedCount"], 1)
         self.assertEqual(result["checks"]["failed"], [])
 
+    def test_queued_rerun_supersedes_older_passing_run(self):
+        repo = make_repo("syz51/demo")
+        completed = {
+            "workflowName": "CI",
+            "name": "test",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+            "startedAt": "2026-11-20T00:01:00Z",
+            "completedAt": "2026-11-20T00:05:00Z",
+        }
+        for queued in (
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "QUEUED",
+                "conclusion": "",
+                "startedAt": None,
+                "completedAt": None,
+            },
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "QUEUED",
+                "conclusion": "",
+                "startedAt": "0001-01-01T00:00:00Z",
+                "completedAt": "0001-01-01T00:00:00Z",
+            },
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "IN_PROGRESS",
+                "conclusion": "",
+                "startedAt": "2026-11-20T00:04:00Z",
+                "completedAt": "0001-01-01T00:00:00Z",
+            },
+        ):
+            for order in ([completed, queued], [queued, completed]):
+                with self.subTest(queued=queued, reversed=order[0] is queued):
+                    result = ds.classify_pr(make_pr(checks=order), repo)
+                    self.assertEqual(result["action"], "pending_checks")
+                    self.assertEqual(result["checks"]["state"], "pending")
+                    self.assertEqual(result["checks"]["pending"], ["test"])
+                    self.assertEqual(result["checks"]["passedCount"], 0)
+                    self.assertEqual(result["checks"]["failed"], [])
+
+    def test_queued_rerun_supersedes_older_failing_run(self):
+        repo = make_repo("syz51/demo")
+        failed = {
+            "workflowName": "CI",
+            "name": "test",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-11-20T00:01:00Z",
+            "completedAt": "2026-11-20T00:05:00Z",
+        }
+        for queued in (
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "QUEUED",
+                "conclusion": "",
+                "startedAt": None,
+                "completedAt": None,
+            },
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "QUEUED",
+                "conclusion": "",
+                "startedAt": "0001-01-01T00:00:00Z",
+                "completedAt": "0001-01-01T00:00:00Z",
+            },
+            {
+                "workflowName": "CI",
+                "name": "test",
+                "status": "IN_PROGRESS",
+                "conclusion": "",
+                "startedAt": "2026-11-20T00:06:00Z",
+                "completedAt": "0001-01-01T00:00:00Z",
+            },
+        ):
+            for order in ([failed, queued], [queued, failed]):
+                with self.subTest(queued=queued, reversed=order[0] is queued):
+                    result = ds.classify_pr(make_pr(checks=order), repo)
+                    self.assertEqual(result["action"], "pending_checks")
+                    self.assertEqual(result["checks"]["state"], "pending")
+                    self.assertEqual(result["checks"]["pending"], ["test"])
+                    self.assertEqual(result["checks"]["failed"], [])
+
+    def test_completed_run_with_zero_completed_at_falls_back_to_started_at(self):
+        repo = make_repo("syz51/demo")
+        pr = make_pr(
+            checks=[
+                {
+                    "workflowName": "CI",
+                    "name": "test",
+                    "status": "COMPLETED",
+                    "conclusion": "FAILURE",
+                    "startedAt": "2026-11-20T00:01:00Z",
+                    "completedAt": "2026-11-20T00:02:00Z",
+                },
+                {
+                    "workflowName": "CI",
+                    "name": "test",
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "startedAt": "2026-11-20T00:05:00Z",
+                    "completedAt": "0001-01-01T00:00:00Z",
+                },
+            ]
+        )
+        result = ds.classify_pr(pr, repo)
+        self.assertEqual(result["action"], "ready_to_merge")
+        self.assertEqual(result["checks"]["passedCount"], 1)
+        self.assertEqual(result["checks"]["failed"], [])
+
     def test_update_branch_when_behind_and_green(self):
         repo = make_repo("syz51/demo")
         pr = make_pr(merge_state="BEHIND")
