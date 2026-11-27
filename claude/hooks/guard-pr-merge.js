@@ -190,21 +190,23 @@ export function classifyChecks(rollup, billingSkipped = new Set()) {
   const failed = [];
   let actionsFailed = 0;
   const checks = latestChecks(rollup);
-  const isSkipped = (check) => check.status === "COMPLETED" && check.conclusion === "FAILURE" && billingSkipped.has(actionsJob(check));
+  // GitHub can leave a check run's status at IN_PROGRESS after recording a final conclusion;
+  // treat any non-empty conclusion (or COMPLETED status) as finished and judge by conclusion.
+  const isFinished = (check) => check.status === "COMPLETED" || (typeof check.conclusion === "string" && check.conclusion.trim() !== "");
+  const isSkipped = (check) => isFinished(check) && check.conclusion === "FAILURE" && billingSkipped.has(actionsJob(check));
   const workflowsOf = new Map();
   for (const check of checks.filter(isSkipped)) workflowsOf.set(check.name, (workflowsOf.get(check.name) ?? new Set()).add(check.workflowName));
   for (const check of checks) {
     if (check.__typename === "CheckRun") {
       const name = check.workflowName ? `${check.workflowName} / ${check.name}` : check.name;
-      // An in-progress run has conclusion "", so the status decides whether it finished.
-      if (check.status !== "COMPLETED") pending.push(name);
+      if (!isFinished(check)) pending.push(name);
       else if (isSkipped(check) && workflowsOf.get(check.name).size > 1) {
         failed.push(`${name} (not started for billing, and a skipped job of another workflow has the same name, so no "<context>: ${check.name}" check can stand for it)`);
       } else if (isSkipped(check)) {
         const fallbacks = checks.filter((other) => actionsJob(other) === undefined && (other.context ?? other.name ?? "").endsWith(`: ${check.name}`));
-        const passed = fallbacks.some((other) => other.state === "SUCCESS" || (other.status === "COMPLETED" && other.conclusion === "SUCCESS"));
+        const passed = fallbacks.some((other) => other.state === "SUCCESS" || (other.__typename === "CheckRun" && isFinished(other) && other.conclusion === "SUCCESS"));
         // A pending fallback is listed as pending itself.
-        const running = fallbacks.some((other) => other.state === "PENDING" || other.state === "EXPECTED" || (other.__typename === "CheckRun" && other.status !== "COMPLETED"));
+        const running = fallbacks.some((other) => other.state === "PENDING" || other.state === "EXPECTED" || (other.__typename === "CheckRun" && !isFinished(other)));
         if (!passed && !running) failed.push(`${name} (not started for billing, and no passing non-Actions check is named "<context>: ${check.name}")`);
       } else if (!PASSED.has(check.conclusion)) {
         failed.push(`${name} (${check.conclusion || "no conclusion"})`);
