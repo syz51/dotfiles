@@ -789,17 +789,117 @@ describe("matching known items", () => {
     const newFiled = records().filter((r) => r.kind === "filed" && r.key !== "claude:earlier:1");
     expect(newFiled.map((r) => r.match)).toEqual(["board-feedback-640", "board-feedback-1"]);
 
-    // Case 3: Matching a duplicate of a live item sends the live target's canonical signature.
+    // Case 3: A duplicate of a live item is excluded from # Known items (its canonical target
+    // is offered instead), while a pending finding that matched the alias before deduplication
+    // still resolves to the live target's canonical signature.
     reset();
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "friction.jsonl"), JSON.stringify({
+      kind: "judged", key: "claude:pending:1", harness: "claude", sessionId: "pending", cwd: PROJECT, turn: 1,
+      endedAt: "2026-11-01T10:00:00.000Z",
+      findings: [{ about: "board", activity: "build", title: TITLE, detail: "", error: "", match: "board-feedback-30" }],
+      at: "2026-11-01T10:05:00.000Z",
+    }) + "\n");
     setEnv({
       FAKE_BOARD_TASKS: JSON.stringify({
         "board-feedback-31": feedbackItem("board-feedback-31", { signature: "board:live-31" }),
         "board-feedback-30": feedbackItem("board-feedback-30", { status: "done", resolution: { kind: "duplicate", task: "board-feedback-31", at: before, by: "user" }, signature: "board:dup-30" }),
       }),
     });
-    answer("board-feedback-30");
+    answer("board-feedback-31");
     expect(await run(["run"], context(roots))).toBe(0);
-    expect(feedbackCalls().map((args) => args[args.indexOf("--signature") + 1])).toEqual(["board:live-31", "board:live-31"]);
+    const [case3Call] = log("claude.jsonl");
+    expect(case3Call.system).toContain('- board-feedback-31: "Item board-feedback-31"');
+    expect(case3Call.system).not.toContain("board-feedback-30");
+    expect(feedbackCalls().map((args) => args[args.indexOf("--signature") + 1])).toEqual(["board:live-31", "board:live-31", "board:live-31"]);
+  }, FRICTION_TIMEOUT);
+
+  test("excludes live duplicate aliases from matchItems without leaking them to closed items or dropping non-feedback targets", () => {
+    const olderCanonical = { id: "board-feedback-116", about: "board", title: "Older canonical", at: "2026-10-20T00:00:00Z" };
+    const canonicalLive = Array.from({ length: 180 }, (_, i) => [`live-${i}`, { id: `live-${i}`, about: "board", title: `Live ${i}`, at: new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString() }]);
+    // 150 newer live duplicate aliases (including a 2-hop chain) targeting canonical live items.
+    const dupAliases = Array.from({ length: 150 }, (_, i) => [
+      `dup-${i}`,
+      { id: `dup-${i}`, about: "board", title: `Dup ${i}`, at: new Date(Date.UTC(2026, 10, 2, 0, i)).toISOString(), duplicateOf: i === 0 ? "dup-1" : "board-feedback-116" },
+    ]);
+    // Duplicate of an external (non-feedback) open task not in `live` stays; a second alias pointing to it is excluded.
+    const externalDup = ["ext-canonical", { id: "ext-canonical", about: "board", title: "External target dup", at: "2026-10-25T00:00:00Z", duplicateOf: "dotfiles-9" }];
+    const externalHop = ["ext-hop", { id: "ext-hop", about: "board", title: "Second hop to external", at: "2026-10-26T00:00:00Z", duplicateOf: "ext-canonical" }];
+    // A cycle in duplicateOf terminates safely without dropping its items.
+    const cycleA = ["cyc-a", { id: "cyc-a", about: "board", title: "Cycle A", at: "2026-10-24T00:00:00Z", duplicateOf: "cyc-b" }];
+    const cycleB = ["cyc-b", { id: "cyc-b", about: "board", title: "Cycle B", at: "2026-10-24T01:00:00Z", duplicateOf: "cyc-a" }];
+    const live = new Map([["board-feedback-116", olderCanonical], ...canonicalLive, ...dupAliases, externalDup, externalHop, cycleA, cycleB]);
+    // Capture had previously filed `dup-1`, which is now a live duplicate alias: it must not leak into `closed`.
+    const filed = new Map([
+      ["dup-1", { id: "dup-1", about: "board", title: "Dup 1", at: "2026-11-02T00:01:00Z" }],
+      ["closed-1", { id: "closed-1", about: "board", title: "Truly closed", at: "2026-11-02T00:02:00Z" }],
+    ]);
+
+    const { live: liveMatch, closed } = matchItems(filed, live);
+    // 181 canonical + ext-canonical + cyc-a + cyc-b = 184 (all under MATCH_ITEMS=200; none evicted by the 150 newer dups).
+    expect(liveMatch).toHaveLength(184);
+    expect(liveMatch.some((item) => item.id === "board-feedback-116")).toBe(true);
+    expect(liveMatch.some((item) => item.id === "ext-canonical")).toBe(true);
+    expect(liveMatch.some((item) => item.id === "ext-hop")).toBe(false);
+    expect(liveMatch.some((item) => item.id.startsWith("dup-"))).toBe(false);
+    expect(liveMatch.some((item) => item.id === "cyc-a")).toBe(true);
+    expect(liveMatch.some((item) => item.id === "cyc-b")).toBe(true);
+    expect(closed.map((item) => item.id)).toEqual(["closed-1"]);
+  });
+
+  test("live duplicate aliases do not occupy MATCH_ITEMS slots or evict older canonical live items in a run", async () => {
+    const roots = fixture();
+    const before = "2026-11-01T09:00:00.000Z";
+    const tasks = {
+      "board-feedback-116": feedbackItem("board-feedback-116", { at: "2026-10-15T00:00:00Z", signature: "board:canonical-116" }),
+      "board-feedback-200": feedbackItem("board-feedback-200", { status: "done", resolution: { kind: "declined", at: before, by: "user" }, at: "2026-10-16T00:00:00Z" }),
+      "board-feedback-201": feedbackItem("board-feedback-201", { status: "done", resolution: { kind: "routed", task: "dotfiles-9", at: before, by: "user" }, at: "2026-10-17T00:00:00Z" }),
+      "dotfiles-9": { id: "dotfiles-9", board: "dotfiles", title: "Open work", status: "open", updated_at: before },
+      // A live duplicate pointing to a non-feedback open task remains offered because its target is not on board-feedback.
+      "board-feedback-202": feedbackItem("board-feedback-202", { status: "done", resolution: { kind: "duplicate", task: "dotfiles-9", at: before, by: "user" }, at: "2026-10-18T00:00:00Z" }),
+      // A recurrence of closed 565 that was itself deduplicated to canonical 700 redirects closed matches to 700.
+      "board-feedback-565": feedbackItem("board-feedback-565", { status: "done", resolution: { kind: "fixed", at: before, by: "user" }, signature: "board:canonical-565" }),
+      "board-feedback-640": feedbackItem("board-feedback-640", { status: "done", resolution: { kind: "duplicate", task: "board-feedback-565", at: before, by: "user" }, signature: "board:dup-640" }),
+      "board-feedback-700": feedbackItem("board-feedback-700", { at: "2026-10-19T00:00:00Z", signature: "board:live-700" }),
+      "board-feedback-686": feedbackItem("board-feedback-686", { status: "done", recurs: "board-feedback-565", resolution: { kind: "duplicate", task: "board-feedback-700", at: before, by: "user" }, at: "2026-10-31T12:00:00Z", signature: "board:dup-686" }),
+    };
+    // Add 220 newer live duplicate aliases (including a 2-hop chain and duplicates of declined/routed items).
+    for (let i = 1; i <= 220; i++) {
+      const target = i === 1 ? "board-feedback-dup-2" : i === 2 ? "board-feedback-200" : i === 3 ? "board-feedback-201" : "board-feedback-116";
+      tasks[`board-feedback-dup-${i}`] = feedbackItem(`board-feedback-dup-${i}`, {
+        status: "done",
+        resolution: { kind: "duplicate", task: target, at: before, by: "user" },
+        at: new Date(Date.UTC(2026, 9, 31, 0, i)).toISOString(),
+      });
+    }
+    const tasksFile = join(scratch, "dup-tasks.json");
+    writeFileSync(tasksFile, JSON.stringify(tasks));
+    // Seed capture records for a live duplicate alias (must stay out of both sections) and closed 640.
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "friction.jsonl"), [
+      { kind: "judged", key: "claude:seed:1", harness: "claude", sessionId: "seed", turn: 1, endedAt: "2026-10-31T08:00:00Z", findings: [{ about: "board", activity: "build", title: "Live dup alias", detail: "", error: "", match: "" }, { about: "board", activity: "build", title: "Closed dup", detail: "", error: "", match: "" }], at: "2026-10-31T08:30:00Z" },
+      { kind: "filed", key: "claude:seed:1", filing: "capture:seed:1:1", about: "board", task: "board-feedback-dup-10", duplicate: false, reports: 1, at: "2026-10-31T08:30:00Z" },
+      { kind: "filed", key: "claude:seed:1", filing: "capture:seed:1:2", about: "board", task: "board-feedback-640", duplicate: false, reports: 1, at: "2026-10-31T08:30:00Z" },
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    setEnv({ FAKE_BOARD_TASKS_FILE: tasksFile });
+    answer("board-feedback-640");
+    expect(await run(["run"], context(roots))).toBe(0);
+    const [call] = log("claude.jsonl");
+    const knownSection = call.system.slice(call.system.indexOf("# Known items"), call.system.indexOf("# Recently closed items"));
+    const closedSection = call.system.slice(call.system.indexOf("# Recently closed items"), call.system.indexOf("# What counts"));
+    expect(knownSection).toContain('- board-feedback-116: "Item board-feedback-116"');
+    expect(knownSection).toContain('- board-feedback-200: "Item board-feedback-200"');
+    expect(knownSection).toContain('- board-feedback-201: "Item board-feedback-201"');
+    expect(knownSection).toContain('- board-feedback-202: "Item board-feedback-202"');
+    expect(knownSection).toContain('- board-feedback-700: "Item board-feedback-700"');
+    expect(knownSection).not.toContain("board-feedback-dup-");
+    expect(knownSection).not.toContain("board-feedback-686");
+    expect(closedSection).not.toContain("board-feedback-dup-10");
+    expect(closedSection).not.toContain("board-feedback-565");
+    expect(closedSection).toContain('- board-feedback-640: "Closed dup"');
+    // Matching closed 640 (-> 565) follows live recurrence 686 -> canonical live 700.
+    expect(feedbackCalls().map((args) => args[args.indexOf("--signature") + 1])).toEqual(["board:live-700", "board:live-700"]);
+    expect(records().filter((r) => r.kind === "filed" && r.key !== "claude:seed:1").map((r) => r.match)).toEqual(["board-feedback-700", "board-feedback-700"]);
   }, FRICTION_TIMEOUT);
 });
 
