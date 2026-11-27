@@ -1,5 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadAntigravitySessions } from "../lib/antigravity.js";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
 import { buildDigest, compactInput } from "./digest.js";
@@ -13,6 +16,15 @@ function session(transcript, subagents = []) {
   const root = writeProjects([{ transcript, subagents }]);
   roots.push(root);
   return loadSessions({ root })[0];
+}
+
+function antigravitySession(records, id = "conv-test") {
+  const brain = mkdtempSync(join(tmpdir(), "digest-agy-"));
+  roots.push(brain);
+  const logs = join(brain, id, ".system_generated", "logs");
+  mkdirSync(logs, { recursive: true });
+  writeFileSync(join(logs, "transcript.jsonl"), `${records.map((r) => JSON.stringify(r)).join("\n")}\n`);
+  return loadAntigravitySessions({ roots: [brain] })[0];
 }
 
 test("holds metadata, prompts, assistant text once per message, tool calls, subagents and the final message", () => {
@@ -180,4 +192,95 @@ test("prompts beyond half the space keep their start and end too", () => {
   expect(digest).toContain("prompt-0 ");
   expect(digest).toContain("prompt-39 ");
   expect(digest).toMatch(/omitted to fit the digest: 1 prompt …/);
+});
+
+test("antigravity digest decodes JSON-encoded tool arguments before compacting", () => {
+  const s = antigravitySession([
+    { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-26T10:00:00Z", content: "<user_request>Edit a.js</user_request>" },
+    {
+      type: "PLANNER_RESPONSE",
+      created_at: "2026-11-26T10:00:05Z",
+      model: "gemini-4-neon-high",
+      input_tokens: 10,
+      output_tokens: 5,
+      cache_read_tokens: 0,
+      tool_calls: [
+        { name: "read_file", args: { Path: JSON.stringify("/repo/a.js"), StartLine: "12" } },
+        { name: "edit_file", args: { Path: JSON.stringify("/repo/a.js"), Target: JSON.stringify("old\nval"), Replacement: JSON.stringify("new") } },
+        { name: "run_command", args: { CommandLine: JSON.stringify("bun test") } },
+        { name: "custom_tool", args: { Flag: "true", Path: JSON.stringify("/tmp/x"), Count: "3" } },
+        { name: "empty_tool", args: null },
+      ],
+    },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:06Z", content: "Showing lines 12-20" },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:06Z", content: "Made 1 replacement" },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:07Z", content: "Command exited with code 0.\n1 pass" },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:07Z", content: "ok" },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:07Z", content: "done" },
+    { type: "PLANNER_RESPONSE", created_at: "2026-11-26T10:00:10Z", model: "gemini-4-neon-high", content: "Done." },
+  ]);
+  const digest = buildDigest(s);
+  expect(digest).toContain("[T1] read_file (ok) /repo/a.js @12 → Showing lines 12-20");
+  expect(digest).toContain("[T2] edit_file (ok) /repo/a.js (-7/+3 chars) → Made 1 replacement");
+  expect(digest).toContain("[T3] run_command (ok) bun test → Command exited with code 0. ⏎ 1 pass");
+  expect(digest).toContain('[T4] custom_tool (ok) {"Flag":true,"Path":"/tmp/x","Count":3} → ok');
+  expect(digest).toContain("[T5] empty_tool (ok) {} → done");
+});
+
+test("antigravity digest resets pending tools on PLANNER_RESPONSE and USER_INPUT", () => {
+  const s = antigravitySession([
+    { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-26T10:00:00Z", content: "<user_request>Check files</user_request>" },
+    {
+      type: "PLANNER_RESPONSE",
+      created_at: "2026-11-26T10:00:05Z",
+      model: "gemini-4-neon-high",
+      tool_calls: [
+        { name: "read_file", args: { Path: JSON.stringify("/repo/a.js") } },
+        { name: "read_file", args: { Path: JSON.stringify("/repo/unmatched.js") } },
+      ],
+    },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:06Z", content: "contents of a" },
+    // Second PLANNER_RESPONSE before /repo/unmatched.js gets a GENERIC result:
+    // the next GENERIC must attach to T3, not shift onto T2.
+    {
+      type: "PLANNER_RESPONSE",
+      created_at: "2026-11-26T10:00:10Z",
+      model: "gemini-4-neon-high",
+      tool_calls: [
+        { name: "run_command", args: { CommandLine: JSON.stringify("bun test") } },
+      ],
+    },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:11Z", content: "Command exited with code 1\n1 fail" },
+    // Tool call interrupted before a GENERIC result by a new USER_INPUT:
+    // a stray GENERIC after USER_INPUT must not attach to T4.
+    {
+      type: "PLANNER_RESPONSE",
+      created_at: "2026-11-26T10:00:15Z",
+      model: "gemini-4-neon-high",
+      tool_calls: [
+        { name: "run_command", args: { CommandLine: JSON.stringify("sleep 99") } },
+      ],
+    },
+    { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-26T10:00:20Z", content: "<user_request>Check c.js instead</user_request>" },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:21Z", content: "stray output" },
+    {
+      type: "PLANNER_RESPONSE",
+      created_at: "2026-11-26T10:00:25Z",
+      model: "gemini-4-neon-high",
+      tool_calls: [
+        { name: "read_file", args: { Path: JSON.stringify("/repo/c.js") } },
+      ],
+    },
+    { type: "GENERIC", created_at: "2026-11-26T10:00:26Z", content: "contents of c" },
+    { type: "PLANNER_RESPONSE", created_at: "2026-11-26T10:00:30Z", model: "gemini-4-neon-high", content: "Checked." },
+  ]);
+  const digest = buildDigest(s);
+  const toolLines = digest.split("\n").filter((line) => line.startsWith("[T"));
+  expect(toolLines).toEqual([
+    "[T1] read_file (ok) /repo/a.js → contents of a",
+    "[T2] read_file (no result) /repo/unmatched.js",
+    "[T3] run_command (ERROR) bun test → Command exited with code 1 ⏎ 1 fail",
+    "[T4] run_command (no result) sleep 99",
+    "[T5] read_file (ok) /repo/c.js → contents of c",
+  ]);
 });
