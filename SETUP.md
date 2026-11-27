@@ -19,7 +19,7 @@ There is no repository-wide installer or complete dependency manifest.
 | Explore | The TUIOS fork, Neovim with RPC and `-l` support, Television, fd, and zoxide. See [Explore installation](explore/README.md#install). |
 | Neovim | Git and network access for lazy.nvim/plugin bootstrap; additional language tools for enabled integrations. The TeX workflow uses Tectonic and Skim on macOS. |
 | mpv | mpv; the uosc and thumbfast scripts and their bundled assets are included. |
-| Agent tools | Claude Code on the Air only (see [No Claude on the Pro](#no-claude-on-the-pro)), and Codex only if you use its example configuration. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun` and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
+| Agent tools | Antigravity / Gemini 4 Neon (`gemini/`) on both Macs as the active harness; dormant Claude Code (`claude/`, Air-only history — see [No Claude on the Pro](#no-claude-on-the-pro)) and Codex (`codex/`) configs remain tracked for shared hooks/factory/tests. Review settings, permissions, and hooks before enabling them; the tracked hooks invoke `~/.atuin/bin/atuin`, `~/.bun/bin/bun`, `gemini/hooks/run-hook.js` (wrapping `claude/hooks/*.js`), and, through `claude/hooks/board-hook.sh` and `claude/hooks/open-items.js` when installed, `~/.cargo/bin/board` (see [Work board](#work-board)). |
 | Tests | Bun, uv, and Python 3.11 or newer. Explore integration tests also need their documented command-line dependencies. |
 
 ## Keep both Macs in sync
@@ -97,11 +97,13 @@ installed or updated on each Mac using the instructions below.
 ### No Claude on the Pro
 
 Since 2026-11-12 no Claude model runs on the Pro: no Claude Code, Agent SDK or Claude API
-call, in a LaunchAgent, a `storagectl run --on pro` job or a local T3 thread. Claude runs on
-the Air and every other machine. The Pro keeps this checkout, config-sync, the storage
-pool and runner, and T3 Code. Every step below that installs Claude Code, its plugins, the
-friction or weekly jobs, the board daemon or the disk alert runs on the Air only. Its
-Claude data from before then is in `cloud:archive/pro-claude/`.
+call, in a LaunchAgent, a `storagectl run --on pro` job or a local T3 thread. Both Air and
+Pro now run **Antigravity / Gemini 4 Neon** (`gemini/`) as the active harness (with no active
+Claude or Codex subscription). The Pro keeps this checkout, `config-sync`, the storage pool
+and runner, T3 Code (Antigravity), `board watch` (configured with Antigravity / Gemini 4
+Neon), and `disk-space-alert` / `disk-space-daily` (`--low-gb 80 --critical-gb 40`). Only
+dormant Claude Code installs/plugins and the `claude-factory` `friction` and `weekly`
+LaunchAgents remain Air-only. The Pro's earlier Claude data is in `cloud:archive/pro-claude/`.
 
 ## Terminal and dock
 
@@ -282,11 +284,12 @@ requiring Git and network access. Inspect `nvim/lazyvim.json` and
 `nvim/lua/plugins/` for language integrations. For TeX, install Tectonic and Skim;
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 
-Agents run on Claude models only: `claude/CLAUDE.md` forbids the `codex` CLI, `gpt-*`
-models and the Codex delegate provider. As a backstop, guard-runtimes blocks a Bash command
-named `codex`, also through `bunx @openai/codex`; it does not see other launchers or the T3
-delegate tools. Tools that read past Codex sessions under `~/.codex` still read them. The `codex/`
-files below stay until their removal is decided.
+Active sessions run on **Antigravity / Gemini 4 Neon** (`gemini/GEMINI.md`, with no active
+Claude or Codex subscription). The dormant `claude/CLAUDE.md` and `codex/` configs remain
+tracked for shared hooks, factory code, and tests until their removal is decided. As a
+backstop, `guard-runtimes` blocks a shell command named `codex` (also through
+`bunx @openai/codex`); it does not see other launchers or the T3 delegate tools. Tools that
+read past Claude Code or Codex sessions under `~/.claude` and `~/.codex` still read them.
 
 `codex/config.example.toml` is a reference configuration. Review and adapt it
 before creating a local `codex/config.toml`, which is intentionally ignored.
@@ -417,7 +420,7 @@ would refuse the mutation from a Bash call. It never blocks: it reports each pul
 as additional context and exits 0. Each gh call gets 10 seconds, and all of them 45, within
 its 60-second `settings.json` timeout. The user chose this hook over a GitHub workflow
 (dotfiles-350), so a pull request opened on the web gets no auto-merge.
-guard-main-checkout (Claude Code only) blocks commands that switch, move or reset a main
+guard-main-checkout (Claude Code and Antigravity via `gemini/hooks/run-hook.js`) blocks commands that switch, move or reset a main
 checkout's branch or set its work aside: git `switch`, `checkout` of a branch,
 `checkout -f`, `reset` to another commit or with `--hard`, `--keep`, `--merge` or
 `--soft`, `merge`, `rebase`, `pull`, `stash`, `bisect`, `gh pr checkout` and `gh pr merge`. Their
@@ -712,7 +715,7 @@ code is in another repository names that repository's board: `t3` is the T3 Code
 the `t3code` board, and `t3-scripts` is the routines in `t3code/` here.
 
 Most friction never gets reported, so `friction run` looks for it. It reads the main
-sessions of Claude Code and Codex turns that ended since its last run (at most 48 hours
+sessions of Antigravity (`~/.t3/userdata/providers/antigravity`), Claude Code and Codex turns that ended since its last run (at most 48 hours
 back), skipping automation, the factory's own runs and turns that ran the `feedback` tool
 or `board feedback`. A turn has ended at the next prompt, when Claude Code's Stop hooks let
 it end or Codex marks it complete; one with no such mark counts as ended after 6 hours
@@ -744,8 +747,9 @@ whose item was fixed, or whose work was done, after its turn ended is skipped as
 `friction-state.json` in the state folder; a filing that fails is retried next run without
 judging again, up to three times. `friction install` loads a LaunchAgent that runs it every
 hour; `friction status` shows it and the last run. It needs the `board` CLI with
-`feedback --source` (agent-board-23). Install it on the Air only, since the Pro runs no
-Claude (a run reads only that Mac's transcripts and keeps its own cursor).
+`feedback --source` (agent-board-23). It is currently installed on the Air only (each run
+reads only that Mac's local transcripts and keeps its own cursor; Pro transcripts and
+`AcpRunner` `$BOARD_HOME/state/transcripts/` files are not yet ingested).
 
 `weekly install` loads a LaunchAgent that runs the loop on Mondays at 13:30: metrics,
 audit, scoring (judge budget $3), the work board, the feedback loop and proposals ($3 per proposer session;
@@ -887,12 +891,12 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
 ## Work board
 
 [agent-board](https://github.com/syz51/agent-board) is the shared work board that the
-"Work board" rule in `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
+"Work board" rule in `gemini/GEMINI.md`, `claude/CLAUDE.md` and `codex/AGENTS.md` refers to. One server runs on
 a host in the tailnet
 ([deployment](https://github.com/syz51/agent-board/blob/main/docs/DEPLOY.md)); each Mac
-runs the `board` binary. The hooks in `claude/settings.json` and `codex/hooks.json` run
-`claude/hooks/board-hook.sh`: Claude Code through the `~/.claude` link and Codex from the checkout,
-both of which reach the tracked `claude/hooks` directory.
+runs the `board` binary. The hooks in `gemini/hooks.json`, `claude/settings.json` and `codex/hooks.json` run
+`claude/hooks/board-hook.sh`: Antigravity directly from `~/.config/claude/hooks`, Claude Code through the `~/.claude` link and Codex from the checkout,
+all of which reach the tracked `claude/hooks` directory.
 It runs `~/.cargo/bin/board` and does nothing until that is installed. The board
 records the files a Bash call changed by the time it returns (not what a background command
 writes later) with agent-board#8 or later; reinstall with the first command below. An older
@@ -906,9 +910,9 @@ wrapper entry, so each hook ran twice (dotfiles-520). After a board upgrade, run
 `board install claude --check ~/.claude/settings.json` where board has `--check`, or the
 "work board" tests in `claude/tests/config.test.js`, and add what they name to
 `claude/settings.json` through `board-hook.sh`. On each Mac, with a device token created
-on the server host. The Pro keeps `board` and its token for config-sync's reports, but skips
-the last three lines: it runs no Claude MCP server and no `board watch`, whose coordinators
-would run Claude:
+on the server host. Both Air and Pro run `board` and `board watch` (configured with
+Antigravity / Gemini 4 Neon); Antigravity wires the `board` MCP server through
+`gemini/mcp_config.json`, so skip the `claude mcp add` line on any Mac without Claude Code:
 
 ```sh
 cargo install --git https://github.com/syz51/agent-board --locked board  # Rust 1.99 or newer
@@ -976,8 +980,9 @@ thread.
 ## Computer use
 
 Claude Code's built-in computer use runs only in interactive sessions, so it is off here.
-On the Air, T3 Code drives Claude Code through the Agent SDK. The `computer-use` plugin in
-`claude/marketplace` gives those sessions screenshots, mouse and keyboard instead. Its MCP
+Antigravity wires the `desktop` MCP server (`claude/marketplace/computer-use/server/desktop.js`)
+directly in `gemini/mcp_config.json`, and the `computer-use` plugin in `claude/marketplace`
+provides the same screenshots, mouse and keyboard server for Claude Code sessions. Its MCP
 server is named `desktop`, because Claude Code reserves the name `computer-use`.
 
 `claude/settings.json` declares the `dotfiles` marketplace (`.claude-plugin/marketplace.json`
