@@ -1313,4 +1313,52 @@ describe("Antigravity hook adapter", () => {
       expect(parsed.reason).toContain("Blocked by the guard-pr-merge hook");
     }
   });
+
+  test("AGY_RUN_ACTIVE=1 bypasses stop/session-start hooks without loosening PreToolUse guards, and hooks.json agy-run-policy fails closed", () => {
+    const script = join(import.meta.dir, "run-hook.js");
+    const stopRes = spawnSync(process.execPath, [script, "stop", "open-items"], {
+      input: JSON.stringify({ cwd: process.cwd() }),
+      encoding: "utf8",
+      env: { ...process.env, AGY_RUN_ACTIVE: "1" },
+    });
+    expect(stopRes.status).toBe(0);
+    expect(JSON.parse(stopRes.stdout)).toEqual({ decision: "allow" });
+
+    // PreToolUse security guards MUST remain active even when AGY_RUN_ACTIVE=1
+    const preRes = spawnSync(process.execPath, [script, "pre-tool-use", "guard-git-push"], {
+      input: JSON.stringify({ cwd: process.cwd(), toolCall: { name: "run_command", args: { CommandLine: "git push --force origin main" } } }),
+      encoding: "utf8",
+      env: { ...process.env, AGY_RUN_ACTIVE: "1" },
+    });
+    expect(preRes.status).toBe(0);
+    expect(JSON.parse(preRes.stdout).decision).toBe("deny");
+
+    const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
+    const policyEntry = hooksJson["agy-run-policy"]?.PreToolUse?.[0];
+    expect(policyEntry?.matcher).toBe("*");
+    expect(policyEntry?.hooks?.[0]?.command).toContain("AGY_RUN_POLICY_FILE");
+    expect(policyEntry?.hooks?.[0]?.command).toContain("agy-run-policy.js");
+
+    // Fast-path when AGY_RUN_POLICY_FILE is unset returns allow immediately
+    const fastPath = spawnSync("/bin/sh", ["-c", policyEntry.hooks[0].command], {
+      input: JSON.stringify({ toolCall: { name: "read_file", args: {} } }),
+      encoding: "utf8",
+      env: { ...process.env, AGY_RUN_POLICY_FILE: "" },
+    });
+    expect(fastPath.status).toBe(0);
+    expect(JSON.parse(fastPath.stdout)).toEqual({ decision: "allow" });
+
+    // Missing bun/script when AGY_RUN_POLICY_FILE IS set must fail closed with deny
+    const brokenHome = mkdtempSync(join(tmpdir(), "agy-broken-home-"));
+    try {
+      const failClosed = spawnSync("/bin/sh", ["-c", policyEntry.hooks[0].command], {
+        input: JSON.stringify({ toolCall: { name: "read_file", args: {} } }),
+        encoding: "utf8",
+        env: { ...process.env, HOME: brokenHome, AGY_RUN_POLICY_FILE: "/nonexistent/policy.json" },
+      });
+      expect(JSON.parse(failClosed.stdout.trim()).decision).toBe("deny");
+    } finally {
+      rmSync(brokenHome, { recursive: true, force: true });
+    }
+  });
 });

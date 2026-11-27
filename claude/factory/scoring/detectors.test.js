@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { Transcript, writeProjects } from "../lib/testing/transcripts.js";
 import { loadSessions } from "../lib/transcripts.js";
-import { aiAttribution, forcePush, forcePushProblem, gitPushes, packageRunner, reviewSkipped, runDetectors, sessionActions, shellChanges, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
+import { aiAttribution, forcePush, forcePushProblem, gitPushes, isManagedWorker, packageRunner, reviewSkipped, runDetectors, sessionActions, shellChanges, shellEdits, shellFileEdit, simpleCommands, ultraEffort } from "./detectors.js";
 import { boardCheckouts, gitCheckout, gitIgnored, loadReviewScope, locate, realFile, REVIEW_SCOPE_FILE, repoName, reviewMatcher, t3Checkout, t3Projects } from "./review-scope.js";
 
 const cleanup = [];
@@ -753,5 +753,77 @@ describe("review-skipped", () => {
     expect(() => loadReviewScope(join(home, "repo.toml"))).toThrow("unknown keys repos; the list is by file kind, never by repository");
     writeFileSync(join(home, "bad.toml"), 'trivial = "a"\n');
     expect(() => loadReviewScope(join(home, "bad.toml"))).toThrow("trivial must be a list of globs");
+  });
+
+  test("exempts daemon-dispatched managed workers while enforcing review on interactive sessions", () => {
+    const t3Worker = "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\n# Worker\n\nYou do one assigned task in this session. The board's dispatcher started you in your own\nworktree, on a branch for this task.\n\n## Assignment\n\n- Board: `dotfiles`\n- Task: `dotfiles-867`";
+    const acpWorker = "# Worker\n\nYou do one assigned task in this session. The board's dispatcher started you in your own\nworktree, on a branch for this task.";
+    const legacyWorker = "# Worker\n\nYou do task dotfiles-100 of board dotfiles in this thread. The board's dispatcher started you in\nyour own worktree, on a branch for this task. The board's review judge reviews your result.";
+    const unreviewedPush = [edit("/w/app/src/main.rs"), bash("git push -u origin task/dotfiles-867")];
+
+    for (const brief of [t3Worker, acpWorker, legacyWorker]) {
+      expect(isManagedWorker(actions([], { prompts: [prompt(brief)] })), brief.slice(0, 40)).toBe(true);
+      expect(detect(unreviewedPush, { prompts: [prompt(brief)] }), brief.slice(0, 40)).toEqual({ verdict: "na", hits: [] });
+    }
+    // Follow-up prompts in a managed worker thread keep the exemption.
+    expect(detect(unreviewedPush, { prompts: [prompt(t3Worker), prompt("Please also fix the typo")] })).toEqual({ verdict: "na", hits: [] });
+
+    // Non-exempt sessions: interactive prompts, prompts quoting worker.md, non-daemon worker
+    // briefs, delegated subagent briefs, and judge briefs still require a review.
+    const nonExempt = [
+      [prompt("Fix the bug in src/main.rs and push a PR")],
+      [prompt(`Update prompts/worker.md:\n\n${acpWorker}`)],
+      [prompt("Let's inspect worker.md"), prompt(acpWorker)],
+      [prompt("# Worker\n\nDo the task.")],
+      [prompt("[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\nFix src/main.rs and push")],
+      [prompt("Act as the implementation subagent. Fix src/main.rs and push.")],
+      [prompt("# Judge\n\nCoordinator rights on the assigned board for one judgment.")],
+    ];
+    for (const prompts of nonExempt) {
+      expect(isManagedWorker(actions([], { prompts })), prompts[0].text.slice(0, 40)).toBe(false);
+      expect(detect(unreviewedPush, { prompts }).verdict, prompts[0].text.slice(0, 40)).toBe("fail");
+    }
+    expect(isManagedWorker(actions([]))).toBe(false);
+  });
+
+  test("runDetectors exempts a managed worker (and its fork) from review-skipped while keeping other detectors active", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "review-worker-")));
+    cleanup.push(dir);
+    const repo = join(dir, "app");
+    for (const args of [["init", "-q", repo], ["-C", repo, "remote", "add", "origin", "git@github.com:syz51/app.git"]])
+      expect(Bun.spawnSync(["git", ...args]).exitCode).toBe(0);
+    mkdirSync(join(repo, "src"), { recursive: true });
+    const file = join(repo, "src", "main.js");
+    const workerBrief = "[T3 Code: this message came through T3 Code's tools, not from the user typing in this chat.]\n\n# Worker\n\nYou do one assigned task in this session. The board's dispatcher started you in your own\nworktree, on a branch for this task.";
+
+    const managed = new Transcript({ cwd: repo })
+      .prompt(workerBrief)
+      .tool("Edit", { file_path: file, old_string: "a", new_string: "b" }, "ok")
+      .tool("Bash", { command: "npm test" }, "ok")
+      .tool("Bash", { command: "git push -u origin task/app-1" }, "ok");
+    const forkedManaged = new Transcript({ cwd: repo })
+      .prompt(workerBrief, { forkedFrom: { sessionId: managed.sessionId, messageUuid: "m1" } })
+      .prompt("Continue and push")
+      .tool("Edit", { file_path: file, old_string: "b", new_string: "c" }, "ok")
+      .tool("Bash", { command: "git push -u origin task/app-1" }, "ok");
+    const interactive = new Transcript({ cwd: repo })
+      .prompt("Fix src/main.js and push")
+      .tool("Edit", { file_path: file, old_string: "a", new_string: "b" }, "ok")
+      .tool("Bash", { command: "git push -u origin feature" }, "ok");
+
+    const root = writeProjects([{ transcript: managed }, { transcript: forkedManaged }, { transcript: interactive }]);
+    cleanup.push(root);
+    const byId = Object.fromEntries(loadSessions({ root }).map((session) => [session.id, session]));
+
+    const managedRes = runDetectors(byId[managed.sessionId]);
+    expect(managedRes["review-skipped"]).toEqual({ verdict: "na", hits: [] });
+    expect(managedRes["package-runner"].verdict).toBe("fail");
+
+    const forkedRes = runDetectors(byId[forkedManaged.sessionId]);
+    expect(forkedRes["review-skipped"]).toEqual({ verdict: "na", hits: [] });
+
+    const interactiveRes = runDetectors(byId[interactive.sessionId]);
+    expect(interactiveRes["review-skipped"].verdict).toBe("fail");
+    expect(interactiveRes["review-skipped"].hits[0].files).toEqual(["syz51/app:src/main.js"]);
   });
 });

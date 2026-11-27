@@ -123,7 +123,7 @@ factory items. Claim a task there before working on it. Done so far:
   and 89 MB for a compiled Bun binary), TypeScript for the web view.
 - 2026-11-06 (user): host it as a container on the existing Dokploy VPS, reachable over
   Tailscale only; per-device tokens; fail-fast writes and stale reads when offline.
-- 2026-11-06 (user): backups to a new Tencent COS bucket with its own scoped key.
+- 2026-11-06 (user): backups to a new object-storage bucket with its own scoped key.
 - 2026-11-06 (user): decisions and actions for the user arrive through a Telegram bot and
   the web view; otherwise agents work unattended.
 - 2026-11-06 (user): autopilot runs one coordinator thread per project. It works the ready

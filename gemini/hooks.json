@@ -1,4 +1,18 @@
 {
+  "agy-run-policy": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh -c '[ -n \"${AGY_RUN_POLICY_FILE:-}\" ] || { printf \"{\\\"decision\\\":\\\"allow\\\"}\\n\"; exit 0; }; \"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/bin/agy-run-policy.js\" --policy \"$AGY_RUN_POLICY_FILE\" || printf \"{\\\"decision\\\":\\\"deny\\\",\\\"reason\\\":\\\"agy-run-policy hook execution failed\\\"}\\n\"'",
+            "timeout": 45
+          }
+        ]
+      }
+    ]
+  },
   "command-guards": {
     "PreToolUse": [
       {

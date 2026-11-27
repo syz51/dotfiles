@@ -102,10 +102,10 @@ describe("gemini skills catalog and cross-machine skill hygiene", () => {
     }
 
     for (const needle of [
-      "sunmacbook-air",
-      "yizhemacbook-pro",
-      "sai",
-      "https://board-mcp.syzroy.com/mcp",
+      "<primary-mac>",
+      "<heavy-mac>",
+      "<control-plane-vps>",
+      "https://<your-board-mcp-host>/mcp",
       "board-feedback",
       "UNTRUSTED DATA",
       "irreversible",
@@ -137,7 +137,8 @@ describe("gemini skills catalog and cross-machine skill hygiene", () => {
     expect(doc).not.toMatch(/\.ts\.net\b/);
 
     for (const needle of [
-      "https://board-mcp.syzroy.com/mcp",
+      "https://<your-board-mcp-host>/mcp",
+      "~/.config/local/gemini-board-workflow.md",
       "board-ops",
       "Cloud MCP",
       "Desktop Remote Access",

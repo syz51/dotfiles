@@ -171,7 +171,7 @@ verify = ["bun test claude/tests"]
 [[setup]]
 id = "storage"
 title = "Shared storage (storagectl)"
-covers = ["storagectl and its destinations: cloud, sai, pro, air, svps"]
+covers = ["storagectl and its configured storage destinations"]
 owner = { repo = "github.com/syz51/vps", board = "vps", parent = "vps-44" }
 channel = "board"
 change = "A child task of vps-44 on the vps board"

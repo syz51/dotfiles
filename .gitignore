@@ -92,3 +92,6 @@ __pycache__/
 
 # Claude Code subagent worktrees.
 /.claude/
+
+# Local private agent-ops overlay (e.g., symlinked to a private infra repo).
+/local
