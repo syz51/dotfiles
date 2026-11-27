@@ -1409,6 +1409,20 @@ describe("Antigravity hook adapter", () => {
           { type: "PLANNER_RESPONSE", content: "Checking back in 4 minutes to run deploy/upgrade.sh." },
         ]),
       ).toEqual({ decision: "allow" });
+
+      // Turn 2 ending with empty content must NOT inherit Turn 1's "Checking back in 4 minutes" message.
+      expect(
+        runStop([
+          { type: "USER_INPUT", content: "Check CI" },
+          { type: "PLANNER_RESPONSE", tool_calls: [{ name: "schedule", args: { DurationSeconds: "240", Prompt: '"Check CI"' } }] },
+          { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-99\nTask Description: Timer: 4m" },
+          { type: "PLANNER_RESPONSE", content: "Checking back in 4 minutes." },
+          { type: "SYSTEM_MESSAGE", content: "[Message] timestamp=2026-11-27T08:30:00Z sender=conv/task-99 content=Check CI" },
+          { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: '"echo done"' } }] },
+          { type: "GENERIC", status: "DONE", content: "done" },
+          { type: "PLANNER_RESPONSE", content: "" },
+        ]),
+      ).toEqual({ decision: "allow" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

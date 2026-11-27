@@ -482,6 +482,15 @@ export function extractLastAssistantMessage(transcriptPath) {
       } catch {
         continue;
       }
+      // Stop at turn boundaries so a previous turn's message never bleeds into the current turn.
+      if (rec.type === "USER_INPUT") return "";
+      if (
+        rec.type === "SYSTEM_MESSAGE" &&
+        typeof rec.content === "string" &&
+        /\[Message\][^\n]*\bsender=/.test(rec.content)
+      ) {
+        return "";
+      }
       if (rec.type === "PLANNER_RESPONSE" && typeof rec.content === "string" && rec.content.trim()) {
         return rec.content;
       }

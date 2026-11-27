@@ -2,7 +2,13 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activeWakeups, checkStopWakeup, detectWakeupClaim, stripNonClaimText } from "./guard-wakeup.js";
+import {
+  activeWakeups,
+  canonicalPrKey,
+  checkStopWakeup,
+  detectWakeupClaim,
+  stripNonClaimText,
+} from "./guard-wakeup.js";
 
 const HOOK = join(import.meta.dir, "guard-wakeup.js");
 
@@ -56,9 +62,13 @@ test("detectWakeupClaim flags async self-wakeup promises", () => {
   }
 });
 
-test("detectWakeupClaim ignores user waits, third-party automation, quoted text, code blocks, and Open items", () => {
+test("detectWakeupClaim ignores user waits (including leading articles), third-party automation, quoted text, code blocks, and Open items", () => {
   for (const msg of [
     "Waiting for your approval before merging.",
+    "Waiting on an approval before merging.",
+    "Waiting for the confirmation before deploying.",
+    "I'll merge once the approval arrives.",
+    "Once a confirmation arrives, I'll proceed.",
     "Waiting on ask #200 before continuing.",
     "Once you confirm, I'll deploy the change.",
     "I'll proceed once your review lands.",
@@ -73,6 +83,12 @@ test("detectWakeupClaim ignores user waits, third-party automation, quoted text,
   }
 });
 
+test("canonicalPrKey normalizes URL and repository+number to the same key", () => {
+  expect(canonicalPrKey("https://github.com/O/R/pull/12")).toBe("o/r#12");
+  expect(canonicalPrKey({ url: '"https://github.com/o/r/pull/12/"' })).toBe("o/r#12");
+  expect(canonicalPrKey({ repository: '"O/R"', number: "12" })).toBe("o/r#12");
+});
+
 test("stripNonClaimText preserves contractions while stripping quotes and code", () => {
   const cleaned = stripNonClaimText('I\'ll check back in 4 minutes, not "Checking back in 10 minutes".');
   expect(cleaned).toContain("I'll check back in 4 minutes");
@@ -82,7 +98,7 @@ test("stripNonClaimText preserves contractions while stripping quotes and code",
 test("replays the exact Antigravity incident (steps 447-486): passes active timers/watches, blocks dropped 3rd timer", () => {
   const prWatchTurn = [
     { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_watch_pull_request", args: { url: '"https://github.com/syz51/agent-board/pull/308"', until: '"merged"' } }] },
-    { type: "GENERIC", status: "DONE", content: '{"watching":true}' },
+    { type: "GENERIC", status: "DONE", content: '{"watching":true,"url":"https://github.com/syz51/agent-board/pull/308"}' },
     { type: "PLANNER_RESPONSE", content: "Auto-merge is enabled and watching [syz51/agent-board#308](https://github.com/syz51/agent-board/pull/308) until it merges. Once it merges, I'll deploy." },
   ];
   withTranscript(prWatchTurn, (tp) => {
@@ -123,102 +139,156 @@ test("replays the exact Antigravity incident (steps 447-486): passes active time
   });
 });
 
-test("PR watch persists across intermediate wake turns until unwatch or merge/close", () => {
-  const afterCommentWake = [
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_watch_pull_request", args: { url: '"https://github.com/o/r/pull/12"' } }] },
-    { type: "GENERIC", status: "DONE", content: '{"watching":true}' },
-    { type: "USER_INPUT", content: "New review comment on PR #12" },
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: '"git push"' } }] },
-    { type: "GENERIC", status: "DONE", content: "ok" },
-    { type: "PLANNER_RESPONSE", content: "Pushed the fix; waiting for required checks to pass before merging." },
+test("PR watch handles URL/repo+num equivalence, multiple watched PRs, and failed watch calls", () => {
+  // Watch by repo+num, watch second PR by URL, merge first PR -> second PR watch MUST survive!
+  const twoWatches = [
+    { type: "PLANNER_RESPONSE", tool_calls: [
+      { name: "mcp_t3-code_watch_pull_request", args: { repository: '"o/r"', number: "12" } },
+      { name: "mcp_t3-code_watch_pull_request", args: { url: '"https://github.com/o/r/pull/13"' } },
+    ] },
+    { type: "GENERIC", status: "DONE", content: '{"watching":true,"repository":"o/r","number":12}' },
+    { type: "GENERIC", status: "DONE", content: '{"watching":true,"url":"https://github.com/o/r/pull/13"}' },
+    { type: "USER_INPUT", content: "Pull request #12 (https://github.com/o/r/pull/12) was merged, so T3 Code stopped watching it." },
   ];
-  withTranscript(afterCommentWake, (tp) => {
-    // Still watched, so async wait passes
+  withTranscript(twoWatches, (tp) => {
     expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: true, readable: true });
-    expect(checkStopWakeup({ last_assistant_message: afterCommentWake.at(-1).content, transcript_path: tp }).block).toBe(false);
-    // But a timed check-back ("Checking back in 4 minutes") still requires a timer, not just a PR watch
-    expect(checkStopWakeup({ last_assistant_message: "Checking back in 4 minutes.", transcript_path: tp }).block).toBe(true);
+    expect(checkStopWakeup({ last_assistant_message: "Watching PR #13 until it merges.", transcript_path: tp }).block).toBe(false);
   });
 
-  const afterUnwatch = [
-    ...afterCommentWake,
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_unwatch_pull_request", args: { url: '"https://github.com/o/r/pull/12"' } }] },
+  // Watch by URL, unwatch by repo+num -> watch is cleared
+  const crossFormUnwatch = [
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_watch_pull_request", args: { url: '"https://github.com/o/r/pull/12"' } }] },
+    { type: "GENERIC", status: "DONE", content: '{"watching":true}' },
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_unwatch_pull_request", args: { repository: '"o/r"', number: "12" } }] },
     { type: "GENERIC", status: "DONE", content: '{"watching":false}' },
   ];
-  withTranscript(afterUnwatch, (tp) => {
+  withTranscript(crossFormUnwatch, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+  });
+
+  // Failed watch_pull_request must NOT poison activePrWatches
+  const failedWatch = [
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_watch_pull_request", args: {} }] },
+    { type: "GENERIC", status: "ERROR", content: "Error: missing repository" },
+  ];
+  withTranscript(failedWatch, (tp) => {
     expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
     expect(checkStopWakeup({ last_assistant_message: "Watching PR #12 until it merges.", transcript_path: tp }).block).toBe(true);
   });
 });
 
-test("tracks Antigravity subagents, recurring crons, and killed timers", () => {
-  const activeSubagent = [
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "invoke_subagent", args: { Role: '"Reviewer"' } }] },
-    { type: "GENERIC", status: "DONE", content: 'Created the following subagent:\n{"conversationId": "sub-123"}' },
+test("daemon run_command (IsDaemon: true) does not count as an active wakeup, and sibling same-turn async survives kills/unwatches", () => {
+  const daemonServer = [
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: '"bun run dev"', IsDaemon: "true", WaitMsBeforeAsync: "500" } }] },
+    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-dev" },
   ];
-  withTranscript(activeSubagent, (tp) => {
+  withTranscript(daemonServer, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+    expect(checkStopWakeup({ last_assistant_message: "Checking back in 4 minutes.", transcript_path: tp }).block).toBe(true);
+  });
+
+  // Same-turn delegate_task + unwatch of finished PR -> delegate stays active
+  const delegatePlusUnwatch = [
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "mcp_t3-code_watch_pull_request", args: { url: '"https://github.com/o/r/pull/1"' } }] },
+    { type: "GENERIC", status: "DONE", content: '{"watching":true}' },
+    { type: "USER_INPUT", content: "PR merged, delegate next step" },
+    { type: "PLANNER_RESPONSE", tool_calls: [
+      { name: "mcp_t3-code_delegate_task", args: { task: '"do work"', mode: '"async"' } },
+      { name: "mcp_t3-code_unwatch_pull_request", args: { url: '"https://github.com/o/r/pull/1"' } },
+    ] },
+    { type: "GENERIC", status: "DONE", content: '{"taskId":"t-1"}' },
+    { type: "GENERIC", status: "DONE", content: '{"watching":false}' },
+  ];
+  withTranscript(delegatePlusUnwatch, (tp) => {
     expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: true, readable: true });
-    expect(checkStopWakeup({ last_assistant_message: "Waiting for the reviewer to finish before pushing.", transcript_path: tp }).block).toBe(false);
-  });
-
-  const killedSubagent = [
-    ...activeSubagent,
-    { type: "SYSTEM_MESSAGE", content: "[Message] timestamp=2026-11-27T08:00:00Z sender=sub-123 content=done" },
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "manage_subagents", args: { Action: '"kill"', ConversationIds: '["sub-123"]' } }] },
-    { type: "GENERIC", status: "DONE", content: "killed" },
-  ];
-  withTranscript(killedSubagent, (tp) => {
-    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
-  });
-
-  const recurringCron = [
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "schedule", args: { CronExpression: '"*/5 * * * *"', Prompt: '"Poll"' } }] },
-    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-9\nTask Description: Cron: */5 * * * *" },
-    { type: "SYSTEM_MESSAGE", content: "[Message] timestamp=2026-11-27T08:05:00Z sender=conv/task-9 content=Poll" },
-  ];
-  withTranscript(recurringCron, (tp) => {
-    expect(activeWakeups(tp)).toEqual({ hasTimer: true, hasAsync: true, readable: true });
-  });
-
-  const killedTimer = [
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "schedule", args: { DurationSeconds: "180", Prompt: '"Check"' } }] },
-    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-10\nTask Description: Timer: 3m" },
-    { type: "USER_INPUT", content: "cancel it" },
-    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "manage_task", args: { Action: '"kill"', TaskId: '"conv/task-10"' } }] },
-    { type: "GENERIC", status: "DONE", content: "killed" },
-  ];
-  withTranscript(killedTimer, (tp) => {
-    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+    expect(checkStopWakeup({ last_assistant_message: "I'll resume once the delegated task finishes.", transcript_path: tp }).block).toBe(false);
   });
 });
 
-test("supports Claude Code JSONL transcripts (ScheduleWakeup, Monitor, watch_pull_request, background Bash/Agent)", () => {
-  const claudeDropped = [
-    { type: "user", message: { role: "user", content: "Watch the deploy" } },
-    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "gh run view 1" } }] } },
-    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "in_progress" }] } },
-    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Checking back in 3 minutes." }] } },
+test("clears multiple senders in one SYSTEM_MESSAGE and preserves pending tool results on mid-turn notifications", () => {
+  const multiSender = [
+    { type: "PLANNER_RESPONSE", tool_calls: [
+      { name: "schedule", args: { DurationSeconds: "60", Prompt: '"A"' } },
+      { name: "schedule", args: { DurationSeconds: "60", Prompt: '"B"' } },
+    ] },
+    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-1\nTask Description: Timer: 1m" },
+    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-2\nTask Description: Timer: 1m" },
+    { type: "SYSTEM_MESSAGE", content: "[Message] timestamp=t1 sender=conv/task-1 content=A\n[Message] timestamp=t2 sender=conv/task-2 content=B" },
   ];
-  withTranscript(claudeDropped, (tp) => {
-    const res = runHook({ last_assistant_message: "Checking back in 3 minutes.", transcript_path: tp });
-    expect(res.code).toBe(2);
-    expect(res.stderr).toContain("guard-wakeup hook");
+  withTranscript(multiSender, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
   });
 
-  const claudeWithWakeup = [
+  // Mid-turn notification while delegate_task + invoke_subagent are running must not drop pendingAgyCalls
+  const midTurnNotif = [
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "schedule", args: { DurationSeconds: "60", Prompt: '"old"' } }] },
+    { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-old\nTask Description: Timer: 1m" },
+    { type: "USER_INPUT", content: "start reviewer" },
+    { type: "PLANNER_RESPONSE", tool_calls: [{ name: "invoke_subagent", args: { Role: '"Reviewer"' } }] },
+    { type: "SYSTEM_MESSAGE", content: "[Message] timestamp=t1 sender=conv/task-old content=old" },
+    { type: "GENERIC", status: "DONE", content: 'Created the following subagent:\n{"conversationId": "sub-99"}' },
+  ];
+  withTranscript(midTurnNotif, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: true, readable: true });
+  });
+});
+
+test("supports Claude Code JSONL transcripts: errors, injected reminders, system wakeup resets, and same-turn unwatch", () => {
+  // Failed ScheduleWakeup (is_error: true) must NOT count as active
+  const claudeError = [
     { type: "user", message: { role: "user", content: "Watch the deploy" } },
-    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "ScheduleWakeup", input: { delaySeconds: 180, prompt: "recheck" } }] } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "ScheduleWakeup", input: { delaySeconds: 180 } }] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "denied" }] } },
+  ];
+  withTranscript(claudeError, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+    expect(runHook({ last_assistant_message: "Checking back in 3 minutes.", transcript_path: tp }).code).toBe(2);
+  });
+
+  // Injected <system-reminder> mid-turn must NOT clear ScheduleWakeup
+  const claudeInjected = [
+    { type: "user", message: { role: "user", content: "Watch the deploy" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "ScheduleWakeup", input: { delaySeconds: 180 } }] } },
     { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "scheduled" }] } },
-    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "Checking back in 3 minutes." }] } },
+    { type: "user", message: { role: "user", content: "<system-reminder>Keep responses concise.</system-reminder>" } },
   ];
-  withTranscript(claudeWithWakeup, (tp) => {
-    const res = runHook({ last_assistant_message: "Checking back in 3 minutes.", transcript_path: tp });
-    expect(res.code).toBe(0);
+  withTranscript(claudeInjected, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: true, hasAsync: true, readable: true });
   });
 
+  // System wakeup prompt (promptSource: "system") MUST reset prior turn's ScheduleWakeup
+  const claudeWakeupTurn = [
+    ...claudeInjected,
+    { type: "user", promptSource: "system", message: { role: "user", content: "Wakeup fired: recheck deploy" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "Bash", input: { command: "gh run view 1" } }] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: "in_progress" }] } },
+  ];
+  withTranscript(claudeWakeupTurn, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+    expect(runHook({ last_assistant_message: "Checking back in 4 minutes.", transcript_path: tp }).code).toBe(2);
+  });
+
+  // Claude same-turn watch + unwatch clears activePrWatches cleanly
+  const claudeUnwatch = [
+    { type: "user", message: { role: "user", content: "Check PR" } },
+    { type: "assistant", message: { role: "assistant", content: [
+      { type: "tool_use", id: "w1", name: "mcp__t3-code__watch_pull_request", input: { url: "https://github.com/o/r/pull/5" } },
+      { type: "tool_use", id: "w2", name: "mcp__t3-code__unwatch_pull_request", input: { repository: "o/r", number: 5 } },
+    ] } },
+    { type: "user", message: { role: "user", content: [
+      { type: "tool_result", tool_use_id: "w1", content: '{"watching":true}' },
+      { type: "tool_result", tool_use_id: "w2", content: '{"watching":false}' },
+    ] } },
+  ];
+  withTranscript(claudeUnwatch, (tp) => {
+    expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: false, readable: true });
+  });
+
+  // Claude background Agent (succeeded)
   const claudeWithBgAgent = [
     { type: "user", message: { role: "user", content: "Review it" } },
     { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Agent", input: { run_in_background: true } }] } },
+    { type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "launched" }] } },
   ];
   withTranscript(claudeWithBgAgent, (tp) => {
     expect(activeWakeups(tp)).toEqual({ hasTimer: false, hasAsync: true, readable: true });
