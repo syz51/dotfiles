@@ -13,7 +13,7 @@ committed text back, so the reformat does not block the pull.
 
 After every check of ~/.config it also verifies the links that install the instructions from
 this checkout (`~/.claude`, on a Mac with Claude Code, `~/.gemini/config` when present, and
-Codex's AGENTS.md); a copy instead of a link stops pulls from reaching the agents.
+Codex's AGENTS.md, on a Mac with Codex); a copy instead of a link stops pulls from reaching the agents.
 
 A host-local list at `~/.local/state/config-sync/repos.txt` (outside this public repository;
 one path per line, `#` comments and blank lines ignored; missing means none) names additional
@@ -95,10 +95,11 @@ def links(repo: Path) -> list:
     """(link, what it must resolve to): the paths that install instructions from the checkout.
 
     A Mac with neither ~/.claude nor the `claude` command, such as the Pro, where no Claude
-    model runs, needs no ~/.claude link. An existing ~/.claude is checked even when the command
-    is missing, so a moved or updating install does not hide a copy. When ~/.gemini/config
-    exists, its GEMINI.md, SKILLS_CATALOG.md, hooks.json, mcp_config.json and dotfiles skill
-    links are checked as well."""
+    model runs, needs no ~/.claude link; likewise a Mac with neither $CODEX_HOME (~/.codex) nor
+    the `codex` command needs no AGENTS.md link. An existing ~/.claude or $CODEX_HOME is checked
+    even when the command is missing, so a moved or updating install does not hide a copy. When
+    ~/.gemini/config exists, its GEMINI.md, SKILLS_CATALOG.md, hooks.json, mcp_config.json and
+    dotfiles skill links are checked as well."""
     claude_home = HOME / ".claude"
     has_claude = os.path.lexists(claude_home) or shutil.which("claude", path=SEARCH_PATH)
     claude = [(claude_home, repo / "claude")] if has_claude else []
@@ -111,7 +112,10 @@ def links(repo: Path) -> list:
         if os.path.lexists(gemini_config)
         else []
     )
-    return claude + gemini + [(Path(os.environ.get("CODEX_HOME", HOME / ".codex")) / "AGENTS.md", repo / "codex" / "AGENTS.md")]
+    codex_home = Path(os.environ.get("CODEX_HOME") or (HOME / ".codex"))
+    has_codex = os.path.lexists(codex_home) or shutil.which("codex", path=SEARCH_PATH)
+    codex = [(codex_home / "AGENTS.md", repo / "codex" / "AGENTS.md")] if has_codex else []
+    return claude + gemini + codex
 
 
 @dataclass
