@@ -225,11 +225,14 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(existsSync(join(REPO, "gemini/bin/gnotebook-monitor"))).toBe(true);
   });
 
-  test("documents linked T3 Pro delegation, cross-Mac thread reading, and read-only ~/.config check", () => {
+  test("documents linked T3 Pro/Air full-access delegation, cross-Mac thread tools, and read-only ~/.config check", () => {
     const storageDoc = docs["gemini/docs/storage-remote-desktop.md"];
     expect(storageDoc).toContain("`t3_environment_links`");
     expect(storageDoc).toContain("`delegate_task`");
     expect(storageDoc).toContain("`t3_thread_read`");
+    expect(storageDoc).toContain("`t3_thread_send`");
+    expect(storageDoc).toContain("both Air→Pro and Pro→Air are `full-access`");
+    expect(storageDoc).not.toContain("Pro→Air `read-only`");
     expect(storageDoc).toContain("`git -C ~/.config log -1`");
     expect(allGeminiInstructions).not.toContain("`vps-247`");
     expect(allGeminiInstructions).not.toMatch(/`ssh [\w.-]+[\s`]/);

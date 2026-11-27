@@ -16,7 +16,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 ## Pro T3 Delegation & Cross-Mac Reads
 
 - Run a Pro T3 thread from the Air (while Pro is awake): check `t3_environment_links`, call `delegate_task` with Pro's `environmentId` on `antigravity` (`gemini-4-neon`, no `isolation: "worktree"`), and pass data via `storagectl`.
-- Cross-Mac thread reads use `t3_thread_list`/`t3_thread_read` with `environmentId` (Air→Pro `full-access`, Pro→Air `read-only`).
+- Cross-Mac thread reads/sends use `t3_thread_list`/`t3_thread_read`/`t3_thread_send` with `environmentId`, and cross-Mac delegation uses `delegate_task` with `target.environmentId` (both Air→Pro and Pro→Air are `full-access`).
 - Check Pro's `~/.config` commit read-only via `git -C ~/.config log -1` over SSH (Pro host in `~/.ssh/config.d/`) or in a Pro T3 thread (`storagectl run --on pro` runs as `storage-runner` and cannot read it). Host-specific providers and reach live in `~/.config/local/fleet-and-storage.md` when present.
 
 ## Remote Hosts & Vault
