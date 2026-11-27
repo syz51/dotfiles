@@ -98,11 +98,11 @@
         ]
       },
       {
-        "matcher": "mcp_t3-code_(delegate_task|t3_thread_launch|create_threads)",
+        "matcher": "call_mcp_tool|mcp_t3-code_(delegate_task|t3_thread_launch|create_threads)",
         "hooks": [
           {
             "type": "command",
-            "command": "/bin/sh \"$HOME/.config/claude/hooks/board-hook.sh\" pre-tool-use antigravity",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" pre-tool-use board-launch",
             "timeout": 10
           }
         ]

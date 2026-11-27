@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   extractMcpPrCreateInput,
   extractMcpPrMergeInput,
   extractPrCreateTargets,
+  normalizeBoardLaunchInput,
   resolveCreatedPrStdout,
   runAdaptedHook,
   translateInput,
@@ -1234,6 +1235,275 @@ describe("Antigravity hook adapter", () => {
     expect(createRe.test("call_mcp_tool")).toBe(true);
     expect(createRe.test("read_file")).toBe(false);
     expect(mcpCreate.hooks.some((h) => h.command.includes("auto-merge") && h.timeout >= 60)).toBe(true);
+  });
+
+  test("gemini/hooks.json wires board-integration T3 launch PreToolUse hook on call_mcp_tool and eager mcp_t3-code_* tools", () => {
+    const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
+    const launchGroup = hooksJson["board-integration"].PreToolUse.find((g) =>
+      g.matcher.includes("t3_thread_launch"),
+    );
+    expect(launchGroup).toBeDefined();
+    const re = new RegExp(`^(?:${launchGroup.matcher})$`);
+    expect(re.test("call_mcp_tool")).toBe(true);
+    expect(re.test("mcp_t3-code_delegate_task")).toBe(true);
+    expect(re.test("mcp_t3-code_t3_thread_launch")).toBe(true);
+    expect(re.test("mcp_t3-code_create_threads")).toBe(true);
+    expect(re.test("mcp_t3-code_t3_thread_read")).toBe(false);
+    expect(re.test("read_file")).toBe(false);
+    expect(
+      launchGroup.hooks.some(
+        (h) => h.command.includes("run-hook.js") && h.command.includes("pre-tool-use board-launch") && h.timeout >= 10,
+      ),
+    ).toBe(true);
+  });
+
+  test("PreToolUse board-launch normalizes lazy call_mcp_tool and eager T3 launch payloads and skips non-launch calls", () => {
+    // Lazy call_mcp_tool with object Arguments
+    expect(
+      normalizeBoardLaunchInput({
+        conversationId: "conv-1",
+        cwd: "/repo",
+        toolCall: {
+          id: "tc-1",
+          name: "call_mcp_tool",
+          args: {
+            ServerName: "t3-code",
+            ToolName: "t3_thread_launch",
+            Arguments: { projectId: "p1", title: "Worker", message: "Do task" },
+          },
+        },
+      }),
+    ).toEqual({
+      conversationId: "conv-1",
+      cwd: "/repo",
+      toolCall: {
+        id: "tc-1",
+        name: "mcp_t3-code_t3_thread_launch",
+        args: { projectId: "p1", title: "Worker", message: "Do task" },
+      },
+    });
+
+    // Lazy call_mcp_tool with JSON-string arguments (camelCase keys) for create_threads
+    expect(
+      normalizeBoardLaunchInput({
+        conversationId: "conv-2",
+        toolCall: {
+          id: "tc-2",
+          name: "call_mcp_tool",
+          args: {
+            serverName: "t3-code",
+            toolName: "create_threads",
+            arguments: JSON.stringify({ threads: [{ title: "A" }, { title: "B" }] }),
+          },
+        },
+      }),
+    ).toEqual({
+      conversationId: "conv-2",
+      toolCall: {
+        id: "tc-2",
+        name: "mcp_t3-code_create_threads",
+        args: { threads: [{ title: "A" }, { title: "B" }] },
+      },
+    });
+
+    // Malformed JSON string falls back to {} so board still counts 1 thread instead of bypassing
+    expect(
+      normalizeBoardLaunchInput({
+        toolCall: {
+          id: "tc-bad",
+          name: "call_mcp_tool",
+          args: { ServerName: "t3-code", ToolName: "delegate_task", Arguments: "{not json" },
+        },
+      }),
+    ).toEqual({
+      toolCall: { id: "tc-bad", name: "mcp_t3-code_delegate_task", args: {} },
+    });
+
+    // Eager mcp_t3-code_* and mcp__t3-code__* tools normalize to canonical eager shape
+    expect(
+      normalizeBoardLaunchInput({
+        toolCall: { id: "tc-eager", name: "mcp_t3-code_delegate_task", args: { task: "Run check" } },
+      }),
+    ).toEqual({
+      toolCall: { id: "tc-eager", name: "mcp_t3-code_delegate_task", args: { task: "Run check" } },
+    });
+    expect(
+      normalizeBoardLaunchInput({
+        toolCall: { id: "tc-cc", name: "mcp__t3-code__create_threads", args: { threads: [{ title: "T" }] } },
+      }),
+    ).toEqual({
+      toolCall: { id: "tc-cc", name: "mcp_t3-code_create_threads", args: { threads: [{ title: "T" }] } },
+    });
+
+    // Non-launch MCP calls and unrelated tools return null
+    for (const toolCall of [
+      { name: "call_mcp_tool", args: { ServerName: "t3-code", ToolName: "t3_thread_read", Arguments: {} } },
+      { name: "call_mcp_tool", args: { ServerName: "board", ToolName: "task_list", Arguments: {} } },
+      { name: "call_mcp_tool", args: { ServerName: "other", ToolName: "delegate_task", Arguments: {} } },
+      { name: "read_file", args: { Path: "/tmp/a" } },
+    ]) {
+      expect(normalizeBoardLaunchInput({ toolCall }), JSON.stringify(toolCall)).toBeNull();
+    }
+
+    // runAdaptedHook skips non-launch calls without calling boardHook, and propagates deny for lazy launches
+    const seen = [];
+    expect(
+      runAdaptedHook(
+        "pre-tool-use",
+        "board-launch",
+        {
+          cwd: "/repo",
+          toolCall: { id: "n1", name: "call_mcp_tool", args: { ServerName: "board", ToolName: "task_list", Arguments: {} } },
+        },
+        {
+          runners: {
+            boardHook: (payload) => {
+              seen.push(payload);
+              return { decision: "deny", reason: "should not run" };
+            },
+          },
+        },
+      ),
+    ).toEqual({ decision: "allow" });
+    expect(seen).toEqual([]);
+
+    const denied = runAdaptedHook(
+      "pre-tool-use",
+      "board-launch",
+      {
+        conversationId: "conv-3",
+        cwd: "/repo",
+        toolCall: {
+          id: "l1",
+          name: "call_mcp_tool",
+          args: {
+            ServerName: "t3-code",
+            ToolName: "t3_thread_launch",
+            Arguments: JSON.stringify({ title: "Child", message: "Work" }),
+          },
+        },
+      },
+      {
+        runners: {
+          boardHook: (payload) => {
+            seen.push(payload);
+            return { decision: "deny", reason: "device limit reached" };
+          },
+        },
+      },
+    );
+    expect(denied).toEqual({ decision: "deny", reason: "device limit reached" });
+    expect(seen).toEqual([
+      {
+        conversationId: "conv-3",
+        cwd: "/repo",
+        toolCall: {
+          id: "l1",
+          name: "mcp_t3-code_t3_thread_launch",
+          args: { title: "Child", message: "Work" },
+        },
+      },
+    ]);
+
+    // Errors in boardHook fail open to allow, matching board-hook.sh semantics
+    expect(
+      runAdaptedHook(
+        "pre-tool-use",
+        "board-launch",
+        { cwd: "/repo", toolCall: { id: "l2", name: "mcp_t3-code_delegate_task", args: { task: "Work" } } },
+        {
+          runners: {
+            boardHook: () => {
+              throw new Error("simulated board failure");
+            },
+          },
+        },
+      ),
+    ).toEqual({ decision: "allow" });
+  });
+
+  test("run-hook.js pre-tool-use board-launch delegates unwrapped lazy T3 launches to board-hook.sh", () => {
+    const home = mkdtempSync(join(tmpdir(), "agy-board-launch-"));
+    const script = join(import.meta.dir, "run-hook.js");
+    try {
+      const binDir = join(home, ".cargo", "bin");
+      mkdirSync(binDir, { recursive: true });
+      const fakeBoard = join(binDir, "board");
+      const argsLog = join(home, "args.txt");
+      const stdinLog = join(home, "stdin.json");
+      writeFileSync(
+        fakeBoard,
+        `#!/bin/sh
+printf '%s ' "$@" > "${argsLog}"
+cat > "${stdinLog}"
+printf '{"decision":"deny","reason":"device limit reached"}\\n'
+`,
+      );
+      chmodSync(fakeBoard, 0o755);
+
+      const runCli = (payload, extraEnv = {}) =>
+        spawnSync(process.execPath, [script, "pre-tool-use", "board-launch"], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          env: { ...process.env, HOME: home, AGENT_BOARD_HOOKS: "", ...extraEnv },
+        });
+
+      // Non-launch call_mcp_tool never spawns board
+      const nonLaunch = runCli({
+        conversationId: "conv-skip",
+        cwd: home,
+        toolCall: { id: "t-skip", name: "call_mcp_tool", args: { ServerName: "board", ToolName: "task_list", Arguments: {} } },
+      });
+      expect(nonLaunch.status).toBe(0);
+      expect(JSON.parse(nonLaunch.stdout)).toEqual({ decision: "allow" });
+      expect(existsSync(stdinLog)).toBe(false);
+
+      // AGENT_BOARD_HOOKS=off returns allow without spawning board
+      const offRes = runCli(
+        {
+          conversationId: "conv-off",
+          cwd: home,
+          toolCall: {
+            id: "t-off",
+            name: "call_mcp_tool",
+            args: { ServerName: "t3-code", ToolName: "t3_thread_launch", Arguments: { title: "Child" } },
+          },
+        },
+        { AGENT_BOARD_HOOKS: "off" },
+      );
+      expect(offRes.status).toBe(0);
+      expect(JSON.parse(offRes.stdout)).toEqual({ decision: "allow" });
+      expect(existsSync(stdinLog)).toBe(false);
+
+      // Lazy call_mcp_tool for t3_thread_launch unwraps payload and forwards deny decision
+      const lazyRes = runCli({
+        conversationId: "conv-launch",
+        cwd: home,
+        toolCall: {
+          id: "t-launch",
+          name: "call_mcp_tool",
+          args: {
+            ServerName: "t3-code",
+            ToolName: "t3_thread_launch",
+            Arguments: JSON.stringify({ projectId: "p1", title: "Child", message: "Do work" }),
+          },
+        },
+      });
+      expect(lazyRes.status).toBe(0);
+      expect(JSON.parse(lazyRes.stdout)).toEqual({ decision: "deny", reason: "device limit reached" });
+      expect(readFileSync(argsLog, "utf8").trim()).toBe("hook pre-tool-use --runtime antigravity");
+      expect(JSON.parse(readFileSync(stdinLog, "utf8"))).toEqual({
+        conversationId: "conv-launch",
+        cwd: home,
+        toolCall: {
+          id: "t-launch",
+          name: "mcp_t3-code_t3_thread_launch",
+          args: { projectId: "p1", title: "Child", message: "Do work" },
+        },
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("Stop open-items checks Antigravity transcripts for missing or unfiled Open items labels", () => {
