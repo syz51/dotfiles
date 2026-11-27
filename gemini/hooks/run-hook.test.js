@@ -1361,4 +1361,56 @@ describe("Antigravity hook adapter", () => {
       rmSync(brokenHome, { recursive: true, force: true });
     }
   });
+
+  test("gemini/hooks.json wires guard-wakeup at Stop and run-hook.js blocks dropped timers on Antigravity transcripts", () => {
+    const hooksJson = JSON.parse(readFileSync(join(import.meta.dir, "..", "hooks.json"), "utf8"));
+    const stopHooks = hooksJson["command-guards"]?.Stop ?? [];
+    expect(stopHooks.some((h) => h.command.includes("stop guard-wakeup"))).toBe(true);
+
+    const dir = mkdtempSync(join(tmpdir(), "agy-guard-wakeup-"));
+    const script = join(import.meta.dir, "run-hook.js");
+    try {
+      const runStop = (lines, extra = {}) => {
+        const transcriptPath = join(dir, "transcript.jsonl");
+        writeFileSync(transcriptPath, `${lines.map((r) => JSON.stringify(r)).join("\n")}\n`);
+        const res = spawnSync(process.execPath, [script, "stop", "guard-wakeup"], {
+          input: JSON.stringify({ cwd: dir, transcriptPath, ...extra }),
+          encoding: "utf8",
+          env: { ...process.env, GUARD_WAKEUP: "" },
+        });
+        expect(res.status).toBe(0);
+        return JSON.parse(res.stdout);
+      };
+
+      const dropped = runStop([
+        { type: "USER_INPUT", content: "Check CI" },
+        { type: "PLANNER_RESPONSE", tool_calls: [{ name: "run_command", args: { CommandLine: '"gh run view 1"' } }] },
+        { type: "GENERIC", status: "DONE", content: "in_progress" },
+        { type: "PLANNER_RESPONSE", content: "Checking back in 4 minutes to run deploy/upgrade.sh." },
+      ]);
+      expect(dropped.decision).toBe("continue");
+      expect(dropped.reason).toContain("guard-wakeup hook");
+
+      expect(
+        runStop(
+          [
+            { type: "USER_INPUT", content: "Check CI" },
+            { type: "PLANNER_RESPONSE", content: "Checking back in 4 minutes to run deploy/upgrade.sh." },
+          ],
+          { continuationActive: true },
+        ),
+      ).toEqual({ decision: "allow" });
+
+      expect(
+        runStop([
+          { type: "USER_INPUT", content: "Check CI" },
+          { type: "PLANNER_RESPONSE", tool_calls: [{ name: "schedule", args: { DurationSeconds: "240", Prompt: '"Check CI"' } }] },
+          { type: "GENERIC", status: "RUNNING", content: "Tool is running as a background task with task id: conv/task-99\nTask Description: Timer: 4m" },
+          { type: "PLANNER_RESPONSE", content: "Checking back in 4 minutes to run deploy/upgrade.sh." },
+        ]),
+      ).toEqual({ decision: "allow" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

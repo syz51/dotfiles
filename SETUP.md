@@ -487,6 +487,12 @@ path for the T3 `html_render` tool and records the deck's sha256 in
 session's transcript names it, the hook blocks the stop once and asks for a new render. A
 deck never rendered is not watched. Link the command on each Mac:
 `ln -s ~/.config/claude/bin/deck-view ~/.local/bin/deck-view`.
+guard-wakeup (Claude Code and Antigravity via `gemini/hooks/run-hook.js`) also runs at
+`Stop`. When a reply promises a timed check-back (such as "Checking back in 4 minutes") or
+an automatic wakeup/continuation after an in-flight event without any active timer, PR
+watch, delegate, subagent, or background task in the session transcript, the hook blocks
+the stop once so the agent starts the wake mechanism or revises the reply. Set
+`GUARD_WAKEUP=off` to disable it in tests.
 `claude/settings.json` cuts worktrees from the local HEAD (`worktree.baseRef` `head`) so
 they keep unpushed commits. Before EnterWorktree or an Agent call with worktree
 isolation, `claude/hooks/freshen-base.js` fetches the checkout's default branch and

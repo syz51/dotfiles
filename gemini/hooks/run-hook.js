@@ -5,12 +5,12 @@
  * Usage: bun run-hook.js <event> <hook-name[,hook-name,...]>
  *   event:     pre-tool-use | post-tool-use | session-start | stop
  *   hook-name: guard-git-push | guard-runtimes | guard-main-checkout | guard-pr-merge |
- *              guard-asks | auto-merge | stale-base | open-items | deck-view
+ *              guard-asks | auto-merge | stale-base | open-items | deck-view | guard-wakeup
  *
  * Hot-path command guards (guard-git-push, guard-runtimes, guard-main-checkout,
  * guard-pr-merge, guard-asks, auto-merge) execute in-process via their exported functions so a
  * single Bun invocation handles all PreToolUse guards instead of spawning nested Bun VMs.
- * Low-frequency hooks (stale-base, open-items, deck-view) still delegate via spawnSync to share
+ * Low-frequency hooks (stale-base, open-items, deck-view, guard-wakeup) still delegate via spawnSync to share
  * the exact same Claude Code hook scripts.
  */
 import { spawnSync } from "node:child_process";
@@ -627,7 +627,9 @@ export function translateInput(event, hookName, agyInput, { runners = {} } = {})
       stop_hook_active: Boolean(agyInput?.continuationActive),
       transcript_path: transcriptPath,
       last_assistant_message:
-        hookName === "open-items" ? extractLastAssistantMessage(transcriptPath) : "",
+        hookName === "open-items" || hookName === "guard-wakeup"
+          ? extractLastAssistantMessage(transcriptPath)
+          : "",
     };
   }
   return { cwd };

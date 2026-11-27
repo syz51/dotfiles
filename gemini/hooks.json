@@ -57,6 +57,13 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.config/gemini/hooks/run-hook.js\" stop guard-wakeup",
+        "timeout": 10
+      }
     ]
   },
   "board-integration": {
