@@ -28,8 +28,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const LABEL = "com.syz51.gnotebook-monitor";
-export const DEFAULT_INTERVAL_SECONDS = 604_800; // weekly (7 days)
+export const DEFAULT_CALENDAR_SCHEDULE = Object.freeze({ weekday: 1, hour: 10, minute: 0 }); // Monday 10:00 local time
 export const FETCH_TIMEOUT_MS = 20_000;
+export const FETCH_RETRY_DELAYS_MS = Object.freeze([2_000, 5_000, 10_000, 20_000, 30_000]);
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MiB safety cap
 export const BOARD_SLUG = "dotfiles";
 export const BOARD_AGENT = "claude:gnotebook-monitor";
@@ -404,15 +405,21 @@ export function formatReleaseTask(diff, prev, next) {
   return { title, body, acceptance };
 }
 
+function responseTooLargeError(message) {
+  const err = new Error(message);
+  err.code = "ERR_RESPONSE_TOO_LARGE";
+  return err;
+}
+
 export async function readBoundedText(resp, maxBytes = MAX_RESPONSE_BYTES) {
   const lenHeader = resp.headers?.get?.("content-length");
   if (lenHeader && Number.parseInt(lenHeader, 10) > maxBytes) {
-    throw new Error(`Response exceeds ${maxBytes} bytes (${lenHeader})`);
+    throw responseTooLargeError(`Response exceeds ${maxBytes} bytes (${lenHeader})`);
   }
   if (!resp.body || typeof resp.body.getReader !== "function") {
     const text = await resp.text();
     if (Buffer.byteLength(text, "utf8") > maxBytes) {
-      throw new Error(`Response exceeds ${maxBytes} bytes`);
+      throw responseTooLargeError(`Response exceeds ${maxBytes} bytes`);
     }
     return text;
   }
@@ -428,7 +435,7 @@ export async function readBoundedText(resp, maxBytes = MAX_RESPONSE_BYTES) {
         try {
           await reader.cancel();
         } catch {}
-        throw new Error(`Response exceeds ${maxBytes} bytes`);
+        throw responseTooLargeError(`Response exceeds ${maxBytes} bytes`);
       }
       chunks.push(value);
     }
@@ -440,35 +447,112 @@ export async function readBoundedText(resp, maxBytes = MAX_RESPONSE_BYTES) {
   return Buffer.concat(chunks.map((c) => Buffer.from(c))).toString("utf8");
 }
 
-export async function fetchCurrentSnapshot(fetchImpl = fetch) {
+export function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isRetryableHttpStatus(status) {
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+export function isRetryableFetchError(err) {
+  if (!err || typeof err !== "object") return false;
+  if (err instanceof SyntaxError || err instanceof RangeError) return false;
+  if (err.code === "ERR_INVALID_URL" || err.code === "ERR_RESPONSE_TOO_LARGE") return false;
+  return true;
+}
+
+function markTransientError(err) {
+  if (err && typeof err === "object") {
+    try {
+      err.transient = true;
+      return err;
+    } catch {}
+  }
+  const wrapped = new Error(err?.message || String(err), { cause: err });
+  wrapped.transient = true;
+  return wrapped;
+}
+
+export async function fetchTextWithRetry(
+  fetchImpl,
+  url,
+  {
+    headers,
+    timeoutMs = FETCH_TIMEOUT_MS,
+    maxBytes = MAX_RESPONSE_BYTES,
+    retryDelaysMs = FETCH_RETRY_DELAYS_MS,
+    sleep = defaultSleep,
+  } = {},
+) {
+  const delays = Array.isArray(retryDelaysMs) ? retryDelaysMs : [];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const resp = await fetchImpl(url, {
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (isRetryableHttpStatus(resp.status) && attempt < delays.length) {
+        try {
+          await resp.body?.cancel?.();
+        } catch {}
+      } else if (!resp.ok) {
+        try {
+          await resp.body?.cancel?.();
+        } catch {}
+        return { ok: false, status: resp.status, text: null };
+      } else {
+        const text = await readBoundedText(resp, maxBytes);
+        return { ok: true, status: resp.status, text };
+      }
+    } catch (err) {
+      if (!isRetryableFetchError(err)) {
+        throw err;
+      }
+      if (attempt >= delays.length) {
+        throw markTransientError(err);
+      }
+    }
+    await sleep(delays[attempt]);
+  }
+}
+
+export async function fetchCurrentSnapshot(
+  fetchImpl = fetch,
+  { retryDelaysMs = FETCH_RETRY_DELAYS_MS, sleep = defaultSleep } = {},
+) {
   const headers = {
     "User-Agent": "gnotebook-monitor/1.0 (+https://developers.google.com/notebook/docs/mcp)",
   };
   const warnings = [];
+  const secondaryRetryDelays = Array.isArray(retryDelaysMs) ? retryDelaysMs.slice(0, 2) : [];
 
-  // 1. Discovery v1 (authoritative, required)
-  const discResp = await fetchImpl(`${DISCOVERY_BASE}?version=v1`, {
+  // 1. Discovery v1 (authoritative, required) — retry transient DNS/network/stream/5xx errors
+  const discResp = await fetchTextWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=v1`, {
     headers,
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    retryDelaysMs,
+    sleep,
   });
   if (!discResp.ok) {
-    throw new Error(`Discovery v1 fetch failed with HTTP ${discResp.status}`);
+    const err = new Error(`Discovery v1 fetch failed with HTTP ${discResp.status}`);
+    if (isRetryableHttpStatus(discResp.status)) err.transient = true;
+    throw err;
   }
-  const discText = await readBoundedText(discResp);
-  const discovery = parseDiscoverySnapshot(JSON.parse(discText));
+  const discovery = parseDiscoverySnapshot(JSON.parse(discResp.text));
 
   // 2. Probe alternative versions concurrently (distinguish confirmed 404 vs transient errors)
   const probeEntries = await Promise.all(
     PROBE_VERSIONS.map(async (ver) => {
       try {
-        const res = await fetchImpl(`${DISCOVERY_BASE}?version=${encodeURIComponent(ver)}`, {
+        const res = await fetchTextWithRetry(fetchImpl, `${DISCOVERY_BASE}?version=${encodeURIComponent(ver)}`, {
           headers,
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          maxBytes: 512 * 1024,
+          retryDelaysMs: secondaryRetryDelays,
+          sleep,
         });
         if (res.status === 200) {
           // Verify valid JSON discovery doc to avoid false positives on soft-200 error pages
-          const txt = await readBoundedText(res, 512 * 1024);
-          const parsed = JSON.parse(txt);
+          const parsed = JSON.parse(res.text);
           if (parsed && parsed.name === "notebook") {
             return { version: ver, status: "live" };
           }
@@ -492,12 +576,13 @@ export async function fetchCurrentSnapshot(fetchImpl = fetch) {
   // 3. Official MCP tools doc (best-effort; preserves null on error/layout shift)
   let mcpTools = null;
   try {
-    const mcpResp = await fetchImpl(MCP_DOC_URL, {
+    const mcpResp = await fetchTextWithRetry(fetchImpl, MCP_DOC_URL, {
       headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      retryDelaysMs: secondaryRetryDelays,
+      sleep,
     });
     if (mcpResp.ok) {
-      mcpTools = parseMcpToolsHtml(await readBoundedText(mcpResp));
+      mcpTools = parseMcpToolsHtml(mcpResp.text);
       if (!mcpTools) warnings.push("mcp doc: table not found");
     } else {
       warnings.push(`mcp doc: HTTP ${mcpResp.status}`);
@@ -509,12 +594,13 @@ export async function fetchCurrentSnapshot(fetchImpl = fetch) {
   // 4. Official Roadmap doc (best-effort)
   let roadmapItems = null;
   try {
-    const rmResp = await fetchImpl(ROADMAP_DOC_URL, {
+    const rmResp = await fetchTextWithRetry(fetchImpl, ROADMAP_DOC_URL, {
       headers,
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      retryDelaysMs: secondaryRetryDelays,
+      sleep,
     });
     if (rmResp.ok) {
-      roadmapItems = parseRoadmapHtml(await readBoundedText(rmResp));
+      roadmapItems = parseRoadmapHtml(rmResp.text);
       if (!roadmapItems) warnings.push("roadmap doc: list not found");
     } else {
       warnings.push(`roadmap doc: HTTP ${rmResp.status}`);
@@ -719,26 +805,31 @@ export async function runCheck({
   boardPath = findExecutable("board"),
   now = new Date(),
   dryRun = false,
+  retryDelaysMs = FETCH_RETRY_DELAYS_MS,
+  sleep = defaultSleep,
 } = {}) {
   const nowIso = now.toISOString();
   const state = loadState(stateDir);
 
   let fetched;
   try {
-    fetched = await fetchCurrentSnapshot(fetchImpl);
+    fetched = await fetchCurrentSnapshot(fetchImpl, { retryDelaysMs, sleep });
   } catch (err) {
     const failingSince = state.fetchFailingSince || nowIso;
     state.fetchFailingSince = failingSince;
     state.lastCheck = nowIso;
     const elapsedMs = now.getTime() - new Date(failingSince).getTime();
+    const transient = Boolean(err?.transient);
+    const persistent = elapsedMs >= FETCH_FAILURE_GRACE_MS;
     if (!dryRun) {
       saveState(stateDir, state);
-      if (elapsedMs >= FETCH_FAILURE_GRACE_MS) {
+      if (persistent || !transient) {
         appendEvent(stateDir, {
           at: nowIso,
           event: "fetch-error",
           error: err.message,
           failingSince,
+          transient,
         });
       }
     }
@@ -747,7 +838,8 @@ export async function runCheck({
       status: "fetch-error",
       error: err.message,
       failingSince,
-      persistent: elapsedMs >= FETCH_FAILURE_GRACE_MS,
+      transient,
+      persistent,
     };
   }
 
@@ -877,10 +969,28 @@ export function buildLaunchAgentPlist({
   bunPath,
   scriptPath,
   stateDir = defaultStateDir(),
-  intervalSeconds = DEFAULT_INTERVAL_SECONDS,
+  intervalSeconds = null,
+  calendarInterval = DEFAULT_CALENDAR_SCHEDULE,
   searchPath = defaultSearchPath(),
 }) {
   const logPath = join(stateDir, "launchd.log");
+  let scheduleXml;
+  if (intervalSeconds !== null && intervalSeconds !== undefined) {
+    scheduleXml = `  <key>StartInterval</key>\n  <integer>${Math.max(300, Math.floor(intervalSeconds))}</integer>`;
+  } else {
+    const entries = [
+      ["Weekday", calendarInterval?.weekday],
+      ["Hour", calendarInterval?.hour],
+      ["Minute", calendarInterval?.minute],
+    ].filter(([, value]) => Number.isInteger(value));
+    if (entries.length === 0) {
+      throw new Error("calendarInterval must specify at least one integer field");
+    }
+    const dictBody = entries
+      .map(([k, v]) => `    <key>${k}</key>\n    <integer>${v}</integer>`)
+      .join("\n");
+    scheduleXml = `  <key>StartCalendarInterval</key>\n  <dict>\n${dictBody}\n  </dict>`;
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -895,10 +1005,9 @@ export function buildLaunchAgentPlist({
     <string>--state-dir</string>
     <string>${escapeXml(stateDir)}</string>
   </array>
-  <key>StartInterval</key>
-  <integer>${Math.max(300, Math.floor(intervalSeconds))}</integer>
+${scheduleXml}
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
   <key>ProcessType</key>
   <string>Background</string>
   <key>EnvironmentVariables</key>
@@ -921,7 +1030,7 @@ export function parseMonitorCli(argv) {
     dryRun: false,
     json: false,
     stateDir: null,
-    intervalSeconds: DEFAULT_INTERVAL_SECONDS,
+    intervalSeconds: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -962,36 +1071,51 @@ Usage:
 `;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), deps = {}) {
   const { command, opts } = parseMonitorCli(argv);
   const stateDir = opts.stateDir || defaultStateDir();
+  const stdout = deps.stdout || process.stdout;
+  const stderr = deps.stderr || process.stderr;
 
   if (command === "help") {
-    process.stdout.write(usageText());
+    stdout.write(usageText());
     return 0;
   }
 
   if (command === "check") {
-    const res = await runCheck({ stateDir, dryRun: opts.dryRun });
+    const res = await runCheck({
+      stateDir,
+      dryRun: opts.dryRun,
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+      ...(deps.runCommand ? { runCommand: deps.runCommand } : {}),
+      ...(deps.boardPath !== undefined ? { boardPath: deps.boardPath } : {}),
+      ...(deps.now ? { now: deps.now } : {}),
+      ...(deps.retryDelaysMs !== undefined ? { retryDelaysMs: deps.retryDelaysMs } : {}),
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    });
+    const gracedTransientFetchError =
+      res.status === "fetch-error" && res.transient && !res.persistent && !opts.dryRun;
     if (opts.json) {
-      process.stdout.write(JSON.stringify(res, null, 2) + "\n");
+      stdout.write(JSON.stringify(res, null, 2) + "\n");
     } else if (res.status === "initialized") {
       const d = res.snapshot.discovery;
-      process.stdout.write(
+      stdout.write(
         `Initialized baseline (rev ${d.revision}, ${Object.keys(d.methods).length} methods, ${Object.keys(d.schemas).length} schemas, ${res.snapshot.mcpTools?.length ?? 0} MCP tools, ${res.snapshot.roadmapItems?.length ?? 0} roadmap items)\n`,
       );
     } else if (res.status === "unchanged") {
-      process.stdout.write(`No Gemini Notebook API changes (rev ${res.revision})\n`);
+      stdout.write(`No Gemini Notebook API changes (rev ${res.revision})\n`);
     } else if (res.status === "release-detected") {
-      process.stdout.write(
+      stdout.write(
         `Release detected (${res.changeKey}) -> ${res.channel}${res.taskId ? ` (${res.taskId})` : ""}\n`,
       );
     } else if (res.status === "already-reported") {
-      process.stdout.write(`Change ${res.changeKey} already reported\n`);
+      stdout.write(`Change ${res.changeKey} already reported\n`);
+    } else if (gracedTransientFetchError) {
+      stderr.write(`gnotebook-monitor ${res.status} (transient, within 24h grace): ${res.error}\n`);
     } else {
-      process.stderr.write(`gnotebook-monitor ${res.status}: ${res.error}\n`);
+      stderr.write(`gnotebook-monitor ${res.status}: ${res.error}\n`);
     }
-    return res.ok ? 0 : 1;
+    return res.ok || gracedTransientFetchError ? 0 : 1;
   }
 
   if (command === "status") {
@@ -1020,7 +1144,7 @@ export async function main(argv = process.argv.slice(2)) {
           }
         : null,
     };
-    process.stdout.write(JSON.stringify(out, null, 2) + "\n");
+    stdout.write(JSON.stringify(out, null, 2) + "\n");
     return 0;
   }
 
@@ -1034,7 +1158,7 @@ export async function main(argv = process.argv.slice(2)) {
       intervalSeconds: opts.intervalSeconds,
     });
     if (opts.dryRun) {
-      process.stdout.write(plist);
+      stdout.write(plist);
       return 0;
     }
     if (process.platform !== "darwin") {
@@ -1051,7 +1175,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (boot.status !== 0) {
       throw new Error(`launchctl bootstrap failed: ${boot.stderr.trim()}`);
     }
-    process.stdout.write(`Loaded ${LABEL} from ${targetPlist}\n`);
+    stdout.write(`Loaded ${LABEL} from ${targetPlist}\n`);
     return 0;
   }
 
@@ -1062,7 +1186,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const targetPlist = launchAgentPlistPath();
     if (existsSync(targetPlist)) unlinkSync(targetPlist);
-    process.stdout.write(`Removed ${LABEL}; state in ${stateDir} is kept.\n`);
+    stdout.write(`Removed ${LABEL}; state in ${stateDir} is kept.\n`);
     return 0;
   }
 

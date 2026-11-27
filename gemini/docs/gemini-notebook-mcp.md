@@ -132,8 +132,9 @@ gnotebook-monitor check
 gnotebook-monitor status
 
 # Install/uninstall the weekly macOS LaunchAgent (com.syz51.gnotebook-monitor)
+# Runs Mondays at 10:00 local time via StartCalendarInterval (RunAtLoad = false)
 gnotebook-monitor install
 gnotebook-monitor uninstall
 ```
 
-When a structural API, MCP tool, version, or roadmap change appears, `gnotebook-monitor` checks the `dotfiles` work board for an existing matching change key (preventing duplicates across Macs), files a ready `p2` integration task on `dotfiles`, and sends a macOS notification.
+When a structural API, MCP tool, version, or roadmap change appears, `gnotebook-monitor` checks the `dotfiles` work board for an existing matching change key (preventing duplicates across Macs), files a ready `p2` integration task on `dotfiles`, and sends a macOS notification. Transient DNS/network/5xx fetch errors retry with bounded backoff (`FETCH_RETRY_DELAYS_MS`), and transient failures within the 24-hour grace window record `fetchFailingSince` without exiting non-zero so a brief offline wake does not stick the weekly LaunchAgent in a failing state; persistent failures (>=24h) and non-transient HTTP/parse errors exit `1`.

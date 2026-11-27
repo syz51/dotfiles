@@ -767,3 +767,7 @@ coordination). This file keeps the goal, evidence, decisions and log.
 - 2026-11-25: Registered `research-factory` (covering `lab`, `papers`, `claimcheck`, `prov`,
   `ireval` and `agentprof`) and `masters` (local remote-less repository) in `setups.toml`
   (dotfiles-98), both owned by the `research-factory` board. The registry now has 35 setups.
+- 2026-11-28: Registered `agent-desktop` (Rust `desktopd` daemon, `desktop` CLI/MCP server,
+  `AgentDesktop.app` bundle, and Tailscale fleet) in `setups.toml`, owned by the autopilot
+  `agent-desktop` board (`github.com/syz51/agent-desktop`), and scoped `computer-use` to the
+  dotfiles plugin wrapper and legacy `desktop.js` fallback. The registry now has 36 setups.

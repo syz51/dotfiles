@@ -67,12 +67,23 @@ change = "A PR on dotfiles; `factory audit` for permission and sandbox changes"
 verify = ["bun test claude/tests/config.test.js", "bun ~/.claude/factory/cli.js audit"]
 
 [[setup]]
+id = "agent-desktop"
+title = "Rust computer-use daemon, CLI, and MCP server (agent-desktop)"
+covers = [
+  "the Rust agent-desktop daemon (desktopd), CLI and desktop MCP server (desktop), /Applications/AgentDesktop.app bundle, and Tailscale desktop fleet (github.com/syz51/agent-desktop)",
+]
+owner = { repo = "github.com/syz51/agent-desktop", board = "agent-desktop" }
+channel = "board"
+change = "A PR on syz51/agent-desktop, tracked on the agent-desktop board; rebuild/re-sign AgentDesktop.app via ./packaging/macos/build-app.sh on Macs when binaries change"
+verify = ["cargo fmt --all -- --check", "cargo clippy --workspace --all-targets -- -D warnings", "cargo test --workspace", "shellcheck packaging/macos/*.sh packaging/linux/*.sh"]
+
+[[setup]]
 id = "computer-use"
-title = "Computer-use plugin (desktop MCP server)"
+title = "Computer-use plugin wrapper & legacy JS fallback (dotfiles)"
 covers = [".claude-plugin", "claude/marketplace/computer-use"]
 owner = { repo = "github.com/syz51/dotfiles", board = "dotfiles" }
 channel = "board"
-change = "A PR on dotfiles with tests for the safeguard; a live check in a T3 Code session when the helper changes"
+change = "A PR on dotfiles with tests for the plugin wrapper or legacy desktop.js fallback (Rust desktop/desktopd issues belong on agent-desktop)"
 verify = ["bun test claude/marketplace"]
 
 [[setup]]

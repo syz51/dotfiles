@@ -1043,7 +1043,9 @@ to `/Applications/AgentDesktop.app` `desktopd` with opt-in `~/.config/agent-desk
 default `open` mode and physical Esc stop) when installed, and fall back to the bundled
 `claude/marketplace/computer-use/server/desktop.js` + `helper.swift` on machines without
 `agent-desktop`. Its MCP server is named `desktop`, because Claude Code reserves the name
-`computer-use`.
+`computer-use`. Agent friction reports about `desktop`/`desktopd` go to the `agent-desktop`
+setup in `setups.toml`, which routes to the autopilot `agent-desktop` board
+(`github.com/syz51/agent-desktop`).
 
 `claude/settings.json` declares the `dotfiles` marketplace (`.claude-plugin/marketplace.json`
 on GitHub) and enables the plugin, so there is nothing to install. Claude Code clones the
