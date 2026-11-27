@@ -678,6 +678,7 @@ function sshProgram(argv, i, dir, dirs) {
 function program(argv, dir, remote = false, dirs = undefined) {
   const chdir = (path) => { ({ dir, dirs } = moveDir(dir, dirs, path, remote)); };
   let appended = false; // xargs adds words read from standard input
+  let repeating = false; // a repeating wrapper (`xargs` or `watch`) may run the command more than once
   // Whether a skipped word runs the words after it as a command: a wrapper, an assignment, or
   // a second xargs. The first xargs alone runs echo.
   let runner = false;
@@ -699,19 +700,20 @@ function program(argv, dir, remote = false, dirs = undefined) {
     }
     if (name === "ssh") {
       const remote = sshProgram(argv, i, dir, dirs);
-      return { ...remote, appended };
+      return { ...remote, appended, repeating };
     }
     if (name === "watch") {
-      // watch runs its remaining words through `sh -c`.
-      i += 1;
-      while (i < argv.length && argv[i].startsWith("-")) i += ["-n", "--interval", "-q", "--equexit"].includes(argv[i]) ? 2 : 1;
-      return { words: [], nested: [argv.slice(i).join(" ")], dir, dirs, appended, reparses: true };
+      // watch runs its remaining words through `sh -c`, or directly via exec with `-x`/`--exec`.
+      const { next, options } = skipOptions(argv, i + 1, (option) => ["-n", "--interval", "-q", "--equexit"].includes(option));
+      const exec = options.some(([option]) => option === "-x" || option === "--exec");
+      const rest = argv.slice(next);
+      return { words: [], nested: [exec ? quote(rest) : rest.join(" ")], dir, dirs, appended, reparses: true, repeating: true };
     }
     if (name === "command") {
       // `command -v NAME` and `command -V NAME` look a command up without running it.
       let j = i + 1;
       while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, dirs, appended };
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, dirs, appended, repeating };
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     runner = name !== "xargs" || appended;
@@ -745,6 +747,7 @@ function program(argv, dir, remote = false, dirs = undefined) {
     if (name === "timeout") i += 1; // the duration
     if (name === "xargs") {
       appended = true;
+      repeating = true;
       for (const [option, value] of options) {
         if (option === "-I" || option === "-J" || option === "--replace") replace = value || "{}";
         else if (option === "-i") replace = "{}";
@@ -758,7 +761,7 @@ function program(argv, dir, remote = false, dirs = undefined) {
   const words = argv.slice(i).map(fill);
   // `fills`: the input fills in the command's name or an `env -S` string.
   const fills = filled || (words[0] ?? "").includes(FILLED);
-  return { words, nested: [], dir, dirs, appended, bare, fills };
+  return { words, nested: [], dir, dirs, appended, bare, fills, repeating };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -980,6 +983,8 @@ function inspect(source, state, visit, depth, tooDeep) {
   // 'gh pr merge 12'`. They join the script's text, which the shell parses again, so the guard
   // cannot tell which command gets them and treats every command in it as getting more words.
   const added = state.appended === true;
+  // Whether an enclosing repeating wrapper (`xargs`, `find -exec`, or `watch`) may run this script more than once.
+  const inRepeating = state.repeating === true;
   const { commands } = parseScript(source);
   const cmdMeta = analyzeCommands(commands, state.piped, state.background);
   const snapshot = () => ({
@@ -1065,10 +1070,11 @@ function inspect(source, state, visit, depth, tooDeep) {
     const background = pipeline.at(-1).command.next === "&";
     const readerInShell = reader !== -1 && !background && reader === pipeline.length - 1 && !here
       && sourceTarget(pipeline[reader].run.words) !== undefined;
-    for (const [index, { command: { argv, inputs, substitutions, processSubs }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills }, before, beforeDirs }] of pipeline.entries()) {
+    for (const [index, { command: { argv, inputs, substitutions, processSubs }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills, repeating }, before, beforeDirs }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       const lastInShell = !background && index === pipeline.length - 1 && !here;
       const topLevel = depth === 0 && !grouped && !piped && !inBackground;
+      const isRepeating = inRepeating || repeating === true;
       // Its substitutions, which the shell running it expands first, process substitutions
       // (`<(…)` and `>(…)`), which run concurrently over pipes, scripts this command runs
       // itself, and scripts the reading shell runs in its directory. An ssh command's scripts
@@ -1077,20 +1083,20 @@ function inspect(source, state, visit, depth, tooDeep) {
       const scripts = [
         ...substitutions.map((script) => ({ script, dir: before, dirs: beforeDirs, remote: here })),
         ...processSubs.map((script) => ({ script, dir: before, dirs: beforeDirs, remote: here, piped: true, background: true })),
-        ...nested.map((script) => ({ script, dir, dirs, remote: here || Boolean(remote), appended })),
-        ...(local ?? []).map((entry) => ({ ...entry, remote: here })),
+        ...nested.map((script) => ({ script, dir, dirs, remote: here || Boolean(remote), appended, repeating: repeating === true })),
+        ...(local ?? []).map((entry) => ({ ...entry, remote: here, repeating: repeating === true })),
       ];
-      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => ({ script, dir, dirs, remote: here })));
+      if (SHELLS.has(name)) scripts.push(...shellScripts(words).map((script) => ({ script, dir, dirs, remote: here, repeating: repeating === true })));
       if (name === "eval") {
         const evalWords = words[1] === "--" || words[1] === "-" ? words.slice(2) : words.slice(1);
-        scripts.push({ script: evalWords.join(" "), dir, dirs, remote: here, sameShell: lastInShell });
+        scripts.push({ script: evalWords.join(" "), dir, dirs, remote: here, sameShell: lastInShell, repeating: repeating === true });
       }
       const sourced = sourceTarget(words);
       if (sourced !== undefined) {
         const inline = processSubScript(sourced);
-        if (inline !== undefined) scripts.push({ script: inline, dir, dirs, remote: here, sameShell: lastInShell });
+        if (inline !== undefined) scripts.push({ script: inline, dir, dirs, remote: here, sameShell: lastInShell, repeating: repeating === true });
       }
-      if (name === "find") scripts.push(...findScripts(words, dir, dirs).map((entry) => ({ ...entry, remote: here })));
+      if (name === "find") scripts.push(...findScripts(words, dir, dirs).map((entry) => ({ ...entry, remote: here, repeating: true })));
       if (reader !== -1) {
         const pipedScripts = index < reader ? [...inputs, ...text] : inputs;
         const targetRun = pipeline[reader].run;
@@ -1100,9 +1106,10 @@ function inspect(source, state, visit, depth, tooDeep) {
           dirs: targetRun.dirs,
           remote: here || Boolean(targetRun.remote),
           sameShell: readerInShell,
+          repeating: targetRun.repeating === true,
         })));
       }
-      for (const { script, dir: where, dirs: whereDirs, remote: onRemote, appended: adds, sameShell, piped: scriptPiped, background: scriptBg } of scripts) {
+      for (const { script, dir: where, dirs: whereDirs, remote: onRemote, appended: adds, sameShell, piped: scriptPiped, background: scriptBg, repeating: scriptRepeating } of scripts) {
         if (script === undefined) continue;
         const child = {
           dir: where,
@@ -1111,6 +1118,7 @@ function inspect(source, state, visit, depth, tooDeep) {
           appended: added || adds === true,
           piped: piped || scriptPiped === true,
           background: inBackground || scriptBg === true,
+          repeating: inRepeating || scriptRepeating === true,
           cdCount: 0,
           cdTargets: [],
         };
@@ -1133,7 +1141,7 @@ function inspect(source, state, visit, depth, tooDeep) {
       if (opaque) {
         const opaqueDir = dir !== undefined || dirs !== undefined ? dir : before;
         const opaqueDirs = dir !== undefined || dirs !== undefined ? dirs : beforeDirs;
-        const violation = visit(argv, opaqueDir, { appended: true, opaque: true, remote: here, topLevel, piped, background: inBackground, ...(opaqueDirs !== undefined && { dirs: opaqueDirs }) });
+        const violation = visit(argv, opaqueDir, { appended: true, opaque: true, remote: here, topLevel, piped, background: inBackground, repeating: isRepeating, ...(opaqueDirs !== undefined && { dirs: opaqueDirs }) });
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
@@ -1154,7 +1162,7 @@ function inspect(source, state, visit, depth, tooDeep) {
           }
         }
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, topLevel, piped, background: inBackground, ...(dirs !== undefined && { dirs }) });
+        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, topLevel, piped, background: inBackground, repeating: isRepeating, ...(dirs !== undefined && { dirs }) });
         if (violation) return violation;
       }
     }
@@ -1165,7 +1173,7 @@ function inspect(source, state, visit, depth, tooDeep) {
 }
 
 /**
- * Calls `visit(words, dir, { appended, opaque, remote, topLevel, piped, background, dirs })` for every command `source` would run,
+ * Calls `visit(words, dir, { appended, opaque, remote, topLevel, piped, background, repeating, dirs })` for every command `source` would run,
  * after wrappers, through shells, substitutions, `eval`, `source`, `find -exec` and `ssh`; `dir` is its
  * directory when known, and always undefined for a command on another host or when a `cd` inside `eval`,
  * `source` or a non-last piped compound command leaves the directory uncertain (in which case `dirs` lists
@@ -1173,7 +1181,9 @@ function inspect(source, state, visit, depth, tooDeep) {
  * `remote` says that it runs on another host over `ssh`. `topLevel` says that the command runs directly
  * in the top-level sequential list (not nested inside a loop, function body, group, subshell, pipeline,
  * background job, or inner script); `piped` and `background` say whether the command (or an enclosing
- * group, process substitution, or script) is in a pipeline or backgrounded. `opaque` says that the words xargs adds may run
+ * group, process substitution, or script) is in a pipeline or backgrounded. `repeating` says that the
+ * command runs under a repeating wrapper (`xargs`, `find -exec`/`-execdir`/`-ok`/`-okdir`, or `watch`),
+ * including scripts nested inside one. `opaque` says that the words xargs adds may run
  * a command the guard cannot see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or
  * `xargs find`; then `words` are the xargs command's own words, and the command they name is visited too.
  * A word that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
