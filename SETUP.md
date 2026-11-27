@@ -874,7 +874,11 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
 - Billing goes through `claude-api`; `API_FIRST_SUBSCRIPTION=1` uses the subscription. A
   caller's own `ANTHROPIC_BASE_URL` becomes the proxy's upstream, and `claude-api` then
   passes the run through on claude's own auth, as for any caller's own endpoint.
-- `claude-experiment preflight [--cap N] <claude args>` sends a fixed canary with the same
+- `--timeout SECONDS` (default 120) caps each call so a hung `claude` invocation cannot
+  stall a batch runner. On expiry, the wrapper kills the child's whole process group,
+  stops the local proxy, prints the tail of the child's stderr and exits 124. Runners must
+  retry a timed-out call (exit 124).
+- `claude-experiment preflight [--cap N] [--timeout SECONDS] <claude args>` sends a fixed canary with the same
   flags. Run it before a batch; it fails nonzero as follows:
   - Exit 4 when a request the proxy forwards would still carry the email block
     (`# userEmail`, "The user's email address is") or the environment block (a
@@ -883,6 +887,7 @@ goes through `~/.claude/bin/claude-experiment`, not plain `claude -p`. `claude-e
     its text. This check does not depend on the prompt's size. A system prompt that itself
     holds those lines fails it too.
   - Exit 4 when no Messages request reached the proxy.
+  - Exit 124 when the canary run times out.
   - Claude's own code when the canary run fails.
   - Exit 3 when a request's prompt tokens (input, cache creation and cache read) exceed
     the cap, default 2000. The leaked blocks add about 580 tokens, so the cap alone misses
@@ -1417,7 +1422,9 @@ in CI:
 - `claude-experiment.test.js`: the experiment route against a fake claude and a stub
   upstream. It checks the default flags and variables, the proxy's removal of both blocks
   from a request shaped like 2.1.322's, the refusal of leftover context, exit status
-  passthrough, the preflight cap, and the preflight's leak check: exit 4 when the blocks
+  passthrough, `--timeout` enforcement (exit 124, whole process-group cleanup including
+  SIGTERM-ignoring grandchildren, proxy stop, and child stderr tail), the preflight cap,
+  and the preflight's leak check: exit 4 when the blocks
   reach the proxy's output in a form the strip misses, under the cap, and when no request
   reaches the proxy. With `RUN_CLAUDE_LIVE=1` (use `API_FIRST_SUBSCRIPTION=1` to spend no
   API credit), a Haiku probe asks the model for its environment and account, and fails
