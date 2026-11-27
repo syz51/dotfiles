@@ -703,3 +703,36 @@ test("visit reports topLevel, piped, and background execution context (dotfiles-
   expect(ctx('if true; then echo ok; "fi"; a; b; fi').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, false]);
   expect(ctx('{ a; "}"; echo ok; } & c').find(([cmd]) => cmd === "a")).toEqual(["a", false, false, true]);
 });
+
+test("visit reports repeating wrappers (xargs, find -exec/-execdir/-ok/-okdir, watch) (dotfiles-879)", () => {
+  const repeating = (source) => {
+    const seen = [];
+    visitCommands(source, "/repo", (words, _dir, { repeating: rep, opaque }) => {
+      if (!opaque) seen.push([words.join(" "), rep]);
+    });
+    return seen;
+  };
+  expect(repeating("printf '1\\n2\\n' | xargs -I{} sh -c 'make'")).toEqual([
+    ["printf 1\\n2\\n", false],
+    ["make", true],
+    ["sh -c make", true],
+  ]);
+  expect(repeating("printf '1\\n2\\n' | xargs -I{} sh -c 'echo $(make)' _ {}")).toContainEqual(["make", true]);
+  expect(repeating("xargs -a items sh <<< 'make'")).toContainEqual(["make", true]);
+  expect(repeating("find . -maxdepth 1 -exec make \\;")).toEqual([
+    ["make", true],
+    ["find . -maxdepth 1 -exec make ;", false],
+  ]);
+  expect(repeating("find . -execdir make \\;")[0]).toEqual(["make", true]);
+  expect(repeating("find . -ok make \\;")[0]).toEqual(["make", true]);
+  expect(repeating("find . -okdir make {} +")[0]).toEqual(["make {}", true]);
+  expect(repeating("find . -exec sh -c 'make' \\;")).toContainEqual(["make", true]);
+  expect(repeating("watch -n 1 make")).toEqual([["make", true]]);
+  expect(repeating("watch -x sh -c 'make'")).toContainEqual(["make", true]);
+  expect(repeating("sudo xargs -I{} sh -c 'eval make'")).toContainEqual(["make", true]);
+  expect(repeating("echo 1 | xargs ssh -o ProxyCommand='make' host ls")).toContainEqual(["make", true]);
+  // Commands outside the repeating wrapper, or outer substitutions expanded once before it runs, are not repeating.
+  expect(repeating("echo $(make) | xargs echo")).toContainEqual(["make", false]);
+  expect(repeating("find $(make) -exec echo {} \\;")).toContainEqual(["make", false]);
+  expect(repeating("find . -maxdepth 1 -print && make")).toContainEqual(["make", false]);
+});

@@ -397,6 +397,8 @@ describe("it allows", () => {
     ["cd /main && git -c claude.mainCheckout=allow stash drop stash@{0}", "/elsewhere"],
     ["cd /main && git -c claude.mainCheckout=allow stash drop stash@{0} && git stash list", "/elsewhere"],
     ["git -c alias.sd='stash drop' -c claude.mainCheckout=allow sd stash@{0}"],
+    ["find . -maxdepth 1 -print && git -c claude.mainCheckout=allow stash drop stash@{0}"],
+    ["echo hi | xargs echo && git -c claude.mainCheckout=allow stash drop stash@{0}"],
   ])("%s: allows dropping one backed-up stash entry", (...row) => {
     expect(verdict(...row)).toBeUndefined();
   });
@@ -411,7 +413,19 @@ describe("it allows", () => {
     ["repeat 2; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", "shell loop or function"],
     ["f() { git -c claude.mainCheckout=allow stash drop stash@{0}; }; f; f", "shell loop or function"],
     ["function f { git -c claude.mainCheckout=allow stash drop stash@{0}; }; f; f", "shell loop or function"],
-  ])("%s: blocks chained stash mutations or loops around a backed-up drop", (command, expected) => {
+    // repeating wrappers (xargs, find -exec/-execdir/-ok/-okdir, watch) (dotfiles-879)
+    ["printf \"1\\n2\\n\" | xargs -I{} sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}'", "repeating wrapper"],
+    ["printf \"1\\n2\\n\" | xargs -I{} sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}' _ {}", "repeating wrapper"],
+    ["printf \"1\\n2\\n\" | xargs -n1 sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}' _", "repeating wrapper"],
+    ["xargs -a items sh <<< 'git -c claude.mainCheckout=allow stash drop stash@{0}'", "repeating wrapper"],
+    ["find . -maxdepth 1 -exec git -c claude.mainCheckout=allow stash drop stash@{0} \\;", "repeating wrapper"],
+    ["find . -maxdepth 1 -ok git -c claude.mainCheckout=allow stash drop stash@{0} \\;", "repeating wrapper"],
+    ["find . -maxdepth 1 -exec sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}' \\;", "repeating wrapper"],
+    ["find . -maxdepth 1 -execdir git -C /main -c claude.mainCheckout=allow stash drop stash@{0} \\;", "repeating wrapper"],
+    ["find . -maxdepth 1 -okdir git -C /main -c claude.mainCheckout=allow stash drop stash@{0} \\;", "repeating wrapper"],
+    ["watch -n 1 git -c claude.mainCheckout=allow stash drop stash@{0}", "repeating wrapper"],
+    ["watch -x sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}'", "repeating wrapper"],
+  ])("%s: blocks chained stash mutations, loops, or repeating wrappers around a backed-up drop", (command, expected) => {
     expect(verdict(command)).toContain(expected);
   });
 
@@ -601,11 +615,14 @@ describe("hook process", () => {
       expect(run("git -c claude.mainCheckout=allow stash drop stash@{0}", main).code).toBe(2);
       git(main, "symbolic-ref", "-d", backupRef);
 
-      // A direct backup ref lets the named drop through, while plain drop, stash clear, and loops stay refused.
+      // A direct backup ref lets the named drop through, while plain drop, stash clear, loops, and repeating wrappers stay refused.
       git(main, "update-ref", backupRef, "refs/stash@{0}");
       expect(run("git stash drop stash@{0}", main).code).toBe(2);
       expect(run("git -c claude.mainCheckout=allow stash clear", main).code).toBe(2);
       expect(run("for i in 1 2; do git -c claude.mainCheckout=allow stash drop stash@{0}; done", main).code).toBe(2);
+      expect(run("printf \"1\\n2\\n\" | xargs -I{} sh -c 'git -c claude.mainCheckout=allow stash drop stash@{0}'", main).code).toBe(2);
+      expect(run("find . -maxdepth 1 -exec git -c claude.mainCheckout=allow stash drop stash@{0} \\;", main).code).toBe(2);
+      expect(run("watch -n 1 git -c claude.mainCheckout=allow stash drop stash@{0}", main).code).toBe(2);
       expect(run("git -c claude.mainCheckout=allow stash drop stash@{0}", main)).toEqual({ code: 0, stderr: "" });
       expect(run("git -c claude.mainCheckout=allow stash drop -q -- stash@{0}", main)).toEqual({ code: 0, stderr: "" });
 

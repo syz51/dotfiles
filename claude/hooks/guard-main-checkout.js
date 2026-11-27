@@ -382,7 +382,7 @@ const mergeReason = (top) => `it merges a pull request from ${top}, a main check
 export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
   const stashDrops = [];
   let stashMutator;
-  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote, dirs }) => {
+  const violation = visitCommands(command, cwd, (words, dir, { appended, opaque, remote, dirs, repeating }) => {
     // A command over ssh changes a repository on another host, not a checkout here.
     if (remote) return undefined;
     // macOS volumes ignore case, so GIT and Git run git too.
@@ -411,7 +411,7 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
         if (result?.stashDrop) droppedHere = true;
         if (result?.stashMutator) mutatedHere = true;
       }
-      if (droppedHere) stashDrops.push(words);
+      if (droppedHere) stashDrops.push({ words, repeating });
       else if (mutatedHere) stashMutator ??= words;
       return undefined;
     }
@@ -434,17 +434,21 @@ export function findMainCheckoutViolation(command, cwd, git, tempRoots = []) {
   });
   if (violation || stashDrops.length === 0) return violation;
   // The guard verifies `stash@{<n>}` against refs/stash-backup/ once before the shell runs, so
-  // chained stash mutations or loops could shift stash indices and drop an unbacked entry.
+  // chained stash mutations, loops, or repeating wrappers could shift stash indices and drop an unbacked entry.
   if (stashDrops.length > 1) {
-    return `\`${stashDrops[1].join(" ")}\`: the same command runs another \`git stash drop\`, and an earlier drop shifts \`stash@{<n>}\` indices before the next runs. `
+    return `\`${stashDrops[1].words.join(" ")}\`: the same command runs another \`git stash drop\`, and an earlier drop shifts \`stash@{<n>}\` indices before the next runs. `
       + "Drop each backed-up stash entry in its own command.";
   }
   if (stashMutator !== undefined) {
-    return `\`${stashDrops[0].join(" ")}\`: the same command also runs \`${stashMutator.join(" ")}\`, which may shift \`refs/stash\` or alter backup refs before or after the drop. `
+    return `\`${stashDrops[0].words.join(" ")}\`: the same command also runs \`${stashMutator.join(" ")}\`, which may shift \`refs/stash\` or alter backup refs before or after the drop. `
       + "Run `git -c claude.mainCheckout=allow stash drop <ref>` in its own command.";
   }
+  if (stashDrops[0].repeating) {
+    return `\`${stashDrops[0].words.join(" ")}\`: it runs \`git stash drop\` inside a repeating wrapper (\`xargs\`, \`find -exec\`, or \`watch\`), which may execute more than once as \`stash@{<n>}\` indices shift. `
+      + "Run `git -c claude.mainCheckout=allow stash drop <ref>` once in its own command.";
+  }
   if (REPEATING_SHELL.test(command)) {
-    return `\`${stashDrops[0].join(" ")}\`: it runs \`git stash drop\` inside a shell loop or function, which may execute more than once as \`stash@{<n>}\` indices shift. `
+    return `\`${stashDrops[0].words.join(" ")}\`: it runs \`git stash drop\` inside a shell loop or function, which may execute more than once as \`stash@{<n>}\` indices shift. `
       + "Run `git -c claude.mainCheckout=allow stash drop <ref>` once in its own command.";
   }
   return undefined;
