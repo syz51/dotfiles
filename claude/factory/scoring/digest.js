@@ -6,7 +6,7 @@
 // start and prompt hooks added shows as [hook <event>, <time>]. Over the size limit
 // it keeps prompts and host notices first, then other events from the start and the
 // end, and says what it left out.
-import { unwrapUserRequest } from "../lib/antigravity.js";
+import { parseAntigravityArg, unwrapUserRequest } from "../lib/antigravity.js";
 import { INTERRUPT, isHostPrompt, readRecords, textOf } from "../lib/transcripts.js";
 
 export const DIGEST_CHARS = 60_000;
@@ -141,19 +141,25 @@ const AGY_TOOL_ERROR = /Command exited with code [1-9]|Encountered error in tool
 
 function collectAntigravityEvents(records) {
   const events = [];
-  const pendingTools = [];
+  let pendingTools = [];
   const counters = { prompt: 0, assistant: 0, tool: 0 };
   const label = (kind) => `${{ prompt: "P", assistant: "A", tool: "T" }[kind]}${++counters[kind]}`;
   for (const record of records) {
-    if (record.type === "USER_INPUT" && record.source === "USER_EXPLICIT") {
-      const text = unwrapUserRequest(record.content);
-      if (text) events.push(promptEvent(label("prompt"), { at: record.created_at ?? null, text, source: "user" }));
+    if (record.type === "USER_INPUT") {
+      pendingTools = [];
+      if (record.source === "USER_EXPLICIT") {
+        const text = unwrapUserRequest(record.content);
+        if (text) events.push(promptEvent(label("prompt"), { at: record.created_at ?? null, text, source: "user" }));
+      }
     } else if (record.type === "PLANNER_RESPONSE") {
+      pendingTools = [];
       if (typeof record.content === "string" && record.content.trim())
         events.push({ kind: "assistant", label: label("assistant"), raw: record.content });
       for (const call of Array.isArray(record.tool_calls) ? record.tool_calls : []) {
         const name = call?.name ?? "tool";
-        const event = { kind: "tool", label: label("tool"), name, input: compactInput(name, call?.args ?? {}), status: "no result", output: "" };
+        const rawArgs = call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {};
+        const args = Object.fromEntries(Object.entries(rawArgs).map(([key, value]) => [key, parseAntigravityArg(value)]));
+        const event = { kind: "tool", label: label("tool"), name, input: compactInput(name, args), status: "no result", output: "" };
         events.push(event);
         pendingTools.push(event);
       }
