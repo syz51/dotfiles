@@ -67,7 +67,7 @@ export function unwrapUserRequest(text) {
 }
 
 // Antigravity stores each tool argument value as a JSON-encoded string inside args.
-function parseAntigravityArg(value) {
+export function parseAntigravityArg(value) {
   if (typeof value !== "string") return value;
   try {
     return JSON.parse(value);
