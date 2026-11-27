@@ -138,9 +138,10 @@ export function parseMerge(args, repo) {
           break;
         }
         if (MERGE_VALUE_FLAGS.has(name)) {
-          // The value is the rest of the word, after an optional `=`, or else the next word.
-          const rest = arg.slice(k + 1).replace(/^=/, "");
-          set(name, rest === "" ? args[++i] : rest);
+          // pflag consumes the next word only when the short flag ends the word; attached
+          // characters are its value, stripping a leading `=` only when characters follow it.
+          const rest = arg.slice(k + 1);
+          set(name, k + 1 === arg.length ? args[++i] : rest.length > 1 && rest.startsWith("=") ? rest.slice(1) : rest);
           break;
         }
         set(name, true);
