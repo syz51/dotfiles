@@ -190,6 +190,52 @@ follow it with `s` for the session switcher, uppercase `S` for scrollback, or
 Ghostty loads optional machine settings from `ghostty/config.local`, which Git
 ignores. For example, put `font-size = 17.0` there to override the shared size.
 
+## Rex
+
+Rex (`Rex.app`) reads `~/.config/rex/init.lua` on the machine running its server.
+The tracked [rex/init.lua](rex/init.lua) starts from Rex's defaults and loads an
+optional gitignored `rex/local.lua` beside it for machine-specific overrides or
+private `rex.host{ ... }` entries.
+
+Expose the bundled `rex` CLI on `PATH` (including for non-interactive SSH
+connections) and keep `REX_BIN_DIR` first inside Rex terminals:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+ln -sfn "/Applications/Rex.app/Contents/Helpers/Rex Server.rex/Contents/MacOS/rex" "$HOME/.local/bin/rex"
+```
+
+Add this near the end of `~/.zshrc`:
+
+```zsh
+if [[ -n "${REX_BIN_DIR:-}" ]]; then
+  export PATH="$REX_BIN_DIR:$PATH"
+fi
+```
+
+Install Rex's `xterm-rex` terminfo entry and SSH `TERM` downgrade guard once per
+Mac (its generated `rex/ssh_config` and `rex/terminfo-hosts` files are
+gitignored):
+
+```sh
+rex terminfo setup
+rex terminfo status
+```
+
+To use a remote Mac's running Rex server as your home and remote host over SSH:
+
+```sh
+rex home set ssh://<host-alias> --label <label>
+rex hosts add <label> ssh://<host-alias>
+```
+
+To match the Catppuccin Frappe theme in Rex for Mac, import
+`~/.config/rex/themes/Catppuccin Frappe` via **Settings > Themes > Import Theme**
+(or the **Import Theme File** command palette action). If Rex's agent integration
+is not needed for dormant Claude Code / Codex configs, run `rex skill remove`
+and leave **Settings > Integrations > Coding Agents** off so tracked settings
+files stay clean for `config-sync`.
+
 ## Shell startup
 
 JavaScript runs on bun only, so `bun run` and `bunx` must not start Node for a tool
@@ -257,8 +303,8 @@ recognizes its own earlier result, so the installer works on both Macs' layouts:
   `====` or `=ls` stays as written, and removes the aliases defined before it, such
   as Oh My Zsh's `g` and `gg`, so agents can name helper functions freely. Claude
   Code records all three in its shell snapshot of `~/.zshrc`; terminals keep them.
-- The uv and uvx completions load through `shell/completions.zsh`, right after Oh My
-  Zsh runs `compinit`, for whichever of the two is on `PATH` there. Zsh initializes
+- The uv, uvx, and rex completions load through `shell/completions.zsh`, right after Oh My
+  Zsh runs `compinit`, for whichever are on `PATH` there. Zsh initializes
   completions once, after adding `~/.zsh/functions` where that directory was set up;
   the installer refuses a configuration that runs `compinit` again elsewhere, which
   would drop those completions.
@@ -273,7 +319,7 @@ or a setting it bakes in changes: Atuin's `config.toml` (in `$ATUIN_CONFIG_DIR`,
 `_ZO_*` variables, for the zoxide init in `explore/explore.zsh`. With Atuin's
 `[dotfiles]` enabled, its init also prints synced aliases, so it runs live. The
 cached output is sourced at the top level, exactly as `eval` ran it. An unusable
-cache falls back to live generation; an empty or truncated entry is regenerated. The uv and uvx completions are autoloaded
+cache falls back to live generation; an empty or truncated entry is regenerated. The uv, uvx, and rex completions are autoloaded
 from that cache, so zsh reads their large definitions on the first completion
 instead of at every startup. Open a new shell after applying.
 
@@ -1369,6 +1415,7 @@ sh claude/skills/headless-browser/scripts/setup.sh
 bun test nvim/tests/bun-outdated.test.js nvim/tests/protect-skim-notes.test.js claude/hooks claude/tests claude/factory claude/marketplace
 uv run --no-project --python 3.11 python -B -m unittest discover -s tuios/tests -v
 uv run --no-project --python 3.11 python -B ghostty/test-tuios-launcher.py -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s rex/tests -v
 uv run --no-project python -B shell/test-startup-fixes.py -v
 uv run --no-project python -B shell/test-vp-launcher.py -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s t3code/tests -v

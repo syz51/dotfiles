@@ -14,6 +14,7 @@ there is no repository-wide installer.
 | ------------------------ | -------------------------------------------------------------------------------- |
 | `shell/`                 | Zsh startup installer, cached init scripts and completions, with tests.          |
 | `ghostty/`               | Ghostty settings, themes, and a TUIOS session launcher with tests.               |
+| `rex/`                   | Rex Lua configuration starter, Catppuccin Frappe theme, and tests.               |
 | `tuios/`                 | TUIOS appearance, dock, sidebar, startup settings, and themes.                   |
 | `explore/`               | Television popup explorer with shell and Neovim handoff, actions, and tests.     |
 | `nvim/`                  | LazyVim-based Neovim configuration, language tooling, custom scripts, and tests. |
