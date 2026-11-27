@@ -549,33 +549,66 @@ class InstallTests(unittest.TestCase):
             self.assertEqual(sync.main(["install", "--dry-run"], run=Runner()), 0)
         self.assertEqual(plistlib.loads(out.getvalue().encode())["Label"], "com.syz51.config-sync")
 
-    def links(self, *, lexists, which, gemini=False):
+    def links(self, *, lexists, which, gemini=False, codex_lexists=None, codex_which=None, codex_home="/codex"):
+        if codex_lexists is None:
+            codex_lexists = lexists
+        if codex_which is None:
+            codex_which = which
+
         def fake_lexists(path):
             if path == Path.home() / ".gemini" / "config":
                 return gemini
+            if path == Path(codex_home or (Path.home() / ".codex")):
+                return codex_lexists
             return lexists
-        with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), \
+
+        def fake_which(cmd, path=None):
+            return codex_which if cmd == "codex" else which
+
+        env = {"CODEX_HOME": codex_home} if codex_home is not None else {}
+        with mock.patch.dict(sync.os.environ, env, clear=False), \
                 mock.patch.object(sync.os.path, "lexists", side_effect=fake_lexists) as exists, \
-                mock.patch.object(sync.shutil, "which", return_value=which):
+                mock.patch.object(sync.shutil, "which", side_effect=fake_which):
             pairs = sync.links(Path("/r"))
         exists.assert_any_call(Path.home() / ".claude")
+        exists.assert_any_call(Path(codex_home or (Path.home() / ".codex")))
         return pairs
 
     def test_the_default_links_cover_claude_and_codex(self):
         with mock.patch.dict(sync.os.environ, {"CODEX_HOME": "/codex"}), \
                 mock.patch.object(sync.os.path, "lexists", return_value=False), \
-                mock.patch.object(sync.shutil, "which", return_value="/bin/claude") as which:
+                mock.patch.object(sync.shutil, "which", side_effect=lambda cmd, path=None: f"/bin/{cmd}") as which:
             pairs = sync.links(Path("/r"))
-        which.assert_called_once_with("claude", path=sync.SEARCH_PATH)
+        which.assert_any_call("claude", path=sync.SEARCH_PATH)
+        which.assert_any_call("codex", path=sync.SEARCH_PATH)
         self.assertEqual(pairs, [(Path.home() / ".claude", Path("/r/claude")), (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
 
-    def test_a_mac_without_claude_code_needs_no_claude_link(self):
-        # The Pro runs no Claude model, so a missing ~/.claude there is not a problem to report.
-        self.assertEqual(self.links(lexists=False, which=None), [(Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))])
+    def test_a_mac_without_claude_or_codex_needs_no_claude_or_codex_link(self):
+        # A Mac with neither Claude Code nor Codex installed needs neither link.
+        self.assertEqual(self.links(lexists=False, which=None), [])
 
-    def test_an_existing_claude_home_is_checked_without_the_command(self):
-        # A moved or updating install must not hide a ~/.claude that became a copy.
-        self.assertEqual(self.links(lexists=True, which=None)[0], (Path.home() / ".claude", Path("/r/claude")))
+    def test_claude_and_codex_link_checks_are_independent(self):
+        # Claude installed without Codex checks only ~/.claude.
+        self.assertEqual(
+            self.links(lexists=False, which="/bin/claude", codex_lexists=False, codex_which=None),
+            [(Path.home() / ".claude", Path("/r/claude"))],
+        )
+        # Codex installed without Claude checks only $CODEX_HOME/AGENTS.md.
+        self.assertEqual(
+            self.links(lexists=False, which=None, codex_lexists=False, codex_which="/bin/codex"),
+            [(Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md"))],
+        )
+        # Empty CODEX_HOME falls back to ~/.codex instead of Path('.') (which always exists).
+        self.assertEqual(
+            self.links(lexists=False, which=None, codex_lexists=False, codex_which=None, codex_home=""),
+            [],
+        )
+
+    def test_an_existing_claude_and_codex_home_are_checked_without_the_command(self):
+        # A moved or updating install must not hide a ~/.claude or ~/.codex that became a copy.
+        pairs = self.links(lexists=True, which=None)
+        self.assertEqual(pairs[0], (Path.home() / ".claude", Path("/r/claude")))
+        self.assertIn((Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")), pairs)
 
     def test_an_existing_gemini_config_checks_gemini_links(self):
         pairs = self.links(lexists=False, which=None, gemini=True)
@@ -592,7 +625,6 @@ class InstallTests(unittest.TestCase):
             (Path.home() / ".gemini/config/skills/work-stages", Path("/r/claude/skills/work-stages")),
             (Path.home() / ".local/bin/gnotebook", Path("/r/gemini/bin/gnotebook")),
             (Path.home() / ".local/bin/gnotebook-monitor", Path("/r/gemini/bin/gnotebook-monitor")),
-            (Path("/codex/AGENTS.md"), Path("/r/codex/AGENTS.md")),
         ])
 
 
