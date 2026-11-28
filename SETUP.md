@@ -1339,6 +1339,7 @@ uv run --no-project --python 3.11 python -B -m unittest discover -s disk-alert/t
 uv run --no-project --python 3.11 python -B -m unittest discover -s cargo/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s kache/tests -v
 uv run --no-project --python 3.11 python -B -m unittest discover -s config-sync/tests -v
+uv run --no-project --python 3.11 python -B -m unittest discover -s fleet-profiler/tests -v
 ```
 
 The `claude/tests` suites check the Claude Code configuration. These run offline and

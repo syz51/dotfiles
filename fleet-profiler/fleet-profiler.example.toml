@@ -1,0 +1,35 @@
+# Example configuration for fleet-profiler.
+# Copy to ~/.config/local/fleet-profiler.toml (private overlay) and customize for your hosts.
+# Never commit real hostnames, tailnet domains, IPs, or SSH aliases to public dotfiles.
+
+local_name = "primary-mac"
+
+[board_db]
+ssh = "board-host"
+user = "board-service"
+path = "/var/lib/agent-board/board.db"
+
+[local]
+t3_dir = "~/.t3"
+board_home = "~/.local/share/agent-board"
+repos_dir = "~/Developer"
+extra_repos = ["~/.config"]
+clean_checkouts = ["~/.config"]
+
+[[peer_macs]]
+name = "peer-mac"
+ssh = "peer-mac"
+t3_dir = "~/.t3"
+board_home = "~/.local/share/agent-board"
+repos_dir = "~/Developer"
+extra_repos = ["~/.config"]
+clean_checkouts = ["~/.config"]
+
+# Optional threshold overrides (defaults match fleet_profiler.py DEFAULT_THRESHOLDS):
+# [thresholds]
+# failed_llm_warn = 10
+# failed_llm_red = 25
+# pace_overshoot_warn_pct = 3.0
+# pace_overshoot_red_pct = 6.0
+# worktrees_warn_gib = 15.0
+# worktrees_red_gib = 30.0
