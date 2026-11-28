@@ -1303,13 +1303,16 @@ leftover trash, sweeps idle Claude Code session scratch (>=24 hours) and idle Ca
 `statev2.sqlite`, no secret `.env*` files, and `HEAD` reachable from `origin/HEAD` or the
 main checkout's upstream), drops older duplicate Playwright browser revisions in
 `~/Library/Caches/ms-playwright` (>=24 hours idle when Playwright is not running), and
-runs safe tool cache cleanups (`uv cache prune`, `brew cleanup --prune=14 -s` when `brew`
-is idle, and `bun pm cache rm` when `~/.bun/install/cache` exceeds 1 GB and no Bun
-install is running). It never touches live browser caches, `~/.cargo/registry`, Colima
-disks, T3 databases, downloads, or user documents. Normal daily runs log a `daily` record
-to `events.jsonl` quietly and notify only on failure; `daily --dry-run` previews without
-modifying anything. A non-blocking `sweep.lock` prevents overlapping `check` and `daily`
-runs from colliding.
+runs safe tool cache cleanups (`uv cache prune` with a 300s timeout and lock pre-check,
+with both `com.syz51.disk-space-alert` and `com.syz51.disk-space-daily` launched via
+`uv run --no-cache` so neither runner holds `uv`'s cache lock against `uv cache prune`,
+and timeouts recorded as warnings rather than job failures; `brew cleanup --prune=14 -s` when `brew` is idle; and `bun pm cache rm` when
+`~/.bun/install/cache` exceeds 1 GB and no Bun install is running). It never touches live
+browser caches, `~/.cargo/registry`, Colima disks, T3 databases, downloads, or user
+documents. Normal daily runs log a `daily` record to `events.jsonl` quietly and notify
+only on failure; `daily --dry-run` previews without modifying anything. A non-blocking
+`sweep.lock` (recording the holder PID and recovering stale locks left by dead PIDs)
+prevents overlapping `check` and `daily` runs from colliding.
 
 `install --dry-run` and `install-daily --dry-run` print their plists without loading
 them, and `uninstall` / `uninstall-daily` unload and remove them. To change a threshold
