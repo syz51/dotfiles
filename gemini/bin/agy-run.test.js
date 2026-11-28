@@ -768,6 +768,104 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     expect(existsSync(log.attachmentPath)).toBe(false);
   });
 
+  test("tailors --no-tools and restricted preambles for --json-schema (finish tool) with and without attachments", () => {
+    const home = createTestHome();
+    const work = join(scratch, "work");
+    mkdirSync(work, { recursive: true });
+    const schemaJson = '{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}';
+    const imageBlocks = [
+      { type: "text", text: "Inspect this screenshot" },
+      { type: "image", source: { type: "base64", media_type: "image/png", data: Buffer.from("fake-png").toString("base64") } },
+    ];
+
+    // 1. --no-tools without --json-schema (no attachments): forbids all tools and does not mention finish
+    {
+      const { bin, logFile } = createFakeAgyCli({ reply: "plain reply" });
+      const run = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--no-tools", "--output-format", "stream-json"],
+        { input: "Summarize", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const prompt = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(prompt).toContain("Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.");
+      expect(prompt).not.toContain("finish tool");
+    }
+
+    // 2. --no-tools with --json-schema (no attachments): instructs calling finish on first response and no other tools
+    {
+      const { bin, logFile } = createFakeAgyCli({
+        steps: [{ step_index: 1, state: "DONE", step_type: "tool", tool_name: "finish", tool_info: { name: "finish", parameters: { ok: true } } }],
+        structuredOutput: { ok: true },
+        reply: '{"ok":true}',
+      });
+      const run = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--no-tools", "--json-schema", schemaJson, "--output-format", "stream-json"],
+        { input: "Check status", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const prompt = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(prompt).toContain("Submit your JSON answer immediately on your first response by calling the finish tool; do not use any other tools");
+      expect(prompt).toContain("Submit ONLY valid JSON matching this JSON Schema by calling the finish tool");
+      expect(prompt).not.toContain("Do not use any tools");
+    }
+
+    // 3. --no-tools without --json-schema with image attachment: allows only view_file on attachments, does not mention finish
+    {
+      const { bin, logFile } = createFakeAgyCli({ reply: "looks good" });
+      const run = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--no-tools", "--content-json", "-", "--output-format", "stream-json"],
+        { input: JSON.stringify(imageBlocks), encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const prompt = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(prompt).toContain("You may call view_file ONLY on those attached image files; do not use any other tools");
+      expect(prompt).not.toContain("finish tool");
+    }
+
+    // 4. --no-tools with --json-schema and image attachment: allows view_file on attachments and requires finish for final JSON
+    {
+      const { bin, logFile } = createFakeAgyCli({
+        steps: [{ step_index: 2, state: "DONE", step_type: "tool", tool_name: "finish", tool_info: { name: "finish", parameters: { ok: true } } }],
+        structuredOutput: { ok: true },
+        reply: '{"ok":true}',
+      });
+      const run = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--no-tools", "--content-json", "-", "--json-schema", schemaJson, "--output-format", "stream-json"],
+        { input: JSON.stringify(imageBlocks), encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(run.status, run.stderr).toBe(0);
+      const prompt = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(prompt).toContain("You may call view_file ONLY on those attached image files, and you MUST submit your final JSON answer by calling the finish tool; do not use any other tools");
+      expect(prompt).toContain("Submit ONLY valid JSON matching this JSON Schema by calling the finish tool");
+    }
+
+    // 5. Restricted session with and without --json-schema: includes finish in permitted list only when schema is active
+    {
+      const { bin, logFile } = createFakeAgyCli({ structuredOutput: { ok: true }, reply: '{"ok":true}' });
+      const withSchema = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--permission-mode", "acceptEdits", "--tools", "Read", "--json-schema", schemaJson, "--output-format", "stream-json"],
+        { input: "Check", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(withSchema.status, withSchema.stderr).toBe(0);
+      const promptWith = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(promptWith).toMatch(/Restricted session: only these tools are permitted: [^\n]*finish\./);
+
+      const withoutSchema = spawnSync(
+        process.execPath,
+        [AGY_RUN, "--cwd", work, "--permission-mode", "acceptEdits", "--tools", "Read", "--output-format", "stream-json"],
+        { input: "Check", encoding: "utf8", env: { ...process.env, HOME: home, AGY_RUN_BIN: bin } },
+      );
+      expect(withoutSchema.status, withoutSchema.stderr).toBe(0);
+      const promptWithout = JSON.parse(readFileSync(logFile, "utf8")).stdinMessages[0].message.content;
+      expect(promptWithout).not.toContain("finish");
+    }
+  });
+
   test("fails closed on invalid --timeout, missing terminal result event, or non-zero exit after result", () => {
     const home = createTestHome();
     const work = join(scratch, "work");
