@@ -31,7 +31,8 @@
 // attempt of each job counts, so a passing re-run replaces a failed attempt. A failed Actions job
 // that GitHub never started for billing, with no steps, the billing annotation and at most
 // GitHub's notices besides, counts as passed when a passing non-Actions check is named
-// "<context>: <job name>", such as "ci/circleci: build"; one GraphQL call reads those jobs'
+// "<context>: <job name>", such as "ci/circleci: build", or another passing Actions check on the
+// same head commit has the same workflow and job name; one GraphQL call reads those jobs'
 // steps and annotations, and only when every failed check is a failed Actions job. A merge it
 // checks like a direct merge must pin the head commit it judged with --match-head-commit, so
 // GitHub refuses the merge if the head moves after the check; the refusal names the SHA and the
@@ -180,10 +181,11 @@ function latestChecks(rollup) {
 /**
  * The checks on the head commit that are still running and those that failed, as display names,
  * and how many of the failed ones are failed Actions jobs. `billingSkipped` holds the ids of
- * failed Actions jobs that GitHub never started for billing. Such a job passes when a non-Actions
- * check named "<context>: <job name>" succeeded, and waits while one is pending; without one it
- * fails. It also fails when a skipped job of another workflow has the same name, because then
- * the guard cannot tell which job the check stands for.
+ * failed Actions jobs that GitHub never started for billing. Such a job passes when another
+ * Actions check with the same workflow and job name succeeded, or when a non-Actions check
+ * named "<context>: <job name>" succeeded, and waits while one is pending; without one it
+ * fails. A non-Actions check cannot stand for a skipped job when a skipped job of another
+ * workflow has the same name, because the guard cannot tell which workflow it stands for.
  */
 export function classifyChecks(rollup, billingSkipped = new Set()) {
   const pending = [];
@@ -200,14 +202,23 @@ export function classifyChecks(rollup, billingSkipped = new Set()) {
     if (check.__typename === "CheckRun") {
       const name = check.workflowName ? `${check.workflowName} / ${check.name}` : check.name;
       if (!isFinished(check)) pending.push(name);
-      else if (isSkipped(check) && workflowsOf.get(check.name).size > 1) {
-        failed.push(`${name} (not started for billing, and a skipped job of another workflow has the same name, so no "<context>: ${check.name}" check can stand for it)`);
-      } else if (isSkipped(check)) {
-        const fallbacks = checks.filter((other) => actionsJob(other) === undefined && (other.context ?? other.name ?? "").endsWith(`: ${check.name}`));
+      else if (isSkipped(check)) {
+        const ambiguousName = workflowsOf.get(check.name).size > 1;
+        const actionsFallbacks = check.workflowName && check.name
+          ? checks.filter((other) => actionsJob(other) !== undefined && other.workflowName === check.workflowName && other.name === check.name && !isSkipped(other))
+          : [];
+        const nonActionsFallbacks = ambiguousName
+          ? []
+          : checks.filter((other) => actionsJob(other) === undefined && (other.context ?? other.name ?? "").endsWith(`: ${check.name}`));
+        const fallbacks = [...actionsFallbacks, ...nonActionsFallbacks];
         const passed = fallbacks.some((other) => other.state === "SUCCESS" || (other.__typename === "CheckRun" && isFinished(other) && other.conclusion === "SUCCESS"));
         // A pending fallback is listed as pending itself.
         const running = fallbacks.some((other) => other.state === "PENDING" || other.state === "EXPECTED" || (other.__typename === "CheckRun" && !isFinished(other)));
-        if (!passed && !running) failed.push(`${name} (not started for billing, and no passing non-Actions check is named "<context>: ${check.name}")`);
+        if (!passed && !running) {
+          failed.push(ambiguousName
+            ? `${name} (not started for billing, and a skipped job of another workflow has the same name, so no "<context>: ${check.name}" check can stand for it, and no passing Actions check matches "${name}")`
+            : `${name} (not started for billing, and no passing non-Actions check is named "<context>: ${check.name}" or passing Actions check matches "${name}")`);
+        }
       } else if (!PASSED.has(check.conclusion)) {
         failed.push(`${name} (${check.conclusion || "no conclusion"})`);
         if (check.conclusion === "FAILURE" && actionsJob(check) !== undefined) actionsFailed += 1;
@@ -857,7 +868,7 @@ const MCP_REPO = /^(?:[^/\s]+\/)?[^/\s]+\/[^/\s]+$/;
 
 /**
  * Returns why a T3 MCP `pull_request_merge` call with `toolInput` from `cwd` must not run, or
- * undefined when it may. Reuses the exact same GitHub check, billing-skipped CircleCI fallback,
+ * undefined when it may. Reuses the exact same GitHub check, billing-skipped fallback,
  * missing-CI, draft, behind/dirty, and head-pin verification as `findMergeViolation`.
  */
 export function findMcpMergeViolation(toolInput, cwd, run, { budgetMs = BUDGET_MS } = {}) {
