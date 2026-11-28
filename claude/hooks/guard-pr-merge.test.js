@@ -501,7 +501,7 @@ describe("an Actions job GitHub never started for billing", () => {
 
   test("refuses a skipped job without a passing non-Actions check of its name, and names it", () => {
     const violation = merge([BUILD, TEST, FALLBACKS[0]], BOTH);
-    expect(violation).toContain("checks failed on pull request #12's head commit: Checks / test (not started for billing, and no passing non-Actions check is named \"<context>: test\")");
+    expect(violation).toContain("checks failed on pull request #12's head commit: Checks / test (not started for billing, and no passing non-Actions check is named \"<context>: test\" or passing Actions check matches \"Checks / test\")");
     expect(violation).not.toContain("/ build");
     // a failed fallback is a failed check of its own, so the guard refuses without the GraphQL call
     expect(merge([BUILD, context("ci/circleci: build", "FAILURE")])).toContain("ci/circleci: build (FAILURE)");
@@ -541,14 +541,135 @@ describe("an Actions job GitHub never started for billing", () => {
     expect(merge([stuckSkipped, stuckFallbackSuccess], graph([billingRun(11)]))).toBeUndefined();
     // fallback CheckRun with non-COMPLETED status and non-SUCCESS conclusion counts as finished (not running), so the skipped job fails
     expect(merge([BUILD, stuckFallbackSkipped], graph([billingRun(11)])))
-      .toContain("Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\")");
+      .toContain("Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\" or passing Actions check matches \"Checks / build\")");
     expect(classifyChecks([BUILD, stuckFallbackFailure], new Set(["11"]))).toEqual({
       pending: [],
       failed: [
-        "Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\")",
+        "Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\" or passing Actions check matches \"Checks / build\")",
         "ci/other: build (FAILURE)",
       ],
       actionsFailed: 0,
+    });
+  });
+
+  // Tier-3 workflow_dispatch runs the same workflow and job names on self-hosted runners (dotfiles-938).
+  describe("Actions workflow_dispatch fallback with matching (workflowName, name) (dotfiles-938)", () => {
+    const dispatchJob = (name, id, conclusion = "SUCCESS", { workflowName = "Checks", runId = 8, status = "COMPLETED", ...extra } = {}) =>
+      run(name, status, conclusion, { workflowName, detailsUrl: `https://github.com/o/r/actions/runs/${runId}/job/${id}`, ...extra });
+
+    test("allows merge when a billing-skipped CheckRun has a passing Actions CheckRun with matching workflowName and name", () => {
+      const dispatchBuild = dispatchJob("build", 21, "SUCCESS");
+      const dispatchTest = dispatchJob("test", 22, "SUCCESS");
+      expect(classifyChecks([BUILD, dispatchBuild], new Set(["11"]))).toEqual({ pending: [], failed: [], actionsFailed: 0 });
+      expect(merge([BUILD, TEST, dispatchBuild, dispatchTest], BOTH)).toBeUndefined();
+      // Stuck-status SUCCESS conclusion on the workflow_dispatch CheckRun counts as passed too
+      const stuckDispatch = dispatchJob("build", 23, "SUCCESS", { status: "IN_PROGRESS" });
+      expect(merge([BUILD, stuckDispatch], graph([billingRun(11)]))).toBeUndefined();
+      // MCP pull_request_merge shares the same fallback check
+      expect(findMcpMergeViolation(
+        { number: 12, expectedHeadSha: HEAD },
+        "/repo",
+        fakeGh({ view: { statusCheckRollup: [BUILD, dispatchBuild] }, graphql: graph([billingRun(11)]) }),
+      )).toBeUndefined();
+      // If one job lacks a fallback, only that job is reported as failed
+      const partial = merge([BUILD, TEST, dispatchBuild], BOTH);
+      expect(partial).toContain("Checks / test (not started for billing");
+      expect(partial).not.toContain("/ build");
+    });
+
+    test("blocks when the matching Actions CheckRun is still pending or failed or non-SUCCESS", () => {
+      // Pending workflow_dispatch runs block with "still running"
+      for (const pending of [
+        dispatchJob("build", 21, "", { status: "IN_PROGRESS" }),
+        dispatchJob("build", 21, null, { status: "QUEUED" }),
+      ]) {
+        expect(classifyChecks([BUILD, pending], new Set(["11"]))).toEqual({ pending: ["Checks / build"], failed: [], actionsFailed: 0 });
+        expect(merge([BUILD, pending], graph([billingRun(11)])))
+          .toContain("checks are still running on pull request #12's head commit: Checks / build.");
+      }
+
+      // Failing workflow_dispatch runs stay blocked
+      for (const failed of [
+        dispatchJob("build", 21, "FAILURE"),
+        dispatchJob("build", 21, "CANCELLED"),
+        dispatchJob("build", 21, "TIMED_OUT"),
+        dispatchJob("build", 21, "FAILURE", { status: "IN_PROGRESS" }),
+      ]) {
+        const result = classifyChecks([BUILD, failed], new Set(["11"]));
+        expect(result.failed).toHaveLength(2);
+        expect(result.failed[0]).toContain("Checks / build (not started for billing");
+        expect(result.failed[1]).toBe(`Checks / build (${failed.conclusion})`);
+        expect(merge([BUILD, failed], graph([billingRun(11)]))).toContain(`Checks / build (${failed.conclusion})`);
+      }
+
+      // SKIPPED or NEUTRAL Actions runs did not run the checks and do not satisfy a billing-skipped job
+      for (const conclusion of ["SKIPPED", "NEUTRAL"]) {
+        const nonPassing = dispatchJob("build", 21, conclusion);
+        expect(classifyChecks([BUILD, nonPassing], new Set(["11"])).failed)
+          .toEqual(["Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\" or passing Actions check matches \"Checks / build\")"]);
+        expect(merge([BUILD, nonPassing], graph([billingRun(11)]))).toContain("Checks / build (not started for billing");
+      }
+
+      // Another billing-skipped job of the same (workflowName, name) does not satisfy itself or its peer
+      const secondSkipped = dispatchJob("build", 21, "FAILURE", { runId: 9 });
+      expect(merge([BUILD, secondSkipped], graph([billingRun(11), billingRun(21)]))).toContain("Checks / build (not started for billing");
+    });
+
+    test("blocks when the passing CheckRun has a different workflowName, a different name, or is not an Actions CheckRun", () => {
+      const differentWorkflow = dispatchJob("build", 21, "SUCCESS", { workflowName: "Other Workflow" });
+      const differentName = dispatchJob("lint", 21, "SUCCESS", { workflowName: "Checks" });
+      const nonActionsSameFields = run("build", "COMPLETED", "SUCCESS", { workflowName: "Checks", detailsUrl: "https://ci.example/1" });
+      for (const other of [differentWorkflow, differentName, nonActionsSameFields]) {
+        expect(classifyChecks([BUILD, other], new Set(["11"])).failed)
+          .toEqual(["Checks / build (not started for billing, and no passing non-Actions check is named \"<context>: build\" or passing Actions check matches \"Checks / build\")"]);
+        expect(merge([BUILD, other], graph([billingRun(11)]))).toContain("Checks / build (not started for billing");
+      }
+      // A billing-skipped check without workflowName does not match another check lacking workflowName
+      const noWorkflowSkipped = run("build", "COMPLETED", "FAILURE", { workflowName: "", detailsUrl: "https://github.com/o/r/actions/runs/7/job/11" });
+      const noWorkflowPass = dispatchJob("build", 21, "SUCCESS", { workflowName: "" });
+      expect(classifyChecks([noWorkflowSkipped, noWorkflowPass], new Set(["11"])).failed[0]).toContain("not started for billing");
+    });
+
+    test("keeps non-billing FAILURE CheckRuns strictly blocked even with a passing same-(workflowName, name) CheckRun", () => {
+      const dispatchBuild = dispatchJob("build", 21, "SUCCESS");
+      // Direct classifyChecks with empty billingSkipped
+      expect(classifyChecks([BUILD, dispatchBuild])).toEqual({
+        pending: [],
+        failed: ["Checks / build (FAILURE)"],
+        actionsFailed: 1,
+      });
+      // End-to-end: failed job ran steps, so GraphQL does not mark it billingSkipped
+      expect(merge([BUILD, dispatchBuild], graph([graphRun(11, 3, [BILLING])]))).toContain("Checks / build (FAILURE)");
+      // End-to-end: failed job had a non-billing failure annotation
+      expect(merge([BUILD, dispatchBuild], graph([graphRun(11, 0, [{ path: ".github", message: "The workflow is not valid.", annotationLevel: "FAILURE" }])])))
+        .toContain("Checks / build (FAILURE)");
+      // A real failed workflow_dispatch alongside a billing-skipped PR run and a later passing dispatch run still blocks
+      const realFailedDispatch = dispatchJob("build", 20, "FAILURE", { runId: 8 });
+      const passingDispatch = dispatchJob("build", 21, "SUCCESS", { runId: 9 });
+      expect(merge([BUILD, realFailedDispatch, passingDispatch], graph([billingRun(11), graphRun(20, 2, [{ path: "src/a.js", message: "test failed", annotationLevel: "FAILURE" }])])))
+        .toContain("Checks / build (FAILURE)");
+    });
+
+    test("resolves ambiguous job names across workflows using exact (workflowName, name) Actions fallbacks", () => {
+      const docsSkipped = run("build", "COMPLETED", "FAILURE", { workflowName: "Docs", detailsUrl: "https://github.com/o/r/actions/runs/9/job/15" });
+      const checksDispatch = dispatchJob("build", 21, "SUCCESS", { workflowName: "Checks", runId: 10 });
+      const docsDispatch = dispatchJob("build", 22, "SUCCESS", { workflowName: "Docs", runId: 11 });
+      // Both workflows covered by their own matching Actions fallbacks -> allowed
+      expect(merge([BUILD, docsSkipped, checksDispatch, docsDispatch], graph([billingRun(11), billingRun(15)]))).toBeUndefined();
+      // Only Checks covered by Actions fallback; non-Actions ci/circleci: build still cannot disambiguate Docs / build
+      const partial = merge([BUILD, docsSkipped, checksDispatch, FALLBACKS[0]], graph([billingRun(11), billingRun(15)]));
+      expect(partial).toContain("Docs / build (not started for billing, and a skipped job of another workflow has the same name");
+      expect(partial).not.toContain("Checks / build");
+    });
+
+    test("uses only the latest attempt of a workflow_dispatch run as the fallback", () => {
+      const failedAttempt = dispatchJob("build", 21, "FAILURE", { runId: 8, startedAt: "2026-11-28T10:00:00Z" });
+      const passedRerun = dispatchJob("build", 22, "SUCCESS", { runId: 8, startedAt: "2026-11-28T11:00:00Z" });
+      expect(merge([BUILD, failedAttempt, passedRerun], graph([billingRun(11)]))).toBeUndefined();
+
+      const passedFirst = dispatchJob("build", 21, "SUCCESS", { runId: 8, startedAt: "2026-11-28T10:00:00Z" });
+      const failedRerun = dispatchJob("build", 22, "FAILURE", { runId: 8, startedAt: "2026-11-28T11:00:00Z" });
+      expect(merge([BUILD, passedFirst, failedRerun], graph([billingRun(11)]))).toContain("Checks / build (FAILURE)");
     });
   });
 

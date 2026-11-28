@@ -308,10 +308,11 @@ reuses, only the latest attempt of each job counts. GitHub records each Actions 
 started for billing as a failed check run with no steps and one failure-level annotation on
 `.github`. GitHub may add notice-level annotations on `.github`, such as the `ubuntu-latest`
 migration notice. Such a job passes when its annotations number at most 10 and are all
-these, and a non-Actions check named `<context>: <job name>`, such as `ci/circleci: build`,
-succeeded. A failed job with steps fails, even with that annotation,
-because a job's own output can write it. So does a skipped job whose name a skipped job of
-another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
+these, and either another Actions check on the same head commit with the same workflow and job
+name succeeded (such as a self-hosted `workflow_dispatch` fallback), or a non-Actions check named
+`<context>: <job name>`, such as `ci/circleci: build`, succeeded. A failed job with steps fails,
+even with that annotation, because a job's own output can write it. A non-Actions check cannot
+stand for a skipped job whose name a skipped job of another workflow shares. One GraphQL call reads the steps and annotations, only when every failed
 check is a failed Actions job. It adds about 0.75 seconds and costs about 12 GraphQL rate-limit
 points. It filters by github.com's Actions app, so on another host such jobs stay failed. Once no
 check is pending or failed, the guard expects a check from the CI that runs on every pull
