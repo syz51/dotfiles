@@ -458,15 +458,19 @@ export async function runAgyPrompt({
     if (policy.noTools) {
       if (attachmentPaths.length > 0) {
         preambleParts.push(
-          `Use only the input and attached image files below (${attachmentPaths.join(", ")}). You may call view_file ONLY on those attached image files; do not use any other tools, read other files, write files, run commands, or ask questions.`,
+          policy.allowFinish
+            ? `Use only the input and attached image files below (${attachmentPaths.join(", ")}). You may call view_file ONLY on those attached image files, and you MUST submit your final JSON answer by calling the finish tool; do not use any other tools, read other files, write files, run commands, or ask questions.`
+            : `Use only the input and attached image files below (${attachmentPaths.join(", ")}). You may call view_file ONLY on those attached image files; do not use any other tools, read other files, write files, run commands, or ask questions.`,
         );
       } else {
         preambleParts.push(
-          "Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.",
+          policy.allowFinish
+            ? "Use only the input below. Submit your JSON answer immediately on your first response by calling the finish tool; do not use any other tools, read or write files, run commands, or ask questions."
+            : "Use only the input below. Do not use any tools, read or write files, run commands, or ask questions.",
         );
       }
     } else if (policy.restricted) {
-      const allowedList = policy.allowedAgyTools.join(", ") || "none";
+      const allowedList = [...policy.allowedAgyTools, ...(policy.allowFinish ? ["finish"] : [])].join(", ") || "none";
       const notes = [`Restricted session: only these tools are permitted: ${allowedList}.`];
       if (policy.confineWrites) {
         notes.push("File edits and writes are confined to the working directory.");
@@ -479,7 +483,7 @@ export async function runAgyPrompt({
     if (schema) {
       const schemaStr = typeof schema === "string" ? schema : JSON.stringify(schema);
       preambleParts.push(
-        `Return ONLY valid JSON matching this JSON Schema (no prose, no markdown fences):\n${schemaStr}`,
+        `Submit ONLY valid JSON matching this JSON Schema by calling the finish tool (no prose, no markdown fences):\n${schemaStr}`,
       );
     }
 
