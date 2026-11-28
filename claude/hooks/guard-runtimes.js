@@ -7,6 +7,10 @@
 // Node.js, and `vp dlx` and Vite+'s package-management commands, which run the project's
 // package manager (pnpm when no lockfile names one). The `codex` CLI is blocked the same
 // way: the user has only a Claude plan, so no session may start Codex or its models.
+// Commands that select a disallowed Claude model (Sonnet, or any Fable other than 5.2) via
+// `--model`/`--fallback-model` (space or `=`) or `ANTHROPIC_MODEL`/`CLAUDE_MODEL`
+// environment assignments (including `export`/`declare`/`typeset`) are blocked too, so a
+// stale brief cannot start paid Sonnet or old-Fable calls.
 // BUN_OPTIONS=--bun (set in ~/.zshenv) makes bun run and bunx use bun for tools whose
 // shebang names node. `uv run python`, `uv pip`, `bun run`, `vp check`, `vp test` and
 // words that only mention a runtime (`grep python`, `command -v node`, `ls ~/.codex`)
@@ -42,14 +46,25 @@ const PACKAGE_MANAGER_SCRIPT = /(?:^|[/(`\s])(?:npm|npx|pnpm|pnpx|yarn|yarnpkg|c
 const GITHUB_REMOTE = /^(?:(?:https?|ssh|git|git\+ssh):\/\/)?(?:[^@/\s]+@)?(?:ssh\.)?github\.com(?::\d+)?[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i;
 // The Codex CLI, by its name or, through bunx, its npm package.
 const CODEX = /^(?:@openai\/)?codex$/i;
+// Disallowed Claude models: Sonnet, or any Fable not pinned to 5.2. The bare `fable`
+// alias moves to newer Fable versions, so it counts as another Fable.
+const DISALLOWED_MODEL = /(?:^|[^a-z])(?:sonnet(?=$|[^a-z])|fable(?=$|[^a-z])(?![-. ]?5[-.]2(?=$|[^a-z0-9.]|\.(?!\d))))/i;
+const MODEL_OPTIONS = new Set(["--model", "--fallback-model"]);
+const MODEL_OPTION_PREFIXES = ["--model=", "--fallback-model="];
+const MODEL_ENV = /^(?:ANTHROPIC|CLAUDE)(?:_[A-Z0-9]+)*_MODEL$/;
+const VAR_BUILTINS = new Set(["export", "declare", "typeset", "local", "readonly"]);
+// Text, search and lookup commands whose arguments are patterns or literal output rather
+// than a model selection for a CLI run (scripts piped from echo/printf into a shell are
+// still parsed and checked by shell.js).
+const NON_MODEL_TOOLS = new Set(["echo", "printf", "grep", "egrep", "fgrep", "ugrep", "rg", "ag", "ack", "git", "which", "type", "man"]);
 // A bare version probe: an interpreter and its version flag, nothing else.
 const PROBE_INTERPRETER = /^(?:python|pypy)(?:\d+(?:\.\d+)*)?$/i;
 const versionProbe = (words) => words.length === 2 && (
   (PROBE_INTERPRETER.test(basename(words[0])) && (words[1] === "--version" || words[1] === "-V"))
   || (NODE.test(basename(words[0])) && ["--version", "-V", "-v"].includes(words[1])));
-// A cheap prefilter: commands that never name a runtime or a launcher, even split by
-// quotes or backslashes ("no"de, n\ode), are not parsed.
-const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus|codex/i;
+// A cheap prefilter: commands that never name a runtime, launcher, or disallowed model,
+// even split by quotes or backslashes ("no"de, n\ode), are not parsed.
+const MENTION = /python|pip|pypy|py\.?test|node|np[mx]|pnp|yarn|corepack|vp|vite-plus|codex|sonnet|fable/i;
 // Options of bun and `bun x` that take the next word as their value.
 const BUN_VALUE_OPTIONS = new Set(["--cwd", "--env-file", "--registry", "--ca", "--cafile", "--minimum-release-age",
   "-c", "--config", "-r", "--preload", "--import", "--require", "--port", "--conditions", "-e", "--eval", "-p", "--print"]);
@@ -189,16 +204,112 @@ export const blockedRuntime = (words, dir, allowsNode = nodeCheckout) => find(wo
   || (JS_TOOL.test(tool) && !(NODE.test(tool) && !run?.slice(1).some((word) => PACKAGE_MANAGER_SCRIPT.test(word)) && allowsNode(where))), true);
 export const codexLaunch = (words) => find(words, undefined, (tool) => CODEX.test(tool), false);
 
+function disallowedModelAssignment(assignments) {
+  for (const entry of assignments) {
+    const eq = entry.indexOf("=");
+    if (eq <= 0) continue;
+    const name = entry.slice(0, eq);
+    const value = entry.slice(eq + 1);
+    if (MODEL_ENV.test(name) && DISALLOWED_MODEL.test(value)) {
+      return { model: value, envVar: name, assignment: entry };
+    }
+  }
+  return undefined;
+}
+
+function isTestRunner(words) {
+  const name = basename(words[0]).toLowerCase();
+  if (name === "bun") {
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-")) i += BUN_VALUE_OPTIONS.has(words[i]) ? 2 : 1;
+    return words[i]?.toLowerCase() === "test";
+  }
+  if (VITE_PLUS.test(name)) {
+    let i = 1;
+    while (i < words.length && words[i].startsWith("-")) i += 1;
+    return words[i]?.toLowerCase() === "test";
+  }
+  return false;
+}
+
+function disallowedModelFlag(words) {
+  const name = basename(words[0]).toLowerCase();
+  if (NON_MODEL_TOOLS.has(name) || isTestRunner(words)) return undefined;
+  for (let i = 1; i < words.length; i += 1) {
+    const word = words[i];
+    if (word === "--") break;
+    if (MODEL_OPTIONS.has(word)) {
+      const value = words[i + 1];
+      if (value !== undefined && DISALLOWED_MODEL.test(value)) return { model: value, flag: word };
+      i += 1;
+    } else {
+      const prefix = MODEL_OPTION_PREFIXES.find((p) => word.startsWith(p));
+      if (prefix) {
+        const value = word.slice(prefix.length);
+        if (DISALLOWED_MODEL.test(value)) return { model: value, flag: prefix.slice(0, -1) };
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The disallowed Claude model selection `words` or `assignments` makes (Sonnet, or any Fable
+ * other than 5.2), following launchers (`bunx`, `vpx`, `vp exec`, `vp env exec`, `vp dlx`).
+ */
+export function disallowedModel(words, assignments = []) {
+  const assigned = disallowedModelAssignment(assignments);
+  if (assigned) return assigned;
+  let via;
+  for (let depth = 0; words.length > 0 && depth < 8; depth += 1) {
+    const name = basename(words[0]).toLowerCase();
+    if (VAR_BUILTINS.has(name)) {
+      const builtinAssigned = disallowedModelAssignment(words.slice(1));
+      if (builtinAssigned) return { ...builtinAssigned, via };
+    }
+    const flagged = disallowedModelFlag(words);
+    if (flagged) return { ...flagged, via };
+    const next = handOff(words);
+    if (!next) return undefined;
+    via = next.via;
+    if (next.script !== undefined) {
+      const inner = visitCommands(
+        next.script,
+        undefined,
+        (command, _where, { assignments: innerAssignments = [] }) => disallowedModel(command, innerAssignments),
+        undefined,
+        (innerAssignments) => disallowedModelAssignment(innerAssignments),
+      );
+      return inner && { ...inner, via: inner.via ?? via };
+    }
+    words = next.words;
+  }
+  return undefined;
+}
+
+function formatModelViolation(denied, words) {
+  const subject = words && words.length > 0 ? `\`${words.join(" ")}\`` : `\`${denied.assignment}\``;
+  const how = denied.envVar
+    ? `sets ${denied.envVar}=${denied.model}`
+    : `passes ${denied.flag} ${denied.model}${denied.via ? ` through ${denied.via}` : ""}`;
+  return `${subject} ${how}, which is a disallowed Claude model. Only Opus, Haiku or Fable 5.2 are allowed `
+    + "(never Sonnet or another Fable). Use an allowed model such as `claude-opus-5-5`, `claude-haiku-5-5` or "
+    + "`claude-fable-5-2`, and correct the brief if it named this model.";
+}
+
 /**
  * Why the command `words`, run in the directory `dir`, here or on another host when `remote`,
  * must not run, or undefined when it may.
  */
-export function runtimeViolation(words, dir, { remote = false } = {}) {
+export function runtimeViolation(words, dir, { remote = false, assignments = [] } = {}) {
   if (versionProbe(words)) return undefined;
   // node-repos.json names local checkouts, so a command on another host, even one that
   // `bun --cwd` moves to a path that exists here, gets no exception.
   const blocked = (remote ? blockedRuntime(words, undefined, () => false) : blockedRuntime(words, dir)) ?? codexLaunch(words);
-  if (!blocked) return undefined;
+  if (!blocked) {
+    const denied = disallowedModel(words, assignments);
+    return denied ? formatModelViolation(denied, words) : undefined;
+  }
   const { tool, via } = blocked;
   const command = `\`${words.join(" ")}\``;
   if (PYTHON.test(tool) && (remote || blocked.remote)) {
@@ -234,7 +345,11 @@ export function runtimeViolation(words, dir, { remote = false } = {}) {
 }
 
 export function findRuntimeViolation(command, cwd) {
-  return MENTION.test(command.replace(/["'\\]/g, "")) ? visitCommands(command, cwd, runtimeViolation) : undefined;
+  if (!MENTION.test(command.replace(/["'\\]/g, ""))) return undefined;
+  return visitCommands(command, cwd, runtimeViolation, undefined, (assignments, _dir, { words }) => {
+    const denied = disallowedModelAssignment(assignments);
+    return denied ? formatModelViolation(denied, words) : undefined;
+  });
 }
 
 if (import.meta.main) {
