@@ -249,16 +249,20 @@ describe("transcripts", () => {
         type: "PLANNER_RESPONSE",
         created_at: "2026-11-24T10:00:05Z",
         model: "gemini-4-neon-high",
-        input_tokens: 100,
-        output_tokens: 20,
+        input_tokens: 10,
+        output_tokens: 5,
         cache_read_tokens: 0,
         tool_calls: [
           { name: "read_file", args: { Path: "\"/Users/u/.gemini/config/skills/diff-review/SKILL.md\"", StartLine: "1" } },
           { name: "read_file", args: { Path: "\"/Users/u/missing.md\"" } },
+          { name: "run_command", args: { CommandLine: "\"python3 -c 1\"" } },
+          { name: "read_file", args: { Path: "\"/Users/u/antigravity.js\"" } },
         ],
       },
       { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Showing lines 1-70 of 70" },
       { type: "GENERIC", created_at: "2026-11-24T10:00:06Z", content: "Encountered error in tool execution: file does not exist" },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:07Z", status: "ERROR", error: "tool call denied by pre-tool hook", content: "Created At: ...\nEncountered error in step execution: tool call denied by pre-tool hook" },
+      { type: "GENERIC", created_at: "2026-11-24T10:00:08Z", status: "DONE", content: "Showing lines 1-2 of 2\n1: const RE = /Command exited with code [1-9]/;" },
     ].map((r) => JSON.stringify(r)).join("\n") + "\n");
     const agentLogs = join(brain, "conv-b", ".system_generated", "logs");
     mkdirSync(agentLogs, { recursive: true });
@@ -284,6 +288,22 @@ describe("transcripts", () => {
         at: "2026-11-24T10:00:05Z",
         ok: false,
         output: "Encountered error in tool execution: file does not exist",
+      },
+      {
+        id: null,
+        name: "run_command",
+        input: { CommandLine: "python3 -c 1" },
+        at: "2026-11-24T10:00:05Z",
+        ok: false,
+        output: "Created At: ...\nEncountered error in step execution: tool call denied by pre-tool hook",
+      },
+      {
+        id: null,
+        name: "read_file",
+        input: { Path: "/Users/u/antigravity.js" },
+        at: "2026-11-24T10:00:05Z",
+        ok: true,
+        output: "Showing lines 1-2 of 2\n1: const RE = /Command exited with code [1-9]/;",
       },
     ]);
   });
