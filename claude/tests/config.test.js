@@ -2009,11 +2009,12 @@ describe("CI release downloads", () => {
 });
 
 // The user allows only Opus, Haiku or Fable 5.2 models: Opus or Haiku since 2026-11-08, and
-// Fable 5.2 since 2026-11-12. Pricing keeps the other rows to price past sessions; tests may
-// name any model as data. Installed packages, such as the headless-browser skill's
-// Playwright, are not ours to change, so the scan skips node_modules.
+// Fable 5.2 since 2026-11-12. Pricing keeps the other rows to price past sessions;
+// guard-runtimes.js names disallowed models to block them; tests may name any model as data.
+// Installed packages, such as the headless-browser skill's Playwright, are not ours to
+// change, so the scan skips node_modules.
 describe("models", () => {
-  const exempt = /(?:^|\/)node_modules\/|\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$/;
+  const exempt = /(?:^|\/)node_modules\/|\.test\.js$|\/testing\/|\/bench\/cases\/|factory\/lib\/pricing\.js$|factory\/PLAN\.md$|hooks\/guard-runtimes\.js$/;
   // Sonnet, or any Fable not pinned to 5.2. The bare `fable` alias moves to each newer
   // Fable, so it counts as another Fable.
   const disallowed = /\b(?:claude-)?sonnet\b|\bfable\b(?![- ]?5[-.]2\b)/i;
@@ -2032,8 +2033,10 @@ describe("models", () => {
     expect(offenders).toEqual([]);
   });
 
-  test("the scan skips installed packages but not our own files", () => {
+  test("the scan skips installed packages and guard-runtimes.js but not our other files", () => {
     expect(exempt.test("claude/skills/headless-browser/node_modules/playwright/lib/agents/playwright-test-planner.agent.md")).toBe(true);
+    expect(exempt.test("claude/hooks/guard-runtimes.js")).toBe(true);
+    expect(exempt.test("claude/hooks/auto-merge.js")).toBe(false);
     expect(exempt.test("claude/skills/headless-browser/SKILL.md")).toBe(false);
     expect(exempt.test("claude/factory/ui/node_modules_notes.md")).toBe(false);
   });

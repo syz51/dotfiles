@@ -736,3 +736,33 @@ test("visit reports repeating wrappers (xargs, find -exec/-execdir/-ok/-okdir, w
   expect(repeating("find $(make) -exec echo {} \\;")).toContainEqual(["make", false]);
   expect(repeating("find . -maxdepth 1 -print && make")).toContainEqual(["make", false]);
 });
+
+test("visit collects leading assignments, unwraps no-session-env, and calls onAssignments for standalone assignments", () => {
+  const seen = [];
+  const standalone = [];
+  const run = (source) => {
+    seen.length = 0;
+    standalone.length = 0;
+    visitCommands(
+      source,
+      "/repo",
+      (words, _dir, { assignments }) => { seen.push([words.join(" "), assignments]); },
+      undefined,
+      (assignments, _dir, { words }) => { standalone.push([words.join(" "), assignments]); },
+    );
+  };
+  run("ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi");
+  expect(seen).toEqual([["claude -p hi", ["ANTHROPIC_MODEL=claude-sonnet-5-5"]]]);
+  expect(standalone).toEqual([]);
+
+  run("no-session-env CLAUDE_MODEL=sonnet claude-api -p hi");
+  expect(seen).toEqual([["claude-api -p hi", ["CLAUDE_MODEL=sonnet"]]]);
+  expect(standalone).toEqual([]);
+
+  run("env -S 'ANTHROPIC_MODEL=fable claude -p hi'");
+  expect(seen).toEqual([["claude -p hi", ["ANTHROPIC_MODEL=fable"]]]);
+
+  run("ANTHROPIC_MODEL=sonnet; claude -p hi");
+  expect(seen).toEqual([["claude -p hi", []]]);
+  expect(standalone).toEqual([["", ["ANTHROPIC_MODEL=sonnet"]]]);
+});

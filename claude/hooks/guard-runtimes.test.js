@@ -177,6 +177,51 @@ describe("blocks", () => {
     ["ssh host 'codex exec hi'"],
     ["bash -lc 'codex exec hi'"],
     ["Codex exec hi"],
+    // disallowed Claude models: Sonnet, or any Fable other than 5.2 (dotfiles-460)
+    ["claude -p --model claude-sonnet-5-5 hi"],
+    ["claude-api -p --model claude-sonnet-5-5 hi"],
+    ["claude-api --model=sonnet hi"],
+    ["claude-experiment --model claude-sonnet-5-5 hi"],
+    ["/opt/homebrew/bin/claude --model=claude-sonnet-4-5-20250929 hi"],
+    ["claude -p --model claude-3-5-sonnet-20241022 hi"],
+    ["claude -p --model sonnet5 hi"],
+    ["claude -p --model claude-fable-5-1 hi"],
+    ["claude -p --model=fable-5.1 hi"],
+    ["claude -p --model fable hi"],
+    ["claude -p --model=claude-fable hi"],
+    ["claude -p --model fable-6 hi"],
+    ["claude -p --model fable-15-2 hi"],
+    ["claude -p --model fable-5-20 hi"],
+    ["claude -p --model fable-5.2.1 hi"],
+    ["claude -p --model=CLAUDE-SONNET-5-5 hi"],
+    ['claude -p --model="son"net hi'],
+    ["claude -p --model=f\\able hi"],
+    ["claude -p --model claude-haiku-5-5 --fallback-model claude-sonnet-5-5 hi"],
+    ["claude -p --fallback-model=fable hi"],
+    ["no-session-env claude -p --model claude-sonnet-5-5 hi"],
+    ["no-session-env ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi"],
+    ["ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi"],
+    ["CLAUDE_MODEL=sonnet claude-api -p hi"],
+    ["FOO=1 ANTHROPIC_MODEL=claude-fable-5-1 claude -p hi"],
+    ["CLAUDE_CODE_SUBAGENT_MODEL=claude-sonnet-5-5 claude -p hi"],
+    ["env ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi"],
+    ["env -S 'CLAUDE_MODEL=fable claude -p hi'"],
+    ["ANTHROPIC_MODEL=claude-sonnet-5-5"],
+    ["ANTHROPIC_MODEL=claude-sonnet-5-5; claude -p hi"],
+    ["export ANTHROPIC_MODEL=claude-sonnet-5-5"],
+    ["export -x CLAUDE_MODEL=claude-fable-5-1 && claude -p hi"],
+    ["declare -x ANTHROPIC_MODEL=sonnet"],
+    ["typeset -x CLAUDE_MODEL=fable"],
+    ["bash -lc 'claude -p --model claude-sonnet-5-5 hi'"],
+    ["ssh host 'claude-api --model=sonnet hi'"],
+    ["ssh host 'ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi'"],
+    ["echo 'claude -p --model sonnet hi' | sh"],
+    ["bunx @anthropic-ai/claude-code --model sonnet"],
+    ["vp exec -- claude -p --model claude-sonnet-5-5 hi"],
+    ["vpx -c 'claude -p --model sonnet hi'"],
+    ["vpx -c 'ANTHROPIC_MODEL=sonnet claude -p hi'"],
+    ["uv run python scripts/eval.py --model claude-sonnet-5-5"],
+    ["bun scripts/eval.js --model=claude-fable-5-1"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeDefined();
   });
@@ -275,6 +320,40 @@ describe("allows", () => {
     ["codex-skills daily --config c.json"],
     ["which codex"],
     ["bun claude/factory/metrics/cli.js --codex-home ~/.codex"],
+    // allowed Claude models: Opus, Haiku, and Fable 5.2 (dotfiles-460)
+    ["claude -p --model claude-haiku-5-5 hi"],
+    ["claude -p --model=haiku hi"],
+    ["claude -p --model claude-opus-5-5 hi"],
+    ["claude -p --model=opus hi"],
+    ["claude -p --model claude-fable-5-2 hi"],
+    ["claude -p --model=claude-fable-5-2 hi"],
+    ["claude-api --model claude-fable-5-2-20261112 hi"],
+    ["claude-api --model=fable-5.2 hi"],
+    ["claude-api --model claude-fable-5-2[1m] hi"],
+    ["no-session-env claude-experiment --model claude-haiku-5-5 hi"],
+    ["ANTHROPIC_MODEL=claude-haiku-5-5 claude -p hi"],
+    ["CLAUDE_MODEL=claude-opus-5-5 claude -p hi"],
+    ["ANTHROPIC_MODEL=claude-fable-5-2 claude -p hi"],
+    ["export ANTHROPIC_MODEL=claude-fable-5-2"],
+    ["ANTHROPIC_MODEL= claude -p hi"],
+    ["env -u ANTHROPIC_MODEL claude -p hi"],
+    ["unset ANTHROPIC_MODEL"],
+    ["ANTHROPIC_DEFAULT_SONNET_MODEL=claude-haiku-5-5 claude -p hi"],
+    // benign mentions of disallowed models in text, search, git, tests, or after `--`
+    ["echo claude -p --model claude-sonnet-5-5 hi"],
+    ["echo ANTHROPIC_MODEL=claude-sonnet-5-5"],
+    ["printf '%s\\n' --model sonnet"],
+    ["grep -rn sonnet claude/"],
+    ["grep -F -e --model=sonnet claude/"],
+    ["rg -- '--model=sonnet' claude/"],
+    ["rg -e --model=sonnet claude/"],
+    ["git grep -e --model=sonnet"],
+    ["git commit -m 'Refuse --model claude-sonnet-5-5'"],
+    ['bun test claude/hooks/guard-runtimes.test.js -t "--model=sonnet"'],
+    ['claude -p "Explain why --model claude-sonnet-5-5 is banned"'],
+    ["claude -p -- --model claude-sonnet-5-5"],
+    ["cat <<'EOF' > run.sh\nclaude -p --model claude-sonnet-5-5 hi\nEOF"],
+    ["claude -p --model fabled hi"],
   ])("%s", (command) => {
     expect(verdict(command)).toBeUndefined();
   });
@@ -304,6 +383,20 @@ test("the reason names the command and the replacement", () => {
   expect(verdict("codex exec hi")).toContain("Gemini 4 Neon");
   expect(verdict("codex exec hi")).not.toContain("bun");
   expect(verdict("bunx @openai/codex exec hi")).toContain("runs @openai/codex through bunx");
+  for (const command of [
+    "claude -p --model claude-sonnet-5-5 hi",
+    "claude-api --model=sonnet hi",
+    "claude -p --model claude-fable-5-1 hi",
+    "ANTHROPIC_MODEL=claude-sonnet-5-5 claude -p hi",
+    "export CLAUDE_MODEL=fable",
+  ]) {
+    const reason = verdict(command);
+    expect(reason).toContain("Opus, Haiku or Fable 5.2");
+    expect(reason).toContain("claude-opus-5-5");
+    expect(reason).toContain("claude-haiku-5-5");
+    expect(reason).toContain("claude-fable-5-2");
+    expect(reason).toContain("correct the brief");
+  }
 });
 
 test("local python refusal leads with uv run --no-project python, names -I and the Edit tool", () => {
@@ -551,6 +644,27 @@ describe("hook process", () => {
     const result = bash("codex exec 'say hi'");
     expect(result.code).toBe(2);
     expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook: `codex exec say hi` runs codex.");
+  });
+
+  test("blocks disallowed Claude models with exit 2 and allows Haiku, Opus, and Fable 5.2", () => {
+    for (const command of [
+      "claude -p --model claude-sonnet-5-5 hi",
+      "claude-api --model=sonnet hi",
+      "ANTHROPIC_MODEL=claude-fable-5-1 claude -p hi",
+    ]) {
+      const result = bash(command);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toStartWith("Blocked by the guard-runtimes hook:");
+      expect(result.stderr).toContain("Opus, Haiku or Fable 5.2");
+      expect(result.stderr).toContain("correct the brief");
+    }
+    for (const command of [
+      "claude -p --model claude-haiku-5-5 hi",
+      "claude -p --model claude-fable-5-2 hi",
+      "ANTHROPIC_MODEL=claude-opus-5-5 claude -p hi",
+    ]) {
+      expect(bash(command)).toEqual({ code: 0, stderr: "" });
+    }
   });
 
   // Codex sends its exec_command calls as tool_name Bash with the command string and the
