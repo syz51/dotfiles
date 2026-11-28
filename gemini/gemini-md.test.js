@@ -282,4 +282,23 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
       "put any probe, script or command a proposal or verdict note cites inline in the body or a note when short, else on shared storage through `storagectl`, and cite that place, never a scratch path",
     );
   });
+
+  test("documents Antigravity #1890 custom-agent 4x billing guardrail and keeps repo free of custom agent dirs", () => {
+    const delegationDoc = docs["gemini/docs/delegation-and-t3.md"];
+    expect(delegationDoc).toContain("google-antigravity/antigravity-cli#1890");
+    expect(delegationDoc).toContain(".agents/agents/*");
+    expect(delegationDoc).toContain("~/.gemini/config/agents/*");
+    expect(delegationDoc).toContain("plugin agents");
+    expect(delegationDoc).toContain("`--agent`");
+    expect(delegationDoc).toContain("4x quota");
+    for (const rel of [
+      ".agents/agents",
+      ".agent/agents",
+      "_agents/agents",
+      "_agent/agents",
+      "gemini/agents",
+    ]) {
+      expect(existsSync(join(REPO, rel)), rel).toBe(false);
+    }
+  });
 });
