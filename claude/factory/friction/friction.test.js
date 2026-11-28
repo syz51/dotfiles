@@ -505,15 +505,121 @@ describe("matching known items", () => {
     for (const args of filed) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "board", "--activity", "build", "--signature", "board:item board-feedback-40", "--json"]);
     expect(records().filter((record) => record.kind === "filed").map((record) => record.match)).toEqual(["board-feedback-40", "board-feedback-40"]);
 
-    // A match about another setup, or an id the judge was not given, files a new item.
-    for (const match of ["board-feedback-41", "board-feedback-99"]) {
-      reset();
-      answer(match);
-      expect(await run(["run"], context(roots))).toBe(0);
-      expect(feedbackCalls()).toHaveLength(2);
-      expect(feedbackCalls().some((args) => args.includes("--signature"))).toBe(false);
-    }
+    // A match about another setup files under the matched item's canonical about and signature.
+    reset();
+    answer("board-feedback-41", "board");
+    expect(await run(["run"], context(roots))).toBe(0);
+    const crossFiled = feedbackCalls();
+    expect(crossFiled).toHaveLength(2);
+    for (const args of crossFiled) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "hooks", "--activity", "build", "--signature", "hooks:item board-feedback-41", "--json"]);
+    expect(records().filter((record) => record.kind === "filed").map((record) => [record.about, record.match])).toEqual([["hooks", "board-feedback-41"], ["hooks", "board-feedback-41"]]);
+
+    // An id the judge was not given still files a new item without a signature.
+    reset();
+    answer("board-feedback-99", "board");
+    expect(await run(["run"], context(roots))).toBe(0);
+    expect(feedbackCalls()).toHaveLength(2);
+    expect(feedbackCalls().some((args) => args.includes("--signature"))).toBe(false);
   }, FRICTION_TIMEOUT);
+
+  test("cross-about matches follow duplicate chains and live recurrences to the canonical item's about and signature", async () => {
+    const roots = fixture();
+    const before = "2026-11-01T09:00:00.000Z";
+    const after = "2026-11-01T11:00:00.000Z";
+    // Case 1: Closed duplicate under `hooks` pointing to closed canonical under `board` with
+    // a live recurrence under `t3` redirects to the live recurrence's about and signature.
+    seedFiled("board-feedback-511", "Board Stop hook blocks", "2026-10-31T09:00:00Z");
+    setEnv({
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-192": feedbackItem("board-feedback-192", { about: "board", status: "done", resolution: { kind: "fixed", at: before, by: "user" }, signature: "board:canonical-192" }),
+        "board-feedback-511": feedbackItem("board-feedback-511", { about: "hooks", status: "done", resolution: { kind: "duplicate", task: "board-feedback-192", at: before, by: "user" }, signature: "hooks:dup-511" }),
+        "board-feedback-700": feedbackItem("board-feedback-700", { about: "t3", recurs: "board-feedback-192", signature: "t3:live-700", at: "2026-10-31T12:00:00Z" }),
+      }),
+    });
+    answer("board-feedback-511", "other");
+    expect(await run(["run"], context(roots))).toBe(0);
+    for (const args of feedbackCalls()) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "t3", "--activity", "build", "--signature", "t3:live-700", "--json"]);
+    expect(records().filter((r) => r.kind === "filed" && r.key !== "claude:earlier:1").map((r) => [r.about, r.match])).toEqual([["t3", "board-feedback-700"], ["t3", "board-feedback-700"]]);
+
+    // Case 2: Pending finding matching a live duplicate alias (`hooks`) targeting live
+    // canonical item (`board`) files under canonical `board`'s about and signature.
+    reset();
+    mkdirSync(join(scratch, "state"), { recursive: true });
+    writeFileSync(join(scratch, "state", "friction.jsonl"), JSON.stringify({
+      kind: "judged", key: "claude:pending-cross:1", harness: "claude", sessionId: "pending-cross", cwd: PROJECT, turn: 1,
+      endedAt: "2026-11-01T10:00:00.000Z",
+      findings: [{ about: "other", activity: "build", title: TITLE, detail: "", error: "", match: "board-feedback-511" }],
+      at: "2026-11-01T10:05:00.000Z",
+    }) + "\n");
+    setEnv({
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-192": feedbackItem("board-feedback-192", { about: "board", signature: "board:live-192" }),
+        "board-feedback-511": feedbackItem("board-feedback-511", { about: "hooks", status: "done", resolution: { kind: "duplicate", task: "board-feedback-192", at: before, by: "user" }, signature: "hooks:dup-511" }),
+      }),
+    });
+    answer("board-feedback-192", "hooks");
+    expect(await run(["run"], context(roots))).toBe(0);
+    expect(feedbackCalls()).toHaveLength(3);
+    for (const args of feedbackCalls()) expect(args.slice(0, -2)).toEqual(["--agent", AGENT, "feedback", "--source", "capture", "--about", "board", "--activity", "build", "--signature", "board:live-192", "--json"]);
+
+    // Case 3: Cross-about match to an item fixed after the turn ended is still skipped.
+    reset();
+    seedFiled("board-feedback-41", "Hook blocked work", "2026-10-31T09:00:00Z");
+    setEnv({
+      FAKE_BOARD_TASKS: JSON.stringify({
+        "board-feedback-41": feedbackItem("board-feedback-41", { about: "hooks", status: "done", resolution: { kind: "fixed", at: after, by: "user" } }),
+      }),
+    });
+    answer("board-feedback-41", "board");
+    expect(await run(["run"], context(roots))).toBe(0);
+    expect(feedbackCalls()).toHaveLength(0);
+    expect(records().filter((r) => r.kind === "skipped").map((r) => r.match)).toEqual(["board-feedback-41", "board-feedback-41"]);
+  }, FRICTION_TIMEOUT);
+
+  test("filedItems preserves original about and title across merged filings and live metadata wins", () => {
+    const judged = (key, title) => ({ kind: "judged", key, findings: [{ title }] });
+    const filed = (key, task, about, at, duplicate = false) => ({ kind: "filed", key, filing: `capture:${key}:1:1`, about, task, duplicate, at });
+    const since = Date.parse("2026-11-08T00:00:00Z");
+    const list = [
+      // Item 175 originally filed before `since` under `board`, then merged after `since` under `hooks`.
+      judged("k1", "Board Stop hook blocks"),
+      filed("k1", "board-feedback-175", "board", "2026-11-05T00:00:00Z", false),
+      judged("k2", "Hooks Stop guard blocks"),
+      filed("k2", "board-feedback-175", "hooks", "2026-11-10T00:00:00Z", true),
+      // Item 686 originally filed after `since` under `hooks`, then merged later under `board`.
+      judged("k3", "Worktree guard rejects command"),
+      filed("k3", "board-feedback-686", "hooks", "2026-11-11T00:00:00Z", false),
+      judged("k4", "Board worktree guard failure"),
+      filed("k4", "board-feedback-686", "board", "2026-11-12T00:00:00Z", true),
+    ];
+    const items = filedItems(list, since);
+    expect(items.get("board-feedback-175")).toEqual({
+      id: "board-feedback-175",
+      about: "board",
+      title: "Board Stop hook blocks",
+      at: "2026-11-10T00:00:00Z",
+    });
+    expect(items.get("board-feedback-686")).toEqual({
+      id: "board-feedback-686",
+      about: "hooks",
+      title: "Worktree guard rejects command",
+      at: "2026-11-12T00:00:00Z",
+    });
+    // Live board metadata wins over filedItems for the same item id in both liveFilter modes.
+    const live = new Map([
+      ["board-feedback-686", { id: "board-feedback-686", about: "t3", title: "Canonical board title", at: "2026-11-12T01:00:00Z" }],
+    ]);
+    for (const liveFilter of [true, false]) {
+      const merged = matchItems(items, live, { liveFilter });
+      expect(merged.live.find((item) => item.id === "board-feedback-686")).toEqual({
+        id: "board-feedback-686",
+        about: "t3",
+        title: "Canonical board title",
+        at: "2026-11-12T01:00:00Z",
+      });
+      expect(merged.closed.some((item) => item.id === "board-feedback-686")).toBe(false);
+    }
+  });
 
   test("offers declined and routed-to-open done items from other agents to the judge, and omits closed ones", async () => {
     const roots = fixture();
@@ -918,10 +1024,13 @@ describe("judge answer", () => {
       .toBe("T\n\nCaptured from Claude Code session s, turn 3 in ~/Developer/app.");
     expect(judgeSchema([{ id: "board" }]).properties.findings.items.properties.about.enum).toEqual(["board"]);
     expect(judgeSchema([{ id: "board" }]).properties.findings.items.required).toContain("match");
-    // A match counts only for a known item about the same setup.
+    // A match counts for any known item, even when its setup differs from finding.about.
     const items = new Map([["board-feedback-1", "board"], ["board-feedback-2", "other"]]);
     const matches = (match) => checkFindings({ findings: [{ about: "board", activity: "build", title: "t", detail: "", error: "", match }] }, ids, items)[0].match;
-    expect([matches("board-feedback-1"), matches("board-feedback-2"), matches("board-feedback-3"), matches(""), matches(undefined)]).toEqual(["board-feedback-1", "", "", "", ""]);
+    expect([matches("board-feedback-1"), matches("board-feedback-2"), matches("board-feedback-3"), matches(""), matches(undefined)]).toEqual(["board-feedback-1", "board-feedback-2", "", "", ""]);
+    const prompt = judgeSystem([{ id: "board", title: "Board", covers: ["x"] }], []);
+    expect(prompt).toContain("listed under another setup");
+    expect(prompt).not.toContain("with the same about");
   });
 });
 
