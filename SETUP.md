@@ -481,6 +481,11 @@ speaks when a subagent starts, and at session start or after compaction, when th
 folder is under `.claude/worktrees/`. T3 worktree threads live elsewhere and run without
 the guard. Re-measure the forms when a Claude Code update changes the
 guard's messages.
+After a context compaction, Claude Code re-attaches skills invoked earlier in the session as
+"for context only" guidelines. `claude/hooks/compact-skills.js` runs on `SessionStart` only
+for source `compact` (adding nothing on `startup`, `resume` or `clear`) and injects a
+one-line reminder that loaded skills still apply and to invoke the skill again before the
+next step it covers.
 
 `claude/settings.json` sets `autoCompactWindow` to `200000`, the context window that Claude
 Code compacts against. It compacts about 33K below the window, so near 167K instead of near
