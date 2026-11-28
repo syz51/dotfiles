@@ -525,6 +525,18 @@ describe("global instructions", () => {
     expect(referenceRules("merge")).toContain("- When a pull request is BEHIND a base branch that requires checks, run `gh pr update-branch`, then, as a separate command, `gh pr merge --auto` with a merge-method flag, and watch the pull request instead of waiting for each run by hand; update the branch again whenever it falls behind. Auto-merge can lag a minute or two after the checks pass; if the pull request then still sits at CLEAN, merge it directly.");
   });
 
+  // In a worktree, `gh pr merge --delete-branch` exits non-zero after merging because the
+  // branch is checked out there (board-feedback-665, dotfiles-430). And ExitWorktree `remove`
+  // compares against the stale local base branch and refuses after a merged PR unless
+  // `discard_changes: true` is passed after checking `origin/<base>..HEAD` (board-feedback-401,
+  // -643, -875, dotfiles-780). Both stay in merge.md so claude/CLAUDE.md does not grow.
+  test("the merge rule covers deleting merged branches and removing EnterWorktree worktrees", () => {
+    expect(referenceRules("merge")).toContain("- In a worktree, merge without `--delete-branch` (the branch is checked out there, so `gh` exits non-zero even after the merge succeeds). Rely on the repository's delete-on-merge setting to remove the remote branch, or run `git push origin --delete <branch>` where the repository lacks it; the local branch goes with the worktree cleanup.");
+    expect(referenceRules("merge")).toContain("- To remove an EnterWorktree worktree after its PR merged, run `git fetch origin` and confirm `git rev-list --count origin/<base>..HEAD` is 0, then call ExitWorktree `remove` with `discard_changes: true`. The plain call refuses because it compares with the stale local base branch.");
+    expect(globalInstructions).not.toContain("ExitWorktree");
+    expect(globalInstructions).not.toContain("discard_changes");
+  });
+
   // t3_thread_launch takes its brief in `message` and drops unknown keys; launches that passed
   // `prompt` made idle threads with runId null, and t3_thread_send started a run each time
   // (board-feedback-369, dotfiles-204). No live scenario covers it: the live suites have no
