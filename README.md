@@ -24,6 +24,7 @@ there is no repository-wide installer.
 | `t3code/`                | T3 Code routines that settle idle subagent threads, prune finished branches, and sweep Dependabot PRs. |
 | `disk-alert/`            | A LaunchAgent that alerts through T3 Code and macOS when free disk space runs low. |
 | `config-sync/`           | A LaunchAgent that fast-forwards each Mac's checkout to main and reports blockers. |
+| `fleet-profiler/`        | A zero-token daily LaunchAgent that profiles board, T3, and host health into compact digests. |
 | `cargo/` & `kache/`      | User-wide Cargo and Kache settings that shrink Rust builds and cache artifacts.  |
 | `git/`                   | Shared Git ignore patterns, and settings that `~/.gitconfig` includes.           |
 | `setups.toml`            | Every setup on both Macs, with its owner, for routing agents' friction reports.  |

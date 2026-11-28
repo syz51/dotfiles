@@ -34,4 +34,5 @@ launchd_exclude = [
 "agent-skills" = "agent_ops"
 "config-sync" = "sync"
 "disk-space" = "monitoring"
+"fleet-profiler" = "monitoring"
 "gnotebook-monitor" = "research"
