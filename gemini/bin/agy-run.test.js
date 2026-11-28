@@ -19,7 +19,7 @@ import {
   evaluateToolCall,
   UNRESTRICTED_CLAUDE_TOOLS,
 } from "./agy-run-policy.js";
-import { extractJsonFromText } from "./agy-run.js";
+import { extractJsonFromText, runAgyPrompt } from "./agy-run.js";
 
 const AGY_RUN = join(import.meta.dir, "agy-run.js");
 const POLICY_HOOK = join(import.meta.dir, "agy-run-policy.js");
@@ -911,6 +911,44 @@ describe("agy-run CLI with fake official agy headless binary", () => {
     );
     expect(run.status).toBe(1);
     expect(run.stderr).toContain("sandbox");
+  });
+
+  test("fails closed before spawning agy on --agent (4x custom-agent billing guardrail #1890)", async () => {
+    const run = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", scratch, "--agent", "custom-role", "--output-format", "stream-json"],
+      {
+        input: "hi",
+        encoding: "utf8",
+        env: { ...process.env, AGY_RUN_BIN: join(scratch, "nonexistent-binary") },
+      },
+    );
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain("--agent");
+    expect(run.stderr).toContain("4x");
+    expect(run.stderr).toContain("#1890");
+
+    await expect(
+      runAgyPrompt({
+        prompt: "hi",
+        agent: "custom-role",
+        cwd: scratch,
+        env: { ...process.env, AGY_RUN_BIN: join(scratch, "nonexistent-binary") },
+      }),
+    ).rejects.toThrow(/refuses --agent "custom-role".*4x.*#1890/);
+
+    const bare = spawnSync(
+      process.execPath,
+      [AGY_RUN, "--cwd", scratch, "--agent"],
+      {
+        input: "hi",
+        encoding: "utf8",
+        env: { ...process.env, AGY_RUN_BIN: join(scratch, "nonexistent-binary") },
+      },
+    );
+    expect(bare.status).toBe(1);
+    expect(bare.stderr).toContain("refuses --agent:");
+    expect(bare.stderr).not.toContain('"true"');
   });
 
   test("source code contains zero references to T3 OAuth token cloning", () => {

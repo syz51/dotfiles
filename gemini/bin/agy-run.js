@@ -310,6 +310,7 @@ export async function runAgyPrompt({
   schema,
   model = DEFAULT_MODEL,
   effort = DEFAULT_EFFORT,
+  agent,
   cwd,
   noTools = false,
   fullAccess = false,
@@ -321,6 +322,12 @@ export async function runAgyPrompt({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   env = process.env,
 }) {
+  if (agent !== undefined && agent !== null && agent !== false) {
+    const label = typeof agent === "string" && agent.trim() ? ` "${agent}"` : "";
+    throw new Error(
+      `agy-run refuses --agent${label}: Antigravity bills custom agents at 4x quota (google-antigravity/antigravity-cli#1890); pass instructions via --system/--system-file, GEMINI.md, AGENTS.md, or skills instead.`,
+    );
+  }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error(`Invalid timeoutMs for agy-run: ${timeoutMs}`);
   }
@@ -681,6 +688,7 @@ if (import.meta.main) {
     options: {
       model: { type: "string", default: DEFAULT_MODEL },
       effort: { type: "string", default: DEFAULT_EFFORT },
+      agent: { type: "string" },
       system: { type: "string" },
       "system-file": { type: "string" },
       "system-prompt": { type: "string" },
@@ -803,6 +811,7 @@ if (import.meta.main) {
       schema,
       model: values.model,
       effort: resolvedEffort,
+      agent: values.agent,
       cwd: values.cwd,
       noTools,
       fullAccess,
