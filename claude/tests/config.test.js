@@ -1030,11 +1030,19 @@ describe("work board", () => {
   test("everything still to do goes on the board, in the form its kind needs", () => {
     const rule = section("Work board");
     expect(rule).toContain("- Before `task_done`, and before ending a turn, file each remaining step, follow-up and suggestion, checking first for a task that covers it (add a note there instead): your task's remaining scope as a sub-task (parent: your task);");
-    expect(rule).toContain("work you find outside it as a proposal (`auto=false`, a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L) on the board of the work's repository, or on this one when that repository has none, with the task you found it in as parent or named in the body;");
+    expect(rule).toContain("work you find outside it as a proposal (`auto=false`, a body starting `Proposal:` that gives the problem, the evidence without secrets, the change and its size S, M or L; put any probe, script or command a proposal or verdict note cites inline in the body or a note when short, else on shared storage through `storagectl`, and cite that place, never a scratch path) on the board of the work's repository, or on this one when that repository has none, with the task you found it in as parent or named in the body;");
     expect(rule).toContain("my decision or action as a task with `auto=false`, set `blocked` only once its `ask_user` is accepted. Your task stays open until every acceptance check passes. Where another section names the place for something, such as storage problems, it goes there.");
     expect(rule).toMatch(/When filing fails, report the item instead\. Don't ask before filing/);
     expect(rule).toMatch(/A handoff's `next` holds only your claimed task's first action/);
     expect(section("Workflow")).toMatch(/File unrelated issues and follow-ups as the Work board section says, otherwise report them; don't expand scope/);
+  });
+
+  // Proposals cited probe scripts kept only in the filing thread's scratch folder, which was
+  // cleaned before the verdict judge could rerun them (board-feedback-1024, dotfiles-790).
+  test("proposals and verdict notes keep cited probes inline or on shared storage, never in scratch", () => {
+    const clause = "put any probe, script or command a proposal or verdict note cites inline in the body or a note when short, else on shared storage through `storagectl`, and cite that place, never a scratch path";
+    expect(section("Work board")).toContain(clause);
+    expect(read("codex/AGENTS.md")).toContain(clause);
   });
 
   // A report listed five items under "What still depends on you"; one had a task id, and
