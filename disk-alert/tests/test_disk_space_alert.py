@@ -843,7 +843,7 @@ class LaunchAgentTest(unittest.TestCase):
         self.assertEqual(decoded["Label"], "com.syz51.disk-space-alert")
         self.assertEqual(
             decoded["ProgramArguments"],
-            ["/bin/uv", "run", "--no-project", "--python", "3.11", "python", "-B",
+            ["/bin/uv", "run", "--no-cache", "--no-project", "--python", "3.11", "python", "-B",
              "/repo/disk-alert/disk_space_alert.py", "check", "--low-gb", "30",
              "--critical-gb", "20", "--sweep-minutes", "5"],
         )
@@ -1606,6 +1606,21 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
         self.assertTrue(res2[0]["ran"])
         self.assertIsNone(res2[0]["error"])
         self.assertIn([str(uv), "cache", "prune"], recorded)
+
+    def test_uv_cache_prune_skips_when_budget_expires_during_lock_probe(self):
+        uv = self.make_tool("uv")
+        ticks = iter([50.0, 105.0])
+        limit = alert.Limit(deadline=100.0, clock=lambda: next(ticks))
+        called = []
+
+        def runner(args, input_text, timeout=None):
+            called.append(list(args))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        res = alert.sweep_tool_caches(self.config, runner, dry_run=False, limit=limit)
+        self.assertEqual(res, [])
+        self.assertTrue(limit.reached)
+        self.assertNotIn([str(uv), "cache", "prune"], called)
 
     def test_run_command_respects_custom_timeout(self):
         with mock.patch.object(alert.subprocess, "run", side_effect=subprocess.TimeoutExpired(["uv"], 300)):

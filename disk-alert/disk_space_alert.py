@@ -850,7 +850,8 @@ def _write_lock_owner_fd(descriptor: int) -> None:
 
 def _try_recover_stale_lock(state_dir: Path, lock_path: Path, orig_ino: int) -> Optional[int]:
     """Safely replace a sweep.lock whose recorded PID is dead while flock is still blocked.
-    Serializes recovery via sweep.lock.recover and re-verifies inode + dead PID before unlinking.
+    Takes an exclusive lock on sweep.lock.recover (which normal acquirers hold shared across
+    open+flock+write) and re-verifies inode + dead PID before unlinking.
     Returns a newly locked descriptor populated with our PID on success, or None if an active run holds it."""
     recover_path = state_dir / "sweep.lock.recover"
     recover_fd = None
@@ -870,15 +871,6 @@ def _try_recover_stale_lock(state_dir: Path, lock_path: Path, orig_ino: int) -> 
         if check_fd is not None:
             try:
                 current_ino = os.fstat(check_fd).st_ino
-                if current_ino != orig_ino:
-                    try:
-                        fcntl.flock(check_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        fd = check_fd
-                        check_fd = None
-                        _write_lock_owner_fd(fd)
-                        return fd
-                    except BlockingIOError:
-                        return None
                 try:
                     fcntl.flock(check_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fd = check_fd
@@ -886,7 +878,8 @@ def _try_recover_stale_lock(state_dir: Path, lock_path: Path, orig_ino: int) -> 
                     _write_lock_owner_fd(fd)
                     return fd
                 except BlockingIOError:
-                    pass
+                    if current_ino != orig_ino:
+                        return None
                 owner = _read_lock_owner_fd(check_fd)
                 if owner is None or pid_is_alive(owner["pid"]):
                     return None
@@ -921,36 +914,64 @@ def sweep_lock(state_dir: Path) -> Iterator[bool]:
     Writes the holder PID to sweep.lock and recovers stale locks whose recorded PID is dead.
     Yields True when the lock is held, False when another live run already holds it."""
     lock_path = state_dir / "sweep.lock"
+    recover_path = state_dir / "sweep.lock.recover"
     descriptor = None
-    recovered = False
+    recover_fd = None
+    recover_locked = False
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        owner = _read_lock_owner_fd(descriptor) if descriptor is not None else None
+        # Hold a shared gate across open + flock + write-PID so stale recovery (which takes
+        # LOCK_EX on the same gate) can never unlink sweep.lock under a live acquirer.
+        recover_fd = os.open(recover_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(recover_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        recover_locked = True
         try:
-            orig_ino = os.fstat(descriptor).st_ino if descriptor is not None else None
-        except OSError:
-            orig_ino = None
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _write_lock_owner_fd(descriptor)
+        except BlockingIOError:
+            owner = _read_lock_owner_fd(descriptor) if descriptor is not None else None
+            try:
+                orig_ino = os.fstat(descriptor).st_ino if descriptor is not None else None
+            except OSError:
+                orig_ino = None
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+            try:
+                fcntl.flock(recover_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            recover_locked = False
+            os.close(recover_fd)
+            recover_fd = None
+            if owner is not None and not pid_is_alive(owner["pid"]) and orig_ino is not None:
+                descriptor = _try_recover_stale_lock(state_dir, lock_path, orig_ino)
+            if descriptor is None:
+                yield False
+                return
+    except BlockingIOError:
         if descriptor is not None:
             os.close(descriptor)
             descriptor = None
-        if owner is not None and not pid_is_alive(owner["pid"]) and orig_ino is not None:
-            descriptor = _try_recover_stale_lock(state_dir, lock_path, orig_ino)
-            recovered = descriptor is not None
-        if descriptor is None:
-            yield False
-            return
+        yield False
+        return
     except OSError:
         if descriptor is not None:
             os.close(descriptor)
+            descriptor = None
         # If state_dir cannot hold a lock file (e.g. a full disk or unwritable parent),
         # fall through rather than silently blocking emergency cleanup.
         yield True
         return
-    if not recovered:
-        _write_lock_owner_fd(descriptor)
+    finally:
+        if recover_fd is not None:
+            if recover_locked:
+                try:
+                    fcntl.flock(recover_fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(recover_fd)
     try:
         yield True
     finally:
@@ -1335,20 +1356,25 @@ def sweep_tool_caches(
             timeout = UV_PRUNE_TIMEOUT_SECONDS
             if limit.deadline != float("inf"):
                 remaining = int(limit.deadline - limit.clock())
-                timeout = min(UV_PRUNE_TIMEOUT_SECONDS, max(1, remaining))
-            res = run_with_timeout(run, [uv, "cache", "prune"], None, timeout)
-            if res.returncode == TIMEOUT_EXIT:
-                warn = (res.stderr or res.stdout).strip() or f"timed out after {timeout} seconds"
-                results.append({
-                    "tool": "uv",
-                    "action": "uv cache prune",
-                    "ran": True,
-                    "error": None,
-                    "warning": warn,
-                })
-            else:
-                err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
-                results.append({"tool": "uv", "action": "uv cache prune", "ran": True, "error": err})
+                if remaining <= 0:
+                    limit.reached = True
+                    timeout = 0
+                else:
+                    timeout = min(UV_PRUNE_TIMEOUT_SECONDS, remaining)
+            if timeout > 0:
+                res = run_with_timeout(run, [uv, "cache", "prune"], None, timeout)
+                if res.returncode == TIMEOUT_EXIT:
+                    warn = (res.stderr or res.stdout).strip() or f"timed out after {timeout} seconds"
+                    results.append({
+                        "tool": "uv",
+                        "action": "uv cache prune",
+                        "ran": True,
+                        "error": None,
+                        "warning": warn,
+                    })
+                else:
+                    err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
+                    results.append({"tool": "uv", "action": "uv cache prune", "ran": True, "error": err})
 
     brew = shutil.which("brew", path=config.search_path)
     if brew and not limit.passed():
@@ -1797,6 +1823,7 @@ def launch_agent(
         "ProgramArguments": [
             uv,
             "run",
+            "--no-cache",
             "--no-project",
             "--python",
             "3.11",

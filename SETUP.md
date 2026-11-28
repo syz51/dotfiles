@@ -1304,9 +1304,9 @@ leftover trash, sweeps idle Claude Code session scratch (>=24 hours) and idle Ca
 main checkout's upstream), drops older duplicate Playwright browser revisions in
 `~/Library/Caches/ms-playwright` (>=24 hours idle when Playwright is not running), and
 runs safe tool cache cleanups (`uv cache prune` with a 300s timeout and lock pre-check,
-with `com.syz51.disk-space-daily` launched via `uv run --no-cache` so the runner does not
-hold `uv`'s cache lock against itself and timeouts recorded as warnings rather than job
-failures; `brew cleanup --prune=14 -s` when `brew` is idle; and `bun pm cache rm` when
+with both `com.syz51.disk-space-alert` and `com.syz51.disk-space-daily` launched via
+`uv run --no-cache` so neither runner holds `uv`'s cache lock against `uv cache prune`,
+and timeouts recorded as warnings rather than job failures; `brew cleanup --prune=14 -s` when `brew` is idle; and `bun pm cache rm` when
 `~/.bun/install/cache` exceeds 1 GB and no Bun install is running). It never touches live
 browser caches, `~/.cargo/registry`, Colima disks, T3 databases, downloads, or user
 documents. Normal daily runs log a `daily` record to `events.jsonl` quietly and notify
