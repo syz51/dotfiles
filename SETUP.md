@@ -238,7 +238,10 @@ instead of at every startup. Open a new shell after applying.
 ## Neovim and optional tools
 
 Neovim bootstraps lazy.nvim and installs configured plugins on first launch,
-requiring Git and network access. Inspect `nvim/lazyvim.json` and
+requiring Git and network access. `nvim/lua/config/lazy.lua` stores the per-host
+`lazy-lock.json` under `vim.fn.stdpath("state")` (`~/.local/state/nvim/lazy-lock.json`),
+and `nvim/.gitignore` ignores `/lazy-lock.json`, so local plugin updates do not dirty
+`~/.config` or stall `config-sync`. Inspect `nvim/lazyvim.json` and
 `nvim/lua/plugins/` for language integrations. For TeX, install Tectonic and Skim;
 the macOS annotation protection also uses the system `osascript` and PDFKit.
 

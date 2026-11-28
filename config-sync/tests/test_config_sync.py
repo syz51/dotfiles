@@ -122,6 +122,39 @@ class PullTests(Sandbox):
         self.assertEqual((self.repo / "scratch.txt").read_text(), "mine")
         self.assertEqual(runner.reports(), [])
 
+    def test_untracking_and_ignoring_a_local_lockfile_prevents_future_dirty_stalls(self):
+        # Regression for dotfiles-936: once nvim/lazy-lock.json is untracked and gitignored,
+        # a clean checkout fast-forwards past the removal and later local writes do not stall pulls.
+        (self.upstream / "nvim").mkdir()
+        (self.upstream / "nvim" / "init.lua").write_text('require("config.lazy")\n')
+        (self.upstream / "nvim" / "lazy-lock.json").write_text('{"a": {"commit": "111"}}\n')
+        git(self.upstream, "add", ".")
+        git(self.upstream, "commit", "-m", "track lockfile")
+        git(self.upstream, "push", "origin", "HEAD:main")
+        self.check(Runner())
+        self.assertTrue((self.repo / "nvim" / "lazy-lock.json").exists())
+
+        git(self.upstream, "rm", "-q", "nvim/lazy-lock.json")
+        (self.upstream / "nvim" / ".gitignore").write_text("/lazy-lock.json\n")
+        git(self.upstream, "add", "nvim/.gitignore")
+        git(self.upstream, "commit", "-m", "untrack and ignore lockfile")
+        git(self.upstream, "push", "origin", "HEAD:main")
+        removed_head = git(self.upstream, "rev-parse", "HEAD")
+
+        runner = Runner()
+        self.check(runner)
+        self.assertEqual(self.head(), removed_head)
+        self.assertFalse((self.repo / "nvim" / "lazy-lock.json").exists())
+        self.assertEqual(runner.reports(), [])
+
+        # A stale or manual local write to nvim/lazy-lock.json stays ignored and never stalls pulls.
+        (self.repo / "nvim" / "lazy-lock.json").write_text('{"a": {"commit": "222"}}\n')
+        next_target = self.advance("after-untrack")
+        self.check(runner)
+        self.assertEqual(self.head(), next_target)
+        self.assertEqual((self.repo / "nvim" / "lazy-lock.json").read_text(), '{"a": {"commit": "222"}}\n')
+        self.assertEqual(runner.reports(), [])
+
 
 class BlockedTests(Sandbox):
     def assert_reported_untouched(self, runner, before, kind):
