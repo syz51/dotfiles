@@ -27,6 +27,7 @@ These rules are part of the global instructions (`~/.gemini/config/GEMINI.md`, S
 ## Desktop MCP
 
 - Desktop (`desktop` MCP server, lazy-loaded): runs `~/.local/bin/desktop mcp` (`agent-desktop` Rust client talking to `/Applications/AgentDesktop.app` `desktopd`; falls back to `~/.config/claude/marketplace/computer-use/server/desktop.js` on machines without `agent-desktop`). Machine-local credentials and fleet config live in gitignored `~/.config/agent-desktop/` (`token`, `fleet.toml`, opt-in `policy.toml`); never commit them to public dotfiles. Prefer `snapshot`/`find` (Accessibility tree `@eN` refs) + batched `act` with `focus_mode: "background"` or `"auto"`, and call `session_end` when finished (`release` on the legacy `desktop.js` fallback).
+- Browser & screenshot hygiene: navigate via address-bar `@eN` refs instead of shell `open <url>` (avoids tab sprawl); if a Chromium/Electron `snapshot` returns chrome-only nodes without `webarea`, retry `snapshot` once before falling back to `screenshot`; keep multi-step `screenshot` loops out of large (`>100k`-token) threads (compact or isolate in a lean context — Antigravity offloads MCP images to disk for 2 turns/shot and retains ~1.6k image tokens/shot permanently).
 - Report friction, bugs, or missing capabilities in `desktop`/`desktopd` via Feedback `about` `agent-desktop` (host, tool/command, error or latency, workaround) so triage routes improvements to the `agent-desktop` board.
 
 ## Gemini Notebook MCP & `gnotebook`
