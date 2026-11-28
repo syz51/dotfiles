@@ -1465,6 +1465,16 @@ describe("rules the live suites test", () => {
     expect(referenceRules("review")).toMatch(/delegating only fixes that split into parallel tracks/);
   });
 
+  // The built-in web-fetch agent receives compressed PDF streams from WebFetch and has
+  // neither Bash nor Read, so sending it a PDF URL burns a full agent run (~43k tokens in
+  // board-feedback-1162) and returns no answer (dotfiles-805). Keep the rule in CLAUDE.md
+  // itself, since agents treat web-fetch as tool use and do not read delegation.md first.
+  test("Delegation keeps PDF and binary URLs out of web-fetch, directly in CLAUDE.md", () => {
+    const line = section("Delegation").split("\n").find((l) => l.includes("`web-fetch`"));
+    expect(line).toBeDefined();
+    expect(line).toContain("For a URL that serves a PDF or other binary file, do not ask `web-fetch` to answer from it: use the saved path from the harness note or download it into your scratch directory, and read it yourself with Read (`pages` for PDFs).");
+  });
+
   // Anthropic's multi-agent guidance: split by context, not by type of work, because
   // each handoff between phases of the same work loses context.
   test("Delegation splits by context, and each agent owns its whole track", () => {
