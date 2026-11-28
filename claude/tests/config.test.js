@@ -666,6 +666,19 @@ describe("settings", () => {
     expect(tracked("claude/hooks/worktree-rule.js")).toBe(true);
   });
 
+  // After compaction, Claude Code re-attaches previously invoked skills as "for context only"
+  // guidelines (board-feedback-977, dotfiles-787). This SessionStart hook runs only for source
+  // "compact" so loaded skills' rules stay binding with zero cost on uncompacted turns.
+  test("a SessionStart hook reminds compacted sessions that loaded skills still apply", () => {
+    const groups = settings.hooks.SessionStart.filter((group) => group.hooks.some((hook) => hook.command.includes("hooks/compact-skills.js")));
+    expect(groups.map((group) => group.matcher)).toEqual(["compact"]);
+    expect(groups[0].hooks[0].timeout).toBeLessThanOrEqual(5);
+    const re = new RegExp(groups[0].matcher);
+    expect(re.test("compact")).toBe(true);
+    for (const source of ["startup", "resume", "clear"]) expect(re.test(source), source).toBe(false);
+    expect(tracked("claude/hooks/compact-skills.js")).toBe(true);
+  });
+
   // The owner rarely uses the claude.ai connectors (Gmail, Claude Docs), and their tool schemas
   // cost tokens in every session. T3 Claude sessions load user settings, so this one key also
   // covers T3 threads and their subagents (dotfiles-509). Delete it to bring them back.

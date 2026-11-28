@@ -185,6 +185,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.bun/bin/bun\" \"$HOME/.claude/hooks/compact-skills.js\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStart": [
