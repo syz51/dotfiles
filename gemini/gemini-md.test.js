@@ -207,6 +207,9 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(storageDoc).toContain("`desktop` MCP server");
     expect(storageDoc).toContain("~/.local/bin/desktop mcp");
     expect(storageDoc).toContain("~/.config/claude/marketplace/computer-use/server/desktop.js");
+    expect(storageDoc).toContain("address-bar `@eN` refs");
+    expect(storageDoc).toContain("without `webarea`");
+    expect(storageDoc).toContain("2 turns/shot");
     expect(storageDoc).toContain("Feedback `about` `agent-desktop`");
   });
 
