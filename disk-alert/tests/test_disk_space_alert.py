@@ -1422,6 +1422,10 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
         self.assertFalse(decoded["RunAtLoad"])
         self.assertEqual(decoded["ProcessType"], "Standard")
         self.assertEqual(
+            decoded["ProgramArguments"][:6],
+            ["/bin/uv", "run", "--no-cache", "--no-project", "--python", "3.11"],
+        )
+        self.assertEqual(
             decoded["ProgramArguments"][-8:],
             ["/repo/disk-alert/disk_space_alert.py", "daily", "--sweep-minutes", "10",
              "--bun-cache-max-gb", "1", "--brew-prune-days", "14"],
@@ -1493,6 +1497,203 @@ class DailyCacheAndLaunchAgentTest(unittest.TestCase):
             )
         self.assertEqual(code2, 0)
         self.assertTrue(json.loads(out2.getvalue())["stopped"])
+
+    def test_uv_cache_prune_uses_longer_timeout_and_treats_timeout_as_warning(self):
+        uv = self.make_tool("uv")
+        seen_timeouts = []
+
+        def timeout_runner(args, input_text, timeout=None):
+            if args == [str(uv), "cache", "prune"]:
+                seen_timeouts.append(timeout)
+                return subprocess.CompletedProcess(
+                    args, alert.TIMEOUT_EXIT, "", f"timed out after {timeout} seconds"
+                )
+            if args == [str(uv), "cache", "dir"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[0] == "ps":
+                return subprocess.CompletedProcess(args, 0, "/sbin/launchd\n", "")
+            if args[0] == "lsof":
+                return subprocess.CompletedProcess(args, 1, "p1\nn/\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        # Direct sweep_tool_caches uses UV_PRUNE_TIMEOUT_SECONDS when no finite deadline is set.
+        caches = alert.sweep_tool_caches(self.config, timeout_runner, dry_run=False)
+        self.assertEqual(seen_timeouts, [alert.UV_PRUNE_TIMEOUT_SECONDS])
+        self.assertEqual(len(caches), 1)
+        self.assertTrue(caches[0]["ran"])
+        self.assertIsNone(caches[0]["error"])
+        self.assertIn(f"timed out after {alert.UV_PRUNE_TIMEOUT_SECONDS} seconds", caches[0]["warning"])
+
+        # run_daily treats a uv cache prune timeout as a warning: exits 0 and does not notify.
+        notified = []
+
+        def daily_timeout_runner(args, input_text, timeout=None):
+            if args[0] == self.config.osascript:
+                notified.append(args)
+            return timeout_runner(args, input_text, timeout=timeout)
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = alert.run_daily(
+                replace(self.config, sweep_minutes=2.0),
+                daily_timeout_runner,
+                self.now,
+                dry_run=False,
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(notified, [])
+        # Timeout was bounded by remaining sweep budget (~120s <= 300s).
+        self.assertLessEqual(seen_timeouts[-1], 120)
+        self.assertGreater(seen_timeouts[-1], 0)
+        summary = json.loads(out.getvalue())
+        self.assertIn("uv", summary["warnings"])
+        events = [json.loads(line) for line in (self.config.state_dir / "events.jsonl").read_text().splitlines()]
+        self.assertEqual(events[-1]["errors"], {})
+        self.assertIn("uv", events[-1]["warnings"])
+
+    def test_uv_cache_prune_non_timeout_error_still_fails_daily(self):
+        uv = self.make_tool("uv")
+        notified = []
+
+        def fail_runner(args, input_text, timeout=None):
+            if args == [str(uv), "cache", "prune"]:
+                return subprocess.CompletedProcess(args, 1, "", "permission denied")
+            if args == [str(uv), "cache", "dir"]:
+                return subprocess.CompletedProcess(args, 0, "", "")
+            if args[0] == self.config.osascript:
+                notified.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = alert.run_daily(self.config, fail_runner, self.now, dry_run=False)
+        self.assertEqual(code, 1)
+        self.assertEqual(len(notified), 1)
+        summary = json.loads(out.getvalue())
+        self.assertEqual(summary["warnings"], {})
+        self.assertEqual(summary["caches"][0]["error"], "permission denied")
+
+    def test_uv_cache_in_use_skips_prune_when_lock_is_held(self):
+        uv = self.make_tool("uv")
+        uv_cache = self.root / "uv-cache"
+        uv_cache.mkdir()
+        lock_file = uv_cache / ".lock"
+        lock_file.touch()
+
+        recorded = []
+
+        def runner(args, input_text):
+            recorded.append(list(args))
+            if args == [str(uv), "cache", "dir"]:
+                return subprocess.CompletedProcess(args, 0, f"{uv_cache}\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        # Hold a shared lock on .lock (just like an outer `uv run` without --no-cache).
+        lock_fd = os.open(lock_file, os.O_RDWR)
+        try:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_SH | alert.fcntl.LOCK_NB)
+            res = alert.sweep_tool_caches(self.config, runner, dry_run=False)
+            self.assertEqual(res[0]["skipped"], "uv_cache_in_use")
+            self.assertFalse(res[0]["ran"])
+            self.assertIsNone(res[0]["error"])
+            self.assertNotIn([str(uv), "cache", "prune"], recorded)
+        finally:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+        # Once unlocked, uv cache prune runs normally.
+        res2 = alert.sweep_tool_caches(self.config, runner, dry_run=False)
+        self.assertTrue(res2[0]["ran"])
+        self.assertIsNone(res2[0]["error"])
+        self.assertIn([str(uv), "cache", "prune"], recorded)
+
+    def test_run_command_respects_custom_timeout(self):
+        with mock.patch.object(alert.subprocess, "run", side_effect=subprocess.TimeoutExpired(["uv"], 300)):
+            res = alert.run_command(["uv", "cache", "prune"], timeout=300)
+        self.assertEqual(res.returncode, alert.TIMEOUT_EXIT)
+        self.assertEqual(res.stderr, "timed out after 300 seconds")
+
+    def test_sweep_lock_writes_pid_and_truncates_on_release(self):
+        with alert.sweep_lock(self.config.state_dir) as acquired:
+            self.assertTrue(acquired)
+            owner = alert.read_sweep_lock_owner(self.config.state_dir)
+            self.assertIsNotNone(owner)
+            self.assertEqual(owner["pid"], os.getpid())
+            self.assertIn("started_at", owner)
+        self.assertIsNone(alert.read_sweep_lock_owner(self.config.state_dir))
+
+    def test_sweep_lock_recovers_stale_dead_pid_when_unlocked_and_when_flock_blocked(self):
+        self.config.state_dir.mkdir(parents=True)
+        lock_path = self.config.state_dir / "sweep.lock"
+        stale_pid = dead_pid()
+
+        # Case 1: crashed holder left dead PID in unlocked sweep.lock.
+        lock_path.write_text(json.dumps({"pid": stale_pid, "started_at": "2026-11-01T00:00:00+00:00"}) + "\n")
+        with alert.sweep_lock(self.config.state_dir) as acquired:
+            self.assertTrue(acquired)
+            self.assertEqual(alert.read_sweep_lock_owner(self.config.state_dir)["pid"], os.getpid())
+
+        # Case 2: dead PID in sweep.lock while flock is still held (e.g. leaked FD in orphaned child).
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
+            os.ftruncate(lock_fd, 0)
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            os.write(lock_fd, (json.dumps({"pid": stale_pid}) + "\n").encode())
+            stale_ino = os.fstat(lock_fd).st_ino
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = alert.run_daily(
+                    replace(self.config, search_path=""), FakeRunner(), self.now, dry_run=False
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.getvalue())["event"], "daily")
+            # A fresh inode replaced the stale locked file.
+            self.assertNotEqual(lock_path.stat().st_ino, stale_ino)
+        finally:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_UN)
+            os.close(lock_fd)
+
+        # Case 3: plain integer dead PID text in locked sweep.lock also recovers.
+        lock_fd2 = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            alert.fcntl.flock(lock_fd2, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
+            os.ftruncate(lock_fd2, 0)
+            os.lseek(lock_fd2, 0, os.SEEK_SET)
+            os.write(lock_fd2, f"{stale_pid}\n".encode())
+            with alert.sweep_lock(self.config.state_dir) as acquired:
+                self.assertTrue(acquired)
+                self.assertEqual(alert.read_sweep_lock_owner(self.config.state_dir)["pid"], os.getpid())
+        finally:
+            alert.fcntl.flock(lock_fd2, alert.fcntl.LOCK_UN)
+            os.close(lock_fd2)
+
+    def test_sweep_lock_does_not_break_live_pid_and_logs_holder_pid(self):
+        self.config.state_dir.mkdir(parents=True)
+        lock_path = self.config.state_dir / "sweep.lock"
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_EX | alert.fcntl.LOCK_NB)
+            os.ftruncate(lock_fd, 0)
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            os.write(lock_fd, (json.dumps({"pid": os.getpid()}) + "\n").encode())
+            live_ino = os.fstat(lock_fd).st_ino
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = alert.run_daily(
+                    replace(self.config, search_path=""), FakeRunner(), self.now, dry_run=False
+                )
+            self.assertEqual(code, 0)
+            record = json.loads(out.getvalue())
+            self.assertEqual(record["event"], "daily_skipped")
+            self.assertEqual(record["holder_pid"], os.getpid())
+            # Inode was NOT unlinked or replaced.
+            self.assertEqual(lock_path.stat().st_ino, live_ino)
+        finally:
+            alert.fcntl.flock(lock_fd, alert.fcntl.LOCK_UN)
+            os.close(lock_fd)
 
 
 if __name__ == "__main__":

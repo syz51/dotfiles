@@ -52,7 +52,8 @@ no open files, no active or recent T3 thread, tip reachable from a remote base
 ref), drops older duplicate Playwright browser revisions (>=24 hours idle), and
 runs safe tool cache cleanups (`uv cache prune`, `brew cleanup --prune=14 -s`,
 and `bun pm cache rm` when the Bun install cache exceeds its cap and no install
-is running). A non-blocking `sweep.lock` keeps overlapping runs from colliding.
+is running). A non-blocking `sweep.lock` (recording the holder PID and recovering
+stale locks left by dead PIDs) keeps overlapping runs from colliding.
 """
 
 from __future__ import annotations
@@ -60,6 +61,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import inspect
 import json
 import os
 import plistlib
@@ -103,6 +105,7 @@ DEFAULT_DAILY_TARGET_IDLE_HOURS = 24.0
 DEFAULT_OSASCRIPT = "/usr/bin/osascript"
 LAUNCH_AGENTS = HOME / "Library" / "LaunchAgents"
 COMMAND_TIMEOUT_SECONDS = 90
+UV_PRUNE_TIMEOUT_SECONDS = 300
 TIMEOUT_EXIT = 124
 
 LEVELS = ("ok", "low", "critical")
@@ -135,7 +138,11 @@ DAILY_SEARCH_PATH = (
 Runner = Callable[[list, Optional[str]], subprocess.CompletedProcess]
 
 
-def run_command(args: list, input_text: Optional[str] = None) -> subprocess.CompletedProcess:
+def run_command(
+    args: list,
+    input_text: Optional[str] = None,
+    timeout: int = COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
     """Run a command, turning a missing program or a timeout into a failed result."""
     try:
         return subprocess.run(
@@ -143,14 +150,29 @@ def run_command(args: list, input_text: Optional[str] = None) -> subprocess.Comp
             input=input_text,
             capture_output=True,
             text=True,
-            timeout=COMMAND_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except FileNotFoundError as error:
         return subprocess.CompletedProcess(args, 127, "", str(error))
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(
-            args, TIMEOUT_EXIT, "", f"timed out after {COMMAND_TIMEOUT_SECONDS} seconds"
+            args, TIMEOUT_EXIT, "", f"timed out after {timeout} seconds"
         )
+
+
+def run_with_timeout(
+    run: Runner, args: list, input_text: Optional[str], timeout: int
+) -> subprocess.CompletedProcess:
+    """Invoke run with a custom timeout when supported, falling back to the 2-arg Runner call."""
+    if run is run_command:
+        return run_command(args, input_text, timeout=timeout)
+    try:
+        params = inspect.signature(run).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "timeout" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return run(args, input_text, timeout=timeout)
+    return run(args, input_text)
 
 
 @dataclass(frozen=True)
@@ -178,6 +200,7 @@ class Config:
     bun_cache: Optional[Path] = None
     bun_cache_max_gb: float = DEFAULT_BUN_CACHE_MAX_GB
     playwright_cache: Optional[Path] = None
+    uv_cache: Optional[Path] = None
     brew_prune_days: int = DEFAULT_BREW_PRUNE_DAYS
     worktree_idle_hours: float = DEFAULT_WORKTREE_IDLE_HOURS
     daily_target_idle_hours: float = DEFAULT_DAILY_TARGET_IDLE_HOURS
@@ -759,20 +782,166 @@ def sweep(
     return swept, failures, stopped
 
 
+def pid_is_alive(pid: int) -> bool:
+    """True when a process with pid exists on this host."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _parse_lock_owner(raw: bytes) -> Optional[dict]:
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if isinstance(data, int) and not isinstance(data, bool) and data > 0:
+        return {"pid": data}
+    if isinstance(data, dict):
+        pid = data.get("pid")
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+            return data
+    return None
+
+
+def _read_lock_owner_fd(descriptor: int) -> Optional[dict]:
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        return _parse_lock_owner(os.read(descriptor, 4096))
+    except OSError:
+        return None
+
+
+def read_sweep_lock_owner(state_dir: Path) -> Optional[dict]:
+    """Read the recorded owner metadata from sweep.lock, or None if missing/empty/invalid."""
+    try:
+        raw = (state_dir / "sweep.lock").read_bytes()[:4096]
+    except OSError:
+        return None
+    return _parse_lock_owner(raw)
+
+
+def _write_lock_owner_fd(descriptor: int) -> None:
+    payload = (
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "started_epoch": round(time.time(), 3),
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+    try:
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, payload)
+    except OSError:
+        pass
+
+
+def _try_recover_stale_lock(state_dir: Path, lock_path: Path, orig_ino: int) -> Optional[int]:
+    """Safely replace a sweep.lock whose recorded PID is dead while flock is still blocked.
+    Serializes recovery via sweep.lock.recover and re-verifies inode + dead PID before unlinking.
+    Returns a newly locked descriptor populated with our PID on success, or None if an active run holds it."""
+    recover_path = state_dir / "sweep.lock.recover"
+    recover_fd = None
+    try:
+        recover_fd = os.open(recover_path, os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(recover_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if recover_fd is not None:
+            os.close(recover_fd)
+        return None
+    try:
+        check_fd = None
+        try:
+            check_fd = os.open(lock_path, os.O_RDWR)
+        except FileNotFoundError:
+            check_fd = None
+        if check_fd is not None:
+            try:
+                current_ino = os.fstat(check_fd).st_ino
+                if current_ino != orig_ino:
+                    try:
+                        fcntl.flock(check_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fd = check_fd
+                        check_fd = None
+                        _write_lock_owner_fd(fd)
+                        return fd
+                    except BlockingIOError:
+                        return None
+                try:
+                    fcntl.flock(check_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fd = check_fd
+                    check_fd = None
+                    _write_lock_owner_fd(fd)
+                    return fd
+                except BlockingIOError:
+                    pass
+                owner = _read_lock_owner_fd(check_fd)
+                if owner is None or pid_is_alive(owner["pid"]):
+                    return None
+            finally:
+                if check_fd is not None:
+                    os.close(check_fd)
+            try:
+                os.unlink(lock_path)
+            except FileNotFoundError:
+                pass
+        new_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(new_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(new_fd)
+            return None
+        _write_lock_owner_fd(new_fd)
+        return new_fd
+    except OSError:
+        return None
+    finally:
+        try:
+            fcntl.flock(recover_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(recover_fd)
+
+
 @contextlib.contextmanager
 def sweep_lock(state_dir: Path) -> Iterator[bool]:
     """Acquire a non-blocking exclusive lock so overlapping check and daily runs do not race.
-    Yields True when the lock is held, False when another run already holds it."""
+    Writes the holder PID to sweep.lock and recovers stale locks whose recorded PID is dead.
+    Yields True when the lock is held, False when another live run already holds it."""
+    lock_path = state_dir / "sweep.lock"
     descriptor = None
+    recovered = False
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(state_dir / "sweep.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        owner = _read_lock_owner_fd(descriptor) if descriptor is not None else None
+        try:
+            orig_ino = os.fstat(descriptor).st_ino if descriptor is not None else None
+        except OSError:
+            orig_ino = None
         if descriptor is not None:
             os.close(descriptor)
-        yield False
-        return
+            descriptor = None
+        if owner is not None and not pid_is_alive(owner["pid"]) and orig_ino is not None:
+            descriptor = _try_recover_stale_lock(state_dir, lock_path, orig_ino)
+            recovered = descriptor is not None
+        if descriptor is None:
+            yield False
+            return
     except OSError:
         if descriptor is not None:
             os.close(descriptor)
@@ -780,9 +949,15 @@ def sweep_lock(state_dir: Path) -> Iterator[bool]:
         # fall through rather than silently blocking emergency cleanup.
         yield True
         return
+    if not recovered:
+        _write_lock_owner_fd(descriptor)
     try:
         yield True
     finally:
+        try:
+            os.ftruncate(descriptor, 0)
+        except OSError:
+            pass
         try:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
@@ -1107,6 +1282,41 @@ def sweep_playwright_cache(
     return swept
 
 
+def uv_cache_in_use(config: Config, uv: str, run: Runner) -> bool:
+    """True when a uv process (including an outer `uv run` without `--no-cache`) holds
+    an advisory lock on uv's cache `.lock` file."""
+    cache_dir = config.uv_cache
+    if cache_dir is None:
+        res = run([uv, "cache", "dir"], None)
+        text = res.stdout.strip() if res.returncode == 0 else ""
+        if text:
+            cache_dir = Path(text)
+    if cache_dir is None:
+        return False
+    lock_path = cache_dir / ".lock"
+    if not lock_path.is_file():
+        return False
+    descriptor = None
+    acquired = False
+    try:
+        descriptor = os.open(lock_path, os.O_RDONLY)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquired = True
+    except BlockingIOError:
+        return True
+    except OSError:
+        return False
+    finally:
+        if descriptor is not None:
+            if acquired:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(descriptor)
+    return False
+
+
 def sweep_tool_caches(
     config: Config, run: Runner, dry_run: bool = False, limit: Optional[Limit] = None,
 ) -> list:
@@ -1117,12 +1327,28 @@ def sweep_tool_caches(
 
     uv = shutil.which("uv", path=config.search_path)
     if uv and not limit.passed():
-        if dry_run:
+        if uv_cache_in_use(config, uv, run):
+            results.append({"tool": "uv", "skipped": "uv_cache_in_use", "ran": False, "error": None})
+        elif dry_run:
             results.append({"tool": "uv", "action": "would run uv cache prune", "ran": False, "error": None})
         else:
-            res = run([uv, "cache", "prune"], None)
-            err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
-            results.append({"tool": "uv", "action": "uv cache prune", "ran": True, "error": err})
+            timeout = UV_PRUNE_TIMEOUT_SECONDS
+            if limit.deadline != float("inf"):
+                remaining = int(limit.deadline - limit.clock())
+                timeout = min(UV_PRUNE_TIMEOUT_SECONDS, max(1, remaining))
+            res = run_with_timeout(run, [uv, "cache", "prune"], None, timeout)
+            if res.returncode == TIMEOUT_EXIT:
+                warn = (res.stderr or res.stdout).strip() or f"timed out after {timeout} seconds"
+                results.append({
+                    "tool": "uv",
+                    "action": "uv cache prune",
+                    "ran": True,
+                    "error": None,
+                    "warning": warn,
+                })
+            else:
+                err = None if res.returncode == 0 else ((res.stderr or res.stdout).strip() or f"exit {res.returncode}")
+                results.append({"tool": "uv", "action": "uv cache prune", "ran": True, "error": err})
 
     brew = shutil.which("brew", path=config.search_path)
     if brew and not limit.passed():
@@ -1387,7 +1613,11 @@ def run_check(
         # finishes what an earlier sweep left in the trash.
         with sweep_lock(config.state_dir) as acquired:
             if not acquired:
-                log(config, {"at": now.isoformat(timespec="seconds"), "event": "sweep_skipped", "reason": "lock_held"})
+                skipped = {"at": now.isoformat(timespec="seconds"), "event": "sweep_skipped", "reason": "lock_held"}
+                owner = read_sweep_lock_owner(config.state_dir)
+                if owner is not None:
+                    skipped["holder_pid"] = owner["pid"]
+                log(config, skipped)
                 return 1 if failed else 0
             swept, failures, stopped = sweep(config, run, now, state.level, clock=clock, trash_only=state.level == "ok")
         for failure in failures:
@@ -1412,6 +1642,9 @@ def run_sweep(config: Config, run: Runner, now: datetime, dry_run: bool) -> int:
     with lock_ctx as acquired:
         if not acquired:
             record = {"at": now.isoformat(timespec="seconds"), "event": "sweep_skipped", "reason": "lock_held"}
+            owner = read_sweep_lock_owner(config.state_dir)
+            if owner is not None:
+                record["holder_pid"] = owner["pid"]
             append_event(config.state_dir, record)
             print(json.dumps(record, indent=2, ensure_ascii=False))
             return 0
@@ -1449,6 +1682,9 @@ def run_daily(
     with lock_ctx as acquired:
         if not acquired:
             record = {"at": now.isoformat(timespec="seconds"), "event": "daily_skipped", "reason": "lock_held"}
+            owner = read_sweep_lock_owner(config.state_dir)
+            if owner is not None:
+                record["holder_pid"] = owner["pid"]
             append_event(config.state_dir, record)
             print(json.dumps(record, indent=2, ensure_ascii=False))
             return 0
@@ -1483,6 +1719,7 @@ def run_daily(
     freed_bytes += sum(entry.get("bytes", 0) for entry in caches if entry.get("ran") and entry.get("error") is None)
     item_errors = {item.path: item.error for item in swept if item.error}
     cache_errors = {entry["tool"]: entry["error"] for entry in caches if entry.get("error")}
+    cache_warnings = {entry["tool"]: entry["warning"] for entry in caches if entry.get("warning")}
     had_error = bool(failures or item_errors or cache_errors)
     summary = {
         "at": now.isoformat(timespec="seconds"),
@@ -1494,6 +1731,7 @@ def run_daily(
         "worktrees": [asdict(item) for item in swept if item.kind == "worktree"],
         "playwright": [asdict(item) for item in swept if item.kind == "playwright"],
         "caches": caches,
+        "warnings": cache_warnings,
         "failures": failures,
         "stopped": stopped is not None,
     }
@@ -1505,6 +1743,7 @@ def run_daily(
             "removed": [item.path for item in swept if item.error is None],
             "caches": caches,
             "errors": {**item_errors, **cache_errors},
+            "warnings": cache_warnings,
             "failures": failures,
             "stopped": summary["stopped"],
         }
@@ -1595,6 +1834,7 @@ def daily_launch_agent(
         "ProgramArguments": [
             uv,
             "run",
+            "--no-cache",
             "--no-project",
             "--python",
             "3.11",
