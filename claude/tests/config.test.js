@@ -819,6 +819,24 @@ test.each(["agent-desktop/token", "agent-desktop/fleet.toml", "agent-desktop/pol
   },
 );
 
+// lazy.nvim updates plugin commits per host (dotfiles-936). Keep nvim/lazy-lock.json untracked
+// and gitignored while pointing lazy.nvim's lockfile at stdpath("state") so plugin updates never
+// dirty ~/.config or stall config-sync.
+test("nvim/lazy-lock.json is untracked, ignored, and moved to Neovim's state directory", () => {
+  expect(tracked("nvim/lazy-lock.json")).toBe(false);
+  const ignored = spawnSync(
+    "git",
+    ["-c", "core.excludesFile=/dev/null", "check-ignore", "-v", "--", "nvim/lazy-lock.json"],
+    { cwd: REPO, encoding: "utf8" },
+  );
+  if (ignored.error) throw ignored.error;
+  expect(ignored.status, ignored.stderr).toBe(0);
+  expect(ignored.stdout).toMatch(/^nvim\/\.gitignore:\d+:\/lazy-lock\.json\t/);
+  expect(read("nvim/lua/config/lazy.lua")).toMatch(
+    /lockfile\s*=\s*vim\.fn\.stdpath\("state"\)\s*\.\.\s*"\/lazy-lock\.json"/,
+  );
+});
+
 test("the root CLAUDE.md holds the repository instructions directly", () => {
   expect(lstatSync(join(REPO, "CLAUDE.md")).isFile()).toBe(true);
   const instructions = read("CLAUDE.md");
