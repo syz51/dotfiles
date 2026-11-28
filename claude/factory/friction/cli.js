@@ -143,15 +143,30 @@ export function recordState(records) {
 }
 
 // The items capture reported to after `since`, by id: the setup, the title capture gave
-// and when. A finding the board added to an existing item names that item.
+// and when. A finding the board added to an existing item names that item; later merged
+// filings advance `at` without overwriting the item's original setup or title.
 export function filedItems(records, since) {
   const judged = new Map(records.filter((record) => record.kind === "judged").map((record) => [record.key, record]));
+  const firstAbout = new Map();
+  const firstTitle = new Map();
   const items = new Map();
   for (const record of records) {
-    if (record.kind !== "filed" || !(Date.parse(record.at) > since)) continue;
+    if (record.kind !== "filed") continue;
+    if (typeof record.about === "string" && !firstAbout.has(record.task)) firstAbout.set(record.task, record.about);
     const n = Number(record.filing.split(":").at(-1));
     const title = judged.get(record.key)?.findings?.[n - 1]?.title;
-    if (title) items.set(record.task, { id: record.task, about: record.about, title, at: record.at });
+    if (title && !firstTitle.has(record.task)) firstTitle.set(record.task, title);
+    if (!(Date.parse(record.at) > since)) continue;
+    const canonicalTitle = firstTitle.get(record.task) ?? title;
+    if (!canonicalTitle) continue;
+    const prev = items.get(record.task);
+    const at = prev && Date.parse(prev.at) > Date.parse(record.at) ? prev.at : record.at;
+    items.set(record.task, {
+      id: record.task,
+      about: prev?.about ?? firstAbout.get(record.task) ?? record.about,
+      title: prev?.title ?? canonicalTitle,
+      at,
+    });
   }
   return items;
 }
@@ -277,7 +292,7 @@ Give at most 3 findings, none when nothing qualifies. For each:
 - title: at most ${TITLE} characters, a factual statement of what the setup did, without session-specific names.
 - detail: at most ${DETAIL} characters: what happened and what it cost (retries, a workaround). No secrets, file contents or personal data.
 - error: one short error line quoted from the turn, at most ${ERROR_LINE} characters, or an empty string.
-- match: the id of a known item with the same about that reports the same problem: the same setup behaving the same way, even in other words or with other sizes, limits or names.${preferLive} The report then adds to that item instead of filing a new one. An empty string when no known item reports it.`;
+- match: the id of any known item that reports the same problem, even if it is listed under another setup, in other words, or with other sizes, limits or names.${preferLive} Check other setups too when a problem could be filed under a neighbouring setup (such as hooks vs board, or t3 vs instructions/other). The report then adds to that item instead of filing a new one. An empty string when no known item reports it.`;
 }
 
 export function judgeSchema(setups) {
@@ -302,8 +317,8 @@ export function judgeSchema(setups) {
 }
 
 // The judge's findings, checked and cut to their limits; a malformed answer fails. A match
-// counts only when it names a known item about the same setup (items: id to its setup);
-// otherwise the finding is filed as new.
+// counts when it names any known item (whatever its setup); otherwise the finding is filed
+// as new.
 export function checkFindings(output, ids, items = new Map()) {
   if (!Array.isArray(output?.findings)) throw new Error("judge answer has no findings list");
   return output.findings.slice(0, 3).map((finding) => {
@@ -311,7 +326,7 @@ export function checkFindings(output, ids, items = new Map()) {
     if (!ACTIVITIES.includes(finding.activity)) throw new Error(`judge named an unknown activity: ${String(finding.activity).slice(0, 40)}`);
     const title = line(finding.title, TITLE);
     if (!title) throw new Error("judge gave a finding without a title");
-    const match = typeof finding.match === "string" && items.get(finding.match) === finding.about ? finding.match : "";
+    const match = typeof finding.match === "string" && finding.match !== "" && items.has(finding.match) ? finding.match : "";
     return { about: finding.about, activity: finding.activity, title, detail: line(finding.detail, DETAIL), error: line(finding.error, ERROR_LINE), match };
   });
 }
@@ -338,27 +353,34 @@ async function boardFilesCapture() {
 // Whether item `id` still takes reports, as the board decides: unresolved and open,
 // declined, or a duplicate or routed item whose target does. Otherwise, when it closed: a
 // fixed or forwarded item when it was resolved, a closed target when it ended. Follows
-// duplicate links to the canonical feedback item's id and signature, while keeping a
-// routed item's own feedback id and signature (its target is a plain task).
+// duplicate links to the canonical feedback item's id, setup and signature, while keeping a
+// routed item's own feedback id, setup and signature (its target is a plain task).
 async function itemState(id, depth = 0) {
   const shown = await boardCall(["show", id, "--json"], { what: `board show ${id}` });
   const task = shown?.task;
   if (typeof task?.status !== "string") throw new Error(`board show ${id}: expected {task: {status}}`);
+  const about = task.feedback?.about;
   const signature = task.feedback?.signature;
   const resolution = task.feedback?.resolution;
   if (!resolution) {
-    if (task.status !== "done" && task.status !== "dropped") return { id, ids: [id], signature, live: true };
+    if (task.status !== "done" && task.status !== "dropped") return { id, ids: [id], about, signature, live: true };
     const ended = (shown.history ?? []).findLast((event) => event.type === "task_done")?.at ?? task.updated_at;
-    return { id, ids: [id], signature, live: false, closedAt: Date.parse(ended) };
+    return { id, ids: [id], about, signature, live: false, closedAt: Date.parse(ended) };
   }
-  if (resolution.kind === "declined") return { id, ids: [id], signature, live: true };
+  if (resolution.kind === "declined") return { id, ids: [id], about, signature, live: true };
   if (resolution.kind === "duplicate" && resolution.task && depth < LINK_DEPTH) {
     const target = await itemState(resolution.task, depth + 1);
-    return { ...target, id: target.signature ? target.id : id, ids: [id, ...(target.ids ?? [])], signature: target.signature ?? signature };
+    return {
+      ...target,
+      id: target.signature ? target.id : id,
+      ids: [id, ...(target.ids ?? [])],
+      about: target.signature ? (target.about ?? about) : about,
+      signature: target.signature ?? signature,
+    };
   }
   if (resolution.kind === "routed" && resolution.task && depth < LINK_DEPTH)
-    return { ...(await itemState(resolution.task, depth + 1)), id, ids: [id], signature };
-  return { id, ids: [id], signature, live: false, closedAt: Date.parse(resolution.at) };
+    return { ...(await itemState(resolution.task, depth + 1)), id, ids: [id], about, signature };
+  return { id, ids: [id], about, signature, live: false, closedAt: Date.parse(resolution.at) };
 }
 
 // Finds an already-live canonical item that continues a closed match: one whose `recurs`
@@ -375,14 +397,15 @@ function findLiveRecurrence(live, state) {
   return best;
 }
 
-// Files one finding. One that matched an item goes to that item's canonical signature: the
-// board adds it there while the item is live, redirects to an existing live recurrence when
-// a closed item already recurred, and otherwise files a new item that recurs it. A match
-// closed after the turn ended is skipped: its fix, such as a raised limit, came later.
+// Files one finding. One that matched an item goes to that item's canonical signature and
+// setup: the board adds it there while the item is live, redirects to an existing live
+// recurrence when a closed item already recurred, and otherwise files a new item that
+// recurs it. A match closed after the turn ended is skipped: its fix, such as a raised
+// limit, came later.
 async function file(record, finding, n, filed, live = new Map()) {
   const filing = filingOf(record.sessionId, record.turn, n);
   if (filed.has(filing)) return null;
-  const args = ["--agent", AGENT, "feedback", "--source", "capture", "--about", finding.about, "--activity", finding.activity];
+  let about = finding.about;
   let match = finding.match;
   let sentSignature;
   let recurredFrom;
@@ -399,18 +422,23 @@ async function file(record, finding, n, filed, live = new Map()) {
     if (existing) {
       match = existing.id;
       sentSignature = existing.signature;
+      if (typeof existing.about === "string") about = existing.about;
+      else if (typeof state.about === "string") about = state.about;
     } else {
       sentSignature = state.signature;
+      if (typeof state.about === "string") about = state.about;
       if (!state.live) recurredFrom = state.id;
     }
-    args.push("--signature", sentSignature);
   }
+  const args = ["--agent", AGENT, "feedback", "--source", "capture", "--about", about, "--activity", finding.activity];
+  if (sentSignature) args.push("--signature", sentSignature);
   const result = await boardCall([...args, "--json", "--", feedbackText(finding, record)], { what: `board feedback for ${filing}` });
   // The board answers with the item the report was filed on or added to.
   const task = result?.task?.id;
   if (typeof task !== "string") throw new Error("board feedback: expected {task: {id}, duplicate, reports}");
+  const filedAbout = typeof result.task?.feedback?.about === "string" ? result.task.feedback.about : about;
   const at = new Date().toISOString();
-  const entry = { kind: "filed", key: record.key, filing, about: finding.about, task, ...(match ? { match } : {}), duplicate: result.duplicate === true, reports: result.reports ?? null, at };
+  const entry = { kind: "filed", key: record.key, filing, about: filedAbout, task, ...(match ? { match } : {}), duplicate: result.duplicate === true, reports: result.reports ?? null, at };
   appendJsonl(recordsFile(), entry);
   filed.add(filing);
   if (!live.has(task)) {
@@ -418,7 +446,7 @@ async function file(record, finding, n, filed, live = new Map()) {
     const recurs = result.task?.feedback?.recurs ?? recurredFrom;
     live.set(task, {
       id: task,
-      about: finding.about,
+      about: filedAbout,
       title: finding.title,
       at,
       ...(typeof signature === "string" ? { signature } : {}),
