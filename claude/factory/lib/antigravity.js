@@ -7,7 +7,33 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { excerpt, isAgentBrief, isAutomation, priceRequests, timestamps, topKey } from "./transcripts.js";
 
-const TOOL_ERROR = /Command exited with code [1-9]|Encountered error in tool execution/i;
+const TOOL_ERROR = /^(?:Command exited with code [1-9]\d*|Encountered error in (?:tool|step) execution)/im;
+const TURN_OUTPUT = 800;
+
+export function isAntigravityToolError(record) {
+  if (!record || typeof record !== "object") return false;
+  if (record.status === "ERROR") return true;
+  if (typeof record.error === "string" ? record.error.trim().length > 0 : Boolean(record.error)) return true;
+  return typeof record.content === "string" && TOOL_ERROR.test(record.content);
+}
+
+function genericOutput(record) {
+  if (typeof record.content === "string" && record.content.length > 0) return record.content;
+  if (typeof record.error === "string") return record.error;
+  return record.error ? String(record.error) : "";
+}
+
+function parseAntigravityArgs(rawArgs) {
+  if (!rawArgs || typeof rawArgs !== "object" || Array.isArray(rawArgs)) return {};
+  return Object.fromEntries(Object.entries(rawArgs).map(([key, value]) => [key, parseAntigravityArg(value)]));
+}
+
+function clipOutput(text, max = TURN_OUTPUT) {
+  const value = String(text ?? "");
+  if (value.length <= max) return value;
+  const head = Math.floor(max * 0.35);
+  return `${value.slice(0, head)}\n[... ${value.length - max} characters omitted ...]\n${value.slice(value.length - (max - head))}`;
+}
 
 export function antigravityBrainRoots(env = process.env) {
   if (env.AGY_BRAIN_ROOT) return [env.AGY_BRAIN_ROOT];
@@ -100,10 +126,12 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
     const toolCalls = [];
     let pendingCalls = [];
     for (const r of records) {
-      if (r.type === "USER_INPUT" && r.source === "USER_EXPLICIT") {
+      if (r.type === "USER_INPUT") {
         pendingCalls = [];
-        const text = unwrapUserRequest(r.content);
-        if (text) prompts.push({ at: r.created_at ?? null, text, source: "user" });
+        if (r.source === "USER_EXPLICIT") {
+          const text = unwrapUserRequest(r.content);
+          if (text) prompts.push({ at: r.created_at ?? null, text, source: "user" });
+        }
       } else if (r.type === "PLANNER_RESPONSE") {
         pendingCalls = [];
         if (r.model) {
@@ -125,17 +153,15 @@ export function loadAntigravitySessions({ since = -Infinity, until = Infinity, r
         if (Array.isArray(r.tool_calls)) {
           for (const tc of r.tool_calls) {
             if (!tc || typeof tc.name !== "string") continue;
-            const rawArgs = tc.args && typeof tc.args === "object" && !Array.isArray(tc.args) ? tc.args : {};
-            const input = Object.fromEntries(Object.entries(rawArgs).map(([key, value]) => [key, parseAntigravityArg(value)]));
-            const call = { id: null, name: tc.name, input, at: r.created_at ?? null, ok: null, output: "" };
+            const call = { id: null, name: tc.name, input: parseAntigravityArgs(tc.args), at: r.created_at ?? null, ok: null, output: "" };
             toolCalls.push(call);
             pendingCalls.push(call);
           }
         }
-      } else if (r.type === "GENERIC" && typeof r.content === "string" && pendingCalls.length) {
+      } else if (r.type === "GENERIC" && pendingCalls.length) {
         const call = pendingCalls.shift();
-        call.ok = !TOOL_ERROR.test(r.content);
-        call.output = excerpt(r.content);
+        call.ok = !isAntigravityToolError(r);
+        call.output = excerpt(genericOutput(r));
       }
     }
 
@@ -186,37 +212,55 @@ export function antigravityTurns(file) {
   const { records } = readJsonlRecords(file);
   const turns = [];
   let turn = null;
+  let pendingCalls = [];
   for (const r of records) {
-    if (r.type === "USER_INPUT" && r.source === "USER_EXPLICIT") {
-      if (turn) turn.complete = true;
-      const prompt = unwrapUserRequest(r.content);
-      turn = {
-        index: turns.length + 1,
-        start: r.created_at ?? null,
-        end: r.created_at ?? null,
-        prompt,
-        texts: [],
-        calls: [],
-        hooks: [],
-        events: [],
-        complete: false,
-      };
-      turns.push(turn);
+    if (r.type === "USER_INPUT") {
+      pendingCalls = [];
+      if (r.source === "USER_EXPLICIT") {
+        if (turn) turn.complete = true;
+        const prompt = unwrapUserRequest(r.content);
+        turn = {
+          index: turns.length + 1,
+          start: r.created_at ?? null,
+          end: r.created_at ?? null,
+          prompt,
+          texts: [],
+          calls: [],
+          hooks: [],
+          events: [],
+          complete: false,
+        };
+        turns.push(turn);
+      }
       continue;
     }
     if (!turn) continue;
     if (r.created_at) turn.end = r.created_at;
-    if (r.type === "PLANNER_RESPONSE" && typeof r.content === "string" && r.content.trim()) {
-      turn.texts.push(r.content);
-      turn.events.push({ text: r.content });
-      turn.complete = true;
-    } else if (r.type === "GENERIC" && typeof r.content === "string") {
-      const isError = TOOL_ERROR.test(r.content);
-      if (isError) {
-        const call = { name: "tool", input: {}, output: r.content.slice(0, 800), isError: true };
-        turn.calls.push(call);
-        turn.events.push({ call });
-        turn.complete = false;
+    if (r.type === "PLANNER_RESPONSE") {
+      pendingCalls = [];
+      const hasText = typeof r.content === "string" && r.content.trim().length > 0;
+      if (hasText) {
+        turn.texts.push(r.content);
+        turn.events.push({ text: r.content });
+      }
+      let addedCalls = 0;
+      if (Array.isArray(r.tool_calls)) {
+        for (const tc of r.tool_calls) {
+          if (!tc || typeof tc.name !== "string") continue;
+          const call = { name: tc.name, input: parseAntigravityArgs(tc.args), ok: null, output: "" };
+          turn.calls.push(call);
+          turn.events.push({ call });
+          pendingCalls.push(call);
+          addedCalls++;
+        }
+      }
+      turn.complete = addedCalls === 0 && hasText;
+    } else if (r.type === "GENERIC") {
+      turn.complete = false;
+      if (pendingCalls.length) {
+        const call = pendingCalls.shift();
+        call.ok = !isAntigravityToolError(r);
+        call.output = clipOutput(genericOutput(r));
       }
     }
   }
