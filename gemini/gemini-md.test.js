@@ -272,4 +272,11 @@ describe("gemini/GEMINI.md completeness, hygiene, and runtime alignment", () => 
     expect(existsSync(join(REPO, "gemini/docs/gemini-board-workflow.md"))).toBe(true);
     expect(existsSync(join(REPO, "gemini/skills/board-ops/SKILL.md"))).toBe(true);
   });
+
+  test("requires proposals and verdict notes to keep cited probes inline or on shared storage, never in scratch", () => {
+    const boardDoc = docs["gemini/docs/work-board-reference.md"];
+    expect(boardDoc).toContain(
+      "put any probe, script or command a proposal or verdict note cites inline in the body or a note when short, else on shared storage through `storagectl`, and cite that place, never a scratch path",
+    );
+  });
 });
