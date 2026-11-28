@@ -147,23 +147,32 @@ export function codexTurns(thread) {
 }
 
 // What a call runs in a shell: Claude Code's Bash command, a Codex shell command or
-// exec_command, or a Codex custom tool's script. Other inputs, such as a Bash call's
-// description or an edit's text, only mention commands.
+// exec_command, an Antigravity run_command CommandLine, or a Codex custom tool's script.
+// Other inputs, such as a Bash call's description or an edit's text, only mention commands.
 export const commandText = (call) => {
   const input = call.input ?? {};
-  return [input.command, input.cmd, input.input].flat().filter((part) => typeof part === "string").join(" ");
+  return [input.command, input.cmd, input.CommandLine, input.input].flat().filter((part) => typeof part === "string").join(" ");
+};
+
+// Antigravity's lazy MCP dispatcher calls `call_mcp_tool` with `{ ServerName, ToolName, Arguments }`.
+const effectiveName = (call) => {
+  if (call?.name === "call_mcp_tool" && typeof call.input?.ToolName === "string") {
+    const server = typeof call.input?.ServerName === "string" && call.input.ServerName ? `${call.input.ServerName}.` : "";
+    return `${server}${call.input.ToolName}`;
+  }
+  return call?.name ?? "";
 };
 
 // A call that filed feedback: the board's MCP tool, or `board feedback` run in a shell. A
 // call that failed (an older `board` rejecting its options, say) filed nothing, so the
 // capture still judges that turn.
-const FEEDBACK_TOOL = /(?:^|__|\.)feedback$/;
+const FEEDBACK_TOOL = /(?:^|__|\.)feedback$|^mcp_board_feedback$/;
 const FEEDBACK_COMMAND = /\bboard\s+feedback\b/;
-export const filedFeedback = (turn) => turn.calls.some((call) => call.ok !== false && (FEEDBACK_TOOL.test(call.name) || FEEDBACK_COMMAND.test(commandText(call))));
+export const filedFeedback = (turn) => turn.calls.some((call) => call.ok !== false && (FEEDBACK_TOOL.test(effectiveName(call)) || FEEDBACK_COMMAND.test(commandText(call))));
 
-const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^board$/;
+const BOARD_CALL = /(?:^|__|\.)board(?:__|\.)|^mcp_board_|^board$/;
 const BOARD_COMMAND = /(?:^|[\s;&|(/"'])board\s+[a-z]/;
-const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(commandText(call));
+const isBoard = (call) => BOARD_CALL.test(effectiveName(call)) || BOARD_COMMAND.test(commandText(call));
 // A board error the server counts itself: an answer with its error code, as the board's
 // MCP tools ("error: <code>: …") and CLI ("board: <code>: …") print it, or text over a
 // limit that the CLI refused before sending and reported to the server. The server files
@@ -171,14 +180,15 @@ const isBoard = (call) => BOARD_CALL.test(call.name) || BOARD_COMMAND.test(comma
 // no server, such as a runtime's schema check or `board mcp` rejecting an argument, and
 // stay friction. See agent-board's docs/API.md "Errors" and docs/DESIGN.md "Client
 // refusals".
-const SERVER_ERROR = /^(?:error|board): (?:(?:invalid|evidence_required|invalid_transition|unauthorized|forbidden|not_found|version_conflict|claim_refused|internal): |\S+ is \d+ characters; the limit is \d+ \(not sent\)$)/m;
+const SERVER_ERROR = /^(?:Encountered error in (?:tool|step) execution:\s*)?(?:error|board): (?:(?:invalid|evidence_required|invalid_transition|unauthorized|forbidden|not_found|version_conflict|claim_refused|internal): |\S+ is \d+ characters; the limit is \d+ \(not sent\)\r?$)/m;
 const serverCounted = (call) => isBoard(call) && SERVER_ERROR.test(call.output);
 
 // The program a shell call runs first, to tell a retry from the next step.
 const program = (call) => commandText(call).trim().split(/\s+/)[0]?.split("/").pop() ?? "";
 // A search or comparison that found nothing exits 1 without output: an answer, not a failure.
 const SEARCHES = new Set(["rg", "grep", "ugrep", "test", "[", "diff", "cmp"]);
-const quietMiss = (call) => SEARCHES.has(program(call)) && /^\s*(?:Exit code 1\s*)?$/.test(call.output);
+const QUIET_EXIT_1 = /^\s*(?:(?:(?:Created|Completed) At: [^\n]*\n)*Command exited with code 1\.?(?:\s*Command output:)?\s*|Exit code 1\s*)?$/;
+const quietMiss = (call) => SEARCHES.has(program(call)) && QUIET_EXIT_1.test(call.output);
 
 // Words that say the setup got in the way, in English and Chinese.
 export const PHRASES = [
@@ -198,7 +208,7 @@ export function signals(turn) {
   let retries = 0;
   turn.calls.forEach((call, index) => {
     const next = turn.calls[index + 1];
-    if (failedAt(call) && next?.name === call.name && program(next) === program(call)) retries++;
+    if (failedAt(call) && next && effectiveName(next) === effectiveName(call) && program(next) === program(call)) retries++;
   });
   const hookBlocks = turn.hooks.length + failed.filter((call) => /\bhook\b/i.test(call.output)).length;
   const boardErrors = failed.filter(isBoard).length;
