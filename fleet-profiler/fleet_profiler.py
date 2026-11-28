@@ -19,6 +19,7 @@ import math
 import os
 import plistlib
 import re
+import secrets
 import shlex
 import shutil
 import socket
@@ -372,14 +373,22 @@ def compute_pace_line(bucket: dict[str, Any], now_ms: int) -> Optional[dict[str,
 
 def load_config(config_path: Optional[Path]) -> ProfilerConfig:
     cfg = ProfilerConfig(local_name=socket.gethostname().split(".")[0])
+    explicit = False
     chosen = config_path
-    if chosen is None:
+    if chosen is not None:
+        explicit = True
+    else:
         env_path = os.environ.get("FLEET_PROFILER_CONFIG")
         if env_path:
             chosen = Path(env_path).expanduser()
+            explicit = True
         elif DEFAULT_CONFIG_PATH.exists():
             chosen = DEFAULT_CONFIG_PATH
-    if chosen is None or not chosen.exists():
+    if chosen is None:
+        return cfg
+    if not chosen.exists():
+        if explicit:
+            raise FileNotFoundError(f"fleet-profiler config not found: {chosen}")
         return cfg
     data = tomllib.loads(chosen.read_text(encoding="utf-8"))
     if "local_name" in data and data["local_name"]:
@@ -528,9 +537,9 @@ def probe_board_db(cfg: ProfilerConfig, runner: Runner) -> dict[str, Any]:
             remote_sql_cmd = f"su -s /bin/sh {q_user} -c {shlex.quote(sqlite_cmd)}"
         else:
             remote_sql_cmd = sqlite_cmd
-        # Single SSH round-trip: emit JSON on line 1, sizes on line 2
+        # Single SSH round-trip: propagate sqlite3/su exit status before emitting sizes
         remote_script = (
-            f"({remote_sql_cmd}); "
+            f"({remote_sql_cmd}) || exit $?; "
             f"printf '\\n__SIZES__ '; "
             f"stat -c '%s' {q_db} 2>/dev/null || echo 0; "
             f"printf ' '; "
@@ -648,7 +657,11 @@ def probe_local_mac(cfg: ProfilerConfig, runner: Runner, now_utc: dt.datetime) -
                     continue
         sample_lines: list[str] = []
         sample_target = logs_dir / "server.trace.ndjson"
-        if not sample_target.exists() or sample_target.stat().st_size < 10_000:
+        try:
+            st_size = sample_target.stat().st_size
+        except OSError:
+            st_size = 0
+        if st_size < 10_000:
             alt = logs_dir / "server.trace.ndjson.1"
             if alt.exists():
                 sample_target = alt
@@ -697,14 +710,20 @@ def probe_local_mac(cfg: ProfilerConfig, runner: Runner, now_utc: dt.datetime) -
     clean_set = {Path(p).expanduser().resolve() for p in cfg.local_clean_checkouts}
     repos_info: list[dict[str, Any]] = []
     for rp in repo_paths:
-        br = runner(["git", "-C", str(rp), "for-each-ref", "--format=%(refname:short)", "refs/heads/"], timeout=10)
-        branches = [b.strip() for b in br.stdout.splitlines() if b.strip()] if br.returncode == 0 else []
+        try:
+            br = runner(["git", "-C", str(rp), "for-each-ref", "--format=%(refname:short)", "refs/heads/"], timeout=10)
+            branches = [b.strip() for b in br.stdout.splitlines() if b.strip()] if br.returncode == 0 else []
+        except (subprocess.TimeoutExpired, OSError):
+            branches = []
         review_cnt = sum(1 for b in branches if b.startswith("review/"))
         dirty: list[str] = []
         if rp.resolve() in clean_set:
-            st = runner(["git", "-C", str(rp), "status", "--porcelain", "-uno"], timeout=10)
-            if st.returncode == 0:
-                dirty = [sanitize_untrusted(ln, 80) for ln in st.stdout.splitlines() if ln.strip()][:5]
+            try:
+                st = runner(["git", "-C", str(rp), "status", "--porcelain", "-uno"], timeout=10)
+                if st.returncode == 0:
+                    dirty = [sanitize_untrusted(ln, 80) for ln in st.stdout.splitlines() if ln.strip()][:5]
+            except (subprocess.TimeoutExpired, OSError):
+                pass
         repos_info.append(
             {
                 "name": rp.name,
@@ -718,21 +737,33 @@ def probe_local_mac(cfg: ProfilerConfig, runner: Runner, now_utc: dt.datetime) -
     # 5. ~/.t3/worktrees size & count
     wt_dir = t3_dir / "worktrees"
     if wt_dir.is_dir():
-        du = runner(["du", "-sk", str(wt_dir)], timeout=15)
-        if du.returncode == 0 and du.stdout.strip():
-            kb = int(du.stdout.strip().split()[0])
-            out["worktrees_gib"] = round(kb / 1_048_576.0, 2)
+        try:
+            du = runner(["du", "-sk", str(wt_dir)], timeout=15)
+            if du.returncode == 0 and du.stdout.strip():
+                kb = int(du.stdout.strip().split()[0])
+                out["worktrees_gib"] = round(kb / 1_048_576.0, 2)
+        except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+            out["worktrees_error"] = sanitize_untrusted(str(exc), 100)
         wt_count = 0
-        for proj in wt_dir.iterdir():
-            if proj.is_dir():
-                wt_count += sum(1 for c in proj.iterdir() if c.is_dir())
+        try:
+            for proj in wt_dir.iterdir():
+                try:
+                    if proj.is_dir():
+                        wt_count += sum(1 for c in proj.iterdir() if c.is_dir())
+                except OSError:
+                    continue
+        except OSError:
+            pass
         out["worktrees_count"] = wt_count
 
     # 6. APFS /System/Volumes/Data (fallback /)
     df_target = "/System/Volumes/Data" if Path("/System/Volumes/Data").exists() else "/"
-    df_res = runner(["df", "-k", df_target], timeout=10)
-    if df_res.returncode == 0:
-        out["disk_avail_gib"] = _parse_df_avail_gib(df_res.stdout)
+    try:
+        df_res = runner(["df", "-k", df_target], timeout=10)
+        if df_res.returncode == 0:
+            out["disk_avail_gib"] = _parse_df_avail_gib(df_res.stdout)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        out["disk_error"] = sanitize_untrusted(str(exc), 100)
 
     return out
 
@@ -741,26 +772,25 @@ def _expand_remote_tilde(path_str: str) -> str:
     if path_str == "~":
         return '"$HOME"'
     if path_str.startswith("~/"):
-        return '"$HOME/' + path_str[2:].replace('"', '\\"') + '"'
+        return '"$HOME/"' + shlex.quote(path_str[2:])
     return shlex.quote(path_str)
 
 
-def probe_peer_mac(peer: PeerMacConfig, runner: Runner, now_utc: dt.datetime) -> dict[str, Any]:
-    """Collect read-only runtime metrics from a peer macOS host in one bounded SSH call (zero remote Python)."""
-    cutoff_iso = (now_utc - dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+def build_peer_mac_script(peer: PeerMacConfig, cutoff_iso: str, nonce: str) -> str:
     t3 = _expand_remote_tilde(peer.t3_dir)
     bh = _expand_remote_tilde(peer.board_home)
     rd = _expand_remote_tilde(peer.repos_dir)
     extras = " ".join(_expand_remote_tilde(p) for p in peer.extra_repos)
     cleans = " ".join(_expand_remote_tilde(p) for p in peer.clean_checkouts)
+    m = f"===FP_{nonce}_"
 
-    remote_sh = f"""
+    return f"""
 T3={t3}
 BH={bh}
 RD={rd}
-echo "===DISK==="
-df -k /System/Volumes/Data 2>/dev/null || df -k /
-echo "===T3DB==="
+printf '\\n{m}DISK===\\n'
+df -k /System/Volumes/Data 2>/dev/null || df -k / || true
+printf '\\n{m}T3DB===\\n'
 DB="$T3/userdata/statev2.sqlite"
 WAL="$T3/userdata/statev2.sqlite-wal"
 if [ -f "$DB" ]; then
@@ -768,41 +798,51 @@ if [ -f "$DB" ]; then
   stat -f '%z' "$WAL" 2>/dev/null || echo 0
   sqlite3 -readonly -cmd '.timeout 5000' -noheader -list "$DB" "SELECT json_object('auth_total', (SELECT COUNT(*) FROM auth_sessions), 'auth_24h', (SELECT COUNT(*) FROM auth_sessions WHERE issued_at >= '{cutoff_iso}'), 'threads', (SELECT COUNT(*) FROM orchestration_v2_projection_threads));" 2>/dev/null || echo '{{}}'
 fi
-echo "===TRACEMETA==="
+printf '\\n{m}TRACEMETA===\\n'
 if [ -d "$T3/userdata/logs" ]; then
   for f in "$T3/userdata/logs"/server.trace.ndjson "$T3/userdata/logs"/server.trace.ndjson.*; do
-    [ -f "$f" ] && printf '%s ' "$(basename "$f")" && stat -f '%z %m' "$f" 2>/dev/null
+    if [ -f "$f" ]; then
+      meta=$(stat -f '%z %m' "$f" 2>/dev/null) && printf '%s %s\\n' "$(basename "$f")" "$meta"
+    fi
   done
 fi
-echo "===TRACESAMPLE==="
+printf '\\n{m}TRACESAMPLE===\\n'
 ST="$T3/userdata/logs/server.trace.ndjson"
 if [ ! -f "$ST" ] || [ "$(stat -f '%z' "$ST" 2>/dev/null || echo 0)" -lt 10000 ]; then
   [ -f "$T3/userdata/logs/server.trace.ndjson.1" ] && ST="$T3/userdata/logs/server.trace.ndjson.1"
 fi
-[ -f "$ST" ] && tail -n 1000 "$ST" 2>/dev/null
-echo "===WORKTREES==="
+if [ -f "$ST" ]; then tail -n 1000 "$ST" 2>/dev/null || true; fi
+printf '\\n{m}WORKTREES===\\n'
 if [ -d "$T3/worktrees" ]; then
   du -sk "$T3/worktrees" 2>/dev/null | awk '{{print $1}}'
   find "$T3/worktrees" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' '
 fi
-echo "===REPOS==="
+printf '\\n{m}REPOS===\\n'
 for r in "$RD"/* {extras}; do
   if [ -d "$r/.git" ] || [ -f "$r/.git" ]; then
     tot=$(git -C "$r" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | wc -l | tr -d ' ')
     rev=$(git -C "$r" for-each-ref --format='%(refname:short)' refs/heads/review/ 2>/dev/null | wc -l | tr -d ' ')
-    printf '%s\t%s\t%s\n' "$(basename "$r")" "$tot" "$rev"
+    printf '%s\\t%s\\t%s\\n' "$(basename "$r")" "$tot" "$rev"
   fi
 done
-echo "===DIRTY==="
+printf '\\n{m}DIRTY===\\n'
 for r in {cleans}; do
   if [ -d "$r/.git" ] || [ -f "$r/.git" ]; then
-    d=$(git -C "$r" status --porcelain -uno 2>/dev/null | head -n 5 | tr '\n' ';')
-    [ -n "$d" ] && printf '%s\t%s\n' "$(basename "$r")" "$d"
+    d=$(git -C "$r" status --porcelain -uno 2>/dev/null | head -n 5 | tr '\\n' ';')
+    if [ -n "$d" ]; then printf '%s\\t%s\\n' "$(basename "$r")" "$d"; fi
   fi
 done
-echo "===WATCHLOG==="
-[ -f "$BH/watch.log" ] && tail -c 2097152 "$BH/watch.log" 2>/dev/null
+printf '\\n{m}WATCHLOG===\\n'
+if [ -f "$BH/watch.log" ]; then tail -c 2097152 "$BH/watch.log" 2>/dev/null || true; fi
+exit 0
 """.strip()
+
+
+def probe_peer_mac(peer: PeerMacConfig, runner: Runner, now_utc: dt.datetime) -> dict[str, Any]:
+    """Collect read-only runtime metrics from a peer macOS host in one bounded SSH call (zero remote Python)."""
+    cutoff_iso = (now_utc - dt.timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = secrets.token_hex(6)
+    remote_sh = build_peer_mac_script(peer, cutoff_iso, nonce)
 
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", peer.ssh, "sh", "-s"]
     try:
@@ -814,15 +854,17 @@ echo "===WATCHLOG==="
         err = sanitize_untrusted(res.stderr or f"exit {res.returncode}", 120)
         return {"name": peer.name, "status": "asleep_or_unreachable", "local": False, "reason": err}
 
-    return parse_peer_mac_output(peer.name, res.stdout, now_utc)
+    return parse_peer_mac_output(peer.name, res.stdout, now_utc, marker_prefix=f"===FP_{nonce}_")
 
 
-def parse_peer_mac_output(name: str, stdout: str, now_utc: dt.datetime) -> dict[str, Any]:
+def parse_peer_mac_output(
+    name: str, stdout: str, now_utc: dt.datetime, *, marker_prefix: str = "==="
+) -> dict[str, Any]:
     sections: dict[str, list[str]] = collections.defaultdict(list)
     cur: Optional[str] = None
     for line in stdout.splitlines():
-        if line.startswith("===") and line.endswith("===") and len(line) > 6:
-            cur = line[3:-3]
+        if line.startswith(marker_prefix) and line.endswith("===") and len(line) > len(marker_prefix) + 3:
+            cur = line[len(marker_prefix) : -3]
             continue
         if cur is not None:
             sections[cur].append(line)
@@ -1152,7 +1194,9 @@ def evaluate_anomalies(
                 anomalies.append(Anomaly("RED", "leaked_review_branches", f"{hname}:{rname}", "agent-board", f"{rev_b} local review/* branches ({tot_b} total)"))
             elif rev_b >= th["review_branches_warn"]:
                 anomalies.append(Anomaly("YELLOW", "leaked_review_branches", f"{hname}:{rname}", "agent-board", f"{rev_b} local review/* branches ({tot_b} total)"))
-            elif tot_b >= th["total_branches_red"]:
+            if tot_b >= th["total_branches_red"]:
+                anomalies.append(Anomaly("RED", "branch_sprawl", f"{hname}:{rname}", "dotfiles", f"{tot_b} local branches"))
+            elif tot_b >= th["total_branches_warn"]:
                 anomalies.append(Anomaly("YELLOW", "branch_sprawl", f"{hname}:{rname}", "dotfiles", f"{tot_b} local branches"))
             dirty = r.get("dirty_tracked") or []
             if dirty:
@@ -1438,7 +1482,7 @@ def cmd_install(args: argparse.Namespace, runner: Runner = default_runner) -> in
     state_dir = Path(args.state_dir).expanduser()
     cfg_path = Path(args.config).expanduser() if args.config else None
     agent = launch_agent(
-        str(Path(uv).resolve()),
+        str(Path(uv)),
         Path(__file__).resolve(),
         state_dir,
         args.hour,
@@ -1530,7 +1574,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.cmd == "status":
         return cmd_status(args)
 
-    cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    try:
+        cfg = load_config(Path(args.config).expanduser() if args.config else None)
+    except (FileNotFoundError, OSError, tomllib.TOMLDecodeError) as exc:
+        print(f"fleet-profiler: {exc}", file=sys.stderr)
+        return 1
     state_dir = Path(args.state_dir).expanduser()
     wait = 0.0 if args.no_wait else args.lock_wait
     rc, report = run_profile(cfg, state_dir, local_only=args.local_only, lock_wait=wait)

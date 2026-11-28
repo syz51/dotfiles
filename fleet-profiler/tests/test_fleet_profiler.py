@@ -404,7 +404,7 @@ repo-a\t M config.toml;
 
     def test_launch_agent_plist_shape(self) -> None:
         agent = fp.launch_agent(
-            "/usr/local/bin/uv",
+            "/opt/homebrew/bin/uv",
             Path("/tmp/fleet_profiler.py"),
             Path("/tmp/state"),
             hour=9,
@@ -417,9 +417,148 @@ repo-a\t M config.toml;
         self.assertEqual(parsed["ProcessType"], "Standard")
         self.assertEqual(parsed["RunAtLoad"], False)
         self.assertEqual(parsed["StartCalendarInterval"], {"Hour": 9, "Minute": 15})
+        self.assertEqual(parsed["ProgramArguments"][0], "/opt/homebrew/bin/uv")
         self.assertIn("--no-cache", parsed["ProgramArguments"])
         self.assertIn("--config", parsed["ProgramArguments"])
         self.assertIn("PATH", parsed["EnvironmentVariables"])
+
+    def test_expand_remote_tilde_neutralizes_shell_metacharacters(self) -> None:
+        expr = fp._expand_remote_tilde("~/$(touch /tmp/pwn)/$HOME/`id`/a\\b")
+        # Evaluate under real sh with a clean HOME; must remain literal without command substitution
+        res = subprocess.run(
+            ["/bin/sh", "-c", f"HOME=/tmp/fakehome; printf '%s' {expr}"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(res.stdout, "/tmp/fakehome/$(touch /tmp/pwn)/$HOME/`id`/a\\b")
+
+    def test_peer_mac_remote_sh_executes_cleanly_without_watch_log_and_resists_marker_spoofing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td)
+            logs = home / ".t3" / "userdata" / "logs"
+            logs.mkdir(parents=True)
+            # Trace file WITHOUT trailing newline AND containing fake ===WORKTREES=== line
+            (logs / "server.trace.ndjson").write_text('{"name":"===WORKTREES==="}', encoding="utf-8")
+            (home / ".t3" / "worktrees" / "proj" / "wt1").mkdir(parents=True)
+            # Intentionally NO watch.log at all -> sh -s must still exit 0!
+            peer = fp.PeerMacConfig(
+                name="peer-mac",
+                ssh="peer-mac",
+                t3_dir="~/.t3",
+                board_home="~/.local/share/agent-board",
+                repos_dir="~/Developer",
+                extra_repos=[],
+                clean_checkouts=[],
+            )
+            now = dt.datetime(2026, 11, 28, 10, 0, 0, tzinfo=dt.timezone.utc)
+
+            def run_locally_under_sh(cmd, *, input_text=None, timeout=25, cwd=None):
+                env = dict(**{"HOME": str(home), "PATH": "/usr/bin:/bin:/opt/homebrew/bin"})
+                return subprocess.run(["/bin/sh", "-s"], input=input_text, text=True, capture_output=True, env=env, timeout=timeout)
+
+            parsed = fp.probe_peer_mac(peer, run_locally_under_sh, now)
+            self.assertEqual(parsed["status"], "ok")
+            self.assertEqual(parsed["worktrees_count"], 1)
+            self.assertIsNotNone(parsed.get("disk_avail_gib"))
+
+    def test_load_config_explicit_missing_raises_and_toml_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            missing = Path(td) / "nope.toml"
+            with self.assertRaises(FileNotFoundError):
+                fp.load_config(missing)
+            good = Path(td) / "fleet.toml"
+            good.write_text(
+                'local_name = "host-a"\n[board_db]\nssh = "srv"\nuser = "svc"\npath = "/tmp/b.db"\n[thresholds]\nfailed_llm_warn = 3\n',
+                encoding="utf-8",
+            )
+            cfg = fp.load_config(good)
+            self.assertEqual(cfg.local_name, "host-a")
+            self.assertEqual(cfg.board_db_ssh, "srv")
+            self.assertEqual(cfg.board_db_user, "svc")
+            self.assertEqual(cfg.thresholds["failed_llm_warn"], 3)
+
+    def test_probe_board_db_ssh_propagates_sql_failure_exit_code(self) -> None:
+        cfg = fp.ProfilerConfig(board_db_ssh="srv", board_db_user="svc", board_db_path="/var/lib/b.db")
+
+        def run_sh_fail(cmd, *, input_text=None, timeout=20, cwd=None):
+            # Verify the generated remote script contains `|| exit $?` so failures propagate
+            remote_script = cmd[-1]
+            self.assertIn("|| exit $?", remote_script)
+            return _cp(stdout="", stderr="Error: database is locked", rc=5)
+
+        res = fp.probe_board_db(cfg, run_sh_fail)
+        self.assertEqual(res["status"], "error")
+        self.assertIn("database is locked", res["error"])
+
+    def test_probe_local_mac_survives_du_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "t3" / "worktrees" / "p" / "w1").mkdir(parents=True)
+            cfg = fp.ProfilerConfig(
+                local_name="mac-1",
+                local_t3_dir=str(root / "t3"),
+                local_board_home=str(root / "board"),
+                local_repos_dir=str(root / "repos"),
+                local_extra_repos=[],
+                local_clean_checkouts=[],
+            )
+
+            def timeout_du(cmd, **kwargs):
+                if cmd[0] == "du":
+                    raise subprocess.TimeoutExpired(cmd=cmd, timeout=15)
+                if cmd[0] == "df":
+                    return _cp("Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/d 100 10 52428800 50% /\n")
+                return _cp()
+
+            res = fp.probe_local_mac(cfg, timeout_du, dt.datetime.now(dt.timezone.utc))
+            self.assertEqual(res["status"], "ok")
+            self.assertIn("worktrees_error", res)
+            self.assertEqual(res["worktrees_count"], 1)
+            self.assertAlmostEqual(res["disk_avail_gib"], 50.0, places=1)
+
+    def test_branch_sprawl_warn_and_red_independent_of_review_branches(self) -> None:
+        hosts = [
+            {
+                "name": "mac-1",
+                "status": "ok",
+                "repos": [
+                    {"name": "repo-warn", "total_branches": 75, "review_branches": 0, "dirty_tracked": []},
+                    {"name": "repo-both", "total_branches": 130, "review_branches": 25, "dirty_tracked": []},
+                ],
+            }
+        ]
+        anoms, _ = fp.evaluate_anomalies({"status": "skipped"}, hosts, fp.DEFAULT_THRESHOLDS, 0)
+        got = {(a.severity, a.code, a.target) for a in anoms}
+        self.assertIn(("YELLOW", "branch_sprawl", "mac-1:repo-warn"), got)
+        self.assertIn(("RED", "branch_sprawl", "mac-1:repo-both"), got)
+        self.assertIn(("RED", "leaked_review_branches", "mac-1:repo-both"), got)
+
+    def test_run_lock_contention_and_fail_on_red_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            lock_path = root / "state" / "run.lock"
+            with fp.RunLock(lock_path, wait_secs=0.0) as got1:
+                self.assertTrue(got1)
+                with fp.RunLock(lock_path, wait_secs=0.0) as got2:
+                    self.assertFalse(got2)
+
+            # Test main() --fail-on-red exit 2 when config triggers RED (missing board_db)
+            cfg_file = root / "cfg.toml"
+            cfg_file.write_text(
+                f'local_name = "mac-1"\n[board_db]\npath = "{root / "missing.db"}"\n'
+                f'[local]\nt3_dir = "{root / "empty"}"\nboard_home = "{root / "empty"}"\n'
+                f'repos_dir = "{root / "empty"}"\nextra_repos = []\nclean_checkouts = []\n',
+                encoding="utf-8",
+            )
+            rc = fp.main(["run", "--config", str(cfg_file), "--state-dir", str(root / "st2"), "--fail-on-red"])
+            self.assertEqual(rc, 2)
+            # Without --fail-on-red, returns 0 even on RED anomalies
+            rc0 = fp.main(["run", "--config", str(cfg_file), "--state-dir", str(root / "st3")])
+            self.assertEqual(rc0, 0)
+            # Explicit missing --config returns 1
+            rc1 = fp.main(["run", "--config", str(root / "does-not-exist.toml"), "--state-dir", str(root / "st4")])
+            self.assertEqual(rc1, 1)
 
 
 if __name__ == "__main__":
