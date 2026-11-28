@@ -246,7 +246,9 @@ Active sessions run on **Antigravity / Gemini 4 Neon** (`gemini/GEMINI.md`, with
 Claude or Codex subscription). The dormant `claude/CLAUDE.md` and `codex/` configs remain
 tracked for shared hooks, factory code, and tests until their removal is decided. As a
 backstop, `guard-runtimes` blocks a shell command named `codex` (also through
-`bunx @openai/codex`); it does not see other launchers or the T3 delegate tools. Tools that
+`bunx @openai/codex`) and commands that select a disallowed Claude model (Sonnet, or any
+Fable other than 5.2) via `--model`/`--fallback-model` or `ANTHROPIC_MODEL`/`CLAUDE_MODEL`
+assignments; it does not see other launchers or the T3 delegate tools. Tools that
 read past Claude Code or Codex sessions under `~/.claude` and `~/.codex` still read them.
 
 `codex/config.example.toml` is a reference configuration. Review and adapt it

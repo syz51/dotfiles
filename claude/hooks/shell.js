@@ -57,6 +57,7 @@ const WRAPPERS = {
   env: ["-u", "-P", "-S", "-C", "--unset", "--split-string", "--chdir"],
   exec: ["-a"],
   nice: ["-n"],
+  "no-session-env": [],
   // zsh precommand modifiers
   nocorrect: [],
   noglob: [],
@@ -685,11 +686,16 @@ function program(argv, dir, remote = false, dirs = undefined) {
   let replace; // xargs' -I or -J string, which each input line replaces
   let filled = false; // the input fills in an `env -S` string, so it may supply any words
   let envDir; // the directory state an env started in while it parses its `env -S` words again
+  const assignments = [];
+  const fill = (word) => (replace === undefined ? word : word.replaceAll(replace, FILLED));
   let i = 0;
   while (i < argv.length) {
     const name = basename(argv[i]);
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[i]) || SHELL_KEYWORDS.has(argv[i])) {
-      if (!SHELL_KEYWORDS.has(argv[i])) runner = true;
+      if (!SHELL_KEYWORDS.has(argv[i])) {
+        runner = true;
+        assignments.push(argv[i]);
+      }
       i += 1;
       continue;
     }
@@ -700,20 +706,20 @@ function program(argv, dir, remote = false, dirs = undefined) {
     }
     if (name === "ssh") {
       const remote = sshProgram(argv, i, dir, dirs);
-      return { ...remote, appended, repeating };
+      return { ...remote, appended, repeating, assignments: assignments.map(fill) };
     }
     if (name === "watch") {
       // watch runs its remaining words through `sh -c`, or directly via exec with `-x`/`--exec`.
       const { next, options } = skipOptions(argv, i + 1, (option) => ["-n", "--interval", "-q", "--equexit"].includes(option));
       const exec = options.some(([option]) => option === "-x" || option === "--exec");
       const rest = argv.slice(next);
-      return { words: [], nested: [exec ? quote(rest) : rest.join(" ")], dir, dirs, appended, reparses: true, repeating: true };
+      return { words: [], nested: [exec ? quote(rest) : rest.join(" ")], dir, dirs, appended, reparses: true, repeating: true, assignments: assignments.map(fill) };
     }
     if (name === "command") {
       // `command -v NAME` and `command -V NAME` look a command up without running it.
       let j = i + 1;
       while (j < argv.length && /^-[A-Za-z]+$/.test(argv[j]) && !/[vV]/.test(argv[j])) j += 1;
-      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, dirs, appended, repeating };
+      if (/^-[A-Za-z]*[vV]/.test(argv[j] ?? "")) return { words: [], nested: [], dir, dirs, appended, repeating, assignments: assignments.map(fill) };
     }
     if (!Object.hasOwn(WRAPPERS, name)) break;
     runner = name !== "xargs" || appended;
@@ -757,11 +763,10 @@ function program(argv, dir, remote = false, dirs = undefined) {
   // `bare`: wrappers or assignments with no command after them, so the command is the words
   // xargs adds, if any.
   const bare = i === argv.length && runner;
-  const fill = (word) => (replace === undefined ? word : word.replaceAll(replace, FILLED));
   const words = argv.slice(i).map(fill);
   // `fills`: the input fills in the command's name or an `env -S` string.
   const fills = filled || (words[0] ?? "").includes(FILLED);
-  return { words, nested: [], dir, dirs, appended, bare, fills, repeating };
+  return { words, nested: [], dir, dirs, appended, bare, fills, repeating, assignments: assignments.map(fill) };
 }
 
 /** The scripts of `sh -c <script>` and fish's `--command` and `--init-command`, skipping options that take a value. */
@@ -973,7 +978,7 @@ function analyzeCommands(commands, inheritedPiped, inheritedBg) {
   return commands.map((_, i) => ({ grouped: grouped[i], piped: pipedDepth[i] < Infinity, background: bg[i] }));
 }
 
-function inspect(source, state, visit, depth, tooDeep) {
+function inspect(source, state, visit, depth, tooDeep, onAssignments) {
   if (depth > MAX_DEPTH) return tooDeep;
   state.cdCount ??= 0;
   state.cdTargets ??= [];
@@ -1070,7 +1075,7 @@ function inspect(source, state, visit, depth, tooDeep) {
     const background = pipeline.at(-1).command.next === "&";
     const readerInShell = reader !== -1 && !background && reader === pipeline.length - 1 && !here
       && sourceTarget(pipeline[reader].run.words) !== undefined;
-    for (const [index, { command: { argv, inputs, substitutions, processSubs }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills, repeating }, before, beforeDirs }] of pipeline.entries()) {
+    for (const [index, { command: { argv, inputs, substitutions, processSubs }, meta: { grouped, piped, background: inBackground }, run: { words, nested, local, dir, dirs, remote, printed: text, appended, reparses, bare, fills, repeating, assignments = [] }, before, beforeDirs }] of pipeline.entries()) {
       const name = words.length > 0 ? basename(words[0]) : "";
       const lastInShell = !background && index === pipeline.length - 1 && !here;
       const topLevel = depth === 0 && !grouped && !piped && !inBackground;
@@ -1122,7 +1127,7 @@ function inspect(source, state, visit, depth, tooDeep) {
           cdCount: 0,
           cdTargets: [],
         };
-        const violation = inspect(script, child, visit, depth + 1, tooDeep);
+        const violation = inspect(script, child, visit, depth + 1, tooDeep, onAssignments);
         if (violation) return violation;
         if (sameShell && child.cdCount > 0) {
           const prev = snapshot();
@@ -1145,6 +1150,10 @@ function inspect(source, state, visit, depth, tooDeep) {
         if (violation) return violation;
       }
       if (name === "cd" || name === "pushd" || name === "popd") {
+        if (assignments.length > 0 && onAssignments) {
+          const violation = onAssignments(assignments, dir, { remote: here, words });
+          if (violation) return violation;
+        }
         if (background || index < pipeline.length - 1) continue;
         // A directory on another host is unknown here, whatever path it names.
         if (here) {
@@ -1162,7 +1171,10 @@ function inspect(source, state, visit, depth, tooDeep) {
           }
         }
       } else if (words.length > 0) {
-        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, topLevel, piped, background: inBackground, repeating: isRepeating, ...(dirs !== undefined && { dirs }) });
+        const violation = visit(words, dir, { appended: added || appended, opaque: false, remote: here, topLevel, piped, background: inBackground, repeating: isRepeating, assignments, ...(dirs !== undefined && { dirs }) });
+        if (violation) return violation;
+      } else if (assignments.length > 0 && onAssignments) {
+        const violation = onAssignments(assignments, dir, { remote: here, words });
         if (violation) return violation;
       }
     }
@@ -1173,7 +1185,7 @@ function inspect(source, state, visit, depth, tooDeep) {
 }
 
 /**
- * Calls `visit(words, dir, { appended, opaque, remote, topLevel, piped, background, repeating, dirs })` for every command `source` would run,
+ * Calls `visit(words, dir, { appended, opaque, remote, topLevel, piped, background, repeating, assignments, dirs })` for every command `source` would run,
  * after wrappers, through shells, substitutions, `eval`, `source`, `find -exec` and `ssh`; `dir` is its
  * directory when known, and always undefined for a command on another host or when a `cd` inside `eval`,
  * `source` or a non-last piped compound command leaves the directory uncertain (in which case `dirs` lists
@@ -1183,13 +1195,16 @@ function inspect(source, state, visit, depth, tooDeep) {
  * background job, or inner script); `piped` and `background` say whether the command (or an enclosing
  * group, process substitution, or script) is in a pipeline or backgrounded. `repeating` says that the
  * command runs under a repeating wrapper (`xargs`, `find -exec`/`-execdir`/`-ok`/`-okdir`, or `watch`),
- * including scripts nested inside one. `opaque` says that the words xargs adds may run
+ * including scripts nested inside one. `assignments` holds leading `NAME=value` assignments skipped before
+ * the command (including those after `env` or `no-session-env`); when a command has only assignments (or
+ * is `cd`/`pushd`/`popd`), `onAssignments(assignments, dir, { remote, words })` is called if provided.
+ * `opaque` says that the words xargs adds may run
  * a command the guard cannot see at all, as in `xargs sudo`, `xargs ssh host true`, `xargs bash -c` or
  * `xargs find`; then `words` are the xargs command's own words, and the command they name is visited too.
  * A word that holds xargs' `-I` replace string holds `${xargs}` in its place, which `expands` reports.
  * Returns the first reason `visit` gives for blocking one, or undefined. A script nested
  * more than eight levels deep returns `tooDeep`, which is undefined unless given.
  */
-export function visitCommands(source, cwd, visit, tooDeep) {
-  return inspect(source, { dir: cwd }, visit, 0, tooDeep);
+export function visitCommands(source, cwd, visit, tooDeep, onAssignments) {
+  return inspect(source, { dir: cwd }, visit, 0, tooDeep, onAssignments);
 }
