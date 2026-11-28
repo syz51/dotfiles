@@ -488,7 +488,7 @@ function parseOptions(argv) {
   };
 }
 
-export async function runFriction(options, { now = Date.now(), claudeRoot, codexRoot } = {}) {
+export async function runFriction(options, { now = Date.now(), claudeRoot, codexRoot, antigravityRoots } = {}) {
   const lock = statePath("friction.lock");
   if (!options.dryRun && !acquireLock(lock)) {
     console.error("Another friction run is in progress.");
@@ -504,7 +504,7 @@ export async function runFriction(options, { now = Date.now(), claudeRoot, codex
     const from = Math.max(state.cursor ? Date.parse(state.cursor) : now - options.sinceHours * HOUR, oldest);
     const records = readJsonl(recordsFile());
     const known = recordState(records);
-    const { turns, skipped, holdAt } = completedTurns({ from, to, staleBefore: now - options.staleHours * HOUR, claudeRoot, codexRoot });
+    const { turns, skipped, holdAt } = completedTurns({ from, to, staleBefore: now - options.staleHours * HOUR, claudeRoot, codexRoot, antigravityRoots });
     const candidates = turns
       .filter((entry) => !known.judged.has(entry.key) && (known.errors.get(entry.key) ?? 0) < MAX_JUDGE_ERRORS)
       .map((entry) => ({ ...entry, signals: signals(entry.turn) }))

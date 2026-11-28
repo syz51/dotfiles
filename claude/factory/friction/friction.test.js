@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { antigravityTurns } from "../lib/antigravity.js";
 import { rolloutThreads } from "../lib/codex.js";
 import { readJson, readJsonl } from "../lib/state.js";
 import { Rollout, writeRollouts } from "../lib/testing/codex.js";
@@ -145,7 +146,15 @@ function fixture() {
   return { person, reportedFirst, codex, claudeRoot, codexRoot };
 }
 
-const context = (roots, now = NOW) => ({ now, claudeRoot: roots.claudeRoot, codexRoot: roots.codexRoot });
+const writeAntigravity = (brain, id, records) => {
+  const dir = join(brain, id, ".system_generated", "logs");
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, "transcript.jsonl");
+  writeFileSync(file, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  return file;
+};
+
+const context = (roots, now = NOW) => ({ now, claudeRoot: roots.claudeRoot, codexRoot: roots.codexRoot, antigravityRoots: roots.antigravityRoots ?? [] });
 const feedbackCalls = () => log("board.jsonl").filter((args) => args.includes("feedback"));
 const records = () => readJsonl(join(scratch, "state", "friction.jsonl"));
 
@@ -200,6 +209,168 @@ describe("turns", () => {
     child.prompt("sub").complete();
     const childRoot = writeRollouts([child], join(scratch, "codex-child"));
     expect(codexTurns(rolloutThreads(childRoot)[0])).toBeNull();
+  });
+
+  test("Antigravity turns parse PLANNER_RESPONSE tool_calls, pair GENERIC results, score signals, and render digest", () => {
+    const brain = join(scratch, "agy-brain");
+    const longOutput = `Created At: 2026-11-01T10:00:02Z\nCompleted At: 2026-11-01T10:00:03Z\nCommand exited with code 1.\n\nCommand output:\n${"passing test\n".repeat(120)}error: expected 1, got 2`;
+    const file = writeAntigravity(brain, "conv-agy-1", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Claim the task and run checks</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:00:01Z",
+        content: "Checking the file and claiming the task.",
+        tool_calls: [
+          { name: "read_file", args: { Path: JSON.stringify("/repo/antigravity.js"), StartLine: "1" } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-1") } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-1") } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("bun test") } },
+        ],
+      },
+      // Numbered file lines mentioning "Command exited with code 1" are not a tool error.
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: 'Created At: 2026-11-01T10:00:01Z\nShowing lines 1-2 of 2\n1: const RE = /Command exited with code [1-9]/;\n2: const s = "Command exited with code 1";' },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: "Created At: 2026-11-01T10:00:01Z\nCompleted At: 2026-11-01T10:00:02Z\nCommand exited with code 1.\n\nCommand output:\nerror: connection refused\r\n" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:03Z", status: "ERROR", error: "tool call denied by pre-tool hook: Blocked by guard", content: "Created At: 2026-11-01T10:00:02Z\nCompleted At: 2026-11-01T10:00:03Z\nEncountered error in step execution: tool call denied by pre-tool hook: Blocked by guard" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:04Z", status: "DONE", content: longOutput },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:00:05Z",
+        tool_calls: [
+          { name: "read_file", args: { Path: JSON.stringify("/repo/missing.js") } },
+          { name: "read_file", args: { Path: JSON.stringify("/repo/unmatched.js") } },
+        ],
+      },
+      // Error record with `error` field and no `content` falls back to `error` as output.
+      { type: "GENERIC", created_at: "2026-11-01T10:00:06Z", status: "DONE", error: "file does not exist" },
+      // Final text-only response resets unmatched pending calls and completes the turn.
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:07Z", content: "I had to work around the refusal." },
+      // Turn 2: interrupted before final text-only response, plus a stray GENERIC after USER_INPUT.
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:01:00Z", content: "<user_request>Check tool error text</user_request>" },
+      { type: "GENERIC", created_at: "2026-11-01T10:01:01Z", status: "DONE", content: "stray output" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:01:02Z",
+        content: "Running command.",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: JSON.stringify("sleep 1") } },
+          { name: "edit_file", args: { Path: JSON.stringify("/repo/a.js") } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-01T10:01:03Z", status: "RUNNING", content: "Created At: 2026-11-01T10:01:02Z\nTool is running as a background task" },
+      { type: "GENERIC", created_at: "2026-11-01T10:01:04Z", status: "DONE", content: "Encountered error in tool execution: target not found" },
+    ]);
+    const { sessionId, turns } = antigravityTurns(file);
+    expect([sessionId, turns.length]).toEqual(["conv-agy-1", 2]);
+    expect(turns.map((turn) => [turn.index, turn.complete, turn.prompt])).toEqual([
+      [1, true, "Claim the task and run checks"],
+      [2, false, "Check tool error text"],
+    ]);
+    expect(turns[0].calls.map((call) => [call.name, call.ok])).toEqual([
+      ["read_file", true],
+      ["run_command", false],
+      ["run_command", false],
+      ["run_command", false],
+      ["read_file", false],
+      ["read_file", null],
+    ]);
+    expect(turns[0].calls[0].input).toEqual({ Path: "/repo/antigravity.js", StartLine: 1 });
+    expect(turns[0].calls[1].input).toEqual({ CommandLine: "board claim x-1" });
+    expect(turns[0].calls[3].output).toStartWith("Created At:");
+    expect(turns[0].calls[3].output).toEndWith("error: expected 1, got 2");
+    expect(turns[0].calls[3].output).toMatch(/\[\.\.\. \d+ characters omitted \.\.\.\]/);
+    expect(turns[0].calls[4].output).toBe("file does not exist");
+    // 4 failed calls (2 boardErrors, 1 hookBlock), 2 retries (board claim -> board claim, missing -> unmatched read_file), 2 phrases ("had to", "work around").
+    expect(signals(turns[0])).toEqual({
+      toolErrors: 4,
+      boardErrors: 2,
+      serverErrors: 0,
+      hookBlocks: 1,
+      retries: 2,
+      phrases: 2,
+      score: 3 * 2 + 2 * 1 + 4 + 2 * 2 + 2,
+    });
+    const rendered = digest(turns[0]);
+    expect(rendered).toContain('[Tool 1 read_file ok] {"Path":"/repo/antigravity.js","StartLine":1}');
+    expect(rendered).toContain('[Tool 2 run_command FAILED] {"CommandLine":"board claim x-1"}\n  output:');
+    expect(rendered).toContain("error: connection refused");
+    expect(rendered).toContain("[Tool 3 run_command FAILED]");
+    expect(rendered).toContain("[Tool 6 read_file no result]");
+    expect(turns[1].calls.map((call) => [call.name, call.ok])).toEqual([["run_command", true], ["edit_file", false]]);
+  });
+
+  test("Antigravity filedFeedback, quietMiss, retries, and serverCounted handle run_command and MCP calls", () => {
+    const brain = join(scratch, "agy-helpers");
+    const cliFeedback = writeAntigravity(brain, "cli-fb", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Report it</user_request>" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:01Z", tool_calls: [{ name: "run_command", args: { CommandLine: JSON.stringify("board feedback --about hooks --activity build 'noisy'") } }] },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: "Created At: ...\nCommand exited with code 0.\n\nCommand output:\nfiled" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:03Z", content: "Filed." },
+    ]);
+    const mcpLazyFeedback = writeAntigravity(brain, "mcp-lazy-fb", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Report via MCP</user_request>" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:01Z", tool_calls: [{ name: "call_mcp_tool", args: { ServerName: JSON.stringify("board"), ToolName: JSON.stringify("feedback"), Arguments: JSON.stringify({ about: "hooks", text: "x" }) } }] },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: "filed" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:03Z", content: "Filed." },
+    ]);
+    const failedFeedback = writeAntigravity(brain, "failed-fb", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Report bad activity</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:00:01Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: JSON.stringify("board feedback --about hooks --activity verify 'x'") } },
+          { name: "call_mcp_tool", args: { ServerName: JSON.stringify("board"), ToolName: JSON.stringify("feedback"), Arguments: JSON.stringify({ text: "x" }) } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: "Command exited with code 2.\n\nCommand output:\nerror: invalid value 'verify' for '--activity <ACTIVITY>'\r\n" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:03Z", status: "ERROR", error: "invalid arguments", content: "Encountered error in step execution: error: invalid arguments" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:04Z", content: "Failed." },
+    ]);
+    expect(filedFeedback(antigravityTurns(cliFeedback).turns[0])).toBe(true);
+    expect(filedFeedback(antigravityTurns(mcpLazyFeedback).turns[0])).toBe(true);
+    expect(filedFeedback({ calls: [{ name: "mcp_board_feedback", input: {}, ok: true, output: "filed" }] })).toBe(true);
+    expect(filedFeedback(antigravityTurns(failedFeedback).turns[0])).toBe(false);
+
+    // Server-counted board errors via Antigravity run_command (\r\n) and MCP (step execution prefix) score 0 alone.
+    const serverOnly = writeAntigravity(brain, "server-only", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Claim</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:00:01Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-1") } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("board note x-1 'long'") } },
+          { name: "call_mcp_tool", args: { ServerName: JSON.stringify("board"), ToolName: JSON.stringify("task_note"), Arguments: JSON.stringify({ id: "x-1", text: "long" }) } },
+          { name: "mcp_board_task_claim", args: { id: JSON.stringify("x-2") } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:02Z", status: "DONE", content: "Created At: ...\nCommand exited with code 1.\n\nCommand output:\nboard: claim_refused: you already have x-0 in doing\r\n" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:03Z", status: "DONE", content: "Created At: ...\nCommand exited with code 1.\n\nCommand output:\nboard: text is 501 characters; the limit is 500 (not sent)\r\n" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:04Z", status: "ERROR", error: "error: invalid: text is 501 characters; the limit is 500", content: "Created At: ...\nEncountered error in step execution: error: invalid: text is 501 characters; the limit is 500" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:05Z", status: "ERROR", error: "error: not_found: task x-2", content: "Created At: ...\nEncountered error in step execution: error: not_found: task x-2" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:06Z", content: "Done." },
+    ]);
+    expect(signals(antigravityTurns(serverOnly).turns[0])).toEqual({
+      toolErrors: 4,
+      boardErrors: 4,
+      serverErrors: 4,
+      hookBlocks: 0,
+      retries: 1,
+      phrases: 0,
+      score: 0,
+    });
+
+    // Quiet rg exit-1 miss in run_command is not a failure; different call_mcp_tool targets are not retries.
+    expect(signals({
+      prompt: "",
+      texts: [],
+      hooks: [],
+      calls: [
+        { name: "run_command", input: { CommandLine: "rg needle src/" }, ok: false, output: "Created At: 2026-11-01T10:00:01Z\nCompleted At: 2026-11-01T10:00:02Z\nCommand exited with code 1.\n" },
+        { name: "call_mcp_tool", input: { ServerName: "board", ToolName: "task_claim" }, ok: false, output: "error: server answered 502" },
+        { name: "call_mcp_tool", input: { ServerName: "desktop", ToolName: "snapshot" }, ok: true, output: "ok" },
+      ],
+    })).toMatchObject({ toolErrors: 1, boardErrors: 1, serverErrors: 0, retries: 0, score: 4 });
   });
 
   test("a turn that called the feedback tool or ran board feedback has filed feedback", () => {
@@ -464,6 +635,61 @@ describe("friction run", () => {
     expect(out).toContain("1 show friction");
     expect(out).toContain(`claude ${transcript.sessionId} turn 2: score 10`);
     expect(out).not.toContain(`claude ${transcript.sessionId} turn 1:`);
+  }, FRICTION_TIMEOUT);
+
+  test("scores Antigravity turns, labels filings Antigravity, skips feedback and server-counted turns, and holds incomplete turns", async () => {
+    const brain = join(scratch, "agy-run");
+    writeAntigravity(brain, "agy-friction", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:00:00Z", content: "<user_request>Claim and fix</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:00:05Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-1") } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-1") } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:06Z", status: "DONE", content: "Command exited with code 1.\n\nCommand output:\nerror: server unreachable" },
+      { type: "GENERIC", created_at: "2026-11-01T10:00:07Z", status: "DONE", content: "Command exited with code 1.\n\nCommand output:\nerror: server unreachable" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:00:10Z", content: "I had to work around the board outage." },
+    ]);
+    writeAntigravity(brain, "agy-reported", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:01:00Z", content: "<user_request>Already reported</user_request>" },
+      {
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-01T10:01:05Z",
+        tool_calls: [
+          { name: "run_command", args: { CommandLine: JSON.stringify("board claim x-2") } },
+          { name: "run_command", args: { CommandLine: JSON.stringify("board feedback --about board 'unreachable'") } },
+        ],
+      },
+      { type: "GENERIC", created_at: "2026-11-01T10:01:06Z", status: "DONE", content: "Command exited with code 1.\n\nCommand output:\nerror: server unreachable" },
+      { type: "GENERIC", created_at: "2026-11-01T10:01:07Z", status: "DONE", content: "Command exited with code 0.\n\nCommand output:\nfiled" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:01:10Z", content: "Reported." },
+    ]);
+    writeAntigravity(brain, "agy-server-only", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:02:00Z", content: "<user_request>Server counted</user_request>" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:02:05Z", tool_calls: [{ name: "run_command", args: { CommandLine: JSON.stringify("board claim x-3") } }] },
+      { type: "GENERIC", created_at: "2026-11-01T10:02:06Z", status: "DONE", content: "Command exited with code 1.\n\nCommand output:\nboard: claim_refused: already claimed\r\n" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:02:10Z", content: "Done." },
+    ]);
+    writeAntigravity(brain, "agy-running", [
+      { type: "USER_INPUT", source: "USER_EXPLICIT", created_at: "2026-11-01T10:03:00Z", content: "<user_request>Still running</user_request>" },
+      { type: "PLANNER_RESPONSE", created_at: "2026-11-01T10:03:05Z", content: "Working...", tool_calls: [{ name: "run_command", args: { CommandLine: JSON.stringify("board claim x-4") } }] },
+      { type: "GENERIC", created_at: "2026-11-01T10:03:06Z", status: "DONE", content: "Command exited with code 1.\n\nCommand output:\nerror: server unreachable" },
+    ]);
+    const roots = { claudeRoot: join(scratch, "no-claude"), codexRoot: join(scratch, "no-codex"), antigravityRoots: [brain] };
+    expect(await run(["run"], context(roots))).toBe(0);
+    const judged = log("claude.jsonl");
+    expect(judged).toHaveLength(1);
+    expect(judged[0].stdin).toContain("Claim and fix");
+    expect(judged[0].stdin).toContain('[Tool 1 run_command FAILED] {"CommandLine":"board claim x-1"}');
+    const filed = feedbackCalls();
+    expect(filed).toHaveLength(1);
+    expect(filed[0].at(-1)).toContain("Captured from Antigravity session agy-friction, turn 1.");
+    expect(console.log.mock.calls.flat().join("\n")).toContain("skipped 0 automation sessions, 1 turns that filed feedback");
+    const cursor = readJson(join(scratch, "state", "friction-state.json")).cursor;
+    expect(Date.parse(cursor)).toBeLessThan(Date.parse("2026-11-01T10:03:06Z"));
   }, FRICTION_TIMEOUT);
 });
 
